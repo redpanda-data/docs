@@ -1,0 +1,141 @@
+= Migrating Data to Redpanda
+:description: Migrate external data to Redpanda with MirrorMaker 2.
+
+One of the more elegant aspects of Redpanda is that it is compatible with the xref:reference:faq.adoc[Kafka API and ecosystem].
+So when you want to migrate data from Kafka or replicate data between Redpanda clusters,
+the MirrorMaker 2 tool bundled in the https://kafka.apache.org/downloads[Kafka download package] is a natural solution.
+
+In this article, we'll go through the process of configuring MirrorMaker to replicate data from one Redpanda cluster to another.
+In short, MirrorMaker reads a configuration file that specifies the connection details for the Redpanda clusters, as well as other options.
+After you start MirrorMaker, the data migration continues according to the configuration at launch time until you shutdown the MirrorMaker process.
+
+For all of the details on MirrorMaker and its options, check out the https://kafka.apache.org/documentation/#georeplication[Kafka documentation].
+
+== Prerequisites
+
+To set up the replication, we'll need:
+
+* 2 Redpanda clusters - You can set up these clusters in any deployment you like, including xref:quickstart:kubernetes-qs-cloud.adoc[Kubernetes], xref:quickstart:quick-start-docker.adoc[Docker], xref:quickstart:quick-start-linux.adoc[Linux], or xref:quickstart:quick-start-macos.adoc[MacOS].
+* MirrorMaker host - You install MirrorMaker on a separate system or on one of the Redpanda clusters, as long as the IP addresses and ports on each cluster are accessible from the MirrorMaker host.
+You must install the https://docs.oracle.com/javase/10/install/toc.htm[Java Runtime Engine (JRE)] on the MirrorMaker host.
+
+== Installing MirrorMaker
+
+MirrorMaker 2 is run by a shell script that is part of the Kafka download package.
+To install MirrorMaker 2 on the machine that you want to run the replication between the clusters:
+
+. Download the latest https://kafka.apache.org/downloads[Kafka download package].
++
+For example:
++
+[,bash]
+----
+ curl -O https://dlcdn.apache.org/kafka/3.0.0/kafka_2.13-3.0.0.tgz
+----
+
+. Extract the files from the archive:
++
+[,bash]
+----
+ tar -xvf kafka_2.13-3.0.0.tgz
+----
+
+== Create the MirrorMaker 2 config files
+
+MirrorMaker uses configuration files to get the connection details for the clusters.
+You can find the MirrorMaker script and configuration files in the expanded Kafka directory.
+
+----
+.
+└── kafka_2.13-3.0.0
+    └── bin
+        └── connect-mirror-maker.sh
+    └── config
+        └── connect-mirror-maker.properties
+----
+
+The sample configuration is a great place to understand a number of the settings for MirrorMaker.
+
+To create a basic configuration file, go to the `config` and run this command:
+
+[,bash]
+----
+cat << EOF > mm2.properties
+// Name the clusters
+clusters = redpanda1, redpanda2
+
+// Assign IP addresses to the cluster names
+redpanda1.bootstrap.servers = <redpanda1_cluster_ip>:9092
+redpanda2.bootstrap.servers = <redpanda2_cluster_ip>:9092
+
+// Set replication for all topics from Redpanda 1 to Redpanda 2
+redpanda1->redpanda2.enabled = true
+redpanda1->redpanda2.topics = .*
+
+// Setting replication factor of newly created remote topics
+replication.factor = 1
+EOF
+----
+
+== Run MirrorMaker to start replication
+
+To start MirrorMaker in the `kafka_2.13-3.0.0/bin/` directory, run:
+
+[,bash]
+----
+./kafka_2.13-3.0.0/bin/connect-mirror-maker.sh mm2.properties
+----
+
+With this command, MirrorMaker consumes all topics from the redpanda1 cluster and replicates them into the redpanda2 cluster.
+MirrorMaker adds the prefix `redpanda1` to the names of replicated topics.
+
+== See migration in action
+
+Here are the basic commands to produce and consume streams:
+
+. Create a topic in the source cluster. We'll call it "twitch_chat":
++
+[,bash]
+----
+ rpk topic create twitch_chat --brokers <node IP>:<kafka API port>
+----
+
+. Produce messages to the topic:
++
+[,bash]
+----
+ rpk topic produce twitch_chat --brokers <node IP>:<kafka API port>
+----
++
+Type text into the topic and press Ctrl + D to separate between messages.
++
+Press Ctrl + C to exit the produce command.
+
+. Consume (or read) the messages from the destination cluster:
++
+[,bash]
+----
+ rpk topic consume twitch_chat --brokers <node IP>:<kafka API port>
+----
++
+Each message is shown with its metadata, like this:
++
+[,json]
+----
+ {
+     "message": "How do you stream with Redpanda?\n",
+     "partition": 0,
+     "offset": 1,
+     "timestamp": "2021-02-10T15:52:35.251+02:00"
+ }
+----
+
+Now you know the replication is working!
+
+== Stop MirrorMaker
+
+To stop the MirrorMaker process, use `top` to find its process ID and then run: `kill <MirrorMaker pid>`
+
+== Troubleshooting
+
+If you run into any difficulty with data migration, contact us in our https://redpanda.com/slack[Slack] community so we can help you succeed.

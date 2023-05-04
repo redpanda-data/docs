@@ -1,0 +1,296 @@
+= Kubernetes
+:description: Spin up a Redpanda cluster with Docker or Redpanda Cloud, create a basic streaming application, and explore your cluster in Redpanda Console.
+
+With Redpanda you can get up and running with streaming quickly
+and be fully compatible with the https://cwiki.apache.org/confluence/display/KAFKA/Ecosystem[Kafka ecosystem].
+
+This quick start guide can help you get started with Redpanda for development and testing purposes.
+To get up and running you need to create a cluster and deploy the Redpanda operator on the cluster.
+
+* For production or benchmarking, set up a xref:deployment:production-deployment.adoc[production deployment].
+* You can also set up a xref:deployment:kubernetes-external-connect.adoc[Kubernetes cluster with external access].
+
+NOTE: Run a container inside the Kubernetes cluster to communicate with the Redpanda cluster.
+Currently, a load balancer is not automatically created during deployment by default.
+
+NOTE: In the steps below, the `.yaml` file that you use to install Redpanda sets `developerMode: true`.
+If you want to set `developerMode: false`, for optimal configuration it is recommended that you run `rpk redpanda tune all` directly on the host before you create a Redpanda cluster.
+You can find more information about the command as well as tuning recommendations in the xref:deployment:production-deployment.adoc#step-2-set-redpanda-production-mode[Set Redpanda production mode] documentation.
+If `rpk` is not available, verify that `fs.aio-max-nr` is set to `1048576` or greater.
+You can set `fs.aio-max-nr` by running `sysctl -w fs.aio-max-nr=1048576`.
+
+== Prerequisites
+
+Before you start installing Redpanda you need to setup your Kubernetes environment.
+
+=== Install Kubernetes, Helm, and cert-manager
+
+You'll need to install:
+
+* https://kubernetes.io/docs/setup/[Kubernetes] v1.19 or above
+* https://kubernetes.io/docs/tasks/tools/[kubectl] v1.19 or above
+* https://github.com/helm/helm/releases[helm] v3.0.0 or above
+* https://cert-manager.io/docs/installation/kubernetes/[cert-manager] v1.5.0 or above
++
+Follow the instructions to verify that cert-manager is ready to create certificates.
+
+Make sure you also have these common tools installed:
+
+* https://golang.org/doc/install[Go] v1.17 or above
+* https://git-scm.com/book/en/v2/Getting-Started-Installing-Git[Git]
+
+To run locally
+
+* https://kind.sigs.k8s.io/docs/user/quick-start/[Kind] v0.12 or above
+
+NOTE: Make sure that you have kind configured in your path. https://golang.org/doc/code#GOPATH[This reference in the GO documentation] can help you configure the path.
+
+=== Create a Kubernetes cluster
+
+You can either create a Kubernetes cluster on your local machine or on a cloud provider.
+
+[tabs]
+=====
+Kind::
++
+--
+https://kind.sigs.k8s.io[Kind] is a tool that lets you create local Kubernetes clusters using Docker. After you install Kind, verify that port 30001 is free on your machine before you set up a cluster or cluster creation will fail. Set up a cluster with:
+
+```bash
+kind create cluster --config docs/kind-external.yaml
+```
+
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+    extraPortMappings:
+    - containerPort: 30001
+      hostPort: 30001
+```
+
+--
+AWS EKS::
++
+--
+Use the https://docs.aws.amazon.com/eks/latest/userguide/getting-started-eksctl.html[EKS Getting Started] guide to set up EKS. When you finish, you'll have `eksctl` installed so that you can create and delete clusters in EKS. Then, create an EKS cluster with:
+
+```bash
+eksctl create cluster \ --name redpanda \ --nodegroup-name standard-workers \ --node-type m5.xlarge \ --nodes 1 \ --nodes-min 1 \ --nodes-max 4
+```
+
+It will take about 10-15 minutes for the process to finish.
+
+--
+Google GKE::
++
+--
+First complete the "Before You Begin" steps describe in https://kubernetes.io/docs/contribute/generate-ref-docs/quickstart/[Google Kubernetes Engine Quickstart]. Then, create a cluster with:
+
+```bash
+gcloud container clusters create redpanda --machine-type n1-standard-4 --num-nodes=1
+```
+
+NOTE: You may need to add a `--region` or `--zone` to this command.
+
+--
+Digital Ocean::
++
+--
+First, set up your https://docs.digitalocean.com/products/getting-started/[Digital Ocean account] and install https://docs.digitalocean.com/reference/doctl/how-to/install/[`doctl`]. Remember to set up your https://docs.digitalocean.com/reference/api/create-personal-access-token/[personal access token]. For additional information, check out the https://github.com/digitalocean/Kubernetes-Starter-Kit-Developers/blob/main/01-setup-DOKS/README.md[Digital Ocean setup docs]. Then you can create a cluster for your Redpanda deployment: 
+
+```bash
+doctl kubernetes cluster create redpanda --wait --size s-4vcpu-8gb
+```
+
+--
+=====
+
+== Kubectl context
+
+Most cloud utility tools will automatically change your `kubectl` config file. To check if you're in the correct context, run the command:
+
+[,bash]
+----
+kubectl config current-context
+----
+
+For Digital Ocean for example, the output will look similar to this:
+
+[,bash]
+----
+do-nyc1-redpanda
+----
+
+If you're running multiple clusters or if the config file wasn't set up automatically, look for more information in the https://kubernetes.io/docs/tasks/access-application-cluster/configure-access-multiple-clusters/[Kubernetes documentation].
+
+== Install cert-manager
+
+The Redpanda operator requires cert-manager to create certificates for TLS communication.
+You can https://cert-manager.io/docs/installation/kubernetes/#installing-with-helm[install cert-manager with a CRD],
+but here's the command to install using helm:
+
+[,bash]
+----
+helm repo add jetstack https://charts.jetstack.io && \
+helm repo update && \
+helm install \
+  cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --version v1.8.0 \
+  --set installCRDs=true
+----
+
+We recommend that you use https://cert-manager.io/docs/installation/verify/#manual-verification[the verification procedure] in the cert-manager docs
+to verify that cert-manager is working correctly.
+
+== Use Helm to install Redpanda operator
+
+. Using Helm, add the Redpanda chart repository and update it:
++
+[,bash]
+----
+ helm repo add redpanda https://charts.vectorized.io/ && \
+ helm repo update
+----
+
+. Just to simplify the commands, create a variable to hold the latest version number:
++
+[,bash]
+----
+ export VERSION=$(curl -s https://api.github.com/repos/redpanda-data/redpanda/releases/latest | jq -r .tag_name)
+----
++
+[NOTE]
+====
+You can find information about the versions of the operator in the https://github.com/redpanda-data/redpanda/releases[list of operator releases]. We're using `jq` to help us. If you don't have it installed run this command:
+
+[tabs]
+=====
+apt::
++
+--
+```bash
+sudo apt-get update && \
+sudo apt-get install jq
+```
+--
+zsh::
++
+--
+```bash
+brew install jq
+```
+--
+=====
+====
+
+. Install the Redpanda operator CRD:
++
+[tabs]
+====
+bash::
++
+--
+```bash
+kubectl apply \ -k https://github.com/redpanda-data/redpanda/src/go/k8s/config/crd?ref=$VERSION
+```
+--
+zsh::
++
+--
+```bash
+noglob kubectl apply \ -k https://github.com/redpanda-data/redpanda/src/go/k8s/config/crd?ref=$VERSION
+```
+--
+====
+
+. Install the Redpanda operator on your Kubernetes cluster with:
++
+[,bash]
+----
+ helm install \
+ redpanda-operator \
+ redpanda/redpanda-operator \
+ --namespace redpanda-system \
+ --create-namespace \
+ --version $VERSION
+----
+
+== Install and connect to a Redpanda cluster
+
+After you set up Redpanda in your Kubernetes cluster, you can use our samples to install a cluster and see Redpanda in action.
+
+Let's try setting up a Redpanda topic to handle a stream of events from a chat application with 5 chat rooms:
+
+. Create a namespace for your cluster:
++
+----
+ kubectl create ns chat-with-me
+----
+
+. Install a cluster from https://github.com/redpanda-data/redpanda/tree/dev/src/go/k8s/config/samples[our sample files], for example the single-node cluster:
++
+----
+ kubectl apply \
+ -n chat-with-me \
+ -f https://raw.githubusercontent.com/redpanda-data/redpanda/dev/src/go/k8s/config/samples/one_node_external.yaml
+----
++
+You can see the resource configuration options in the https://github.com/redpanda-data/redpanda/blob/dev/src/go/k8s/apis/redpanda/v1alpha1/cluster_types.go[cluster_types file].
+
+== Check etc/hosts file
+
+Verify that `0.local.rp` is mapped to `127.0.0.1` on your system. It will contain a line similar to this:
+
+----
+127.0.0.1 0.local.rp
+----
+
+== Do some streaming
+
+Here are some sample commands to produce and consume streams:
+
+. Create a topic. We'll call it "twitch_chat":
++
+[,bash]
+----
+ rpk topic create twitch_chat --brokers=0.local.rp:30001
+----
+
+. Produce messages to the topic:
++
+[,bash]
+----
+ rpk topic produce twitch_chat --brokers=0.local.rp:30001
+----
++
+Type text into the topic and press Ctrl + D to separate between messages.
++
+Press Ctrl + C to exit the produce command.
+
+. Consume (or read) the messages in the topic:
++
+[,bash]
+----
+ rpk topic consume twitch_chat --brokers=0.local.rp:30001
+----
++
+Each message is shown with its metadata, like this:
++
+[,bash]
+----
+ {
+ "message": "How do you stream with Redpanda?\n",
+ "partition": 0,
+ "offset": 1,
+ "timestamp": "2021-02-10T15:52:35.251+02:00"
+ }
+----
+
+== Next steps
+
+* Check out our in-depth explanation of how to xref:deployment:kubernetes-connectivity.adoc[connect external clients] to a Redpanda Kubernetes deployment.
+* Contact us in our https://redpanda.com/slack[Slack] community so we can work together to implement your Kubernetes use cases.
