@@ -1,0 +1,166 @@
+= Custom configuration in Kubernetes
+:description: Using configuration parameters with a custom resource.
+
+The Redpanda operator for Kubernetes creates clusters based on the Custom Resource Definition (CRD). After you install the Redpanda operator, you apply the CRD. The CRD contains the basic configuration for the Redpanda cluster, including the cluster name and namespace, and the configuration for the APIs.
+
+:::tip
+Use one of the Redpanda Kubernetes quickstart guides to install the Redpanda operator and create a cluster in a few easy steps. We have quickstart guides for xref:quickstart:kubernetes-qs-cloud.adoc[cloud], xref:quickstart:kubernetes-qs-cloud.adoc[kind], and xref:quickstart:kubernetes-qs-cloud.adoc[minikube].
+:::
+
+=== Configuring the CRD
+
+In addition to the cluster properties that are included in the CRD by default, you can add additional properties under the `additionalConfiguration` section of the CRD. These properties can be cluster-level or node-level. Node-level configuration properties are passed to the `redpanda.yaml` configuration file. The Redpanda operator uses the Admin API to update cluster-level properties.
+
+The format of each property in the `additionalConfiguration` section of the CRD is:
+
+[,yaml]
+----
+<subsystem>.<property_name>: <value>
+----
+
+For example, the CRD might have the following `additionalConfiguration` section:
+
+[,yaml]
+----
+additionalConfiguration:
+  redpanda.enable_idempotence: "true"
+  redpanda.default_topic_partitions: "3"
+  pandaproxy_client.retries: "10"
+  schema_registry.schema_registry_replication_factor: "3"
+----
+
+This example references the following subsystems: `redpanda`, `pandaproxy_client` (this refers to the HTTP Proxy client), and `schema_registry`. Each subsystem is followed by a property name and a value for the property. For a more detailed example of the CRD with the `additionalConfiguration` section included, see the _CRD example_ section below.
+
+Note that the Redpanda operator does not check for version compatibility of the properties in the `additionalConfiguration` section of the CRD. You might try to apply a property that is not supported by the Redpanda version that the cluster is running. Therefore, it is recommended that you verify the CRD after you make a change. This is explained in the _Verifying the CRD_ section below.
+
+=== Modifying the CRD
+
+To modify properties, edit the CRD file, save it, and execute it as follows:
+
+[,bash]
+----
+kubectl apply -f <custom_resource.yaml>
+----
+
+If a change to the property requires a restart of the cluster, the operator will perform the restart automatically.
+
+If you want to view whether a change to a property requires a restart, see xref:reference:cluster-properties.adoc[Cluster-level properties].
+
+:::caution
+It is possible to change cluster-level configuration properties through the Admin API. However, if the property in the CRD contains a different value than the value that you set through the Admin API, the value set through the Admin API will eventually be overwritten. If the property does not exist in the CRD, you can change it through the Admin API and there will be no conflict. However, because there is the possibility of a property value being overwritten, it is recommended that you set properties in the CRD.
+:::
+
+=== Verifying the CRD
+
+It is a best practice to verify that your CRD is applied to the cluster successfully after you make a change to the configuration. This is useful if you have a typo in the CRD or if you are trying to apply a new property that is not supported for the version of Redpanda that your cluster is running on.
+
+For example, you might add the following `additionalConfiguration` section to the CRD:
+
+[,yaml]
+----
+additionalConfiguration:
+  redpanda.cluster_idd: allosaurus
+----
+
+In the example, there is a typo in the `cluster_id` property name, with an additional `d`. After saving the file with the typo, run the `kubectl apply` command to apply the modified CRD.
+
+To verify that the cluster was configured successfully:
+
+[,bash]
+----
+kubectl get cluster -o yaml
+----
+
+If there is an error, the `status` section of the output will notify you and look like the following:
+
+[,yaml]
+----
+status:
+  conditions:
+  - lastTransitionTime: "2022-04-01T13:11Z"
+    message: '{cluster_idd":"Unknown property"}'
+    reason: Error
+    status: "False"
+    type: ClusterConfigured
+----
+
+Note that there is a message that there is an unknown property, the reason is that there was an error, and the `ClusterConfigured` status is `False`. In this case, the cluster will continue to run without making a change to the configuration, whether or not a change to the property would require a cluster restart.
+
+After you fix the typo, the `status` section of the `kubectl get cluster-o yaml` output will look like the following:
+
+[,yaml]
+----
+status:
+  conditions:
+  - lastTransitionTime: "2022-04-01T13:11Z"
+    status: "True"
+    type: ClusterConfigured
+----
+
+=== CRD example
+
+The file below is the https://github.com/redpanda-data/redpanda-examples/blob/main/docs/core/example-config/kubernetes/one_node_cluster.yaml[one_node_cluster.yaml] sample file from the https://github.com/redpanda-data/redpanda-examples[redpanda-examples] GitHub repository. In this example, the `additionalConfiguration` section is appended to the end of the file, with one property defined. This section of the file is highlighted.
+
+[,yaml]
+----
+apiVersion: redpanda.vectorized.io/v1alpha1
+kind: Cluster
+metadata:
+  name: one-node-cluster
+spec:
+  image: "docker.redpanda.com/redpandadata/redpanda"
+  version: "latest"
+  replicas: 1
+  resources:
+    requests:
+      cpu: 1
+      memory: 1.2Gi
+    limits:
+      cpu: 1
+      memory: 1.2Gi
+  configuration:
+    rpcServer:
+      port: 33145
+    kafkaApi:
+    - port: 9092
+    pandaproxyApi:
+    - port: 8082
+    schemaRegistry:
+      port: 8081
+    adminApi:
+    - port: 9644
+    developerMode: true
+// highlight-start
+  additionalConfiguration:
+    redpanda.cluster_id: allosaurus
+// highlight-end
+----
+
+The `additionalConfiguration` section of the CRD example contains a cluster-level property, `cluster_id`.
+
+In this example, the cluster ID is revised to `mapusaurus`. To do that, edit the `cluster_id` property in the CRD so that the `additionalConfiguration` section looks like this:
+
+[,yaml]
+----
+additionalConfiguration:
+  redpanda.cluster_id: mapusaurus
+----
+
+Save the file, and run the following command to apply the change:
+
+`kubectl apply -f one-node-cluster.yaml`
+
+Now you can run the following `rpk` command to retrieve the cluster ID:
+
+[,bash]
+----
+kubectl exec one-node-cluster-0 -- rpk cluster config get cluster_id
+----
+
+The command will return something like the following, with the updated cluster ID:
+
+[,bash]
+----
+Defaulted container "redpanda" out of: redpanda, redpanda-configurator (init)
+mapusaurus
+----

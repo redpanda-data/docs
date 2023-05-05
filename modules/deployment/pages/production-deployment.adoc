@@ -1,0 +1,141 @@
+= Deploying Redpanda for production
+:description: Steps to deploy a Redpanda production cluster
+
+This guide will take you through what is needed to setup a production cluster
+of Redpanda.
+
+If you just want to try out Redpanda, check out our Getting Started Guides for
+xref:quickstart:quick-start-linux.adoc[Linux], xref:quickstart:quick-start-macos.adoc[MacOS],
+xref:quickstart:quick-start-docker.adoc[Docker], or xref:quickstart:kubernetes-qs-cloud.adoc[Kubernetes].
+
+:::note
+Before you set up your Redpanda cluster, refer to the xref:deployment:performance-storage-tuning.adoc[Performance and storage tuning] documentation for guidelines on cluster creation, such as avoiding out-of-disk outages.
+:::
+
+== Prepare infrastructure
+
+For the best performance, we need to provision the hardware according to these hardware requirements:
+
+* XFS for the data directory of Redpanda (/var/lib/redpanda/data)
+* A kernel that is at least 3.10.0-514, but a 4.18 or newer kernel is preferred
+* Local NVMe, RAID-0 when using multiple disks
+* 2GB of memory per core
+* TCP ports:
+ ** `33145` - Internal RPC Port
+ ** `9092` - Kafka API Port
+ ** `8082` - Pandaproxy Port
+ ** `8081` - Schema Registry Port
+ ** `9644` - Prometheus and HTTP admin port
+
+If you want, you can xref:deployment:production-deployment-automation.adoc[use Terraform to deploy Redpanda].
+
+== Install Redpanda
+
+After the hardware is provisioned, install Redpanda and configure it for production use.
+
+You can also install Redpanda using an xref:deployment:production-deployment-automation.adoc[Ansible playbook].
+
+=== Step 1: Install the binary
+
+On Fedora/RedHat Systems:
+
+[,bash]
+----
+curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.rpm.sh' | \
+sudo -E bash && sudo yum install redpanda -y
+----
+
+On Debian Systems:
+
+[,bash]
+----
+curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.deb.sh' | \
+sudo -E bash && sudo apt install redpanda -y
+----
+
+=== Step 2: Set Redpanda production mode
+
+By default Redpanda is installed in *development* mode, which turns off hardware optimization.
+To enable hardware optimization, set Redpanda to run in *production* mode:
+
+[,bash]
+----
+sudo rpk redpanda mode production
+----
+
+We then need to tune the hardware, which can be done by running the following
+on each node:
+
+[,bash]
+----
+sudo rpk redpanda tune all
+----
+
+:::note Optional: Benchmark your SSD
+
+On taller machines it is recommended benchmarking your SSD. This can be done
+with `rpk iotune`. You only need to run this once. For reference, a decent
+local NVMe SSD should yield around 1GB/s sustained writes.
+`rpk iotune` will capture SSD wear and tear and give accurate measurements
+of what your hardware is actually capable of delivering. It is recommended
+you run this before benchmarking.
+
+If you are on AWS, GCP or Azure, creating a new instance and upgrading to
+an image with a recent Linux Kernel version is often the easiest way to
+work around bad devices.
+
+[,bash]
+----
+sudo rpk iotune # takes 10mins
+----
+
+:::
+
+=== Step 3: Configure and start the root node
+
+Now that the software is installed we need to configure it. The first step is
+to setup the root node. The root node will start as a standalone node, and
+every other one will join it, forming a cluster along the way.
+
+For the root node we'll choose 0 as its ID. `--self` tells the node which interface address to bind to. Usually you want that to be its private IP.
+
+[,bash]
+----
+sudo rpk config bootstrap --id 0 --self <ip> && \
+sudo systemctl start redpanda-tuner redpanda
+----
+
+=== Step 4: Configure and start the other nodes
+
+For every other node, we just have to choose a unique integer id for it and let
+it know where to reach the root node.
+
+[,bash]
+----
+sudo rpk config bootstrap --id <unique id> \
+--self <private ip>                        \
+--ips <root node ip> &&                    \
+sudo systemctl start redpanda-tuner redpanda
+----
+
+=== Step 5: Verify the installation
+
+You can verify that the cluster is up and running by checking the logs:
+
+[,bash]
+----
+journalctl -u redpanda
+----
+
+You should also be able to create a topic with the following command:
+
+[,bash]
+----
+rpk topic create panda
+----
+
+'''
+
+== Suggested reading
+
+* Working with schema registry https://redpanda.com/blog/schema_registry/[article]

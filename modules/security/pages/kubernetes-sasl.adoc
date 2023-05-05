@@ -1,0 +1,353 @@
+= Configuring Redpanda SASL authentication on Kubernetes
+:description: Use the Simple Authentication and Security Layer (SASL) framework to provide authentication between Redpanda brokers and clients.
+
+This document provides details on how to enable SASL authentication on Kubernetes. Alone, SASL authenticates the server and the client. To encrypt communication between the server and the client, combine SASL authentication with xref:security:tls-kubernetes:.adoc[TLS encryption].
+
+Redpanda supports the SASL/SCRAM authentication method for the Kafka API. For information about Redpanda authentication on Kubernetes in general, see the xref:security:kubernetes-security.adoc[Redpanda security on Kubernetes] document. You will find information there about supported authentication methods for each API.
+
+The steps below will show you how to:
+
+. Enable SASL authentication in the cluster specification file
+. Create the Redpanda cluster
+. Create the superuser
+. Create additional users
+. Grant permissions
+. Use `rpk` to interact Redpanda
+. Clean up
+
+For a quick tutorial, the steps below contain *Tutorial: Brontosaurus* sections that have commands that you can copy and paste to enable SASL authentication. To use the tutorial, just follow the steps below.
+
+== Prerequisites
+
+This guide assumes that you have already completed the following tasks:
+
+. Configured the kubectl context
+. Installed cert-manager. Although SASL authentication doesn't use certificates, the Redpanda operator requires cert-manager to be installed.
+. Installed the Redpanda operator
+
+If you haven't completed these tasks, you can use one of the following quickstarts to get set up before you configure TLS. Just follow the steps in any of these guides and stop before you install and connect to the Redpanda cluster:
+
+* xref:quickstart:kubernetes-qs-cloud.adoc[Kubernetes quickstart for cloud]
+* xref:quickstart:kubernetes-qs-cloud.adoc[Kubernetes quickstart with local access on kind]
+* xref:quickstart:kubernetes-qs-cloud.adoc[Kubernetes quickstart with local access on minikube]
+
+== Step 1: Configure the cluster specification file
+
+The Redpanda GitHub repository contains a `sasl.yaml` example configuration file that you can use to enable SASL authentication. You can find the file here:
+
+https://github.com/redpanda-data/redpanda-examples/blob/main/docs/example-config/kubernetes/sasl.yaml[redpanda-examples../../example-config/kubernetes/sasl.yaml]
+
+:::note
+If you want to modify the example file, save it locally and make the required changes listed below. If you're following along with the brontosaurus tutorial or if you don't need to make changes to the example file, you don't need to save the file locally.
+:::
+
+The text below is the Redpanda `sasl.yaml` file with the relevant sections highlighted:
+
+[,yaml]
+----
+apiVersion: redpanda.vectorized.io/v1alpha1
+kind: Cluster
+// highlight-start
+metadata:
+  name: cluster-sample-sasl
+  // highlight-end
+spec:
+  image: "vectorized/redpanda"
+  version: "latest"
+  replicas: 1
+  // highlight-start
+  enableSasl: true
+  superUsers:
+    - username: admin
+    // highlight-end
+  resources:
+    requests:
+      cpu: 1
+      memory: 1.2G
+    limits:
+      cpu: 1
+      memory: 1.2G
+  configuration:
+    rpcServer:
+      port: 33145
+    kafkaApi:
+      - port: 9092
+    pandaproxyApi:
+      - port: 8082
+      // highlight-start
+    adminApi:
+      - port: 9644
+      // highlight-end
+    developerMode: true
+----
+
+Complete these steps to configure the cluster specification file. The steps reference the highlighted lines in the file above:
+
+. Configure the cluster name. The following property in the file above specifies the name of the cluster. Change this value to the name of your cluster:
+
+[,yaml]
+----
+name: cluster-sample-sasl
+----
+
+. Enable SASL for the cluster. You must include the following property to your configuration file to enable SASL authentication for the cluster:
+
+[,yaml]
+----
+enableSasl: true
+----
+
+. Specify a superuser. You must specify a superuser with this property:
+
+[,yaml]
+----
+superUsers:
+  - username: admin
+----
+
+The example here allows a user with the name `admin` full access to the cluster. However, this does not create the user. In the steps below, you'll create this user through the Admin API. You can change the username to any string, but when you create the superuser, you must use the name that you specify here.
+
+. Verify the Admin API port. If you're using the default Redpanda ports, you will not need to change this. However, users are created through the Admin API and in the steps below, the commands you'll use to create users reference the port specified here. If you edit this port, edit it in the commands below as well:
+
+[,yaml]
+----
+adminApi:
+  - port: 9644
+----
+
+. If you modified the `sasl.yaml` file, save it locally. You can also add TLS encryption before you save the file, which is described below.
+
+:::info
+You can find additional sample configuration files in the following location:
+
+https://github.com/redpanda-data/redpanda-examples/tree/main/docs/example-config/kubernetes[redpanda-examples../../example-config/kubernetes]
+:::
+
+=== SASL with TLS encryption
+
+Optionally, you can use SASL authentication with xref:security:tls-kubernetes:.adoc[TLS encryption] for the Kafka API. To do that, enable TLS for the Kafka API by adding the highlighted lines below to the `kafkaApi` property in the configuration file:
+
+[,yaml]
+----
+kafkaApi:
+  - port: 9092
+  // highlight-start
+    tls:
+      enabled: true
+      // highlight-end
+----
+
+=== Tutorial: Brontosaurus
+
+If you want to follow along with the brontosaurus example, you do not need to do anything for this step. Take note of the contents of the file, but you don't need to modify it or save it locally.
+
+== Step 2: Create the Redpanda cluster
+
+After you configure the cluster specification file, you must run the `kubectl apply` command to create the cluster. You can run the command using a path to the cluster specification file on your local machine or you can use the URL to the `sasl.yaml` file above.
+
+If you modified the file in the previous step, you will have the file saved locally. Run this command to create the Redpanda cluster:
+
+[,bash]
+----
+kubectl apply -f <cluster_specification.yaml>
+----
+
+If you did not modify the example file, you can use the URL to the example file in GitHub to create the cluster:
+
+[,bash]
+----
+kubectl apply -f https://raw.githubusercontent.com/redpanda-data/redpanda-examples/main/docs/example-config/kubernetes/sasl.yaml
+----
+
+=== Tutorial: Brontosaurus
+
+To create the cluster for the brontosaurus tutorial, run this command:
+
+[,bash]
+----
+kubectl apply -f https://raw.githubusercontent.com/redpanda-data/redpanda-examples/main/docs/example-config/kubernetes/sasl.yaml
+----
+
+== Step 3: Create the superuser
+
+You must create the superuser through the Admin API. This user has xref:security:acls.adoc#operations[ALL permissions] on the cluster and is the user that will grant permissions to new users. Without a superuser, you can create other users, but you will not be able to grant them permissions to the cluster.
+
+Run the following command to create the superuser and specify a password for the user:
+
+[,bash]
+----
+kubectl exec -c redpanda <cluster_name>-0 -- rpk acl user create <super_user_username> \
+-p <super_user_password>
+----
+
+The `-0` in this command refers to the first node of the cluster. You can change this integer to specify a different node in the cluster.
+
+The `super_user_username` is the superuser that you defined in the cluster specification file.
+
+:::note
+If you changed the Admin API port from the default, you must add the following line to each command that creates a new user, in this step and the next step:
+
+[,yaml]
+----
+--api-urls localhost:<port>
+----
+
+:::
+
+This command executes the `rpk` command from within a Redpanda cluster container, using the local host. If you want to execute the command from another pod, you must include the broker location with the command. The text below shows the full command with the broker location highlighted:
+
+[,bash]
+----
+kubectl exec -c redpanda <cluster_name>-0 -- rpk acl user create <super_user_username> \
+-p <super_user_password> \
+--api-urls localhost:<port>
+// highlight-start
+--brokers <cluster_name>-0.<cluster_name>.default.svc.cluster.local:<port>
+// highlight-end
+----
+
+=== Tutorial: Brontosaurus
+
+If you're following along with the brontosaurus tutorial, all you need to do is copy and paste the command below. This command creates the superuser `admin` with a password of `SuperUserPassword`:
+
+[,bash]
+----
+kubectl exec -c redpanda cluster-sample-sasl-0 -- rpk acl user create admin \
+-p SuperUserPassword
+----
+
+== Step 4: Create additional users
+
+The same command that you used to create the superuser also creates additional users and sets the passwords for the new users. By default, these users will not have any permissions on the cluster.
+
+:::tip
+As a security best practice, you do not want to use the superuser to execute commands on the cluster. You can use these additional users to interact with the cluster.
+:::
+
+Run the following command for each user that you want to create:
+
+[,bash]
+----
+kubectl exec -c redpanda external-connectivity-0 -- rpk acl user create <username> \
+-p <password> \
+----
+
+=== Tutorial: Brontosaurus
+
+To continue the brontosaurus example, run the command below to create a user called `brontosaurus` with a password of `brontosaurusPassword`:
+
+[,bash]
+----
+kubectl exec -c redpanda cluster-sample-sasl-0 -- rpk acl user create brontosaurus \
+-p brontosaurusPassword
+----
+
+== Step 5: Grant permissions
+
+The superuser can grant permissions to additional users through access control lists (ACLs). For details on how ACLs function in Redpanda, see the link:/docs/22.1/reference/rpk-commands//#rpk-acl[rpk acl reference] documentation.
+
+. Use the superuser to grant `create` and `describe` permissions to another user for the cluster. You can edit the `rpk acl create` command as needed to grant specific permissions to specific users or groups:
+
+[,bash]
+----
+kubectl exec -c redpanda <cluster_name>-0 -- rpk acl create --allow-principal User:<username> --operation create,describe --cluster \
+--user <super_user_username> \
+--password <super_user_password> \
+--sasl-mechanism SCRAM-SHA-256
+----
+
+. Optionally, you can use the superuser to grant permissions to the new user for a topic within the cluster. The command below grants `describe` privileges to a topic that doesn't exist yet. In the next step you will create the topic that you reference in this command. Note that if a user has `describe` privileges on a cluster, they do not automatically have `describe` privileges on topics within the cluster.
+
+[,bash]
+----
+kubectl exec -c redpanda <cluster_name>-0 -- rpk acl create --allow-principal User:<username> --operation describe -–operation describe --topic <topic_name> \
+--user <super_user_username> \
+--password <super_user_password> \
+--sasl-mechanism SCRAM-SHA-256
+----
+
+=== Tutorial: Brontosaurus
+
+. Continuing with the brontosaurus example, this is the command for superuser `admin` to grant `create` and `describe` permissions to `brontosaurus` on the `cluster-sample-sasl` cluster:
+
+[,bash]
+----
+kubectl exec -c redpanda cluster-sample-sasl-0 -- rpk acl create --allow-principal User:brontosaurus --operation create,describe --cluster \
+--user admin \
+--password SuperUserPassword \
+--sasl-mechanism SCRAM-SHA-256
+----
+
+. And this command grants the `brontosaurus` user `describe` privileges on the topic `littlefoot`. Note that we haven't created the topic yet. The `brontosaurus` user will create the `littlefoot` topic in the next step.
+
+[,bash]
+----
+kubectl exec -c redpanda cluster-sample-sasl-0 -- rpk acl create --allow-principal User:brontosaurus --operation describe -–operation describe --topic littlefoot \
+--user admin \
+--password SuperUserPassword \
+--sasl-mechanism SCRAM-SHA-256
+----
+
+== Step 6: Use rpk to interact with Redpanda
+
+Now we're ready to connect to Redpanda with the additional (non-superuser) user and start working with the cluster.
+
+Use the following command to create a topic:
+
+[,bash]
+----
+kubectl exec -c redpanda <cluster_name>-0 -- rpk topic create <topic_name> \
+--user <username> \
+--password <user_password> \
+--sasl-mechanism SCRAM-SHA-256
+----
+
+And this command to describe the topic:
+
+[,bash]
+----
+kubectl exec -c redpanda <cluster_name>-0 -- rpk topic describe <topic_name> \
+--user <username> \
+--password <user_password> \
+--sasl-mechanism SCRAM-SHA-256
+----
+
+=== Tutorial: Brontosaurus
+
+`brontosaurus` uses this command to create a topic called `littlefoot`:
+
+[,bash]
+----
+kubectl exec -c redpanda cluster-sample-sasl-0 -- rpk topic create littlefoot \
+--user brontosaurus \
+--password brontosaurusPassword \
+--sasl-mechanism SCRAM-SHA-256
+----
+
+And this command to describe `littlefoot`:
+
+[,bash]
+----
+kubectl exec -c redpanda cluster-sample-sasl-0 -- rpk topic describe littlefoot \
+--user brontosaurus \
+--password brontosaurusPassword \
+--sasl-mechanism SCRAM-SHA-256
+----
+
+== Step 7: Clean up
+
+Now that you have your superuser and additional users that can interact with the cluster, you can use the link:/docs/22.1/reference/rpk-commands/[rpk reference] documentation to experiment with the `rpk` commands and create additional users and ACLs.
+
+When you're ready, delete the cluster with this command:
+
+[,bash]
+----
+kubectl delete -f <cluster_specification.yaml>
+----
+
+=== Tutorial: Brontosaurus
+
+Use the link:/docs/22.1/reference/rpk-commands/[rpk reference] documentation to experiment with the `rpk` commands and when you're ready to clean up the cluster from the brontosaurus tutorial, run this command:
+
+```bash
+kubectl delete -f https://raw.githubusercontent.com/redpanda-data/redpanda-examples/main/docs/example-config/kubernetes/sasl.yaml

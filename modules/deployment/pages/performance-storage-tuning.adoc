@@ -1,0 +1,198 @@
+= Performance and storage tuning
+:description: Configure your Redpanda cluster in the most optimal way to increase performance and reduce failures.
+
+This document contains guidelines for configuring your Redpanda cluster in the most optimal way to increase performance and reduce failures. We recommend that you consider the configurations below if you want to run Redpanda in a production environment.
+
+== Disk utilization
+
+When a Redpanda node runs out of disk space, it terminates. This results in node failure and performance degradation. After a node runs out of disk space, you will not be able to prevent node failure by changing retention settings or deleting data unless a ballast file has been created.
+
+If there are enough out-of-disk node failures in the cluster, performance can be greatly impacted and topics can become unavailable. For this reason, it's important to configure retention and storage settings in a way that ensures the production stability of the cluster.
+
+This document provides information on how to avoid out-of-disk failures by making the following configurations:
+
+* Retention
+ ** Time-based retention
+ ** Size-based retention
+* Segment size
+* Ballast file
+
+=== Retention
+
+Retention refers to the conditions under which messages in a topic are retained on disk. When retention conditions are exceeded, cleanup occurs. You can configure retention settings so that cleanup occurs under the following conditions:
+
+* Message age is exceeded
+* Aggregate message size in the topic is exceeded
+* Either message age is exceeded or aggregate message size in the topic is exceeded
+
+The following table shows the properties that are described in this section along with their scope and default values.
+If the value is not specified at the topic-level configuration, the topic uses the value of the cluster configuration.
+Note that cluster configuration properties use snake-case while topic-level configurations use dots.
+
+|===
+| Type of retention | Cluster-level configuration | Topic-level configuration +
+(overrides cluster configuration)
+
+| Time-based
+| `delete_retention_ms` +
+Default - `604800000`
+| `retention.ms` +
+No default
+
+| Size-based
+| `retention_bytes`  +
+Default - `null`
+| `retention.bytes`  +
+No default
+
+| Segment size
+| `log_segment_size`  +
+Default - `1073741824`
+| N/A
+|===
+
+==== Time-based retention
+
+Configure time-based retention with the following properties:
+
+* `delete_retention_ms`
+* `retention.ms`
+
+A message is deleted if its age exceeds the `delete_retention_ms` or `retention.ms` value. These properties are explained in detail below:
+
+* *delete_retention_ms* - Cluster configuration setting in (cluster configuration)[../../cluster-administration/cluster-property-configuration] that specifies how long a message stays on disk before it is deleted. To set retention time for a single topic, use the `retention.ms` property, which overrides the `delete_retention_ms` setting. If `retention.ms` is not set at the topic-level, the topic uses the `delete_retention_ms` value.
+
+To minimize the likelihood of out-of-disk outages, set `delete_retention_ms` to `86400000`, which equates to one day. The default value is `604800000`, which equates to one week.
+
+* *retention.ms* - Topic-level setting that specifies how long a message stays on disk before it is deleted. This setting overrides the cluster `delete_retention_ms` property for the topic. To minimize the likelihood of out-of-disk outages, set `retention.ms` to `86400000`, which equates to one day. There is no default value, but if `retention.ms` is not set at the topic-level, the topic uses the `delete_retention_ms` value.
++
+You can set `retention.ms` with this command:
++
+[,bash]
+----
+rpk topic alter-config <topic> --set retention.ms=<retention_time>
+----
+
+:::caution
+Do not set `delete_retention_ms` to `-1` unless you are using xref:data-management:tiered-storage.adoc#remote-write[remote write with Tiered Storage] to upload segments to remote storage. Setting `delete_retention_ms` to `-1` configures indefinite retention, which can result in an out-of-disk outage and may result in data loss.
+:::
+
+==== Size-based retention
+
+Configure size-based retention with the following properties:
+
+* `retention_bytes`
+* `retention.bytes`
+
+A message is deleted if the size of the partition in which it is contained reaches the `retention_bytes` or `retention.bytes` value. The properties are explained in detail below:
+
+* *retention_bytes* - Cluster configuration property that specifies the maximum size of a partition. When a partition reaches the `retention_bytes` size, the oldest messages in the partition are deleted. To set retention size for a single topic, use the `retention.bytes` property, which overrides the `retention_bytes` cluster setting. If `retention.bytes` is not set at the topic-level, the topic uses the `retention_bytes` value.
++
+It is recommended that you configure `retention_bytes` to a value that is lower than the disk capacity, or a fraction of the disk capacity based on the number of partitions per topic. For example, if you have one partition, `retention_bytes` can be 80% of the disk size, or if you have 10 partitions, `retention_bytes` can be 80% of the disk size divided by 10. The default value is `null`, which means that retention based on topic size is disabled.
++
+To specify the `retention_bytes` value:
++
+[,bash]
+----
+rpk cluster config set retention_bytes <retention_size>
+----
+
+* *retention.bytes* - Topic-level setting that specifies the maximum size of a partition. This setting overrides the host-wide `retention_bytes` property for the topic. It is recommended to take the same considerations for the `retention.bytes` and `retention_bytes` properties as described above. There is not a default value and when `retention.bytes` is not set at the topic-level, the topic uses the `retention_bytes` value.
++
+You can set `retention.bytes` with this command:
++
+[,bash]
+----
+rpk topic alter-config <topic> --set retention.bytes=<retention_size>
+----
+
+=== Segment size
+
+The `log_segment_size` property specifies the size of each log segment.
+
+To specify a value for `log_segment_size`:
+
+[,bash]
+----
+rpk cluster config set log_segment_size <segment_size>
+----
+
+If you know which topics will receive more data, it is best to specify the size for each topic. To configure log segment size on a topic:
+
+[,bash]
+----
+rpk topic alter-config <topic> --set segment.bytes=<segment_size>
+----
+
+When determining ideal segment size, keep in mind that very large segments prevent compaction and very small segments increase the risk of encountering resource limits. As a rule of thumb to calculate an upper limit on segment size, you can divide the disk size by the number of partitions. For example, if you have a 128GB disk and 1000 partitions, the upper limit of the segment size would be `134217728`. Default is `1073741824`.
+
+For details about how to modify cluster configuration properties, refer to xref:cluster-administration:cluster-property-configuration.adoc[Cluster configuration].
+
+=== Ballast file
+
+You can enable ballast file creation to act as a buffer against an out-of-disk outage. The ballast file is an empty file that takes up disk space. In the event that Redpanda becomes unavailable because it runs out of disk space, you can delete the ballast file, which will clear up some disk space and give you time to delete topics or records and change your retention settings. Deletion of the ballast file is an emergency last resort and should not be considered a replacement for adjusting settings for segment size and retention.
+
+To enable ballast file creation, configure the following properties in the `redpanda.yaml` file:
+
+[,yaml]
+----
+tune_ballast_file: false
+ballast_file_path: "/var/lib/redpanda/data/ballast"
+ballast_file_size: "1GiB"
+----
+
+These properties are explained in detail below:
+
+* *tune_ballast_file* - Tells Redpanda to create a ballast file. Set to `true` to enable ballast file creation. Default is `false`.
+* *ballast_file_path* - The location of the ballast file. You can change the location of the ballast file, but it must be on the same mount point as the Redpanda data directory. Default is `/var/lib/redpanda/data/ballast`.
+* *ballast_file_size* - The size of the ballast file. You can increase the ballast file size if it is a very high throughput cluster or decrease the ballast file size if you have very little storage space. You want to balance the size of the ballast file so that it is large enough to give you enough time to delete data and configure retention settings if Redpanda crashes, but small enough that you do not waste unnecessary disk space. In general, you can set ballast_file_size to approximately 10 times the size of the largest segment to have enough space to compact that topic. Default is `1GiB`.
+
+== Cloud I/O optimization
+
+Redpanda relies on its own disk I/O scheduler, and by default tells the kernel to
+use the `noop` scheduler. To give the users near-optimal performance by default,
+`rpk` comes with an embedded database of I/O settings for well-known cloud
+computers, which are specific combinations of CPUs, SSD types, and VM sizes. It
+is not the same to run software on four VCPUs than it is to run on an EC2 i3.metal
+with 96 physical cores. Often, when trying to scale rapidly to meet demands,
+product teams will not have the time to measure I/O throughput and latency before
+starting every new instance (via `rpk iotune`) and instead need resources right
+now. To meet this demand, Redpanda will attempt to predict the best known
+settings for VM cloud types.
+
+It is encouraged for users to run `rpk iotune` for production workloads, but we will
+provide near-optimal settings for the types of most popular machines.
+It's important to mention this is not required to be done each
+time Redpanda is started. An `rpk iotune``'s output properties are written to a file
+which can be saved and reused in nodes running on the same type of hardware.
+
+Currently, we only have well-known-types for AWS and GCP (Azure VM types support
+is coming soon). Upon startup, `rpk` will try to detect the current cloud and
+instance type via the cloud's metadata API, setting the correct `iotune`
+properties if the detected setup is known apriori.
+
+If access to the metadata API isn't allowed from the instance, you can also hint
+the desired setup by passing the `--well-known-io` flag to `rpk` start with the
+cloud vendor, VM type and storage type surrounded by quotes and separated by
+colons:
+
+[,bash]
+----
+rpk start --well-known-io 'aws:i3.xlarge:default'
+----
+
+It can also be specified in the `redpanda.yaml` configuration file, under the `rpk`
+object:
+
+[,yaml]
+----
+rpk:
+  well_known_io: 'gcp:c2-standard-16:nvme'
+----
+
+If `well-known-io` is specified in the config file, and as a flag, the value
+passed with the flag will take precedence.
+
+In the case where a certain cloud vendor, machine type or storage type isn't
+found, or if the metadata isn't available and no hint is given, `rpk` will print a
+warning pointing out the issue and continue using the default values.
