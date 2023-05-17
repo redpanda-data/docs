@@ -1,0 +1,125 @@
+= Configuring TLS on Kubernetes
+:description: Encrypt with Transport Layer Security (TLS) on Kubernetes.
+
+Redpanda supports Transport Layer Security (TLS) encryption on Kubernetes. For certificate management, the Redpanda Helm chart uses cert-manager with either a self-signed Issuer or your own custom Issuer.
+
+NOTE: This page uses the recommended `redpanda` Helm chart for configuring TLS. For information about using the `redpanda-operator` Helm chart (supported for backward compatibility), see xref:reference:redpanda-operator/index.adoc[Redpanda Operator].
+
+== Use self-signed Issuer
+
+By default, the Redpanda Helm chart uses cert-manager to create self-signed certificates. To enable TLS, enable it when installing or upgrading Redpanda with the Helm chart.
+
+See https://artifacthub.io/packages/helm/redpanda-data/redpanda?modal=values[Artifact Hub] for the default values.
+
+=== Prerequisites
+
+Install cert-manager:
+
+[,bash]
+----
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm install cert-manager jetstack/cert-manager \
+    --set installCRDs=true \
+    --namespace cert-manager \
+    --create-namespace
+----
+
+=== Enable TLS
+
+You can enable TLS in the Redpanda Helm chart using either command line flags or a YAML file to override default values.
+
+[tabs]
+=====
+CLI flags::
++
+--
+During install or upgrade, enable TLS configuration:
+
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --set tls.enable=true --set external.domain=mydomain.dom
+----
+
+--
+YAML values::
++
+--
+Create a YAML file containing the values to override from the defaults.
+
+`tls_enable.yaml`
+
+[,yaml]
+----
+tls:
+  enable: true
+external:
+  domain: mydomain.dom
+----
+
+During install or upgrade, reference the TLS configuration values file:
+
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values tls_enable.yaml
+----
+
+TIP: You can repeat the values flag, allowing you to keep individual value overrides logically separated by file.
+
+--
+=====
+
+=== Validate connection
+
+Retrieve the root certificate authority (CA) to use with clients:
+
+[,bash]
+----
+kubectl -n redpanda get secret redpanda-default-root-certificate -o go-template='{{ index .data "ca.crt" | base64decode }}' > ca.crt
+----
+
+Use that root CA to validate your connection to Redpanda:
+
+[,bash]
+----
+rpk topic list --tls-enabled --tls-truststore=ca.crt ...
+----
+
+== Use custom Issuer
+
+You can use your own Issuer or ClusterIssuer to take advantage of an ACME certificate provider like Let's Encrypt or to use an intermediate CA.
+
+=== Prerequisites
+
+You must have a cert-manager Issuer in the Redpanda namespace or ClusterIssuer in your cluster.
+
+See the https://cert-manager.io/docs/concepts/issuer/[cert-manager documentation] for details.
+
+=== Enable TLS
+
+Create a YAML file containing the values to override the defaults.
+
+`tls_enable.yaml`
+
+[,yaml]
+----
+tls:
+  enable: true
+  certs:
+    default:
+      issuerRef:
+        name: my-custom-issuer
+        kind: ClusterIssuer
+external:
+  domain: mydomain.dom
+----
+
+During install or upgrade, reference the TLS configuration values file:
+
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values tls_enable.yaml
+----

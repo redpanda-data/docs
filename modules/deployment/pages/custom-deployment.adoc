@@ -1,0 +1,112 @@
+= Writing Custom Deployment Automation
+:description: Technical guidance for engineers writing deployment systems for Redpanda.
+
+Redpanda supports several deployment tools for setting up a cluster:
+
+* Ansible Playbook
+* Helm Chart
+* Kubernetes Operator
+
+TIP: Redpanda strongly recommends using one of these supported deployment tools.
+
+This page provides information for anyone creating their own
+automation for deploying Redpanda clusters; that is, anyone not using one
+of these supported tools.
+
+== Configure bootstrapping
+
+Redpanda cluster configuration is written with the Admin API and
+the `rpk cluster config` CLIs.
+
+In the special case where you want to provide configuration to Redpanda
+before it starts for the first time, you can write a `.bootstrap.yaml` file
+in the same directory as `redpanda.yaml`.
+
+This file is only read on the first startup of the cluster. Any subsequent
+changes to `.bootstrap.yaml` are ignored, so changes to
+cluster configuration must be done with the Admin API.
+
+The content format is a YAML dictionary of cluster configuration properties. For example, to initialize a cluster with Admin API authentication enabled
+and a single superuser, the `.bootstrap.yaml` file would contain the following:
+
+----
+admin_api_require_auth: true
+superusers:
+- alice
+----
+
+With this configuration, the Admin API is not accessible until you bootstrap a user account.
+
+== Bootstrap a user account
+
+When using username/password authentication, it's helpful to be able to create one user before the cluster starts for the first time.
+
+Do this by setting the `RP_BOOTSTRAP_USER` environment variable
+when starting Redpanda for the first time. The value has the format
+`<username>:<password>`. For example, you could set `RP_BOOTSTRAP_USER` to `alice:letmein`.
+
+NOTE: `RP_BOOTSTRAP_USER` only creates a user account. You must still
+set up authentication using cluster configuration.
+
+== Secure the Admin API
+
+The Admin API is used to create SASL user accounts and ACLs, so it's
+important to think about how you secure it when creating a cluster.
+
+There are three ways to authenticate the Admin API:
+
+* No authentication, but listening only on 127.0.0.1: This may be appropriate
+if your Redpanda processes are running in an environment where only
+administrators can access the host.
+* mTLS authentication: You can generate client and server x509 certificates
+before starting Redpanda for the first time, refer to them in
+`redpanda.yaml`, and use the client certificate when accessing the Admin API.
+* Username/password authentication: Use the combination of `admin_api_require_auth`,
+`superusers`, and `RP_BOOTSTRAP_USER` to access the Admin API username/password
+authentication. You probably still want to enable TLS on the Admin API
+endpoint to protect credentials in flight.
+
+== Configure seed_servers list
+
+The `seed_servers` node configuration property controls how Redpanda
+finds its peers when initially forming a cluster. Redpanda clusters form with these guidelines:
+
+* When a node starts with an empty `seed_servers` list, it creates a single
+node cluster with itself as the only member.
+* When a node starts with a non-empty `seed_servers` list, it sends requests
+to the nodes in that list to join the cluster.
+
+Therefore, it's essential that only one node has an empty `seed_servers`
+list.
+
+IMPORTANT: Redpanda expects its storage to be persistent, and it's an error
+to erase a node's drive and restart it. However, in some environments (like when migrating to a different node pool on Kubernetes), truly persistent storage is unavailable,
+and nodes may find their data volumes erased. In this situation, the node should not have an empty `seed_servers`
+list. If it does, then when it starts with an
+empty data volume, it tries to initialize a new Redpanda cluster and write
+new content to its controller log unrelated to the previous state of the cluster. This
+can result in undefined behavior when the node later rejoins its peers and tries to
+reconcile its local controller log with the controller log from peers.
+
+== Configure strict data volumes
+
+When Redpanda starts, by default it looks for its data volume and initializes it if it's empty. However, there can be cases when a node's drive is accidentally erased or an incorrect drive is mounted to the data volume. Redpanda has no way to distinguish whether or not the data volume is incorrect upon start; consequently, there is no way for it to avoid this type of error. You can avoid such errors by setting the configuration option `storage_strict_data_init`, which enables Redpanda to distinguish between a purposefully empty data volume and an inadvertently empty one.
+
+When `storage_strict_data_init` is set to `true` on a node, Redpanda looks in the root of its data volume for an empty file named `.redpanda_data_dir`. If the file is not there Redpanda will not start. You must create this file manually when the data volume is created. Its existence enables Redpanda to distinguish whether or not the data volume it's reading from is correct.
+
+== Use new node ID
+
+Redpanda recommends using a fresh `node_id` each time you add a node
+to the cluster.
+
+In general, it is not safe to reuse a node ID (for example, when adding a new node after
+decommissioning the node with that node ID). While it's convenient to have low, consecutive node IDs, it's not necessary. Node IDs can take any value in the 32-bit space.
+
+== Upgrade considerations
+
+Deployment automation should place each node into maintenance mode and wait for it to drain leaderships before restarting it with a newer version of Redpanda. For information about how to drive a rolling upgrade of a Redpanda cluster, see xref:cluster-administration:node-management.adoc[Node Maintenance Mode].
+
+Rolling restarts preserve high availability and reduce
+risk during upgrades. Check the cluster's health after upgrading each node. Rolling
+back an upgrade to an earlier feature release is only supported until the last node
+has been updated, so it's important to identify any issues before that point.
