@@ -1,0 +1,173 @@
+= Configure Encryption
+:description: Enable encryption with TLS or mTLS.
+
+By default, Redpanda data is sent unencrypted. A security best practice is to enable encryption with TLS or mTLS.
+
+For Kubernetes-specific information, see:
+
+* xref:kubernetes:security:kubernetes-tls.adoc[Configuring TLS on Kubernetes]
+* xref:kubernetes:security:sasl-kubernetes.adoc[Configuring Redpanda SASL on Kubernetes]
+* xref:reference:redpanda-operator.adoc[Security on Kubernetes using the Redpanda Operator]
+
+== Prerequisite
+
+TLS certificates are necessary for encryption. You can use your own certificates, either self-signed or issued by a trusted Certificate Authority, or you can use use the Redpanda https://gist.github.com/0x5d/30404e0b3376a3724da828f1db5a3b1d29ffebf5[prepared script] to generate certificates:
+
+[,bash]
+----
+bash <(curl -s https://gist.github.com/0x5d/56422a0c447e58d8ccbfa0ce1fd6bac6/raw/30404e0b3376a3724da828f1db5a3b1d29ffebf5/generate-certs.sh)
+----
+
+== TLS
+
+Transport Layer Security (TLS), previously SSL, provides encryption for client-server communication. This prevents third parties from accessing data transferred between the client and server.
+
+=== Configure TLS
+
+To configure TLS, in `redpanda.yaml`, enter:
+
+[,yaml]
+----
+redpanda:
+// highlight-start
+  rpc_server_tls: {}
+// highlight-end
+  kafka_api:
+    - address: 0.0.0.0
+      port: 9092
+      name: tls_listener
+// highlight-start
+  kafka_api_tls:
+    - name: tls_listener
+      key_file: server.key
+      cert_file: server.crt
+      truststore_file: ca.crt
+      enabled: true
+      require_client_auth: false
+// highlight-end
+// highlight-start
+  admin_api_tls: []
+// highlight-end
+pandaproxy:
+// highlight-start
+  pandaproxy_api_tls: []
+// highlight-end
+schema_registry:
+// highlight-start
+  schema_registry_api_tls: []
+// highlight-end
+----
+
+All APIs, except `rpc_server_tls`, support multiple listeners.
+
+See also:
+
+* xref:security:listener-configuration.adoc[Configuring Listeners]
+* xref:reference:redpanda-operator:tls-kubernetes.adoc[Configuring Redpanda TLS on Kubernetes]
+
+== mTLS
+
+mTLS, or 2-way TLS, is a protocol that authenticates both the server and the client. In addition to the server certificate required in TLS, mTLS requires the client to give a certificate. This involves more overhead to implement, but it can be useful for environments that require additional security and only have a small number of verified clients.
+
+=== Configure mTLS
+
+To enable mTLS, add `require_client_auth` set to `true`.
+
+For example, for the Kafka API, in `redpanda.yaml`, enter:
+
+[,yaml]
+----
+redpanda:
+  kafka_api:
+    - address: 0.0.0.0
+      port: 9092
+      name: mtls_listener
+  kafka_api_tls:
+    - name: mtls_listener
+      key_file: mtls_server.key
+      cert_file: mtls_server.crt
+      truststore_file: mtls_ca.crt
+      enabled: true
+// highlight-start
+      require_client_auth: true
+// highlight-end
+----
+
+See also:
+
+* xref:security:listener-configuration.adoc[Configuring Listeners]
+* xref:security:authentication.adoc[Configuring mTLS with authentication]
+* xref:reference:redpanda-operator:kubernetes-mtls.adoc[Configuring Redpanda mTLS on Kubernetes]
+
+=== Configure mTLS for a Kafka API listener
+
+To enable mTLS for a Kafka API listener, in `redpanda.yaml`, enter:
+
+[,yaml]
+----
+redpanda:
+
+  kafka_api:
+  # The listener declaration. `name` can have any value.
+// highlight-start
+  - name: internal
+// highlight-end
+    address: 0.0.0.0
+    port: 9092
+
+  advertised_kafka_api:
+  # The advertised listeners. `name` should match the name of a declared listener.
+  # The address:port here is what clients will connect to.
+  - name: internal
+    address: <host name clients use to connect to the broker>
+    port: 9092
+
+  kafka_api_tls:
+  # The listener's TLS config. `name` must match the corresponding listener's name.
+// highlight-start
+  - name: internal
+    enabled: true
+    require_client_auth: true
+    cert_file: <path to PEM-formatted cert file>
+    key_file: <path to PEM-formatted key file>
+    truststore_file: <path to PEM-formatted CA file>
+// highlight-end
+----
+
+See Also: xref:security:listener-configuration.adoc[Configuring Listeners]
+
+== Using rpk with TLS
+
+If you're using `rpk` to interact with the Kafka API using mTLS identity (for example, to manage topics or messages), pass the `--tls-key`, `--tls-cert`, and `--tls-truststore` flags to authenticate.
+
+To interact with the Admin API (for example, to manage users), pass the `--admin-api-tls-key`, `--admin-api-tls-cert`, and `--admin-api-tls-truststore` flags.
+
+[,bash]
+----
+ rpk topic create test-topic \
+--tls-key <path to PEM-formatted key file> \
+--tls-cert <path to PEM-formatted cert file> \
+--tls-truststore <path to PEM-formatted CA file>
+----
+
+The result:
+
+[,bash]
+----
+TOPIC       STATUS
+test-topic  OK
+----
+
+To check the configuration of the topic, run:
+
+[,bash]
+----
+rpk topic describe test-topic <tls flags from above>
+----
+
+By default, `rpk` connects to `localhost:9092` for Kafka protocol commands. If you're connecting to a remote broker or if you configured your local broker differently, use the `--brokers <address:port>` flag.
+
+== Suggested reading
+
+* https://redpanda.com/blog/tls-config/[TLS configuration for Redpanda and rpk]
+* xref::schema-registry.adoc[Working with schema registry]
