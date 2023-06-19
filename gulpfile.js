@@ -13,14 +13,25 @@ const outputDir = (playbook.output || {}).dir || './build/site'
 const serverConfig = { name: 'Preview Site', livereload, port: 5002, root: outputDir }
 const antoraArgs = ['--playbook', playbookFilename]
 const watchPatterns = playbook.content.sources.filter((source) => !source.url.includes(':')).reduce((accum, source) => {
-  accum.push(`${source.url}/${source.start_path ? source.start_path + '/' : ''}antora.yml`)
-  accum.push(`${source.url}/${source.start_path ? source.start_path + '/' : ''}**/*.adoc`)
+  if (source.start_paths) {
+    let startPathsArray = Array.isArray(source.start_paths) ? source.start_paths : source.start_paths.split(',').map(path => path.trim());
+    startPathsArray.forEach(start_path => {
+      accum.push(`${source.url}/${start_path ? start_path + '/' : ''}antora.yml`)
+      accum.push(`${source.url}/${start_path ? start_path + '/' : ''}**/*.adoc`)
+    });
+  } else {
+    accum.push(`${source.url}/${source.start_path ? source.start_path + '/' : ''}antora.yml`)
+    accum.push(`${source.url}/${source.start_path ? source.start_path + '/' : ''}**/*.adoc`)
+  }
   return accum
 }, [])
 
 function generate (done) {
   generator(antoraArgs, process.env)
-    .then(() => done())
+    .then(() => {
+      if (livereload) connect.reload();
+      done();
+    })
     .catch((err) => {
       console.log(err)
       done()
