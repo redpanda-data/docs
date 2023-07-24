@@ -1,0 +1,368 @@
+---
+title: Deploy for Production
+---
+
+<head>
+    <meta name="title" content="Deploy for Production | Redpanda Docs"/>
+    <meta name="description" content="Steps to deploy a Redpanda production cluster"/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/deploy/deployment-option/self-hosted/manual/production/production-deployment/" />
+</head>
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import Versions from '../../../../../shared/_versions.mdx'
+
+You can deploy Redpanda for production with a default deployment, which uses recommended deployment tools, or with a custom deployment, which uses unsupported deployment tools.
+
+:::note
+- See [Automate Deployment for Production](../../production/production-deployment-automation) to use Terraform and Ansible to deploy Redpanda.
+- See [Redpanda Quickstart](../../../../../../get-started/quick-start) to try out Redpanda in Docker or [Deploy for Development](../../production/dev-deployment).
+:::
+
+## Prerequisites
+
+### Hardware and software
+
+Follow these requirements and recommendations:
+
+- Operating system
+  - Minimum recommended version of RHEL of RHEL/CentOS: <Versions name="rhel"/>
+  - Minimum version of Ubuntu: <Versions name="ubuntu"/>
+- CPU and memory
+  - A minimum of three physical nodes or virtual machines are required. 
+  - Two physical (not virtual) cores are required. Four physical cores are strongly recommended.
+  - x86_64 (Westmere or newer) and AWS Graviton family processors are supported.
+  - 2 GB or more of memory per core is required.
+- Storage
+  - An XFS or ext4 file system for the data directory of Redpanda (`/var/lib/redpanda/data`) or the Tiered Storage cache. XFS is highly recommended. NFS is not supported.
+  - Locally-attached NVMe devices. RAID-0 is required if you use multiple disks.
+  - Ephemeral cloud instance storage is only recommended in combination with Tiered Storage or for Tiered Storage cache. Without Tiered Storage, attached persistent volumes (for example, EBS) are recommended.
+- Object storage providers for Tiered Storage
+  - Amazon Simple Storage Service (S3)
+  - Google Cloud Storage (GCS), using the Google Cloud Platform S3 API
+  - Azure Blob Storage (ABS)
+- Networking
+  - Minimum 10 GigE
+- See [Manage Disk Space](../../../../../../manage/cluster-maintenance/disk-utilization) for guidelines on cluster creation.
+
+#### TCP/IP ports
+
+Redpanda uses the following default ports:
+
+| Port | Purpose |
+|---|---|
+|`9092`|Kafka API|
+|`8082`|HTTP Proxy|
+|`8081`|Schema Registry|
+|`9644`|Admin API and Prometheus|
+|`33145`|internal RPC|
+
+### Select deployment type
+
+To start deploying Redpanda for production, choose your deployment type:
+
+- [**Default deployment**](#default-deployment): Use recommended deployment tools.
+- [**Custom deployment**](#custom-deployment): Use unsupported deployment tools.
+
+---
+
+## Default deployment
+
+This section describes how to set up a production cluster of Redpanda.
+
+### Install Redpanda
+
+Install Redpanda on each system you want to be part of your cluster. There are binaries available for Fedora/RedHat or Debian systems.
+
+
+<!--
+[tabs]
+=====
+Fedora/RedHat::
++
+--
+[,bash]
+----
+curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.rpm.sh' | \
+sudo -E bash && sudo yum install redpanda -y
+----
+
+--
+Debian/Ubuntu::
++
+--
+[,bash]
+----
+curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.deb.sh' | \
+sudo -E bash && sudo apt install redpanda -y
+----
+
+--
+=====
+-->
+
+
+### Install Redpanda Console
+
+Redpanda Console is a developer-friendly web UI for managing and debugging your Redpanda cluster and your applications.
+
+For each new release, Redpanda compiles the Redpanda Console to a single binary for Linux, macOS, and Windows. You can find the binaries in the attachments of each release on [GitHub](https://github.com/redpanda-data/console/releases).
+
+
+<!--
+[tabs]
+=====
+Fedora/RedHat::
++
+--
+[,bash]
+----
+curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.rpm.sh' | \
+sudo -E bash && sudo yum install redpanda-console -y
+----
+
+--
+Debian/Ubuntu::
++
+--
+[,bash]
+----
+curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.deb.sh' | \
+sudo -E bash && sudo apt-get install redpanda-console -y
+----
+
+--
+=====
+-->
+
+
+### Set Redpanda to production mode
+
+By default, Redpanda is installed in development mode, which turns off hardware optimization.
+
+To enable hardware optimization, set Redpanda to run in [production mode](../../../../../../reference/rpk/rpk-redpanda/rpk-redpanda-mode/#production-mode):
+
+```bash
+sudo rpk redpanda mode production
+```
+
+To tune the hardware, run the autotuner on each node:
+
+```bash
+sudo rpk redpanda tune all
+```
+
+:::tip
+To run `rpk redpanda tune all` on a Redpanda broker automatically after broker or host restarts, configure the service `redpanda-tuner`, which runs `rpk redpanda tune all`, to run at boot-up:
+
+- For RHEL, after installing the rpm package, run `systemctl` to both start and enable the `redpanda-tuner` service:
+
+  ```bash
+  sudo systemctl start redpanda-tuner
+  sudo systemctl enable redpanda-tuner
+  ```
+
+- For Ubuntu, after installing the apt package, run `systemctl` to start the `redpanda-tuner` service (which is already enabled):
+
+  ```bash
+  sudo systemctl start redpanda-tuner
+  ```
+
+:::
+
+For more details, see the [autotuner reference](../../../../../../reference/rpk/rpk-redpanda/rpk-redpanda-tune).
+
+:::note Optional: Benchmark your SSD
+On taller machines, Redpanda recommends benchmarking your SSD. This can be done
+with [rpk iotune](../../../../../../reference/rpk/rpk-iotune). You only need to run this once.
+
+For reference, a local NVMe SSD should yield around 1 GB/s sustained writes.
+`rpk iotune` captures SSD wear and tear and gives accurate measurements
+of what your hardware is capable of delivering. Run this before benchmarking.
+
+If you're on AWS, GCP, or Azure, creating a new instance and upgrading to
+an image with a recent Linux kernel version is often the easiest way to
+work around bad devices.
+
+```bash
+sudo rpk iotune # takes 10mins
+```
+
+:::
+
+### Start Redpanda
+
+Configure Redpanda using the [`rpk redpanda config bootstrap`](../../../../../../reference/rpk/rpk-redpanda/rpk-redpanda-config-bootstrap) command, then start Redpanda:
+
+```bash
+sudo rpk redpanda config bootstrap --self <ip-address-of-your-node> --ips <seed-node-ips> && \
+sudo rpk redpanda config set redpanda.empty_seed_starts_cluster false && \
+sudo systemctl start redpanda-tuner redpanda
+```
+
+Replace the following placeholders:
+
+- `<ip-address-of-your-node>`: The `--self` flag tells Redpanda the interface address to bind to for the Kafka API, the RPC API, and the Admin API. Usually, this is the node's private IP address.
+- `<seed-node-ips>`: The `--ips` flag lists all the seed nodes in the cluster, including the one being started. Seed nodes correspond to the `seed_servers` property in `redpanda.yaml`.
+
+  :::note
+  The `--ips` flag must be set *identically* (with nodes listed in identical order) on each node.
+  :::
+
+When a Redpanda cluster starts, it instantiates a controller Raft group with all the seed nodes that are specified in the `--ips` flag. After all seed nodes complete their startup procedure and become accessible, the cluster is then available. After that, non-seed nodes start up and are added to the cluster.
+
+:::info
+- Redpanda strongly recommends at least three seed nodes when forming a cluster. A larger number of seed nodes increases the robustness of consensus and minimizes any chance that new clusters get spuriously formed after nodes are lost or restarted without any data.
+- It's important to have one or more seed nodes in each fault domain (such as rack or cloud AZ). A higher number provides a stronger guarantee that clusters don’t fracture unintentionally.
+- It's possible to change the seed nodes for a short period of time after a cluster has been created. For example, you may want to designate one additional broker as a seed node to increase availability. To do this without cluster downtime, add the new broker to [`seed_servers`](../../../../../../reference/node-properties/) and restart Redpanda to apply the change on a broker-by-broker basis.
+:::
+
+### Start Redpanda Console
+
+1. Start Redpanda Console:
+
+  ```bash
+  sudo systemctl start redpanda-console
+  ```
+
+1. Make sure that Redpanda Console is active and running:
+
+  ```bash
+  sudo systemctl status redpanda-console
+  ```
+
+### Verify the installation
+
+To verify that the Redpanda cluster is up and running, use `rpk` to get information about the cluster:
+
+```bash
+rpk cluster info
+```
+
+If topics were initially created in a test environment with a replication factor of `1`, use `rpk topic alter-config` to change the topic replication factor: 
+
+```
+rpk topic alter-config [TOPICS...] --set replication.factor=3
+```
+
+To create a topic:
+
+```bash
+rpk topic create panda
+```
+
+---
+
+## Custom deployment
+
+This section provides information for creating your own automation for deploying Redpanda clusters without using any of the tools that Redpanda supports for setting up a cluster, such as Ansible Playbook, Helm Chart, or Kubernetes Operator.
+
+:::tip
+Redpanda strongly recommends using one of these supported deployment tools. See [Automate Deploying for Production](../../production/production-deployment-automation).
+:::
+
+### Configure bootstrapping
+
+Redpanda cluster configuration is written with the Admin API and
+the `rpk cluster config` CLIs.
+
+In the special case where you want to provide configuration to Redpanda
+before it starts for the first time, you can write a `.bootstrap.yaml` file
+in the same directory as `redpanda.yaml`.
+
+This file is only read on the first startup of the cluster. Any subsequent
+changes to `.bootstrap.yaml` are ignored, so changes to
+cluster configuration must be done with the Admin API.
+
+The content format is a YAML dictionary of cluster configuration properties. For example, to initialize a cluster with Admin API authentication enabled
+and a single superuser, the `.bootstrap.yaml` file would contain the following:
+
+```
+admin_api_require_auth: true
+superusers:
+- alice
+```
+
+With this configuration, the Admin API is not accessible until you bootstrap a user account.
+
+### Bootstrap a user account
+
+When using username/password authentication, it's helpful to be able to create one user before the cluster starts for the first time.
+
+Do this by setting the `RP_BOOTSTRAP_USER` environment variable
+when starting Redpanda for the first time. The value has the format
+`<username>:<password>`. For example, you could set `RP_BOOTSTRAP_USER` to `alice:letmein`.
+
+:::note
+`RP_BOOTSTRAP_USER` only creates a user account. You must still
+set up authentication using cluster configuration.
+:::
+
+### Secure the Admin API
+
+The Admin API is used to create SASL user accounts and ACLs, so it's
+important to think about how you secure it when creating a cluster.
+
+- No authentication, but listening only on 127.0.0.1: This may be appropriate
+  if your Redpanda processes are running in an environment where only
+  administrators can access the host.
+- mTLS authentication: You can generate client and server x509 certificates
+  before starting Redpanda for the first time, refer to them in 
+  `redpanda.yaml`, and use the client certificate when accessing the Admin API.
+- Username/password authentication: Use the combination of `admin_api_require_auth`,
+  `superusers`, and `RP_BOOTSTRAP_USER` to access the Admin API username/password
+  authentication. You probably still want to enable TLS on the Admin API
+  endpoint to protect credentials in flight.
+
+### Configure the seed servers
+
+Seed servers help new nodes join a cluster by directing requests from newly-started nodes to an existing cluster. The [seed_servers](../../../../../../reference/node-properties#seed_servers) node configuration property controls how Redpanda finds its peers when initially forming a cluster. It is dependent on the [empty_seed_starts_cluster](../../../../../../reference/node-properties#empty_seed_starts_cluster) node configuration property.
+
+Starting with Redpanda version 22.3, you should explicitly set `empty_seed_starts_cluster` to `false` on every node, and every node in the cluster should have the same value set for `seed_servers`. With this set of configurations, Redpanda clusters form with these guidelines:
+
+- When a node starts and it is a seed server (its address is in the `seed_servers` list), it waits for all other seed servers to start up, and it forms a cluster with all seed servers as members.
+- When a node starts and it is not a seed server, it sends requests to the seed servers to join the cluster.
+
+It is essential that all seed servers have identical values for the `seed_servers` list. Redpanda strongly recommends at least three seed nodes when forming a cluster. Each seed server decreases the likelihood of unintentionally forming a split brain cluster. To ensure nodes can always discover the cluster, at least one seed node should be available at all times.
+
+By default, for backward compatibility, `empty_seed_starts_cluster` is set to `true`, and Redpanda clusters form with the guidelines used prior to version 22.3:
+- When a node starts with an empty `seed_servers` list, it creates a single node cluster with itself as the only member.
+- When a node starts with a non-empty `seed_servers` list, it sends requests to the nodes in that list to join the cluster. 
+
+You should never have more than one node with an empty `seed_servers` list, which would result in the creation of multiple clusters.
+
+:::important
+Redpanda expects its storage to be persistent, and it's an error
+to erase a node's drive and restart it. However, in some environments (like when migrating to a different node pool on Kubernetes), truly persistent storage is unavailable,
+and nodes may find their data volumes erased. For such environments, Redpanda recommends setting `empty_seed_starts_cluster` to false and designating a set of seed nodes such that they couldn't lose their storage simultaneously.
+:::
+
+### Configure node IDs
+
+Redpanda automatically generates unique node IDs for each new node. This means that you don't need to include node IDs in configuration files or worry about policies on `node_id` re-use. 
+
+If you choose to assign node IDs, make sure to use a fresh `node_id` each time you add a node to the cluster.
+
+:::caution
+Never reuse node IDs, even for nodes that have been decommissioned and restarted empty. Doing so can result in an inconsistent state.
+:::
+
+### Upgrade considerations
+
+Deployment automation should place each node into maintenance mode and wait for it to drain leadership before restarting it with a newer version of Redpanda. For more information, see [Upgrade](../../../../../../manage/cluster-maintenance/rolling-upgrade).
+
+If upgrading multiple [feature release versions of Redpanda](../../../../../../manage/kubernetes/rolling-upgrade#find-a-new-version) in succession, make sure to verify that each version upgrades to completion before proceeding to the next version. You can verify by reading the `/v1/features` Admin API endpoint and checking that `cluster_version` has increased.
+
+Starting with Redpanda version 23.1, the `/v1/features` endpoint also includes a `node_latest_version` attribute, and installers can verify that the cluster has activated any new functionality from a previous upgrade by checking for `cluster_version` == `node_latest_version`.
+
+---
+
+## Next steps
+
+If clients connect from a different subnet, see [Configure Listeners](../../../../../../manage/security/listener-configuration).
+
+## Suggested reading
+
+- [Configure Cluster Properties](../../../../../../manage/cluster-maintenance/cluster-property-configuration)
+- [Redpanda Console Configuration](../../../../../../reference/console/config)
+- [Schema Registry](../../../../../../manage/schema-registry)

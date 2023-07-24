@@ -1,0 +1,343 @@
+---
+title: Docker Compose Samples for Redpanda
+---
+
+<head>
+    <meta name="title" content="Docker Compose Samples for Redpanda | Redpanda Docs"/>
+    <meta name="description" content="Docker Compose Samples for Redpanda and Redpanda Console."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/reference/docker-compose/" />
+</head>
+
+Use these Docker Compose samples to test Redpanda features and applications during development.
+
+:::info Redpanda in Docker is supported only for development and testing.
+
+To deploy Redpanda in production, use one of the following environments:
+
+- [Linux](../../deploy/deployment-option/self-hosted/manual)
+- [Kubernetes](../../deploy/deployment-option/self-hosted/kubernetes)
+
+:::
+
+## Prerequisites
+
+To run `docker compose` you must install Docker on your machine. See the
+[Docker documentation](https://docs.docker.com/compose/install/).
+
+## Owl shop sample application
+
+This `docker-compose.yml` file starts a single Redpanda broker, Redpanda Console, and a sample application called _owl shop_. Owl shop simulates a simple ecommerce shop that uses Redpanda as an asynchronous communication exchange. Owl shop creates topics, produces sample data to those topics, and consumes from those topics.
+
+1. Paste the following YAML into a `docker-compose.yml` file on your computer, and run `docker compose up -d` inside the same directory.
+
+  :::note
+  If you are running on an ARM-based device such as the Apple M1 chip, uncomment the `platform: 'linux/amd64'` lines.
+  :::
+
+  ```yaml title="docker-compose.yml"
+  version: '3.7'
+  name: redpanda-owl-shop
+  networks:
+    redpanda_network:
+      driver: bridge
+  volumes:
+    redpanda: null
+  services:
+    redpanda:
+      image: docker.redpanda.com/redpandadata/redpanda:vVAR::REDPANDA_VERSION_23_1
+      command:
+        - redpanda start
+        - --smp 1
+        - --overprovisioned
+        - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+        # Address the broker advertises to clients that connect to the Kafka API.
+        # Use the internal addresses to connect to the Redpanda brokers
+        # from inside the same Docker network.
+        # Use the external addresses to connect to the Redpanda brokers
+        # from outside the Docker network.
+        - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+        - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+        # Address the broker advertises to clients that connect to the HTTP Proxy.
+        - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+        - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+        # Redpanda brokers use the RPC API to communicate with each other internally.
+        - --rpc-addr redpanda:33145
+        - --advertise-rpc-addr redpanda:33145
+      ports:
+        - 18081:18081
+        - 18082:18082
+        - 19092:19092
+        - 19644:9644
+      volumes:
+        - redpanda:/var/lib/redpanda/data
+      networks:
+        - redpanda_network
+      healthcheck:
+        test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+        interval: 15s
+        timeout: 3s
+        retries: 5
+        start_period: 5s
+
+    console:
+      image: docker.redpanda.com/redpandadata/console:vVAR::CONSOLE_LATEST_VERSION
+      entrypoint: /bin/sh
+      command: -c "echo \"$$CONSOLE_CONFIG_FILE\" > /tmp/config.yml; /app/console"
+      environment:
+        CONFIG_FILEPATH: /tmp/config.yml
+        CONSOLE_CONFIG_FILE: |
+          kafka:
+            brokers: ["redpanda:9092"]
+            schemaRegistry:
+              enabled: true
+              urls: ["http://redpanda:8081"]
+          redpanda:
+            adminApi:
+              enabled: true
+              urls: ["http://redpanda:9644"]
+          connect:
+            enabled: true
+            clusters:
+              - name: local-connect-cluster
+                url: http://connect:8083
+      ports:
+        - 8080:8080
+      networks:
+        - redpanda_network
+      depends_on:
+        - redpanda
+
+    owl-shop:
+      image: quay.io/cloudhut/owl-shop:sha-042112b
+      networks:
+        - redpanda_network
+      # platform: 'linux/amd64'
+      entrypoint: /bin/sh
+      command: -c "echo \"$$OWLSHOP_CONFIG_FILE\" > /tmp/config.yml; /app/owlshop"
+      environment:
+        CONFIG_FILEPATH: /tmp/config.yml
+        OWLSHOP_CONFIG_FILE: |
+          shop:
+            requestRate: 1
+            interval: 0.1s
+            topicReplicationFactor: 1
+            topicPartitionCount: 1
+          kafka:
+            brokers: "redpanda:9092"
+      depends_on:
+        - redpanda
+
+    connect:
+      image: docker.redpanda.com/redpandadata/connectors:latest
+      hostname: connect
+      container_name: connect
+      networks:
+        - redpanda_network
+      # platform: 'linux/amd64'
+      depends_on:
+        - redpanda
+      ports:
+        - "8083:8083"
+      environment:
+        CONNECT_CONFIGURATION: |
+            key.converter=org.apache.kafka.connect.converters.ByteArrayConverter
+            value.converter=org.apache.kafka.connect.converters.ByteArrayConverter
+            group.id=connectors-cluster
+            offset.storage.topic=_internal_connectors_offsets
+            config.storage.topic=_internal_connectors_configs
+            status.storage.topic=_internal_connectors_status
+            config.storage.replication.factor=-1
+            offset.storage.replication.factor=-1
+            status.storage.replication.factor=-1
+            offset.flush.interval.ms=1000
+            producer.linger.ms=50
+            producer.batch.size=131072
+        CONNECT_BOOTSTRAP_SERVERS: redpanda:9092
+        CONNECT_GC_LOG_ENABLED: "false"
+        CONNECT_HEAP_OPTS: -Xms512M -Xmx512M
+        CONNECT_LOG_LEVEL: info
+  ```
+
+1. Open Redpanda Console at [localhost:8080](http://localhost:8080) and go to **Topics** to see the Owl Shop topics.
+
+## Samples for Redpanda Enterprise Edition
+
+This section contains `docker-compose.yml` files with features that require a license key for Redpanda Enterprise Edition. The license key is uploaded to the Redpanda broker through a separate container called `redpandarpk`. This container executes the `rpk cluster license set` command to load the license key from the given filepath.
+
+To request a trial license, to extend your trial period, or to purchase an Enterprise Edition license, contact [Redpanda Sales](https://redpanda.com/try-redpanda?section=enterprise-trial).
+
+In the same location as your `docker-compose.yml` file, save your license key to a file called `redpanda.license` in a directory called `license`. Or, to use another location, update the license paths in the `docker-compose.yml` files to another directory that contains your license key.
+
+### Plain login authentication for Redpanda Console
+
+This `docker-compose.yml` file configures Redpanda Console with a plain login provider so that users of Redpanda Console must log in with a username and password.
+
+1. Paste the following YAML into a `docker-compose.yml` file on your computer, and run `docker compose up -d` inside the same directory.
+
+  ```yaml title="docker-compose.yml"
+  ---
+  version: "3.7"
+  name: redpanda-enterprise
+  networks:
+    redpanda_network:
+      driver: bridge
+  volumes:
+    redpanda: null
+  services:
+    redpanda:
+      image: docker.redpanda.com/redpandadata/redpanda:vVAR::REDPANDA_VERSION_23_1
+      command:
+        - redpanda start
+        - --smp 1
+        - --overprovisioned
+        - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+        # Address the broker advertises to clients that connect to the Kafka API.
+        # Use the internal addresses to connect to the Redpanda brokers
+        # from inside the same Docker network.
+        # Use the external addresses to connect to the Redpanda brokers
+        # from outside the Docker network.
+        - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+        - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+        # Address the broker advertises to clients that connect to the HTTP Proxy.
+        - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+        - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+        # Redpanda brokers use the RPC API to communicate with each other internally.
+        - --rpc-addr redpanda:33145
+        - --advertise-rpc-addr redpanda:33145
+      ports:
+        - 18081:18081
+        - 18082:18082
+        - 19092:19092
+        - 19644:9644
+      volumes:
+        - redpanda:/var/lib/redpanda/data
+      networks:
+        - redpanda_network
+    redpandarpk:
+      command:
+        - cluster
+        - license
+        - set
+        - --path
+        # this is the default location in which rpk searches for the redpanda.license file.
+        # if you mount the license key file to a different location, update this path.
+        - /etc/redpanda/redpanda.license
+        # rpk connects to the admin API of one broker to set the license key for the whole cluster.
+        - --api-urls redpanda:9644
+      image: docker.redpanda.com/redpandadata/redpanda:vVAR::REDPANDA_VERSION_23_1
+      # mount the local directory that contains your license key to the container.
+      # give Redpanda read and write access to the license.
+      volumes:
+        - ./license:/etc/redpanda:rw
+      networks:
+        - redpanda_network
+      depends_on:
+        - redpanda
+    console:
+      container_name: redpanda-console
+      image: docker.redpanda.com/redpandadata/console:vVAR::CONSOLE_LATEST_VERSION
+      # mount the local directory that contains your license key to the container.
+      # give Redpanda Console read access to the license.
+      volumes:
+        - ./license:/etc/redpanda:ro
+      networks:
+        - redpanda_network
+      entrypoint: /bin/sh
+      command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml && echo "$$CONSOLE_ROLEBINDINGS_CONFIG_FILE" > /tmp/role-bindings.yml && /app/console'
+      environment:
+        REDPANDA_LICENSE_FILEPATH: /etc/redpanda/redpanda.license
+        CONFIG_FILEPATH: /tmp/config.yml
+        CONSOLE_CONFIG_FILE: |
+          kafka:
+            brokers: ["redpanda:9092"]
+            schemaRegistry:
+              enabled: true
+              urls: ["http://redpanda:8081"]
+          redpanda:
+            adminApi:
+              enabled: true
+              urls: ["http://redpanda:9644"]
+          login:
+            enabled: true
+            jwtSecret: change-this-to-something-secret
+            useSecureCookies: false
+            plain:
+              enabled: true
+              credentials:
+              - username: "jane"
+                password: "some-other-secret-password"
+              - username: "john"
+                password: "some-secret-password"
+          enterprise:
+            rbac:
+              enabled: true
+              roleBindingsFilepath: /tmp/role-bindings.yml
+        CONSOLE_ROLEBINDINGS_CONFIG_FILE: |
+          roleBindings:
+          - metadata:
+              name: Platform Ops
+            subjects:
+              - kind: user
+                provider: Plain
+                name: jane
+            roleName: admin
+          - metadata:
+              name: Software Engineers
+            subjects:
+              - kind: user
+                provider: Plain
+                name: john
+            roleName: editor
+      ports:
+        - 8080:8080
+      depends_on:
+        - redpanda
+  ```
+
+1. Open Redpanda Console at [localhost:8080](http://localhost:8080) and log in with the credentials for `john` or `jane`.
+
+## Customize the samples
+
+If you want to configure Redpanda or Redpanda Console, you need to customize the sample YAML files.
+
+### Configure Redpanda in Docker
+
+To configure the Redpanda services with [node configuration properties](../../reference/node-properties), you can do the following:
+
+- Pass configuration properties to the `--set` option in the `redpanda start` command. For example:
+
+  ```yaml
+  redpanda:
+    command:
+      - redpanda
+      - start
+      - --set pandaproxy_client.retries=6
+  ```
+
+- Create a `redpanda.yaml` file and mount it to the `/etc/redpanda/` directory on the `redpanda` containers. For example, if you create the `redpanda.yaml` file in a directory called `redpanda-mounts`, configure the following volume mounts:
+
+  ```yaml
+  redpanda:
+    volumes:
+      - ./redpanda-mounts:/etc/redpanda/
+  ```
+
+### Configure Redpanda Console in Docker
+
+To configure the Redpanda Console service with [configuration properties](../../reference/console/config), you can do the following:
+
+- Use environment variables, for example:
+
+  ```yaml
+  console:
+    environment:
+      KAFKA_RACKID: rack1
+  ```
+
+- Create a `redpanda-console-config.yaml` file and mount it to the `/etc/redpanda/` directory on the `redpanda-console` container. For example, if you create the `redpanda-console-config.yaml` file in a directory called `console-mounts`, configure the following volume mounts:
+
+  ```yaml
+  console:
+    volumes:
+      - ./console-mounts:/etc/redpanda/
+  ```

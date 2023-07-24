@@ -1,30 +1,30 @@
 = High Availability
 :description: How to maintain availability under failure conditions.
 
-Redpanda is designed to ensure data integrity and high availability (HA), even at high-throughput levels. This section explains the trade-offs with different configurations.
+Redpanda is designed to ensure data integrity and high availability (HA), even at high-throughput levels.
 
-== Failure scenarios
+== Deployment strategies
 
-The following table lists common types of failures and the likely impact on system availability:
+Consider the following Redpanda deployment strategies for the most common types of failures.
 
 |===
 | Failure | Impact | Mitigation strategy
 
-| Node failure
-| Loss of function for an individual node or for any virtual machine (VM) hosted on that node
-| Multi-node cluster
+| Broker failure
+| Loss of function for an individual broker or for any virtual machine (VM) that hosts the broker
+| Multi-broker deployment
 
 | Rack or switch failure
-| Loss of nodes/VMs hosted within that rack, or loss of connectivity to them
-| Multi-node cluster spread across multiple racks or network failure domains
+| Loss of brokers/VMs hosted within that rack, or loss of connectivity to them
+| Multi-broker deployment spread across multiple racks or network failure domains
 
 | Data center failure
-| Loss of nodes/VMs hosted within that data center, or loss of connectivity to them
-| Multi-AZ cluster or replicated deployment
+| Loss of brokers/VMs hosted within that data center, or loss of connectivity to them
+| Multi-AZ or replicated deployment
 
 | Region failure
-| Loss of nodes/VMs hosted within that region, or loss of connectivity to them
-| Geo-stretch cluster (latency dependent) or replicated deployment
+| Loss of brokers/VMs hosted within that region, or loss of connectivity to them
+| Geo-stretch (latency dependent) or replicated deployment
 
 | Global, systemic outage (DNS failures, routing failures)
 | Complete outage for all systems and services impacting customers and staff
@@ -35,24 +35,32 @@ The following table lists common types of failures and the likely impact on syst
 | Offline backups (Tiered Storage)
 |===
 
-== HA deployments
+See also: xref:./production-deployment.adoc[Deploy for Production]
 
-Mission-critical deployments typically employ the following strategies:
+== HA deployment options
 
-* <<multi-cluster-deployment,Multi-node deployment>>
-* <<multi-availability-zone-deployment,Multi-AZ deployment>>
-* <<multi-region-deployment,Multi-region deployment>>
-* <<multi-cluster-deployment,Multi-cluster deployment>>
+This section explains the trade-offs with different HA configurations.
 
-=== Multi-node deployment
+* <<Multi-broker deployment>>
+* <<Multi-AZ deployment>>
+* <<Multi-region deployment>>
+* <<Multi-cluster deployment>>
 
-Redpanda is designed to be deployed in a cluster, and although clusters with a single node work fine, they aren't resilient to failure. Adding nodes to a cluster provides a way to handle individual node failure. You can also use <<rack-awareness, rack awareness>> to assign nodes to different racks, which allows Redpanda to tolerate the loss of a rack or failure domain.
+=== Multi-broker deployment
 
-=== Multi-availability zone deployment
+Redpanda is designed to be deployed in a cluster that consists of at least three brokers. Although clusters with a single broker work fine, they aren't resilient to failure. Adding brokers to a cluster provides a way to handle individual broker failures. You can also use <<Rack awareness>> to assign brokers to different racks, which allows Redpanda to tolerate the loss of a rack or failure domain.
+
+image::shared:single_az.png[Single-AZ deployment]
+
+See also: <<Single-AZ deployments>>
+
+=== Multi-AZ deployment
 
 An availability zone (AZ) consists of one or more data centers served by high-bandwidth links with low latency (and typically within a close distance of one another). All AZs have discrete failure domains (power, cooling, fire, and network), but they also have common-cause failure domains, such as catastrophic events, that affect their geographical location. To safeguard against such possibilities, a cluster can be deployed across multiple AZs by configuring each AZ as a rack using rack awareness.
 
 Redpanda's internal implementation of Raft lets it tolerate losing a minority of replicas for a given topic or for controller groups. For this to translate to a multi-AZ deployment, however, it's necessary to deploy to at least three AZs (affording the loss of one zone). In a typical multi-AZ deployment, cluster performance is constrained by inter-AZ bandwidth and latency.
+
+image::shared:multi_az.png[Multi-AZ deployment]
 
 === Multi-region deployment
 
@@ -63,9 +71,7 @@ A multi-region deployment is similar to a multi-AZ deployment, in that it needs 
 
 === Multi-cluster deployment
 
-In a multi-cluster deployment, each cluster is configured using one of the other HA deployments, along with standby clusters or xref:manage:remote-read-replicas.adoc[Remote Read Replica] clusters in one or more remote locations. A standby cluster is a fully functional cluster that can handle producers and consumers. A remote read replica is a read-only cluster that can act as a backup for topics.
-
-To replicate data across clusters in a multi-cluster deployment, use one of the following options:
+In a multi-cluster deployment, each cluster is configured using one of the other HA deployments, along with standby clusters or xref:manage:remote-read-replicas.adoc[Remote Read Replica] clusters in one or more remote locations. A standby cluster is a fully functional cluster that can handle producers and consumers. A remote read replica is a read-only cluster that can act as a backup for topics. To replicate data across clusters in a multi-cluster deployment, use one of the following options:
 
 * xref:manage:data-migration.adoc[MirrorMaker2 replication]
 * xref:manage:remote-read-replicas.adoc[Remote Read Replicas]
@@ -75,14 +81,14 @@ Alternatively, you could dual-feed clusters in multiple regions. Dual feeding is
 
 == HA features
 
-Redpanda configurations, as well as configurations of system components like Kubernetes, can differ greatly. Consider the following cluster features for high availability:
+Redpanda includes the following high-availability features:
 
-* <<replica-synchronization,Replica synchronization>>
-* <<rack-awareness,Rack awareness>>
-* <<partition-leadership,Partition leadership>>
-* <<producer-acknowledgment,Producer acknowledgment>>
-* <<partition-rebalancing, Partition rebalancing>>
-* <<tiered-storage-and-disaster-recovery,Tiered Storage and disaster recovery>>
+* <<Replica synchronization>>
+* <<Rack awareness>>
+* <<Partition leadership>>
+* <<Producer acknowledgment>>
+* <<Partition rebalancing>>
+* <<Tiered Storage and disaster recovery>>
 
 === Replica synchronization
 
@@ -92,33 +98,33 @@ A cluster's availability is directly tied to replica synchronization. Brokers ca
 . The replicas receive messages written to the partition of the leader. They send acknowledgments to the leader after successfully replicating the message to their internal partition.
 . The leader sends an acknowledgment to the producer of the message, as determined by that producer's `acks` value. Redpanda considers the group consistent after a majority has formed consensus; that is, a majority of participants acknowledged the write.
 
-While Apache Kafka® uses in-sync replicas, Redpanda uses a quorum-based majority with the Raft replication protocol. Kafka performance is negatively impacted when any replica is out-of-sync, but a Redpanda cluster tolerates replica failures without any performance degradation.
+While Apache Kafka® uses in-sync replicas, Redpanda uses a quorum-based majority with the Raft replication protocol. Kafka performance is negatively impacted when any "in-sync" replica is running slower than other replicas in the In-Sync Replica (ISR) set.
 
-Monitor the health of your cluster with the xref:reference:rpk/rpk-cluster/rpk-cluster-health.adoc[`rpk cluster health`] command. This tells you how many nodes are down (if any), and if you have any leaderless partitions.
+Monitor the health of your cluster with the xref:reference:rpk/rpk-cluster/rpk-cluster-health.adoc[`rpk cluster health`] command, which tells you if any brokers are down, and if you have any leaderless partitions.
 
 === Rack awareness
 
-Rack awareness is one of the most important features for HA. It lets Redpanda spread partition replicas across available brokers in different failure zones.
+Rack awareness is one of the most important features for HA. It lets Redpanda spread partition replicas across available brokers in different failure zones. Rack awareness ensures that no more than a minority of replicas are placed on a single rack, even during cluster balancing.
 
 TIP: Make sure you assign separate rack IDs that actually correspond to a physical separation of brokers.
 
-See also: xref:manage:rack-awareness.adoc[Rack Awareness]
+See also: xref:manage:rack-awareness.adoc[Enable Rack Awareness]
 
 === Partition leadership
 
 Raft uses a heartbeat mechanism to maintain leadership authority and to trigger leader elections. The partition leader sends a periodic heartbeat to all followers to assert its leadership. If a follower does not receive a heartbeat over a period of time, then it triggers an election to choose a new partition leader.
 
+See also: xref:get-started:architecture.adoc#partition-leadership-elections[Partition leadership elections]
+
 === Producer acknowledgment
 
-Producer acknowledgment defines how producer clients and broker leaders communicate their status while transferring data. The following `acks` values determine producer and broker behavior when writing data to the event bus.
+Producer acknowledgment defines how producer clients and broker leaders communicate their status while transferring data. The `acks` value determines producer and broker behavior when writing data to the event bus.
 
-* `acks=0`: The producer doesn't wait for acknowledgments from the leader and doesn't retry sending messages. This increases throughput and lowers latency of the system at the expense of durability.
-* `acks=1`: The producer waits for an acknowledgment from the leader, but it doesn't wait for the leader to get acknowledgments from replicas. This setting doesn't prioritize throughput, latency, or durability. Instead, `acks=1` attempts to provide a balance between all of them.
-* `acks=all`: The producer receives an acknowledgment after the leader and the majority of (and therefore, implicitly, all) replicas acknowledge the message. This increases durability at the expense of lower throughput and increased latency.
+See also xref:develop:produce-data/configure-producers.adoc[Producer Acknowledgement Settings]
 
 === Partition rebalancing
 
-By default, Redpanda rebalances partition distribution when nodes are added or decommissioned. Continuous Data Balancing additionally rebalances partitions when nodes become unavailable or when disk space usage exceeds a threshold.
+By default, Redpanda rebalances partition distribution when brokers are added or decommissioned. Continuous Data Balancing additionally rebalances partitions when brokers become unavailable or when disk space usage exceeds a threshold.
 
 See also: xref:manage:cluster-maintenance/cluster-balancing.adoc[Cluster Balancing]
 
@@ -128,9 +134,174 @@ In a disaster, your secondary cluster may still be available, but you need to qu
 
 See also: xref:manage:tiered-storage.adoc[Tiered Storage]
 
+== Single-AZ deployments
+
+When deploying a cluster for high availability into a single AZ or data center, you need to ensure that, within the AZ, single points of failure are minimized and that Redpanda is configured to be aware of any discrete failure domains within the AZ. This is achieved with Redpanda's rack awareness, which deploys _n_ Redpanda brokers across three or more racks (or failure domains) within the AZ.
+
+Single-AZ deployments in the cloud have less network costs than multi-AZ deployments, and you can leverage resilient power supplies and networking infrastructure within the AZ to mitigate against all but total-AZ failure scenarios. You can balance the benefits of increased availability and fault tolerance against any increase in cost, performance, and complexity:
+
+* Cost: Redpanda operates the same Raft consensus algorithm whether it's in HA mode or not. There may be infrastructure costs when deploying across multiple racks, but these are normally amortized across a wider datacenter operations program.
+* Performance: Spreading Redpanda replicas across racks and switches increases the number of network hops between Redpanda brokers; however, normal intra-data center network latency should be measured in microseconds rather than milliseconds. Ensure that there's sufficient bandwidth between brokers to handle replication traffic.
+* Complexity: A benefit of Redpanda is the simplicity of deployment. Because Redpanda is deployed as a single binary with no external dependencies, it doesn't need any infrastructure for ZooKeeper or for a Schema Registry. Redpanda also includes cluster balancing, so there's no need to run Cruise Control.
+
+=== Single-AZ infrastructure
+
+In a single-AZ deployment, ensure that brokers are spread across at least three failure domains. This generally means separate racks, under separate switches, ideally powered by separate electrical feeds or circuits. Also, ensure that there's sufficient network bandwidth between brokers, particularly considering shared uplinks, which could be subject to high throughput intra-cluster replication traffic. In an on-premises network, this HA configuration refers to separate racks or data halls within a data center.
+
+Cloud providers support various HA configurations:
+
+* AWS https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html#placement-groups-partition[partition placement groups] allow spreading hosts across multiple partitions (or failure domains) within an AZ. The default number of partitions is three, with a maximum of seven. This can be combined with Redpanda's replication factor setting, so each topic partition replica is guaranteed to be isolated from the impact of hardware failure.
+* Microsoft Azure https://learn.microsoft.com/en-us/azure/virtual-machine-scale-sets/virtual-machine-scale-sets-orchestration-modes#scale-sets-with-flexible-orchestration[flexible scale sets] let you assign VMs to specific fault domains. Each scale set can have up to five fault domains, depending on your region. Not all VM types support flexible orchestration; for example, Lsv2-series only supports uniform scale sets.
+* Google Cloud https://cloud.google.com/compute/docs/instances/define-instance-placement[instance placement policies] let you specify how many availability domains you can have (up to eight) when using the Spread Instance Placement Policy.
++
+NOTE: Google Cloud doesn't divulge which availability domain an instance has been placed into, so you must have an availability domain for each Redpanda broker. Essentially, this isn't enabled with rack awareness, but it's the only possibility for clusters with more than three brokers.
+
+You can automate this using Terraform or a similar infrastructure-as-code (IaC) tool. See https://github.com/redpanda-data/deployment-automation/blob/main/aws/cluster.tf#L23-L24[AWS], https://github.com/redpanda-data/deployment-automation/blob/main/azure/network.tf#L39-L50[Azure], and https://github.com/redpanda-data/deployment-automation/blob/main/gcp/cluster.tf#L17-L19[GCP].
+
+=== Single-AZ rack awareness
+
+To make Redpanda aware of the topology it's running on, configure the cluster to xref:manage:rack-awareness.adoc[enable rack awareness], then configure each broker with the identifier of the rack.
+
+Set the `enable_rack_awareness custer` property either in `/etc/redpanda/.bootstrap.yaml` or with `rpk`:
+
+[,bash]
+----
+rpk cluster config set enable_rack_awareness true
+----
+
+For each broker, set the rack ID in `/etc/redpanda/redpanda.yaml` file or with `rpk`:
+
+[,bash]
+----
+rpk redpanda config set redpanda.rack <rackid>
+----
+
+The modified Ansible playbooks take a per-instance rack variable from the Terraform output and use that to set the relevant cluster and broker configuration. Redpanda deployment automation can provision public cloud infrastructure with discrete failure domains (`-var=ha=true`) and use the resulting inventory to provision rack-aware clusters using Ansible.
+
+See also: xref:deploy:deployment-option/self-hosted/manual/production/production-deployment-automation.adoc[Automate Deployment for Production]
+
+=== Single-AZ example
+
+The following example deploys an HA cluster into AWS, Azure, or GCP using Terraform and Ansible.
+
+. Install all prerequisites, including all Ansible requirements:
++
+[,bash]
+----
+ansible-galaxy install -r ansible/requirements.yml
+----
+
+. Initialize a private key, if you haven't done so already:
++
+[,bash]
+----
+ssh-keygen -f ~/.ssh/id_rsa
+----
+
+. Clone the deployment-automation repository:
++
+[,bash]
+----
+git clone https://github.com/redpanda-data/deployment-automation
+----
+
+. Initialize Terraform for your cloud provider:
++
+[,bash]
+----
+cd deployment-automation/aws (or cd deployment-automation/azure, or cd deployment-automation/gcp)
+terraform init
+----
+
+. Deploy the infrastructure (this assumes you have cloud credentials available):
++
+```bash
+terraform apply -var=ha=true
+```
+
+. Verify that the racks have been correctly specified in the `host.ini` file:
++
+[,bash]
+----
+cd ..
+cat hosts.ini
+----
++
+Example output:
++
+[,ini,role=no-copy]
+----
+[redpanda]
+35.166.210.85 ansible_user=ubuntu ansible_become=True private_ip=172.31.7.173 rack=1
+18.237.173.220 ansible_user=ubuntu ansible_become=True private_ip=172.31.2.138 rack=2
+54.218.103.91 ansible_user=ubuntu ansible_become=True private_ip=172.31.2.93 rack=3
+----
+
+. Provision the cluster with Ansible:
++
+[,bash]
+----
+ansible-playbook --private-key `cat ~/.ssh/id_rsa.pub | awk '{print $2}'` ansible/playbooks/provision-node.yml -i hosts.ini
+----
+
+. Verify that rack awareness is enabled:
+.. Get connection details for the first Redpanda broker from the `hosts.ini` file:
++
+```bash
+grep -A1 '\[redpanda]' hosts.ini
+```
++
+Example output:
++
+[.no-copy]
+----
+35.166.210.85 ansible_user=ubuntu ansible_become=True private_ip=172.31.7.173 rack=1
+----
+
+.. SSH into a cluster host with the username and hostname of that Redpanda broker:
++
+```bash
+ssh -i ~/.ssh/id_rsa <username>@<hostname of redpanda broker>
+```
+
+.. Verify that rack awareness is enabled:
++
+```bash
+rpk cluster config get enable_rack_awareness
+```
++
+Example output:
++
+[.no-copy]
+----
+true
+----
+
+.. Check the rack assigned to this specific broker:
++
+```bash
+rpk cluster status
+```
++
+Example output:
++
+[.no-copy]
+----
+CLUSTER
+= = = =
+redpanda.807d59af-e033-466a-98c3-bb0be15c255d
+
+BROKERS
+= = = =
+ID HOST PORT RACK
+0* 10.0.1.7 9092 1
+1 10.0.1.4 9092 2
+2 10.0.1.8 9092 3
+----
+
 == Suggested reading
 
 * https://redpanda.com/blog/redpanda-official-jepsen-report-and-analysis?utm_assettype=report&utm_assetname=roi_report&utm_source=gated_content&utm_medium=content&utm_campaign=jepsen_blog[Redpanda's official Jepsen report]
 * https://redpanda.com/blog/simplifying-raft-replication-in-redpanda[Simplifying Redpanda Raft implementation]
 * https://redpanda.com/blog/kafka-redpanda-availability[An availability footprint of the Redpanda and Apache Kafka replication protocols]
-* https://redpanda.com/blog/tiered-storage-architecture-shadow-indexing-deep-dive[How we built Shadow Indexing]
+* https://redpanda.com/blog/tiered-storage-architecture-shadow-indexing-deep-dive[How we built shadow indexing]

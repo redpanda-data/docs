@@ -1,0 +1,96 @@
+---
+title: Networking and Connectivity in Kubernetes
+tags:
+  - Kubernetes
+  - Helm configuration
+description: Learn how internal and external connectivity works when Redpanda is running in Kubernetes.
+---
+
+<head>
+    <meta name="title" content="Networking and Connectivity in Kubernetes | Redpanda Docs"/>
+    <meta name="description" content="Learn how internal and external connectivity works when Redpanda is running in Kubernetes."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/manage/kubernetes/networking/networking-and-connectivity/" />
+</head>
+
+Clients must be able to connect directly to each Pod that runs a Redpanda broker. For example, to write to or read from a given partition, clients connect directly to the leader broker that hosts that partition.
+
+When a client first accesses a Redpanda cluster, it connects to any Redpanda broker's Kafka API to get the advertised addresses of all brokers in the cluster. Then, the client connects directly to a specific broker through its advertised address and interacts with one of the broker's APIs, known as listeners. For example, a client may connect to a broker's Kafka API listener to produce or consume data.
+
+Listener |Purpose |
+---|---
+|Admin API|Operate Redpanda clusters. For example, you can modify the cluster's configuration, decommission brokers, and place brokers in maintenance mode.
+|Kafka API|Interact with the Kafka protocol in Redpanda.
+|HTTP Proxy (PandaProxy)|Access your data through a REST API. For example, you can list topics or brokers, get events, and produce events.
+|Schema registry|Store and manage event schemas. For example, you can query supported serialization formats, register schemas for a subject, and retrieve schemas of specific versions.
+|RPC API|Connect Redpanda brokers to other Redpanda brokers.
+
+## StatefulSets and Pod identities
+
+Redpanda is a stateful application. Each Redpanda broker needs to store its state (topic partitions) in its own storage volume. As a result, Redpanda is deployed in a StatefulSet to manage the Pods in which the Redpanda brokers are running. StatefulSets ensure that the state associated with a particular Pod replica is always the same, no matter how often the Pod is recreated.
+
+In a StatefulSet, each Pod is given a unique ordinal number in its name such as `redpanda-0`. A Pod with a particular ordinal number is always associated with a PersistentVolumeClaim with the same number. When a Pod in the StatefulSet is deleted and recreated, it is given the same ordinal number and so it mounts the same storage volume as the deleted Pod that it replaced.
+
+## Internal networking
+
+To allow both Redpanda brokers in the same Redpanda cluster and clients within the same Kubernetes cluster to communicate, Redpanda deploys a headless ClusterIP Service (headless Service).
+
+When a headless Service is associated with a StatefulSet, each Pod gets its own A/AAAA record that resolves directly to the individual Pod’s IP address. For example, the IP address of the `redpanda-0` Pod is resolvable at the following address:
+
+![Fully qualified domain name for a Pod called redpanda-0 in the redpanda namespace](/img/headless-clusterip-dns.png)
+
+1. Pod name
+2. Service name
+3. Service namespace
+4. Cluster domain
+
+The Redpanda brokers advertise these addresses so that internal clients can connect to individual brokers, and brokers within the same cluster can communicate with each other. For example, this is the Kafka API configuration for a Redpanda broker running in a Pod called `redpanda-0` in the `redpanda` namespace:
+
+```yaml title="/etc/redpanda/redpanda.yaml"
+redpanda:
+  advertised_kafka_api:
+    - address: redpanda-0.redpanda.redpanda.svc.cluster.local.
+      port: 10092
+      name: internal
+```
+
+## External networking
+
+Because external clients are not in the Kubernetes cluster where the Redpanda brokers are running, they cannot resolve the internal addresses of the headless ClusterIP Service. Instead, Redpanda brokers must also advertise an externally accessible adress that external clients can connect to.
+
+To make the Redpanda brokers externally accessible, the Pods must be exposed through one of following Kubernetes Services:
+
+- NodePort (fastest and cheapest)
+- LoadBalancer
+
+![A client connects to a Pod directly through the NodePort Service or indirectly through the load balancer](/img/nodeport-loadbalancer.png)
+
+:::info
+To make each Redpanda broker addressable through a Service, each Redpanda broker should run on its own worker node. This way, clients or load balancers can use the address of the worker nodes to connect to specific Redpanda brokers.
+:::
+
+### NodePort Service
+
+When you use a NodePort Service, each worker node that runs a Redpanda broker is allocated a port for each listener. All traffic to these ports is routed through the NodePort Service directly to the worker node's local Pod that runs the Redpanda broker. Clients then connect to the addresses of the worker nodes.
+
+:::info
+The NodePort Service has its `service.spec.externalTrafficPolicy` configuration set to `Local` so that clients can send a request to a specific worker node and it will go to the local Redpanda broker on the node. For details, see [Traffic policies](https://kubernetes.io/docs/reference/networking/virtual-ips/#external-traffic-policy) in the Kubernetes documentation.
+:::
+
+### LoadBalancer Service
+
+When you use LoadBalancer Services, each Redpanda broker needs its own LoadBalancer Service so that clients can address each broker individually. Behind each LoadBalancer Service, you need a load balancer instance that is hosted outside your Kubernetes cluster to forward traffic to the worker node. Clients then connect to the addresses of the load balancer instances.
+
+Using LoadBalancer Services is most useful in Managed Kubernetes environments because in these environments, the service provider usually creates the associated load balancer instances for you automatically. In bare-metal environments, you need to create the load balancer instances manually.
+
+:::note
+Load balancers are slower than the NodePort Service. Load balancers force client traffic to make more network hops as the requests must go through the load balancer to get to the worker node, and then the LoadBalancer Service must forward the request to the local Pod. Load balancers are also expensive, so using a load balancer adds to the cost of running a cluster.
+:::
+
+## Next steps
+
+Configure external access through a Service:
+
+- [NodePort](../configure-external-access-nodeport)
+- [LoadBalancer](../configure-external-access-loadbalancer)
+
+[Configure individual listeners](../configure-listeners).

@@ -1,0 +1,311 @@
+---
+title: Remote Read Replicas in Kubernetes
+tags:
+  - Kubernetes
+  - Helm configuration
+deployment: Kubernetes
+linkRoot: ../../../
+contextLinks:
+  - name: 'Linux'
+    to: 'manage/remote-read-replicas'
+  - name: 'Kubernetes'
+    to: manage/kubernetes/remote-read-replicas
+description: Create read-only topics (Remote Read Replica topics) that mirror topics on a different cluster.
+---
+
+<head>
+    <meta name="title" content="Remote Read Replicas in Kubernetes | Redpanda Docs"/>
+    <meta name="description" content="Create read-only topics (Remote Read Replica topics) that mirror topics on a different cluster."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/manage/kubernetes/remote-read-replicas/" />
+</head>
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import ValuesYaml from './shared/_values-yaml.mdx'
+import EnterpriseLicenseNote from '@site/docs/shared/_enterprise-license.mdx'
+import ReduceLag from '../../manage/shared/remote-read-replicas/_reduce-lag.mdx';
+import AboutRemoteReadReplicas from '../shared/remote-read-replicas/_intro.mdx';
+
+import ContextLink from '@site/src/components/ContextButton.js'
+
+<ContextLink frontmatter={frontMatter}
+/>
+
+<AboutRemoteReadReplicas frontmatter={frontMatter}/>
+
+## Prerequisites
+
+You need the following:
+
+- An origin cluster with [Tiered Storage](../tiered-storage#set-up-tiered-storage) set up.
+- A topic on the origin cluster, which you can use as a Remote Read Replica topic on the remote cluster.
+- A separate remote cluster in the same region as the bucket or container used for the origin cluster. 
+   - If you use a multi-region bucket/container, you can create the read replica cluster in any region that has that bucket/container. 
+   - If you use a single-region bucket/container, the remote cluster must be in the same region as the bucket/container.
+
+<EnterpriseLicenseNote frontmatter={frontMatter}/>
+
+To check if you already have a license key applied to your cluster:
+
+```bash
+kubectl exec redpanda-0 -c redpanda -n redpanda -- rpk cluster license info
+```
+
+:::note
+<ValuesYaml path="storage.tieredConfig"/>
+:::
+
+## Configure object storage for the remote cluster
+
+You must configure access to the same object storage as the origin cluster.
+
+<Tabs groupId="cloud-platform" queryString>
+<TabItem value="s3" label="Amazon S3" default>
+
+You can configure access to Amazon S3 with either an IAM role attached to the instance or with access keys.
+
+To configure access to an S3 bucket with an IAM role: 
+
+1. Configure an [IAM role](../../../manage/security/iam-roles/#configuring-iam-roles) with read permissions for the S3 bucket. 
+
+1. Override the following required cluster properties in the Helm chart:
+
+  Replace the following placeholders:
+
+    - `<region>`: The region of your S3 bucket.
+    - `<redpanda-bucket-name>`: The name of your S3 bucket.
+
+  <Tabs groupId="helm-config" queryString>
+  <TabItem value="values" label="--values">
+
+  ```yaml title="cloud-storage.yaml"
+  storage:
+    tieredConfig:
+      cloud_storage_enabled: true
+      cloud_storage_credentials_source: aws_instance_metadata
+      cloud_storage_region: <region>
+      cloud_storage_bucket: "none"
+  ```
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values cloud-storage.yaml
+  ```
+
+  </TabItem>
+  <TabItem value="flags" label="--set">
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+    --set storage.tieredConfig.cloud_storage_enabled=true \
+    --set storage.tieredConfig.cloud_storage_credentials_source=aws_instance_metadata \
+    --set storage.tieredConfig.cloud_storage_region=<region> \
+    --set storage.tieredConfig.cloud_storage_bucket="none"
+  ```
+
+  </TabItem>
+  </Tabs>
+
+To configure access to an S3 bucket with access keys instead of an IAM role:
+
+1. Grant a user the following permissions to read objects on the bucket to be used with the cluster (or on all buckets):
+    - `GetObject`
+    - `ListBucket`
+
+1. Copy the access key and secret key for the `cloud_storage_access_key` and `cloud_storage_secret_key` cluster properties.
+1. Override the following required cluster properties in the Helm chart:
+
+  Replace the following placeholders:
+
+    - `<access-key>`: The access key for your S3 bucket.
+    - `<secret-key>`: The secret key for your S3 bucket.
+    - `<region>`: The region of your S3 bucket.
+
+  <Tabs groupId="helm-config" queryString>
+  <TabItem value="values" label="--values">
+
+  ```yaml title="cloud-storage.yaml"
+  storage:
+    tieredConfig:
+      cloud_storage_enabled: true
+      cloud_storage_credentials_source: config_file
+      cloud_storage_access_key: <access-key>
+      cloud_storage_secret_key: <secret-key>
+      cloud_storage_region: <region>
+      cloud_storage_bucket: "none"
+  ```
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values cloud-storage.yaml
+  ```
+
+  </TabItem>
+  <TabItem value="flags" label="--set">
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+    --set storage.tieredConfig.cloud_storage_enabled=true \
+    --set storage.tieredConfig.cloud_storage_credentials_source=config_file \
+    --set storage.tieredConfig.cloud_storage_access_key=<access-key> \
+    --set storage.tieredConfig.cloud_storage_secret_key=<secret-key> \
+    --set storage.tieredConfig.cloud_storage_region=<region> \
+    --set storage.tieredConfig.cloud_storage_bucket="none"
+  ```
+
+  </TabItem>
+  </Tabs>
+
+</TabItem>
+<TabItem value="gcs" label="Google Cloud Storage">
+
+You can configure access to Google Cloud Storage with either an IAM role attached to the instance or with access keys.
+
+- To configure access to Google Cloud Storage with an IAM role, override the following required cluster properties in the Helm chart:
+
+  Replace the following placeholders:
+
+    - `<region>`: The region of your bucket.
+
+  <Tabs groupId="helm-config" queryString>
+  <TabItem value="values" label="--values">
+
+  ```yaml title="cloud-storage.yaml"
+  storage:
+    tieredConfig:
+      cloud_storage_enabled: true
+      cloud_storage_credentials_source: gcp_instance_metadata
+      cloud_storage_region: <region>
+      cloud_storage_bucket: "none"
+  ```
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values cloud-storage.yaml
+  ```
+
+  </TabItem>
+  <TabItem value="flags" label="--set">
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+    --set storage.tieredConfig.cloud_storage_enabled=true \
+    --set storage.tieredConfig.cloud_storage_credentials_source=aws_instance_metadata \
+    --set storage.tieredConfig.cloud_storage_region=<region> \
+    --set storage.tieredConfig.cloud_storage_bucket="none"
+  ```
+
+  </TabItem>
+  </Tabs>
+
+- To configure access to Google Cloud Storage with access keys instead of an IAM role, override the following required cluster properties in the Helm chart:
+
+  Replace the following placeholders:
+
+    - `<access-key>`: The access key for your bucket.
+    - `<secret-key>`: The secret key for your bucket.
+    - `<region>`: The region of your bucket.
+
+  <Tabs groupId="helm-config" queryString>
+  <TabItem value="values" label="--values">
+
+  ```yaml title="cloud-storage.yaml"
+  storage:
+    tieredConfig:
+      cloud_storage_enabled: true
+      cloud_storage_credentials_source: config_file
+      cloud_storage_api_endpoint: storage.googleapis.com
+      cloud_storage_access_key: <access-key>
+      cloud_storage_secret_key: <secret-key>
+      cloud_storage_region: <region>
+      cloud_storage_bucket: "none"
+  ```
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values cloud-storage.yaml
+  ```
+
+  </TabItem>
+  <TabItem value="flags" label="--set">
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+    --set storage.tieredConfig.cloud_storage_enabled=true \
+    --set storage.tieredConfig.cloud_storage_credentials_source=config_file \
+    --set storage.tieredConfig.cloud_storage_api_endpoint=storage.googleapis.com \
+    --set storage.tieredConfig.cloud_storage_access_key=<access-key> \
+    --set storage.tieredConfig.cloud_storage_secret_key=<secret-key> \
+    --set storage.tieredConfig.cloud_storage_region=<region> \
+    --set storage.tieredConfig.cloud_storage_bucket="none"
+  ```
+
+  </TabItem>
+  </Tabs>
+
+</TabItem>
+<TabItem value="azure" label="Azure Blob Storage" default>
+
+To configure access to Azure Blob Storage, override the following required cluster properties in the Helm chart:
+
+Replace the following placeholders:
+
+  - `<access-key>`: The access key for your Azure account.
+  - `<account-name>`: The name of your Azure account.
+
+<Tabs groupId="helm-config" queryString>
+<TabItem value="values" label="--values">
+
+```yaml title="cloud-storage.yaml"
+storage:
+  tieredConfig:
+    cloud_storage_enabled: true
+    cloud_storage_azure_shared_key: <access_key>
+    cloud_storage_azure_storage_account: <account-name>
+    cloud_storage_azure_container: "none"
+```
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+--values cloud-storage.yaml
+```
+
+</TabItem>
+<TabItem value="flags" label="--set">
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --set storage.tieredConfig.cloud_storage_enabled=true \
+  --set storage.tieredConfig.cloud_storage_azure_shared_key=<access_key> \
+  --set storage.tieredConfig.cloud_storage_azure_storage_account=<account-name> \
+  --set storage.tieredConfig.cloud_storage_azure_container="none"
+```
+
+</TabItem>
+</Tabs>
+
+</TabItem>
+</Tabs>
+
+## Create a Remote Read Replica topic
+
+To create the Remote Read Replica topic, run: 
+   
+`rpk topic create <topic_name> -c redpanda.remote.readreplica=<bucket_name>`. 
+
+- For `<topic_name>`, use the same name as the original topic. 
+- For `<bucket_name>`, use the bucket/container specified in the `storage.tieredConfig.cloud_storage_bucket` or `storage.tieredConfig.cloud_storage_azure_container` properties for the origin cluster.
+
+:::info
+- The Remote Read Replica cluster must run on the same version of Redpanda as the origin cluster, or just one feature release ahead of the origin cluster. For example, if the origin cluster is version 23.1, the Remote Read Replica cluster can be 23.2, but not 23.4. It cannot skip feature releases.
+- During upgrades, upgrade the Remote Read Replica cluster before upgrading the origin cluster. 
+- Do not use `redpanda.remote.read` or `redpanda.remote.write` with `redpanda.remote.readreplica`. Redpanda ignores the values for remote read and remote write properties on read replica topics. 
+:::
+
+## Reduce lag in data availability
+
+<ReduceLag frontmatter={frontMatter}/>
+
+## Suggested reading
+
+- [Remote Read Replicas: Read-only topics in Tiered Storage](https://redpanda.com/blog/remote-read-replicas-for-distributing-work)

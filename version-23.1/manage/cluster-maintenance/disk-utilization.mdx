@@ -1,0 +1,210 @@
+---
+title: Manage Disk Space
+---
+
+<head>
+    <meta name="title" content="Disk Space Management | Redpanda Docs"/>
+    <meta name="description" content="If you exceed the low disk space threshold, Redpanda blocks writes to the local node from Kafka producers."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/manage/cluster-maintenance/disk-utilization/" />
+</head>
+
+Redpanda provides several ways to manage disk space to ensure the production stability of the cluster. You can:
+* Configure message retention and a log cleanup policy.
+* Configure storage threshold properties, and set up alerts to notify you when free disk space reaches a certain threshold.
+* Use [Continuous Data Balancing](../continuous-data-balancing) to automatically distribute partitions across nodes for more balanced disk usage.
+* Create a ballast file to act as a buffer against an out-of-disk outage.
+
+If free disk space reaches a critically low level, Redpanda blocks clients from producing. 
+
+When a Redpanda node runs out of disk space, it terminates. This causes leader reassignment and then replication and rebalancing, impacting performance. If more nodes in the cluster fill up and terminate, traffic concentrates in fewer nodes, also impacting performance. 
+
+## Configure message retention
+
+By default, all topics on self-hosted Redpanda clusters keep the last 24 hours of data on local disk. Redpanda Cloud keeps the last 12 hours of data. However, if data is written fast enough to consume all disk space within the local retention time period, it's possible to exhaust local disk space, even when using Tiered Storage. You can adjust the default local storage size or time period, if required.
+
+Retention properties control how long messages are kept on disk before they're deleted or compacted. Setting message retention properties is the best way to prevent old messages from accumulating on disk to the point that the disk becomes full. You can configure retention properties to delete messages based on the following conditions:
+
+* Message age is exceeded.
+* Aggregate message size in the topic is exceeded.
+* Either message age or aggregate message size in the topic is exceeded.
+
+Set retention properties at the topic level or the cluster level. If a value isn't specified for the topic, then the topic uses the value for the cluster. Note that cluster-level property names use snake-case, while topic-level properties use dots.
+
+| Retention property | Cluster level | Topic level <br /> (overrides cluster configuration) |
+| ---               | ---                                                |  ---                                 |
+| Time-based        | `delete_retention_ms` <br /> Default - `604800000` | `retention.ms` <br /> No default     |
+| Size-based        | `retention_bytes`  <br /> Default - `null`         | `retention.bytes`  <br /> No default |
+| Time-based (with Tiered Storage enabled)       | `retention_local_target_ms_default` <br /> Default - `86400000`| `retention.local.target.ms` <br /> No default     |
+| Size-based (with Tiered Storage enabled)       | `retention_local_target_bytes_default`  <br /> Default - `null`         | `retention.local.target.bytes`  <br /> No default |
+| Segment size      | `log_segment_size`  <br /> Default - `1073741824`  | `segment.bytes`  <br /> No default |
+
+Data expires from object storage following `retention.ms` or `retention.bytes`. For example, if `retention.bytes` is set to 10 GiB, then every partition in the topic has a limit of 10 GiB storage in the cloud. When `retention.bytes` is exceeded by data in object storage, the data in object storage is trimmed. With Tiered Storage enabled, data expires from local storage following `retention.local.target.ms` or `retention.local.target.bytes`. 
+
+Based on these properties, Redpanda runs a log cleanup process in the background. If you start to run out of disk space, adjust your retention properties to reduce the amount of disk space used. 
+
+See also: [Manage local capacity for Tiered Storage topics](../../tiered-storage/#manage-local-capacity-for-tiered-storage-topics)
+
+
+### Set time-based retention
+
+A message is deleted if its age exceeds the value specified in `delete_retention_ms` (the cluster-level property) or `retention.ms` (the topic-level property). If `retention.ms` is not set at the topic level, the topic inherits the `delete_retention_ms` setting.
+
+:::note
+Time-based retention is calculated from the batch timestamp in a segment. Each segment index stores the timestamp. The timestamp policy can be either `CreateTime` (client timestamp set by producer) or `AppendTime` (server timestamp set by Redpanda). Segments are closed when partition leadership changes or when the segment size limit is reached. 
+:::
+
+To set retention time for a single topic, use `retention.ms`, which overrides `delete_retention_ms`. 
+
+* `retention.ms` - Topic-level property that specifies how long a message stays on disk before it's deleted. 
+  
+  To minimize the likelihood of out-of-disk outages, set `retention.ms` to `86400000`, which is one day. There is no default.
+  
+  To set `retention.ms`: 
+
+  ```bash
+  rpk topic alter-config <topic> --set retention.ms=<retention_time>
+  ```
+  
+* `delete_retention_ms` - Cluster-level property that specifies how long a message stays on disk before it's deleted. 
+  
+  To minimize the likelihood of out-of-disk outages, set `delete_retention_ms` to `86400000`, which is one day. The default is `604800000`, which is one week.
+
+:::caution 
+Do not set `delete_retention_ms` to `-1` unless you're using [remote write with Tiered Storage](../../tiered-storage#remote-write) to upload segments to object storage. Setting it to `-1` configures indefinite retention, which can fill disk space.  
+:::
+
+### Set size-based retention
+
+A message is deleted if the size of the partition in which it is contained reaches the value specified in 
+`retention_bytes` or `retention.bytes`. When a partition reaches that value, the oldest messages in the partition are deleted.
+
+To set retention size for a single topic, use `retention.bytes`, which overrides the cluster property `retention_bytes`. If `retention.bytes` is not set at the topic-level, the topic inherits the cluster-level setting.
+
+* `retention.bytes` - Topic-level property that specifies the maximum size of a partition. There is no default. 
+
+  To set `retention.bytes`:
+
+  ```bash
+  rpk topic alter-config <topic> --set retention.bytes=<retention_size>
+  ```
+  
+* `retention_bytes` - Cluster-level property that specifies the maximum size of a partition. 
+
+  Set this to a value that is lower than the disk capacity, or a fraction of the disk capacity based on the number of partitions per topic. For example, if you have one partition, `retention_bytes` can be 80% of the disk size. If you have 10 partitions, it can be 80% of the disk size divided by 10. The default is `null`, which means that retention based on topic size is disabled.
+  
+  To set `retention_bytes`:
+  
+  ```bash
+  rpk cluster config set retention_bytes <retention_size>
+  ```
+
+## Configure segment size
+
+The `log_segment_size` property specifies the size of each log segment.
+
+To set `log_segment_size`:
+
+```bash
+rpk cluster config set log_segment_size <segment_size>
+```
+
+If you know which topics will receive more data, it's best to specify the size for each topic. 
+
+To configure log segment size on a topic: 
+
+```bash
+rpk topic alter-config <topic> --set segment.bytes=<segment_size>
+```
+
+### Segment size for compacted topics
+ 
+Compaction, or key-based retention, saves space by retaining at least the most recent value for a message key within a topic partition's log and discarding older values. Compaction runs periodically in the background in a best effort fashion, and it doesn't guarantee that there are no duplicate values per key.
+
+When compaction is configured, topics take their size from `compacted_log_segment_size`. The `log_segment_size` property does not apply to compacted topics. 
+
+Setting a `segment.bytes` size on a topic applies whether the topic is compacted or not, and the `max_compacted_log_segment_size` property applies to compacted topics regardless of any other properties. The `max_compacted_log_segment_size` property controls how many segments are merged together. For example, if you set `segment.bytes` to 128 MB, but leave `max_compacted_log_segment_size` at 5 GB, then you get 128 MB segments when they're written, but up to 5 GB segments after compaction.
+
+Redpanda periodically performs compaction in the background. The compaction period is configured by the cluster property [log_compaction_interval_ms](../../../reference/cluster-properties#log_compaction_interval_ms).
+
+Keep in mind that very large segments delay, or possibly prevent, compaction. A very large active segment cannot be cleaned up or compacted until it is closed, and very large closed segments require significant memory and CPU to process for compaction. Very small segments increase the frequency of processing for applying compaction and resource limits. To calculate an upper limit on segment size, divide the disk size by the number of partitions. For example, if you have a 128 GB disk and 1000 partitions, the upper limit of the segment size is `134217728`. Default is `1073741824`. 
+
+For details about how to modify cluster configuration properties, see [Cluster configuration](../cluster-property-configuration). 
+
+### Log rolling
+
+Writing data for a topic usually spans multiple log segments. An **active segment** of a topic is a log segment that is being written to. As data of a topic is written and an active segment becomes full (reaches `log_segment_size`), it's closed and changed to read-only mode, and a new segment is created, set to read-write mode, and becomes the active segment. **Log rolling** is the rotation between segments to create a new active segment.
+
+Log rolling can also be triggered by configurable timeouts. This is useful when topic retention limits need to be applied within a known fixed duration. A log rolling timeout starts from the first write to an active segment. When a timeout elapses before the segment is full, the segment is rolled. The timeouts are configured with cluster-level and topic-level properties:
+
+* [log_segment_ms](../../../reference/cluster-properties#log_segment_ms) (or `log.roll.ms`) is a cluster property that configures the default segment rolling timeout for all topics of a cluster.
+
+  To set `log_segment_ms` for all topics of a cluster for a duration in milliseconds:
+
+    ```bash
+    rpk cluster config set log_segment_ms <segment_ms_duration>
+    ```
+
+* `segment.ms` is a topic-level property that configures the default segment rolling timeout for one topic. It's not set by default. If set, it overrides `log_segment_ms`.
+
+  To set `segment.ms` for a topic: 
+
+    ```bash
+    rpk topic alter-config <topic> --set segment.ms=<segment_ms_duration>
+    ```
+
+* [log_segment_ms_min](../../../reference/tunable-properties#log_segment_ms_min) and [log_segment_ms_max](../../../reference/tunable-properties#log_segment_ms_max) are cluster-level properties that configure the lower and upper limits, respectively, of log rolling timeouts.
+
+## Handle full disks
+
+If you exceed your low disk space threshold, Redpanda blocks clients from producing. In that state, Redpanda returns errors to external writers, but it still allows internal write traffic, such as replication and rebalancing. 
+
+The [`storage_min_free_bytes`](../../../reference/tunable-properties/#storage_min_free_bytes) tunable configuration property sets the low disk space threshold–the hard limit–for this write rejection. The default value is 5 GiB, which means that when any broker’s free space falls below 5 GiB, Redpanda rejects writes to all brokers.
+
+You can also set a soft limit for a minimum free disk space _alert_. This soft limit generates an error message and affects the value of the `redpanda_storage_disk_free_space_alert` metric. The alert works with the following configuration properties, which you can set on any data disk (one drive per node):
+
+| Property | Description | 
+| ---      | ---         |  
+| `storage_space_alert_free_threshold_bytes` | Minimum free disk space allowed, in bytes. | 
+| `storage_space_alert_free_threshold_percent`  | Minimum free disk space allowed, in percentage of total available space for that drive.    | 
+
+:::note
+The alert threshold can be set in either bytes or percentage of total space. To disable one threshold in favor of the other, set it to zero. 
+:::
+
+When a disk exceeds the set threshold, `redpanda_storage_disk_free_space_alert` updates, and an error message is written to the Redpanda service log. 
+
+## Monitor disk space
+
+You can check your total disk size and free space by viewing the metrics: 
+* `redpanda_storage_disk_total_bytes`
+* `redpanda_storage_disk_free_bytes`
+
+Redpanda monitors disk space and updates these metrics and the `storage_space_alert` status based on your full disk alert threshold. You can check the alert status with the `redpanda_storage_disk_free_space_alert` metric. The alert values are:  
+* 0 = No alert
+* 1 = Low free space alert
+* 2 = Out of space (degraded, external writes are rejected)
+
+## Create a ballast file
+
+A ballast file is an empty file that takes up disk space. If Redpanda runs out of disk space and becomes unavailable, you can delete the ballast file as a last resort. This clears up some space and gives you time to delete topics or records and change your retention properties. 
+
+To create a ballast file, set the following properties in the rpk section of the `redpanda.yaml` file: 
+
+```yaml
+rpk:
+  tune_ballast_file: true
+  ballast_file_path: "/var/lib/redpanda/data/ballast"
+  ballast_file_size: "1GiB"
+```
+
+Run `rpk` to create the ballast file:
+
+```bash
+rpk redpanda tune ballast_file
+```
+
+| Property | Description | 
+| ---               | ---                                                |  
+| `tune_ballast_file`               | Set to `true` to enable ballast file creation. Default is `false`.   | 
+| `ballast_file_path`      | You can change the location of the ballast file, but it must be on the same mount point as the Redpanda data directory. Default is `/var/lib/redpanda/data/ballast`.      | 
+| `ballast_file_size`      | Increase the ballast file size if it is a very high-throughput cluster. Decrease the ballast file size if you have very little storage space. The ballast file should be large enough to give you time to delete data and reconfigure retention properties if Redpanda crashes, but small enough that you don't waste disk space. In general, set this to approximately 10 times the size of the largest segment, to have enough space to compact that topic. Default is `1GiB`. | 

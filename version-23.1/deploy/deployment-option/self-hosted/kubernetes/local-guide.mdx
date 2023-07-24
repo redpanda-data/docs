@@ -1,0 +1,389 @@
+---
+title: Deploy a Local Development Cluster with kind or minikube
+---
+
+<head>
+    <meta name="title" content="Deploy a Local Redpanda Cluster for Development | Redpanda Docs"/>
+    <meta name="description" content="Deploy a local Redpanda cluster with Redpanda Console using the Helm chart."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/deploy/deployment-option/self-hosted/kubernetes/local-guide/" />
+</head>
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import Versions from '../../../../shared/_versions.mdx'
+import InstallRpkHomebrew from "../../../../get-started/shared/_install-rpk-homebrew.mdx"
+import InstallRpkLinux from "../../../../get-started/shared/_install-rpk-linux.mdx"
+import OperatorNote from "./shared/guides/_operator-note.mdx"
+import ExploreTopics from "./shared/guides/_explore-topics-localhost.mdx"
+import ExternalAccessSteps from "./shared/guides/_external-access-steps.mdx"
+import DefaultComponents from "./shared/_default-components.mdx"
+import NextSteps from "./shared/guides/_next-steps.mdx"
+import SuggestedReading from "./shared/guides/_suggested-reading.mdx"
+
+Deploy a local Redpanda cluster with Redpanda Console using the Helm chart. Explore the essentials of how Redpanda works in Kubernetes and what components are deployed by default. Then, use rpk both as an internal client and an external client to interact with your Redpanda cluster from the command line.
+
+<OperatorNote/>
+
+## Prerequisites
+
+Before you begin, make sure that you have the correct software for your Kubernetes platform:
+
+<Tabs groupId="kubernetes-platform" queryString>
+<TabItem value="all" label="All platforms" default>
+
+* [`kubectl`](https://kubernetes.io/docs/tasks/tools/). Minimum required Kubernetes version: <Versions name="kubernetes"/>
+
+  ```bash
+  kubectl version --short --client
+  ```
+
+* [Helm](https://helm.sh/docs/intro/install/). Minimum required Helm version: <Versions name="helm"/>
+
+  ```bash
+  helm version
+  ```
+
+</TabItem>
+<TabItem value="kind" label="kind">
+
+* [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation)
+
+* [Docker](https://docs.docker.com/get-docker/)
+
+</TabItem>
+<TabItem value="minikube" label="minikube">
+
+[minikube](https://minikube.sigs.k8s.io/docs/start/)
+
+</TabItem>
+</Tabs>
+
+## Create a Kubernetes cluster
+
+In this step, you create one master and three worker nodes (one worker node for each Redpanda broker).
+
+<Tabs groupId="kubernetes-platform" queryString>
+<TabItem value="kind" label="kind" default>
+
+1. Define a cluster in the `kind.yaml` configuration file:
+
+  ```bash
+  cat <<EOF >kind.yaml
+  ---
+  apiVersion: kind.x-k8s.io/v1alpha4
+  kind: Cluster
+  nodes:
+    - role: control-plane
+    - role: worker
+    - role: worker
+    - role: worker
+  EOF
+  ```
+
+1. Create the Kubernetes cluster from the configuration file:
+
+  ```bash
+  kind create cluster --config kind.yaml
+  ```
+
+</TabItem>
+<TabItem value="minikube" label="minikube">
+
+1. Create the Kubernetes cluster:
+
+  ```bash
+  minikube start --namespace redpanda --nodes 4
+  ```
+
+1. Prevent applications from being scheduled on the Kubernetes control plane node:
+
+  ```bash
+  kubectl taint node \
+      -l node-role.kubernetes.io/control-plane="" \
+      node-role.kubernetes.io/control-plane=:NoSchedule
+  ```
+
+</TabItem>
+</Tabs>
+
+## Deploy Redpanda and Redpanda Console
+
+In this step, you deploy Redpanda with self-signed TLS certificates. Redpanda Console is included as a subchart in the Redpanda Helm chart.
+
+1. Add the Redpanda Helm chart repository and install cert-manager using Helm:
+
+  ```bash
+helm repo add redpanda https://charts.redpanda.com
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm install cert-manager jetstack/cert-manager  --set installCRDs=true --namespace cert-manager  --create-namespace
+  ```
+
+  The Redpanda Helm chart uses cert-manager to manage TLS certificates.
+
+1. Install Redpanda using Helm:
+
+  ```bash
+  export DOMAIN=customredpandadomain.local && \
+  helm repo add redpanda https://charts.redpanda.com/
+  helm repo update
+  helm install redpanda redpanda/redpanda \
+    --namespace redpanda \
+    --create-namespace \
+    --set external.domain=${DOMAIN} \
+    --set statefulset.initContainers.setDataDirOwnership.enabled=true
+  ```
+
+  The installation displays some tips for getting started.
+
+1. Wait for the Redpanda cluster to be ready:
+
+  ```bash
+  kubectl -n redpanda rollout status statefulset redpanda --watch
+  ```
+
+  When the Redpanda cluster is ready, the output should look similar to the following:
+
+  ```text
+  statefulset rolling update complete 3 pods at revision redpanda-8654f645b4...
+  ```
+
+  If your cluster remains in a pending state, see [Troubleshooting](#troubleshooting).
+
+## Start streaming
+
+Each Redpanda broker comes with rpk, which is a CLI tool for connecting to and interacting with Redpanda brokers. You can use rpk inside one of the Redpanda broker's Docker containers to create a topic, produce messages to it, and consume messages from it.
+
+1. Create an alias to simplify the `rpk` commands:
+
+  ```bash
+  alias rpk-topic="kubectl -n redpanda exec -i -t redpanda-0 -c redpanda -- rpk topic --brokers redpanda-0.redpanda.redpanda.svc.cluster.local.:9093,redpanda-1.redpanda.redpanda.svc.cluster.local.:9093,redpanda-2.redpanda.redpanda.svc.cluster.local.:9093 --tls-truststore /etc/tls/certs/default/ca.crt --tls-enabled"
+  ```
+
+1. Create a topic called `twitch_chat`:
+
+  ```bash
+  rpk-topic create twitch_chat
+  ```
+
+  <details>
+  <summary>
+  Example output
+  </summary>
+
+  ```text
+  TOPIC       STATUS
+  twitch_chat  OK
+  ```
+
+  </details>
+
+1. Describe the topic:
+
+  ```bash
+  rpk-topic describe twitch_chat
+  ```
+
+  <details>
+  <summary>
+  Example output
+  </summary>
+
+  ```text
+  SUMMARY
+  =======
+  NAME        twitch_chat
+  PARTITIONS  1
+  REPLICAS    1
+
+  CONFIGS
+  =======
+  KEY                     VALUE                          SOURCE
+  cleanup.policy          delete                         DYNAMIC_TOPIC_CONFIG
+  compression.type        producer                       DEFAULT_CONFIG
+  message.timestamp.type  CreateTime                     DEFAULT_CONFIG
+  partition_count         1                              DYNAMIC_TOPIC_CONFIG
+  redpanda.datapolicy     function_name:  script_name:   DEFAULT_CONFIG
+  redpanda.remote.read    false                          DEFAULT_CONFIG
+  redpanda.remote.write   false                          DEFAULT_CONFIG
+  replication_factor      1                              DYNAMIC_TOPIC_CONFIG
+  retention.bytes         -1                             DEFAULT_CONFIG
+  retention.ms            604800000                      DEFAULT_CONFIG
+  segment.bytes           1073741824                     DEFAULT_CONFIG
+  ```
+
+  </details>
+
+1. Produce a message to the topic:
+
+  ```bash
+  rpk-topic produce twitch_chat
+  ```
+
+1. Type a message, then press <kbd>Enter</kbd>:
+
+  ```text
+  Pandas are fabulous!
+  ```
+
+  <details>
+  <summary>
+  Example output
+  </summary>
+
+  ```text
+  Produced to partition 0 at offset 0 with timestamp 1663282629789.
+  ```
+
+  </details>
+
+1. Press <kbd>Ctrl</kbd>+<kbd>C</kbd> to finish producing messages to the topic.
+
+1. Consume one message from the topic:
+
+  ```bash
+  rpk-topic consume twitch_chat --num 1
+  ```
+
+  <details>
+  <summary>
+  Example output
+  </summary>
+
+  Your message is displayed along with its metadata,:
+
+  ```json
+  {
+    "topic": "twitch_chat",
+    "value": "Pandas are fabulous!",
+    "timestamp": 1663282629789,
+    "partition": 0,
+    "offset": 0
+  }
+  ```
+
+  </details>
+
+## Explore your topic in Redpanda Console
+
+<ExploreTopics/>
+
+## Configure external access to the Redpanda brokers
+
+Because external clients are not in the Kubernetes cluster where the Redpanda brokers are running, they cannot resolve the internal addresses of the headless ClusterIP Service.
+Instead, Redpanda brokers must also advertise an externally accessible address that external clients can connect to.
+
+When you created the cluster, you set the `external.domain` configuration to `customredpandadomain.local`, which means that your Redpanda brokers are advertising the following addresses:
+
+- `redpanda-0.customredpandadomain.local`
+- `redpanda-1.customredpandadomain.local`
+- `redpanda-2.customredpandadomain.local`
+
+To access your Redpanda brokers externally, you can map your worker nodes' IP addresses to these domains.
+
+:::note
+IP addresses can change. If the IP addresses of your worker nodes change, you must update your `/etc/hosts` file with the new mappings.
+:::
+
+<Tabs groupId="operating-system" queryString>
+<TabItem value="linux" label="Linux" default>
+
+1. Add mappings in your `/etc/hosts` file between your worker nodes' IP addresses and their custom domain names:
+
+  ```bash
+  sudo true && kubectl -n redpanda get endpoints,node -A -o go-template='{{ range $_ := .items }}{{ if and (eq .kind "Endpoints") (eq .metadata.name "redpanda-external") }}{{ range $_ := (index .subsets 0).addresses }}{{ $nodeName := .nodeName }}{{ $podName := .targetRef.name }}{{ range $node := $.items }}{{ if and (eq .kind "Node") (eq .metadata.name $nodeName) }}{{ range $_ := .status.addresses }}{{ if eq .type "InternalIP" }}{{ .address }} {{ $podName }}.${DOMAIN}{{ "\n" }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}' | envsubst | sudo tee -a /etc/hosts
+  ```
+
+  ```text title="/etc/hosts"
+  203.0.113.3 redpanda-0.customredpandadomain.local
+  203.0.113.5 redpanda-1.customredpandadomain.local
+  203.0.113.7 redpanda-2.customredpandadomain.local
+  ```
+
+1. Save the root certificate authority (CA) to your local file system outside Kubernetes:
+
+  ```bash
+  kubectl -n redpanda get secret redpanda-default-root-certificate -o go-template='{{ index .data "ca.crt" | base64decode }}' > ca.crt
+  ```
+
+1. Install rpk on your local machine, not on a Pod:
+
+    <InstallRpkLinux/>
+
+1. Set the `REDPANDA_BROKERS` environment variable to the custom domains of your Redpanda brokers:
+
+  ```bash
+  export REDPANDA_BROKERS=redpanda-0.customredpandadomain.local:31092,redpanda-1.customredpandadomain.local:31092,redpanda-2.customredpandadomain.local:31092
+  ```
+
+  :::note
+  31092 is the Kafka API port that's exposed by the default NodePort Service.
+  :::
+
+1. Describe the topic:
+
+  ```bash
+  rpk topic describe twitch_chat --tls-enabled --tls-truststore=ca.crt
+  ```
+
+  <details>
+  <summary>
+  Example output
+  </summary>
+
+  ```text
+  SUMMARY
+  =======
+  NAME        twitch_chat
+  PARTITIONS  1
+  REPLICAS    1
+
+  CONFIGS
+  =======
+  KEY                     VALUE                          SOURCE
+  cleanup.policy          delete                         DYNAMIC_TOPIC_CONFIG
+  compression.type        producer                       DEFAULT_CONFIG
+  message.timestamp.type  CreateTime                     DEFAULT_CONFIG
+  partition_count         1                              DYNAMIC_TOPIC_CONFIG
+  redpanda.datapolicy     function_name:  script_name:   DEFAULT_CONFIG
+  redpanda.remote.read    false                          DEFAULT_CONFIG
+  redpanda.remote.write   false                          DEFAULT_CONFIG
+  replication_factor      1                              DYNAMIC_TOPIC_CONFIG
+  retention.bytes         -1                             DEFAULT_CONFIG
+  retention.ms            604800000                      DEFAULT_CONFIG
+  segment.bytes           1073741824                     DEFAULT_CONFIG
+  ```
+
+  </details>
+
+</TabItem>
+<TabItem value="mac" label="macOS">
+
+On macOS, the kind tool is meant for local testing. To test external access, use [GKE](../gke-guide), [EKS](../eks-guide), or [AKS](../aks-guide).
+
+</TabItem>
+
+<TabItem value="windows" label="Windows">
+
+On Windows, the kind tool is meant for local testing. To test external access, use [GKE](../gke-guide), [EKS](../eks-guide), or [AKS](../aks-guide).
+
+</TabItem>
+</Tabs>
+
+## Explore the default Kubernetes components
+
+<DefaultComponents/>
+
+## Troubleshooting
+
+Before troubleshooting your cluster, make sure that you have all the [prerequisites](#prerequisites).
+
+For troubleshooting steps, see [Troubleshoot Redpanda in Kubernetes](../../../../../manage/kubernetes/troubleshooting/troubleshoot).
+
+## Next steps
+
+<NextSteps/>
+
+## Suggested reading
+
+<SuggestedReading/>

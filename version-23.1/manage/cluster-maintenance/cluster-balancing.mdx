@@ -1,0 +1,172 @@
+---
+title: Cluster Balancing
+---
+
+<head>
+    <meta name="title" content="Cluster balancing | Redpanda Docs"/>
+    <meta name="description" content="For balanced clusters, Redpanda provides both leadership balancing and partition balancing by default. It also supports partition assignment with the Kafka API."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/manage/cluster-maintenance/cluster-balancing/" />
+</head>
+
+When a topic is created, Redpanda evenly distributes its partitions by sequentially allocating them to the cluster broker (node) with the least number of partitions. By default, Redpanda provides leadership balancing and partition rebalancing when brokers are added or decommissioned. 
+
+With an Enterprise license, you can additionally enable *Continuous Data Balancing* to continuously monitor broker and rack availability and disk usage. This enables self-healing clusters that dynamically balance partitions. It also continuously maintains adherence to rack-aware replica placement policy and self heals after rack (or availability zone) failure or replacement. See [Configure Continuous Data Balancing](../continuous-data-balancing).
+
+Cluster balancing protects you from unbalanced systems that saturate resources on one or more brokers. This can affect throughput and latency. Furthermore, a cluster with replicas on a down broker risks availability loss if more brokers fail, and a cluster that keeps losing brokers without healing eventually risks data loss.
+
+## Partition leadership balancing
+
+Every Redpanda topic-partition forms a Raft group with a single elected leader. All reads and writes are handled by the partition leader. Raft uses a heartbeat mechanism to maintain leadership authority and to trigger leader elections. The partition leader sends a periodic heartbeat ([`raft_heartbeat_interval_ms`](../../../reference/tunable-properties/#raft_heartbeat_interval_ms)) to all followers to assert its leadership. If a follower does not receive a heartbeat within a timeout duration ([`raft_heartbeat_timeout_ms`](../../../reference/tunable-properties/#raft_heartbeat_timeout_ms)), then it triggers an election to choose a new partition leader. For more information, see [Raft consensus algorithm](../../../get-started/architecture/#raft-consensus-algorithm) and [partition leadership elections](../../../get-started/architecture/#partition-leadership-elections).
+
+Leadership balancing is enabled by default with the [`enable_leader_balancer`](../../../reference/cluster-properties/#enable_leader_balancer) property. Redpanda tries to distribute the entire set of leaders evenly across all shard/broker pairs. Automatic partition leadership balancing improves cluster performance by transferring the leadership of a broker's partitions to other replicas. It changes where data is read from and written to first, but leadership transfer does not involve any data transfer. 
+
+:::note
+In addition to the periodic heartbeat, leadership balancing can also occur when a [broker restarts](../../../manage/cluster-maintenance/rolling-upgrade/#impact-of-broker-restarts) or when the controller leader changes (such as when a controller partition changes leader). The controller leader manages the entire cluster. For example, when a broker is decommissioned, the *controller leader* creates a reallocation plan for all partition replicas allocated to that broker. The *partition leader* then handles the reconfiguration for its Raft group.
+:::
+
+### Manually change leadership
+
+Despite an even distribution of leaders, sometimes the write pattern is not even across topics, and a set of traffic-heavy partitions could land on one broker and cause a latency spike. For information about metrics to monitor, see [Partition health](../../monitoring/#partition-health).
+
+To manually change leadership, use the Admin API: 
+
+```bash
+curl -X POST http://<broker_address>:9644/v1/partitions/kafka/<topic>/<partition>/transfer_leadership?target=<destination-broker-id>
+```
+
+For example, to change leadership to broker 2 for partition 0 on topic `test`:
+
+```bash
+curl -X POST "http://localhost:9644/v1/partitions/kafka/test/0/transfer_leadership?target=2"
+```
+
+:::note
+In Kubernetes, run the `transfer_leadership` request on the Pod that is running the current partition leader.
+:::
+
+## Redpanda partition balancing
+
+While leadership balancing doesn't move any data, partition balancing does move partition replicas to alleviate disk pressure and to honor the configured replication factor across nodes and the additional redundancy across failure domains (such as racks). Depending on the amount of data being transferred, this may take some time. Partition balancing is invoked periodically, determined by the [`partition_autobalancing_tick_interval_ms`](../../../reference/tunable-properties/#partition_autobalancing_tick_interval_ms) property. 
+
+Redpanda's default partition balancing ensures predictable and stable performance across all brokers in a cluster. It includes the following: 
+
+- When a broker is added to the cluster, some replicas are moved from other brokers to the new broker to take advantage of the additional capacity.
+- When a broker is down for a configured timeout, existing online replicas are used to construct a replacement replica on a new broker.
+- When a broker's free storage space drops below its low disk space threshold, some of the replicas from the broker with low disk space are moved to other brokers. 
+
+Monitoring unavailable brokers lets Redpanda self-heal clusters by moving partitions from a failed broker to a healthy broker. Monitoring low disk space lets Redpanda distribute partitions across brokers with enough disk space. If free disk space reaches a critically low level, Redpanda blocks clients from producing. For information about the disk space threshold and alert, see [Handle full disks](../disk-utilization/#handle-full-disks).
+
+### Partition balancing settings
+
+Select your partition balancing setting with the [`partition_autobalancing_mode`](../../../reference/cluster-properties/#partition_autobalancing_mode) property. 
+
+| Setting      | Description |
+| ----------- | ----------- |
+| `node_add`      | Partition balancing happens when brokers (nodes) are added.  <br /><br />This is the default setting.|
+| `continuous`   | In this mode, Redpanda continuously monitors the cluster for broker failures and high disk usage. It uses this information to automatically redistribute partitions across the cluster to maintain optimal performance and availability. It also monitors rack availability after failures, and for a given partition, it tries to move excess replicas from racks that have more than one replica to racks where there are none. See [Configure Continuous Data Balancing](../continuous-data-balancing).<br /><br />This option requires an Enterprise license.     |
+| `off`     | All partition balancing from Redpanda is turned off. <br /><br />This mode is not recommended for production clusters. Only set to `off` if you need to move partitions manually.   |
+
+## Partition balancing with Kafka API
+
+As an alternative to Redpanda partition balancing, you can change partition assignments explicitly with the Kafka API or with any 3rd-party tool in the Kafka ecosystem that controls partition movement using the Kafka API. 
+
+To reassign partitions with the Kafka API:
+
+1. Set the `partition_autobalancing_mode` property to `off`. If Redpanda partition balancing is enabled, Redpanda may change partition assignments regardless of what you do through the Kafka API.
+
+2. Show initial replica sets. For example, for topic `test`:
+  ```bash
+  rpk topic describe test -p
+  PARTITION  LEADER  EPOCH  REPLICAS  LOG-START-OFFSET  HIGH-WATERMARK
+  0          1       1      [1 2 3]   0                 645
+  1          1       1      [0 1 2]   0                 682
+  2          3       1      [0 1 3]   0                 672
+  ```
+
+3. Put all partition reassignments in a JSON file. For example, to change the replica set of partition 1 from `[0 1 2]` to `[3 1 2]` and change the replica set of partition 2 from `[0 1 3]` to `[2 1 3]`:
+   
+  ```json
+  {
+    "version": 1,
+    "partitions": [
+      {
+        "topic": "test",
+        "partition": 1,
+        "replicas": [
+          3,
+          1,
+          2
+        ]
+      },
+      {
+        "topic": "test",
+        "partition": 2,
+        "replicas": [
+          2,
+          1,
+          3
+        ]
+      }
+    ]
+  }
+  ```
+
+4. Execute partition reassignments with the `kafka-reassign-partitions.sh` script. This example uses `example.json` as the name of the JSON file:
+
+  ```bash
+  kafka-reassign-partitions.sh --bootstrap-server localhost:9092,localhost:9093,localhost:9094,localhost:9095 --reassignment-json-file example.json --execute
+  Current partition replica assignment
+
+  {"version":1,"partitions":[{"topic":"test","partition":1,"replicas":[1,2,0],"log_dirs":["any","any","any"]},{"topic":"test","partition":2,"replicas":[3,1,0],"log_dirs":["any","any","any"]}]}
+
+  Save this to use as the --reassignment-json-file option during rollback
+  Successfully started partition reassignments for test-1,test-2
+  ```
+
+5. Verify that the reassignment is complete with the flags `--verify --preserve-throttles`: 
+
+  ```bash
+  kafka-reassign-partitions.sh --bootstrap-server localhost:9092,localhost:9093,localhost:9094,localhost:9095 --reassignment-json-file example.json --verify --preserve-throttles
+  Status of partition reassignment:
+  Reassignment of partition test-1 is complete.
+  Reassignment of partition test-2 is complete.
+  ```
+
+  Alternatively, run `rpk topic describe` again to show your reassigned replica sets:
+
+  ```bash
+  rpk topic describe test -p
+  PARTITION  LEADER  EPOCH  REPLICAS  LOG-START-OFFSET  HIGH-WATERMARK
+  0          3       2      [1 2 3]   0                 0
+  1          2       2      [1 2 3]   0                 0
+  2          2       1      [1 2 3]   0                 0
+  ```  
+
+To cancel an in-progress partition reassignment with the Kafka API, use the flags `--cancel --preserve-throttles`:
+  
+```bash
+kafka-reassign-partitions.sh --bootstrap-server localhost:9092,localhost:9093,localhost:9094,localhost:9095 --reassignment-json-file example.json --cancel --preserve-throttles
+Successfully cancelled partition reassignments for: test-1,test-2
+```
+
+### Differences in partition balancing between Redpanda and Kafka
+
+- Kafka's `kafka-reassign-partitions.sh` script attempts to use throttle configurations that Redpanda does not support, such as `replica.alter.log.dirs.io.max.bytes.per.second`. Include the flag `--preserve-throttles` to avoid errors when verifying or canceling a partition reassignment.
+
+- Kafka supports increasing and decreasing the topic replication factor through partition reassignments. Redpanda currently doesn't support this.
+
+- In a partition reassignment, you must provide the broker ID for each replica. Kafka validates the broker ID for any new replica that wasn't in the previous replica set against the list of alive brokers. Redpanda validates all replicas against the list of alive brokers.
+
+- When there are two identical partition reassignment requests, Kafka cancels the first one without returning an error code, while Redpanda rejects one with `unknown_server_error`.
+
+- In Kafka, attempts to add partitions to a topic during in-progress reassignments result in a `reassignment_in_progress` error, while Redpanda successfully adds partitions to the topic.
+
+- Kafka doesn't support shard-level partition assignments, but Redpanda does. When resolving a partition reassignment, Redpanda automatically determines the shard placements. If you want a partition on a specific shard, you must assign partitions with the Admin API. 
+
+### Assign partitions at topic creation
+
+To manually assign partitions at topic creation, run: 
+
+```bash
+kafka-topics.sh --create --bootstrap-server 127.0.0.1:9092 --topic custom-assignment --replica-assignment 0:1:2,0:1:2,0:1:2 
+``` 

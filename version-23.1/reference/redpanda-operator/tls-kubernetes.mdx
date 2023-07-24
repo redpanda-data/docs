@@ -1,0 +1,394 @@
+---
+title: "Configuring Redpanda TLS on Kubernetes"
+---
+
+<head>
+    <meta name="title" content="Configuring TLS on Kubernetes | Redpanda Docs"/>
+    <meta name="description" content="This section explains how to enable Transport Layer Security (TLS) on Kubernetes."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/reference/redpanda-operator/tls-kubernetes/" />
+</head>
+
+:::danger
+See [Configuring Redpanda TLS on Kubernetes](../../../manage/kubernetes/security/kubernetes-tls) for the most up-to-date instructions using the Redpanda Helm chart. This page is based on the `redpanda-operator` Helm chart and is preserved only for backward compatibility.
+:::
+
+This section explains how to enable Transport Layer Security (TLS) on Kubernetes using the Redpanda Operator. Alone, TLS authenticates the server and encrypts communication between the client and the server. To add client authentication, you can combine TLS encryption with SASL authentication, or you can configure mTLS authentication.
+
+For general security information, see [Redpanda Security on Kubernetes](../security-kubernetes).
+
+## Prerequisites
+
+1. Configure the kubectl context.
+2. Install cert-manager.
+3. Install the Redpanda operator.
+
+If you haven’t completed these tasks, follow one of the [Install Redpanda guides for Kubernetes](../) to get set up before you configure TLS. Just stop before you install and connect to the Redpanda cluster.
+
+## Step 1: Create the cluster specification file
+
+The Redpanda GitHub repository contains a [sample configuration file](https://github.com/redpanda-data/redpanda-examples/blob/main/docs/example-config/kubernetes/tls.yaml) you can use to enable TLS.
+
+:::note
+To modify the sample file, save it locally and make the required changes.
+:::
+
+The following text is the Redpanda `tls.yaml` file with the relevant sections highlighted:
+
+```yaml
+apiVersion: redpanda.vectorized.io/v1alpha1
+kind: Cluster
+// highlight-start
+metadata:
+  name: cluster-sample-tls
+  // highlight-end
+spec:
+  image: "vectorized/redpanda"
+  version: "latest"
+  replicas: 1
+  resources:
+    requests:
+      cpu: 1
+      memory: 1.2G
+    limits:
+      cpu: 1
+      memory: 1.2G
+  configuration:
+    rpcServer:
+      port: 33145
+      // highlight-start
+    kafkaApi:
+     - port: 9092
+        tls:
+          enabled: true
+    pandaproxyApi:
+     - port: 8082
+       tls:
+         enabled: true
+    schemaRegistry:
+       port: 8081
+       tls:
+         enabled: true
+    adminApi:
+     - port: 9644
+       tls:
+         enabled: true
+         // highlight-end
+    developerMode: true
+```
+
+Complete these steps to configure the cluster specification file. The steps reference the highlighted lines in the file:
+
+1. Save the file locally to make the required changes.
+2. Configure the cluster name. The following property in the file is the name of the cluster. Change this value to the name of your cluster:
+
+```yaml
+name: cluster-sample-tls
+```
+
+3. Enable TLS for each API individually. You can enable TLS on one or more of the APIs. In the example, all four API have TLS enabled: Kafka API, HTTP Proxy (`pandaproxyAPI`), Schema Registry, and Admin API:
+
+```yaml
+   kafkaApi:
+     - port: 9092
+        tls:
+          enabled: true
+    pandaproxyApi:
+     - port: 8082
+       tls:
+         enabled: true
+    schemaRegistry:
+       port: 8081
+       tls:
+         enabled: true
+    adminApi:
+     - port: 9644
+       tls:
+         enabled: true
+```
+
+## Step 2: Configure external connectivity (optional)
+
+You can specify up to two listeners for each API, but only one listener can have TLS enabled. If you do have two listeners, one must be internal, and one must be external. The exception is Schema Registry. The Schema Registry listener can be internal, or it can be an internal port that is used internally and externally. If you enable external connectivity on Schema Registry, the Kubernetes node port connects to the internal Redpanda port to provide external connectivity.
+
+To enable external connectivity with TLS, add the following lines to each API in the configuration file that you created in **Step 1**:
+
+```yaml
+- external:
+    enabled: true
+    subdomain: <subdomain_name>
+```
+
+The `subdomain` field lets you specify the advertised address of the external listener. The subdomain addresses, including the brokers, must be registered with a DNS provider, such as [Amazon Route 53](https://aws.amazon.com/route53/). You only need to include the subdomain name in this field, not the brokers. Each API in the configuration file must have the same `subdomain` specified.
+
+The external port is generated automatically, and you don't need to specify it. In the following example, TLS is enabled on the external listener for the Kafka API. Enable external connectivity the same way for Admin API and HTTP Proxy.
+
+```yaml
+kafkaApi:
+ - port: 9092
+ - external:
+     enabled: true
+     subdomain: <subdomain_name>
+   tls:
+     enabled: true
+```
+
+The Schema Registry syntax is slightly different, in that the ports are not a list. You can specify one internal port and one external port. Schema Registry always uses an internal port and with external connectivity configured, the Kubernetes node port connects to the internal Redpanda port. Configure TLS with external connectivity for Schema Registry like this:
+
+```yaml
+schemaRegistry:
+   port: 8081
+   external:
+     enabled: true
+     subdomain: <subdomain_name>
+   tls:
+     enabled: true
+```
+
+For information about external connectivity, including subdomains, see [External connectivity](../security-kubernetes#external-connectivity).
+
+## Step 3: Provide an issuer or certificate (optional)
+
+Kafka API and Schema Registry let you provide a certificate issuer or certificate.
+
+When you enable TLS, the Redpanda operator generates a root certificate for each API. However, for Kafka API and Schema registry you can instead specify a certificate issuer or a certificate.
+
+For information about how certificates are created and used in Redpanda, see [Certificates](../security-kubernetes#certificates).
+
+### Provide an issuer
+
+To provide a certificate issuer, add the `issuerRef` property to the cluster specification file that you created in the previous step. For information about issuers, see the cert-manager [Issuer](https://cert-manager.io/docs/concepts/issuer/) documentation.
+
+You can provide an issuer for `kafkaAPI` or `schemaRegistry` in the same way. The example here is the `kafkaAPI` configuration with the `issuerRef` property highlighted:
+
+```yaml
+kafkaApi:
+ - port: 9092
+   tls:
+     enabled: true
+     // highlight-start
+     issuerRef:
+       name: <issuer_name>
+       kind: <issuer>
+     // highlight-end
+```
+
+The `issuerRef` property contains the following variables:
+
+| Variable | Description |
+| --- | --- |
+| `issuer_name` | Name of the issuer or cluster issuer. |
+| `issuer` | Kubernetes resource that represents a certificate authority. The value of this property can be `Issuer` or `ClusterIssuer`. If the `kind` property is not set, or if it is set to `Issuer`, an issuer with the name specified in the `name` property that exists in the same namespace as the certificate is used. |
+
+### Provide a certificate
+
+You can provide a certificate as a secret by adding the `nodeSecretRef` property to the cluster specification file that you created. For information about secrets, see the Kubernetes [Secrets](https://kubernetes.io/docs/concepts/configuration/secret/) documentation. The cert-manager [Certificate](https://cert-manager.io/docs/concepts/certificate/) documentation contains detailed information about certificates, including a diagram of the certificate lifecycle.
+
+You can provide a certificate for `kafkaAPI` or `schemaRegistry` in the same way. The example here is the `kafkaAPI` configuration with the `nodeSecretRef` property highlighted:
+
+```yaml
+kafkaApi:
+ - port: 9092
+   tls:
+     enabled: true
+     // highlight-start
+     nodeSecretRef:
+       name: <secret_name>
+       namespace: <secret_namespace>
+       // highlight-end
+```
+
+The `nodeSecretRef` property contains the following variables:
+
+| Variable | Description |
+| --- | --- |
+| `secret_name` | Name of the certificate secret. |
+| `secret_namespace` | Kubernetes namespace where the certificate secret is. If the secret is in a different namespace than the Redpanda cluster, the operator copies it to the namespace of the Redpanda cluster. |
+
+## Step 4: Create the Redpanda cluster
+
+After you configure the cluster specification file, run `kubectl apply` to create the cluster. You can run the command using a path to the cluster specification file on your local machine, or you can use the URL to the sample `tls.yaml` file.
+
+If you modified the file in the previous step, you have the file saved locally. To create the Redpanda cluster, run:
+
+```bash
+kubectl apply -f <cluster_specification.yaml>
+```
+
+If you did not modify the example file, you can use the URL to the example file in GitHub to create the cluster:
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/redpanda-data/redpanda-examples/main/docs/example-config/kubernetes/tls.yaml
+```
+
+## Step 5: Create the ConfigMap
+
+Create a YAML file to hold the configuration for TLS, including the location of the public certificate. In the next step, you create the Pod, which consumes this ConfigMap. This lets you run `rpk` commands with TLS.
+
+For detailed information, see the Kubernetes [ConfigMaps](https://kubernetes.io/docs/concepts/configuration/configmap/) documentation.
+
+1. Copy the text below and save it locally as a YAML file, such as `tls_config_map.yaml`.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: <ConfigMap_name>
+data:
+  redpanda.yaml: |
+    redpanda:
+    rpk:
+      kafka_api:
+      brokers:
+        - <cluster_name>-0.<cluster_name>.default.svc.cluster.local:9092
+      tls:
+        truststore_file: <truststore_file_path>/ca.crt
+```
+
+2. In the file that you just saved, configure these variables:
+
+  | Variable | Description |
+  | --- | --- |
+  | `ConfigMap_name` | Name of the ConfigMap. This can be any string. This is what you use to reference the ConfigMap in the next step when you configure the Pod. |
+  | `cluster_name` | Name of the Redpanda cluster that you defined in the cluster specification file. |
+  | `truststore_file_path` | Directory where you want to mount the `ca.crt` file. Generally this is `/etc/tls/certs/ca`. |
+
+3. Save the file.
+
+### External connectivity
+
+If you are configuring TLS with external connectivity, you must configure the brokers accordingly. Replace the `brokers` property in the example file with this:
+
+```yaml
+brokers:
+ - 0.<subdomain_name>.:<node_port>
+```
+
+Configure the following variables in the `brokers` property:
+
+| Variable | Description |
+| --- | --- |
+| `subdomain_name` | Name of the subdomain that you include in the cluster specification file in **Step 1**. |
+| `node_port` | Kafka API external port. Unless you include this in the cluster specification file, this port is autogenerated by Kubernetes. |
+
+## Step 6: Configure the Pod
+
+The Pod is the process that consumes the ConfigMap that you created in the previous step. This Pod runs the Redpanda image in order to run `rpk`, which is part of the Redpanda image.
+
+For detailed information about Pods, see the Kubernetes [Pods](https://kubernetes.io/docs/concepts/workloads/pods/) documentation.
+
+1. Copy the text below and save it locally as a YAML file, such as `tls_pod.yaml`.
+
+```yaml
+piVersion: v1
+kind: Pod
+metadata:
+  name: <pod_name>
+spec:
+  containers:
+    - name: rpk
+      image: 'vectorized/redpanda:<redpanda-version>'
+      command:
+        - /bin/bash
+        - '-c'
+      args:
+        - sleep infinity
+      volumeMounts:
+        - mountPath: <truststore_file_path>
+          name: <ca_volume_name>
+        - mountPath: /etc/redpanda
+          name: <rpk_volume_name>
+  restartPolicy: Never
+  volumes:
+    - name: <ca_volume_name>
+      secret:
+        secretName: <cluster_name>-redpanda
+    - name: <rpk_volume_name>
+      configMap:
+        name: <configMap_name>
+```
+
+2. In the file that you just saved, configure these variables:
+
+  | Variable | Description |
+  | --- | --- |
+  | `pod_name` | Name of the Pod. This is the Pod that runs `rpk`. This can be any string. |
+  | `args` | Specifies what you want the Pod to do. You can run `rpk` commands here. This example uses the `sleep infinity` argument, which tells the Pod to keep running so that you can run as many `rpk` commands as you want from the command line. |
+3. Configure the `volumeMounts` properties. There are two: one for `ca`, and one for `rpk`.
+    * `ca` - The path and the name of the `ca.crt` volume mount.
+
+        | Variable | Description |
+        | --- | --- |
+        | `truststore_file_path` | The same path that you specified in the `truststore_file_path` property in the ConfigMap. Generally this is `/etc/tls/certs/ca`. |
+        | `ca_volume_name` | This can be any string, but it must be the same as `ca_volume_name` in the `volume` property of this file. |
+    * `rpk` - The path and the name of the `rpk` volume mount.
+
+        | Variable | Description |
+        | --- | --- |
+        | `rpk_volume_name` | This can be any string, but it must be the same as `rpk_volume_name` in the `volume` property of this file. |
+4. Configure the `volume` properties. There are two: one for `ca`, and one for `rpk`.
+    * `ca` - The name and secret of the `ca.crt` volume mount.
+
+        | Variable | Description |
+        | --- | --- |
+        | `ca_volume_name` | This must be the same as the `ca_volume_name` in the `volumeMounts` property of this file. |
+        | `cluster_name` | Cluster name that you defined in the cluster specification file in **Step 1**. The `secretName` property specifies the name of the node secret. For the Kafka API, this is `<cluster_name>-redpanda`. |
+    * `rpk` - Volume name and ConfigMap name of the `rpk` volume mount.
+
+        | Variable | Description |
+        | --- | --- |
+        | `rpk_volume_name` | This must match the `<rpk_volume_name>` in the `volumeMounts` property of this file. |
+        | `configMap_name` | ConfigMap name that you specified in the `name` property of the ConfigMap in the previous step. |
+5. Configure the `<redpanda-version>` variable. Add a Redpanda version, such as `v21.11.11`. You can find all the Redpanda version tags in the [Redpanda Docker Hub repository](https://hub.docker.com/r/redpandadata/redpanda/tags?page=1&ordering=last_updated).
+6. Save the file.
+
+## Step 7: Create the Pod
+
+To create the pod, run:
+
+```bash
+kubectl apply -f <tls_pod.yaml>
+```
+
+## Step 8: Connect to Redpanda
+
+Now that you have TLS enabled and the Pod created, you can start using `rpk` to interact with Redpanda. Note that each time you run an `rpk` command, `rpk` establishes a connection and authenticates the server.
+
+1. To create a topic, run:
+
+```bash
+kubectl exec <pod_name> -- rpk topic create <topic_name>
+```
+
+Configure these variables:
+
+| Variable | Description |
+| --- | --- |
+| `pod_name` | Name of the Pod that you specified in the Pod configuration file. |
+| `topic_name` | Name of the topic that you're creating with this command. |
+
+2. To describe the topic, run:
+
+```bash
+kubectl exec <pod_name> -- rpk topic describe <topic_name>
+```
+
+:::note
+You don't need to specify the brokers in these commands, because they were defined in the ConfigMap. If you include brokers in the `rpk` commands, it overrides the brokers in the ConfigMap.
+:::
+
+## Step 9: Clean up
+
+You can use [rpk commands](../../rpk/rpk-topic) to start producing and consuming to your cluster.
+
+When you're ready to delete your cluster and configuration files, run:
+
+```bash
+kubectl delete -f <cluster_specification.yaml> -f <tls_config_map.yaml> -f <tls_pod.yaml>
+```
+
+---
+
+## Suggested reading
+
+- [Working with schema registry](../../../manage/schema-registry)
+- [Configuring TLS for Redpanda with rpk](https://redpanda.com/blog/tls-config/)

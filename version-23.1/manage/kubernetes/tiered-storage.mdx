@@ -1,0 +1,653 @@
+---
+title: Tiered Storage in Kubernetes
+tags:
+  - Kubernetes
+  - Helm configuration
+deployment: Kubernetes
+linkRoot: ../../../
+contextLinks:
+  - name: 'Linux'
+    to: 'manage/tiered-storage'
+  - name: 'Kubernetes'
+    to: manage/kubernetes/tiered-storage
+description: Configure your Redpanda cluster to offload log segments to object storage and save storage costs.
+---
+
+<head>
+    <meta name="title" content="Tiered Storage in Kubernetes | Redpanda Docs"/>
+    <meta name="description" content="Configure your Redpanda cluster to offload log segments to object storage and save storage costs."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/manage/kubernetes/tiered-storage/" />
+</head>
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import ValuesYaml from './shared/_values-yaml.mdx'
+import ClusterProperty from '../shared/tiered-storage/_cluster-props.mdx'
+import TunableClusterProperty from '../shared/tiered-storage/_tunable-cluster-props.mdx'
+import NodeProperty from '../shared/tiered-storage/_node-props.mdx'
+import EnterpriseLicenseNote from '@site/docs/shared/_enterprise-license.mdx'
+import AboutTieredStorage from '../shared/tiered-storage/_intro.mdx';
+import SetUp from '../../manage/shared/tiered-storage/_set-up.mdx';
+import Enable from '../../manage/shared/tiered-storage/_enable.mdx';
+import SetRetentionLimits from '../../manage/shared/tiered-storage/_set-retention-limits.mdx';
+import RemoteWrite from '../../manage/shared/tiered-storage/_remote-write.mdx';
+import IdleTimeout from '../../manage/shared/tiered-storage/_idle-timeout.mdx';
+import Reconciliation from '../../manage/shared/tiered-storage/_reconciliation.mdx';
+import UploadController from '../../manage/shared/tiered-storage/_upload-controller.mdx';
+import RemoteRead from '../../manage/shared/tiered-storage/_remote-read.mdx';
+import RemoteRecovery from '../../manage/shared/tiered-storage/_remote-recovery.mdx';
+import RetriesAndBackoff from '../../manage/shared/tiered-storage/_retries-and-backoff.mdx';
+import Transport from '../../manage/shared/tiered-storage/_transport.mdx';
+import CloudStorageHousekeeping from '../../manage/shared/tiered-storage/_cloud-storage-housekeeping.mdx';
+import AdjacentSegmentMerging from '../../manage/shared/tiered-storage/_adjacent-segment-merging.mdx';
+import ConfigurationProperties from '../../manage/shared/tiered-storage/_configuration-properties.mdx';
+import InitContainer from './shared/_initContainer.mdx'
+import KResetPropertyInfo from '../../manage/shared/tiered-storage/_k-reset-property-info.mdx'
+import AzureBlobLimitations from '../../manage/shared/tiered-storage/_azure-blob-limitations.mdx'
+
+import ContextLink from '@site/src/components/ContextButton.js'
+
+<ContextLink frontmatter={frontMatter}
+/>
+
+<AboutTieredStorage frontmatter={frontMatter}/>
+
+## Prerequisites
+
+<EnterpriseLicenseNote frontmatter={frontMatter}/>
+
+To check if you already have a license key applied to your cluster:
+
+```bash
+kubectl exec redpanda-0 -c redpanda -n redpanda -- rpk cluster license info
+```
+
+## Set up Tiered Storage
+
+<SetUp/>
+
+### Configure object storage
+
+Redpanda natively supports Tiered Storage with Amazon Simple Storage Service (S3), Google Cloud Storage (GCS, which uses the Google Cloud Platform S3 API), and Microsoft Azure Blob Storage (ABS). 
+
+:::info
+- Migrating topics from one object storage provider to another is not supported. 
+- Migrating topics from one bucket or container to another is not supported.
+:::
+
+<Tabs groupId="cloud-platform" queryString>
+<TabItem value="s3" label="Amazon S3" default>
+
+You can configure access to Amazon S3 with either an IAM role attached to the instance or with access keys.
+
+To configure access to an S3 bucket with an IAM role: 
+
+1. Configure an [IAM role](../../../manage/security/iam-roles/#configuring-iam-roles). 
+
+1. Override the following required cluster properties in the Helm chart:
+
+  Replace the following placeholders:
+
+    - `<region>`: The region of your S3 bucket.
+    - `<redpanda-bucket-name>`: The name of your S3 bucket.
+
+  <Tabs groupId="helm-config" queryString>
+  <TabItem value="values" label="--values">
+
+  ```yaml title="cloud-storage.yaml"
+  storage:
+    tieredConfig:
+      cloud_storage_enabled: true
+      cloud_storage_credentials_source: aws_instance_metadata
+      cloud_storage_region: <region>
+      cloud_storage_bucket: <redpanda-bucket-name>
+  ```
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values cloud-storage.yaml --reuse-values
+  ```
+
+  </TabItem>
+  <TabItem value="flags" label="--set">
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+    --set storage.tieredConfig.cloud_storage_enabled=true \
+    --set storage.tieredConfig.cloud_storage_credentials_source=aws_instance_metadata \
+    --set storage.tieredConfig.cloud_storage_region=<region> \
+    --set storage.tieredConfig.cloud_storage_bucket=<redpanda-bucket-name>
+  ```
+
+  </TabItem>
+  </Tabs>
+
+  <KResetPropertyInfo name="_k-reset-property-info.mdx" frontmatter={frontMatter}/>
+
+  :::note
+  <ValuesYaml path="storage.tieredConfig"/>
+  :::
+
+To configure access to an S3 bucket with access keys instead of an IAM role:
+
+1. Grant an IAM user the following permissions to read and create objects in your buckets:
+
+    - `GetObject`
+    - `DeleteObject`
+    - `PutObject`
+    - `PutObjectTagging`
+    - `ListBucket`
+
+1. Copy the access key and secret key for the `storage.tieredConfig.cloud_storage_access_key` and `storage.tieredConfig.cloud_storage_secret_key` cluster properties.
+1. Override the following required cluster properties in the Helm chart:
+
+  Replace the following placeholders:
+
+    - `<access-key>`: The access key for your S3 bucket.
+    - `<secret-key>`: The secret key for your S3 bucket.
+    - `<region>`: The region of your S3 bucket.
+    - `<redpanda-bucket-name>`: The name of your S3 bucket.
+
+  <Tabs groupId="helm-config" queryString>
+  <TabItem value="values" label="--values">
+
+  ```yaml title="cloud-storage.yaml"
+  storage:
+    tieredConfig:
+      cloud_storage_enabled: true
+      cloud_storage_credentials_source: config_file
+      cloud_storage_access_key: <access-key>
+      cloud_storage_secret_key: <secret-key>
+      cloud_storage_region: <region>
+      cloud_storage_bucket: <redpanda-bucket-name>
+  ```
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values cloud-storage.yaml --reuse-values
+  ```
+
+  </TabItem>
+  <TabItem value="flags" label="--set">
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+    --set storage.tieredConfig.cloud_storage_enabled=true \
+    --set storage.tieredConfig.cloud_storage_credentials_source=config_file \
+    --set storage.tieredConfig.cloud_storage_access_key=<access-key> \
+    --set storage.tieredConfig.cloud_storage_secret_key=<secret-key> \
+    --set storage.tieredConfig.cloud_storage_region=<region> \
+    --set storage.tieredConfig.cloud_storage_bucket=<redpanda_bucket_name>
+  ```
+
+  </TabItem>
+  </Tabs>
+
+  <KResetPropertyInfo name="_k-reset-property-info.mdx" frontmatter={frontMatter}/>
+
+  :::note
+  <ValuesYaml path="storage.tieredConfig"/>
+  :::
+
+</TabItem>
+<TabItem value="gcs" label="Google Cloud Storage">
+
+You can configure access to Google Cloud Storage with either an IAM role attached to the instance or with access keys.
+
+To configure access to Google Cloud Storage with an IAM role: 
+
+1. Configure an [IAM role](../../../manage/security/iam-roles/#configuring-iam-roles). 
+
+1. Override the following required cluster properties in the Helm chart:
+
+  Replace the following placeholders:
+
+    - `<region>`: The region of your bucket.
+    - `<redpanda-bucket-name>`: The name of your bucket.
+
+  <Tabs groupId="helm-config" queryString>
+  <TabItem value="values" label="--values">
+
+  ```yaml title="cloud-storage.yaml"
+  storage:
+    tieredConfig:
+      cloud_storage_enabled: true
+      cloud_storage_credentials_source: gcp_instance_metadata
+      cloud_storage_region: <region>
+      cloud_storage_bucket: <redpanda-bucket-name>
+  ```
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values cloud-storage.yaml --reuse-values
+  ```
+
+  </TabItem>
+  <TabItem value="flags" label="--set">
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+    --set storage.tieredConfig.cloud_storage_enabled=true \
+    --set storage.tieredConfig.cloud_storage_credentials_source=aws_instance_metadata \
+    --set storage.tieredConfig.cloud_storage_region=<region> \
+    --set storage.tieredConfig.cloud_storage_bucket=<redpanda-bucket-name>
+  ```
+
+  </TabItem>
+  </Tabs>
+
+  <KResetPropertyInfo name="_k-reset-property-info.mdx" frontmatter={frontMatter}/>
+
+  :::note
+  <ValuesYaml path="storage.tieredConfig"/>
+  :::
+
+To configure access to Google Cloud Storage with access keys instead of an IAM role:
+
+1. Choose a uniform access control when you create the bucket. 
+2. Use a Google-managed encryption key. 
+3. Set a [default project](https://cloud.google.com/storage/docs/migrating#defaultproj). 
+4. Create a service user with [HMAC keys](https://cloud.google.com/storage/docs/authentication/managing-hmackeys) and copy the access key and secret key for the `cloud_storage_access_key` and `cloud_storage_secret_key` properties.
+1. Override the following required cluster properties in the Helm chart:
+
+  Replace the following placeholders:
+
+    - `<access-key>`: The access key for your bucket.
+    - `<secret-key>`: The secret key for your bucket.
+    - `<region>`: The region of your bucket.
+    - `<redpanda-bucket-name>`: The name of your bucket.
+
+  <Tabs groupId="helm-config" queryString>
+  <TabItem value="values" label="--values">
+
+  ```yaml title="cloud-storage.yaml"
+  storage:
+    tieredConfig:
+      cloud_storage_enabled: true
+      cloud_storage_credentials_source: config_file
+      cloud_storage_api_endpoint: storage.googleapis.com
+      cloud_storage_access_key: <access-key>
+      cloud_storage_secret_key: <secret-key>
+      cloud_storage_region: <region>
+      cloud_storage_bucket: <redpanda-bucket-name>
+  ```
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values cloud-storage.yaml --reuse-values
+  ```
+
+  </TabItem>
+  <TabItem value="flags" label="--set">
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+    --set storage.tieredConfig.cloud_storage_enabled=true \
+    --set storage.tieredConfig.cloud_storage_credentials_source=config_file \
+    --set storage.tieredConfig.cloud_storage_api_endpoint=storage.googleapis.com \
+    --set storage.tieredConfig.cloud_storage_access_key=<access-key> \
+    --set storage.tieredConfig.cloud_storage_secret_key=<secret-key> \
+    --set storage.tieredConfig.cloud_storage_region=<region> \
+    --set storage.tieredConfig.cloud_storage_bucket=<redpanda_bucket_name>
+  ```
+
+  </TabItem>
+  </Tabs>
+
+  <KResetPropertyInfo name="_k-reset-property-info.mdx" frontmatter={frontMatter}/>
+
+  :::note
+  <ValuesYaml path="storage.tieredConfig"/>
+  :::
+
+</TabItem>
+<TabItem value="azure" label="Azure Blob Storage" default>
+<AzureBlobLimitations/>
+
+To configure access to Azure Blob Storage, use shared keys:
+
+1. Copy an account access key for the Azure container you want Redpanda to use and enter it in the `cloud_storage_azure_shared_key` property. For information on how to view your account access keys, see the [Azure documentation](https://learn.microsoft.com/en-us/azure/storage/common/storage-account-keys-manage?toc=%2Fazure%2Fstorage%2Fblobs%2Ftoc.json&bc=%2Fazure%2Fstorage%2Fblobs%2Fbreadcrumb%2Ftoc.json&tabs=azure-portal#view-account-access-keys). 
+1. Override the following required cluster properties in the Helm chart:
+
+  Replace the following placeholders:
+
+    - `<access-key>`: The access key for your Azure account.
+    - `<account-name>`: The name of your Azure account.
+    - `<container-name>`: The name of the Azure container in your Azure account.
+
+  <Tabs groupId="helm-config" queryString>
+  <TabItem value="values" label="--values">
+
+  ```yaml title="cloud-storage.yaml"
+  storage:
+    tieredConfig:
+      cloud_storage_enabled: true
+      cloud_storage_azure_shared_key: <access_key>
+      cloud_storage_azure_storage_account: <account-name>
+      cloud_storage_azure_container: <container-name>
+  ```
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values cloud-storage.yaml --reuse-values
+  ```
+
+  </TabItem>
+  <TabItem value="flags" label="--set">
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+    --set storage.tieredConfig.cloud_storage_enabled=true \
+    --set storage.tieredConfig.cloud_storage_azure_shared_key=<access_key> \
+    --set storage.tieredConfig.cloud_storage_azure_storage_account=<account-name> \
+    --set storage.tieredConfig.cloud_storage_azure_container=<container-name>
+  ```
+
+  </TabItem>
+  </Tabs>
+
+  <KResetPropertyInfo name="_k-reset-property-info.mdx" frontmatter={frontMatter}/>
+
+  :::note
+  <ValuesYaml path="storage.tieredConfig"/>
+  :::
+  
+  
+- For information about how to grant access from an internet IP range (if you need to open additional routes/ports between your broker nodes and Azure Blob Storage; for example, in a hybrid cloud deployment), see the [Microsoft documentation](https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security?toc=%2Fazure%2Fstorage%2Fblobs%2Ftoc.json&bc=%2Fazure%2Fstorage%2Fblobs%2Fbreadcrumb%2Ftoc.json&tabs=azure-portal#grant-access-from-an-internet-ip-range).
+
+- For more information about shared key authentication, see the [Microsoft documentation](https://learn.microsoft.com/en-us/rest/api/storageservices/authorize-with-shared-key).
+
+</TabItem>
+</Tabs>
+
+For additional properties, see [Tiered Storage configuration properties](#tiered-storage-configuration-properties)
+
+### Enable Tiered Storage
+
+<Enable frontmatter={frontMatter}/>
+
+### Set retention limits
+
+<SetRetentionLimits frontmatter={frontMatter}/>
+
+## Remote write
+
+<RemoteWrite frontmatter={frontMatter}/>
+
+### Idle timeout
+
+<IdleTimeout frontmatter={frontMatter}/>
+
+### Reconciliation 
+
+<Reconciliation frontmatter={frontMatter}/>
+
+### Upload controller
+
+<UploadController frontmatter={frontMatter}/>
+
+## Remote read
+
+<RemoteRead frontmatter={frontMatter}/>
+
+### Caching 
+
+When the Kafka client fetches an offset range that isn’t available locally in the Redpanda data directory, Redpanda downloads remote segments from object storage. These downloaded segments are stored in the object storage cache.
+
+By default the cache directory is stored in an emptyDir volume in the `<redpanda_data_directory>/cloud_storage_cache` directory. You can configure the Helm chart to store the cache directory in any other volume. For example, you might want to store the cache directory in a dedicated volume with cheaper storage. 
+
+Use the <NodeProperty name="cloud_storage_cache_directory" frontmatter={frontMatter}/> property to specify a different location in the volume for the cache directory. You must specify the full path.
+
+To specify a different volume for the cache directory, use one of the following:
+
+<Tabs groupId="volumes" queryString>
+<TabItem value="persistentvolume" label="PersistentVolume">
+
+A PersistentVolume is storage in the cluster that has been provisioned by an administrator or dynamically provisioned using StorageClasses.
+For details about PersistentVolumes, see the [Kubernetes documentation](https://kubernetes.io/docs/concepts/storage/persistent-volumes/).
+
+You can configure the Helm chart to use a PersistentVolume for the cache directory with either a static provisioner or a dynamic provisioner.
+
+<Tabs groupId="provisioners" queryString>
+<TabItem value="dynamic" label="Dynamic provisioners">
+
+A dynamic provisioner creates a PersistentVolume on demand for each Redpanda broker.
+
+Managed Kubernetes platforms and cloud environments usually provide a dynamic provisioner.
+If you are running Kubernetes on-premises, make sure that you have a dynamic provisioner for your storage type.
+
+1. Make sure that you have at least one StorageClass in the cluster:
+
+  ```bash
+  kubectl get storageclass
+  ```
+
+  <details>
+  <summary>
+  Example output
+  </summary>
+
+  In a Google GKE cluster, this is the result:
+
+  ```
+  NAME                 PROVISIONER            AGE
+  standard (default)   kubernetes.io/gce-pd   1d
+  ```
+
+  This StorageClass is marked as the default, which means that this class is used to provision a PersistentVolume when the PersistentVolumeClaim doesn’t specify the StorageClass.
+
+  </details>
+
+1. Configure the Helm chart with your StorageClass:
+
+    - To use your Kubernetes cluster's default StorageClass, set `storage.persistentVolume.storageClass` to an empty string (`""`):
+
+      <Tabs groupId="helm-config">
+      <TabItem value="values" label="--values">
+
+      ```yaml title="storageclass.yaml"
+      storage:
+        tieredStoragePersistentVolume:
+          enabled: true
+          storageClass: ""
+        tieredConfig:
+          cloud_storage_cache_size: <max-size-for-volume>
+          cloud_storage_cache_directory: <custom-cache-directory>
+      ```
+
+      ```bash
+      helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+        --values storageclass.yaml --reuse-values
+      ```
+
+      </TabItem>
+      <TabItem value="flags" label="--set">
+
+      ```bash
+      helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+        --set storage.tieredStoragePersistentVolume.enabled=true \
+        --set storage.tieredStoragePersistentVolume.storageClass="" \
+        --set storage.tieredConfig.cloud_storage_cache_size=<max-size-for-volume> \
+        --set storage.tieredConfig.cloud_storage_cache_directory=<custom-cache-directory>
+      ```
+
+      </TabItem>
+      </Tabs>
+
+    - To use a specific StorageClass, set its name in the `storage.tieredStoragePersistentVolume.storageClass` configuration:
+
+      <Tabs groupId="helm-config">
+      <TabItem value="values" label="--values">
+
+      ```yaml title="storageclass.yaml"
+      storage:
+        tieredStoragePersistentVolume:
+          enabled: true
+          storageClass: "<storage-class>"
+        tieredConfig:
+          cloud_storage_cache_size: <max-size-for-volume>
+          cloud_storage_cache_directory: <custom-cache-directory>
+      ```
+
+      ```bash
+      helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+        --values storageclass.yaml --reuse-values
+      ```
+
+      </TabItem>
+      <TabItem value="flags" label="--set">
+
+      ```bash
+      helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+        --set storage.tieredStoragePersistentVolume.enabled=true \
+        --set storage.tieredStoragePersistentVolume.storageClass="<storage-class>" \
+        --set storage.tieredConfig.cloud_storage_cache_size=<max-size-for-volume> \
+        --set storage.tieredConfig.cloud_storage_cache_directory=<custom-cache-directory>
+      ```
+
+      </TabItem>
+      </Tabs>
+
+  :::note
+  <ValuesYaml path="storage.tieredStoragePersistentVolume"/>
+  :::
+
+</TabItem>
+<TabItem value="static" label="Static provisioners">
+
+When you use a static provisioner, an existing PersistentVolume in the cluster is selected and bound to one PersistentVolumeClaim for each Redpanda broker.
+
+1. Create one PersistentVolume for each Redpanda broker. Make sure to create PersistentVolumes with a capacity of at least the value of the `storage.tieredConfig.cloud_storage_cache_size` configuration.
+
+1. Set the `storage.tieredStoragePersistentVolume.storageClass` to a dash (`"-"`) to use a PersistentVolume with a static provisioner:
+
+  <Tabs groupId="helm-config">
+  <TabItem value="values" label="--values">
+
+  ```yaml title="storageclass.yaml"
+  storage:
+    tieredStoragePersistentVolume:
+      enabled: true
+      storageClass: "-"
+    tieredConfig:
+      cloud_storage_cache_size: <max-size-for-volume>
+      cloud_storage_cache_directory: <custom-cache-directory>
+  ```
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+    --values storageclass.yaml --reuse-values
+  ```
+
+  </TabItem>
+  <TabItem value="flags" label="--set">
+
+  ```bash
+  helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+    --set storage.tieredStoragePersistentVolume.enabled=true \
+    --set storage.tieredStoragePersistentVolume.storageClass="-" \
+    --set storage.tieredConfig.cloud_storage_cache_size=<max-size-for-volume> \
+    --set storage.tieredConfig.cloud_storage_cache_directory=<custom-cache-directory>
+  ```
+
+  </TabItem>
+  </Tabs>
+
+  <KResetPropertyInfo name="_k-reset-property-info.mdx" frontmatter={frontMatter}/>
+
+  :::note
+  <ValuesYaml path="storage.tieredStoragePersistentVolume"/>
+  :::
+
+</TabItem>
+</Tabs>
+
+</TabItem>
+<TabItem value="hostpath" label="hostPath">
+
+A hostPath volume mounts a file or directory from the host node's file system into your Pod.
+For details about hostPath volumes, see the [Kubernetes documentation](https://kubernetes.io/docs/concepts/storage/volumes/#hostpath).
+
+To use a hostPath volume for the cache directory:
+
+1. Set the `storage.tieredStorageHostPath` configuration to the absolute path of a file on the local worker node.
+1. Set `storage.tieredStoragePersistentVolume.enabled` to `false`.
+1. Set `statefulset.initContainers.setDataDirOwnership.enabled` to `true`.
+
+<InitContainer/>
+
+<Tabs groupId="helm-config">
+<TabItem value="values" label="--values">
+
+```yaml title="hostpath.yaml"
+storage:
+  tieredStorageHostPath: "<absolute-path>"
+  tieredStoragePersistentVolume:
+    enabled: false
+  tieredConfig:
+    cloud_storage_cache_size: <max-size-for-volume>
+    cloud_storage_cache_directory: <custom-cache-directory>
+```
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values hostpath.yaml --reuse-values
+```
+
+</TabItem>
+<TabItem value="flags" label="--set">
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --set storage.tieredStoragePersistentVolume.enabled=false \
+  --set storage.tieredStorageHostPath=<absolute-path>
+  --set storage.tieredConfig.cloud_storage_cache_size=<max-size-for-volume> \
+  --set storage.tieredConfig.cloud_storage_cache_directory=<custom-cache-directory>
+```
+
+</TabItem>
+</Tabs>
+
+<KResetPropertyInfo name="_k-reset-property-info.mdx" frontmatter={frontMatter}/>
+
+:::note
+<ValuesYaml path="storage.tieredStorageHostPath"/>
+:::
+
+</TabItem>
+</Tabs>
+
+Redpanda checks the cache periodically, and if the size of the stored data is larger than the configured limit, the eviction process starts. The eviction process removes segments that haven’t been accessed recently, until the size of the cache drops 20%. 
+
+Use the following cluster-level properties to set the maximum cache size and cache check interval:
+
+- <ClusterProperty name="cloud_storage_cache_size" frontmatter={frontMatter}/>
+- <TunableClusterProperty name="cloud_storage_cache_check_interval" frontmatter={frontMatter}/>
+
+## Disaster recovery 
+
+<RemoteRecovery frontmatter={frontMatter}/>
+
+## Retries and backoff 
+
+<RetriesAndBackoff frontmatter={frontMatter}/>
+
+## Transport 
+
+<Transport frontmatter={frontMatter}/>
+
+## Object storage housekeeping
+
+<CloudStorageHousekeeping frontmatter={frontMatter}/>
+
+### Adjacent segment merging
+
+<AdjacentSegmentMerging frontmatter={frontMatter}/>
+
+## Tiered Storage configuration properties
+
+<ConfigurationProperties frontmatter={frontMatter}/>
+
+## Suggested reading
+
+- [How we built Shadow Indexing, the subsystem powering Tiered Storage](https://redpanda.com/blog/tiered-storage-architecture-shadow-indexing-deep-dive/)

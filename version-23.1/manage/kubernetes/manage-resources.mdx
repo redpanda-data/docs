@@ -1,0 +1,172 @@
+---
+title: Manage Pod Resources in Kubernetes
+tags:
+  - Kubernetes
+  - Helm configuration
+description: Configure your Pod resources such as memory, CPU, and storage.
+---
+
+<head>
+    <meta name="title" content="Manage Pod Resources in Kubernetes | Redpanda Docs"/>
+    <meta name="description" content="Configure your Pod resources such as memory, CPU, and storage."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/manage/kubernetes/manage-resources/" />
+</head>
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import ValuesYaml from './shared/_values-yaml.mdx'
+
+The Redpanda Helm chart allows you to define resource requirements for CPU, memory, and storage. Redpanda recommends that you determine and set these values before deploying the cluster, but you can also update the values on a running cluster.
+
+:::info
+In a running Redpanda cluster, you cannot decrease the number of CPU cores. You can only increase the number of CPU cores.
+:::
+
+To see the available resources on the worker nodes that you have provisioned:
+
+```bash
+kubectl describe nodes
+```
+
+## Prerequisites
+
+If you're deploying to production, see the [production best practices](../../../deploy/deployment-option/self-hosted/kubernetes/kubernetes-best-practices) for memory, CPU, and storage volumes.
+
+Make sure that your physical or virtual machines have enough resources to give to Redpanda. You assign resources to each Redpanda broker using the `values.yaml` settings. If you need to replace a worker node with one that has more resources, [decommission the brokers](../decommission-brokers) before you replace the worker nodes.
+
+## Configure CPU resources
+
+By default, Redpanda pins its threads to all cores that you allocate to it. The more cores that are allocate to Redpanda, the more throughput it can support. You can configure the CPU resources allocated to each Redpanda broker by overriding the default values in the Helm chart. For a description of CPU resource units, see the [Kubernetes documentation](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#meaning-of-cpu).
+
+<Tabs groupId="helm-config" queryString>
+<TabItem value="values" label="--values">
+
+```yaml title="cpu-cores.yaml"
+resources:
+  cpu:
+    cores: <number-of-cpu-cores>
+```
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values cpu-cores.yaml --reuse-values
+```
+
+</TabItem>
+<TabItem value="flags" label="--set">
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --set resources.cpu.cores=<number-of-cpu-cores>
+```
+
+</TabItem>
+</Tabs>
+
+:::info
+You cannot decrease the number of CPU cores in a running cluster.
+:::
+
+:::tip
+
+If you're experimenting with Redpanda in Kubernetes, you can set the number of CPU cores to millicores, which represent fractions of CPU time.
+
+```yaml title="cpu-cores.yaml"
+resources:
+  cpu:
+    cores: 200m
+```
+
+:::
+
+### Disable pinning in shared environments
+
+By default, Redpanda pins its threads to all cores that you allocate to it. 
+On a dedicated worker node, CPU pinning allows maximum throughput, but in a development environment, where you may run other Pods on the same worker node as Redpanda, CPU pinning can cause your processes to run slower than usual. In these shared environments, you can tell Redpanda not to pin its threads or memory, and reduce the amount of polling it does to a minimum.
+
+:::note
+In production environments, you must run Redpanda brokers on dedicated worker nodes. See [Kubernetes Cluster Requirements](../../../deploy/deployment-option/self-hosted/kubernetes/kubernetes-cluster-requirements).
+:::
+
+<Tabs groupId="helm-config" queryString>
+<TabItem value="values" label="--values">
+
+```yaml title="cpu-cores-overprovisioned.yaml"
+resources:
+  cpu:
+    cores: <number-of-cpu-cores>
+    overprovisioned: true
+```
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values cpu-cores-overprovisioned.yaml --reuse-values
+```
+
+</TabItem>
+<TabItem value="flags" label="--set">
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --set resources.cpu.cores=<number-of-cpu-cores> \
+  --set resources.cpu.overprovisioned=true
+```
+
+</TabItem>
+</Tabs>
+
+:::note
+<ValuesYaml path="resources.cpu"/>
+:::
+
+## Configure memory resources
+
+On a worker node, Kubernetes processes and Redpanda processes are running at the same time, including the Seastar subsystem that is built into the Redpanda binary. Each of these processes consumes memory. You can configure the memory resources that are allocated to these processes.
+
+By default, the Helm chart allocates 80% of the configured memory to Redpanda, leaving the rest for the Seastar subsystem and other container processes. Redpanda recommends this default setting.
+
+:::note
+Although you can also allocate the exact amount of memory for Redpanda and the Seastar subsystem manually, Redpanda does not recommend this approach because setting the wrong values can lead to performance issues, instability, or data loss. As a result, this approach is not documented here.
+:::
+
+Redpanda supports the following memory resource units: B, K, M, G, Ki, Mi, and Gi. Memory units are converted to the nearest whole MiB. For a description of memory resource units, see the [Kubernetes documentation](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#meaning-of-memory).
+
+<Tabs groupId="helm-config" queryString>
+<TabItem value="values" label="--values">
+
+```yaml title="memory.yaml"
+resources:
+  memory:
+    container:
+      # Omit min to set it to the same value as max.
+      # min:
+      max: <number><unit>
+```
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --values memory.yaml --reuse-values
+```
+
+</TabItem>
+<TabItem value="flags" label="--set">
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \
+  --set resources.memory.container.max=<number><unit>
+```
+
+</TabItem>
+</Tabs>
+
+:::note
+<ValuesYaml path="resources.memory"/>
+:::
+
+## Configure storage capacity
+
+Make sure to provision enough disk storage for your streaming workloads.
+
+If you use PersistentVolumes, you can set the storage capacity for each volume in the Helm chart's values.
+
+For instructions, see [Configure Storage](../configure-storage).

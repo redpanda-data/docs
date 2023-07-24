@@ -1,0 +1,446 @@
+---
+title: Deploy a Redpanda Cluster in Amazon Elastic Kubernetes Service
+---
+
+<head>
+    <meta name="title" content="Deploy a Redpanda Cluster in Amazon Elastic Kubernetes Service | Redpanda Docs"/>
+    <meta name="description" content="Deploy a secure Redpanda cluster and Redpanda Console in Amazon Elastic Kubernetes Service (EKS) using the Helm chart."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/deploy/deployment-option/self-hosted/kubernetes/eks-guide/" />
+</head>
+
+import Versions from '../../../../shared/_versions.mdx'
+import OperatorNote from "./shared/guides/_operator-note.mdx"
+import DeployRedpanda from "./shared/guides/_deploy-redpanda.mdx"
+import CreateUser from "./shared/guides/_create-user.mdx"
+import StartStreaming from "./shared/guides/_start-streaming.mdx"
+import ExploreTopics from "./shared/guides/_explore-topics-localhost.mdx"
+import ExternalAccessIntro from "./shared/guides/_external-access-intro.mdx"
+import ExternalAccessSteps from "./shared/guides/_external-access-steps.mdx"
+import DefaultComponents from "./shared/_default-components.mdx"
+import NextSteps from "./shared/guides/_next-steps.mdx"
+import SuggestedReading from "./shared/guides/_suggested-reading.mdx"
+
+
+Deploy a secure Redpanda cluster and Redpanda Console in Amazon Elastic Kubernetes Service (EKS) using the Helm chart.
+Then, use rpk both as an internal client and an external client to interact with your Redpanda cluster from the command line.
+
+The Redpanda cluster has the following security features:
+
+- SASL for authenticating users' connections.
+- TLS with self-signed certificates for secure communication between the cluster and clients.
+
+<OperatorNote/>
+
+## Prerequisites
+
+Before you begin, you must have the following prerequisites.
+
+:::info
+Make sure that you meet all the prerequisites before continuing.
+:::
+
+### IAM user
+
+You need an IAM user with at least the following policies:
+
+  <details>
+  <summary>
+  Policies
+  </summary>
+
+  Replace `<account-id>` with your own [account ID](https://console.aws.amazon.com/iamv2/home).
+
+  ```json title="AmazonEC2FullAccess"
+  {
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Action": "ec2:*",
+              "Effect": "Allow",
+              "Resource": "*"
+          },
+          {
+              "Effect": "Allow",
+              "Action": "elasticloadbalancing:*",
+              "Resource": "*"
+          },
+          {
+              "Effect": "Allow",
+              "Action": "cloudwatch:*",
+              "Resource": "*"
+          },
+          {
+              "Effect": "Allow",
+              "Action": "autoscaling:*",
+              "Resource": "*"
+          },
+          {
+              "Effect": "Allow",
+              "Action": "iam:CreateServiceLinkedRole",
+              "Resource": "*",
+              "Condition": {
+                  "StringEquals": {
+                      "iam:AWSServiceName": [
+                          "autoscaling.amazonaws.com",
+                          "ec2scheduled.amazonaws.com",
+                          "elasticloadbalancing.amazonaws.com",
+                          "spot.amazonaws.com",
+                          "spotfleet.amazonaws.com",
+                          "transitgateway.amazonaws.com"
+                      ]
+                  }
+              }
+          }
+      ]
+  }
+  ```
+
+  ```json title="AWSCloudFormationFullAccess"
+  {
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Effect": "Allow",
+              "Action": [
+                  "cloudformation:*"
+              ],
+              "Resource": "*"
+          }
+      ]
+  }
+  ```
+
+  ```json title="EksAllAccess"
+  {
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Effect": "Allow",
+              "Action": "eks:*",
+              "Resource": "*"
+          },
+          {
+              "Action": [
+                  "ssm:GetParameter",
+                  "ssm:GetParameters"
+              ],
+              "Resource": [
+                  "arn:aws:ssm:*:<account-id>:parameter/aws/*",
+                  "arn:aws:ssm:*::parameter/aws/*"
+              ],
+              "Effect": "Allow"
+          },
+          {
+              "Action": [
+                "kms:CreateGrant",
+                "kms:DescribeKey"
+              ],
+              "Resource": "*",
+              "Effect": "Allow"
+          },
+          {
+              "Action": [
+                "logs:PutRetentionPolicy"
+              ],
+              "Resource": "*",
+              "Effect": "Allow"
+          }
+      ]
+  }
+  ```
+
+  ```json title="IamLimitedAccess"
+  {
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Effect": "Allow",
+              "Action": [
+                  "iam:CreateInstanceProfile",
+                  "iam:DeleteInstanceProfile",
+                  "iam:GetInstanceProfile",
+                  "iam:RemoveRoleFromInstanceProfile",
+                  "iam:GetRole",
+                  "iam:CreateRole",
+                  "iam:DeleteRole",
+                  "iam:AttachRolePolicy",
+                  "iam:PutRolePolicy",
+                  "iam:ListInstanceProfiles",
+                  "iam:AddRoleToInstanceProfile",
+                  "iam:ListInstanceProfilesForRole",
+                  "iam:PassRole",
+                  "iam:DetachRolePolicy",
+                  "iam:DeleteRolePolicy",
+                  "iam:GetRolePolicy",
+                  "iam:GetOpenIDConnectProvider",
+                  "iam:CreateOpenIDConnectProvider",
+                  "iam:DeleteOpenIDConnectProvider",
+                  "iam:TagOpenIDConnectProvider",
+                  "iam:ListAttachedRolePolicies",
+                  "iam:TagRole",
+                  "iam:GetPolicy",
+                  "iam:CreatePolicy",
+                  "iam:DeletePolicy",
+                  "iam:ListPolicyVersions"
+              ],
+              "Resource": [
+                  "arn:aws:iam::<account-id>:instance-profile/eksctl-*",
+                  "arn:aws:iam::<account-id>:role/eksctl-*",
+                  "arn:aws:iam::<account-id>:policy/eksctl-*",
+                  "arn:aws:iam::<account-id>:oidc-provider/*",
+                  "arn:aws:iam::<account-id>:role/aws-service-role/eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup",
+                  "arn:aws:iam::<account-id>:role/eksctl-managed-*",
+                  "arn:aws:iam::<account-id>:role/AmazonEKS_EBS_CSI_DriverRole"
+              ]
+          },
+          {
+              "Effect": "Allow",
+              "Action": [
+                  "iam:GetRole"
+              ],
+              "Resource": [
+                  "arn:aws:iam::<account-id>:role/*"
+              ]
+          },
+          {
+              "Effect": "Allow",
+              "Action": [
+                  "iam:CreateServiceLinkedRole"
+              ],
+              "Resource": "*",
+              "Condition": {
+                  "StringEquals": {
+                      "iam:AWSServiceName": [
+                          "eks.amazonaws.com",
+                          "eks-nodegroup.amazonaws.com",
+                          "eks-fargate.amazonaws.com"
+                      ]
+                  }
+              }
+          }
+      ]
+  }
+  ```
+  </details>
+
+See the AWS documentation for help [creating IAM users](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_create.html) or for help [troubleshooting IAM](https://docs.aws.amazon.com/IAM/latest/UserGuide/troubleshoot.html).
+
+### AWS CLI
+
+This guide uses the AWS CLI to get your AWS account ID and to configure `kubeconfig`.
+
+[Install the AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html). After you've installed the AWS CLI, make sure to [configure it](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-quickstart.html) with credentials for your IAM user.
+
+:::note
+If your account uses an identity provider in the IAM Identity Center (previously [AWS SSO](https://aws.amazon.com/about-aws/whats-new/2022/07/aws-single-sign-on-aws-sso-now-aws-iam-identity-center/)), [authenticate with the IAM Identity Center](https://docs.aws.amazon.com/cli/latest/userguide/sso-configure-profile-token.html) (`aws sso login`).
+:::
+
+For troubleshooting, see the [AWS CLI documentation](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html#install-tshoot).
+
+### eksctl
+
+This guide uses `eksctl` to create an EKS cluster. [Install `eksctl`](https://docs.aws.amazon.com/eks/latest/userguide/eksctl.html).
+
+### jq
+
+This guide uses jq to parse JSON results and store the value in environment variables. [Install jq](https://stedolan.github.io/jq/download/).
+
+### kubectl
+
+You must have `kubectl` with the following minimum required Kubernetes version: <Versions name="kubernetes"/>
+
+[Install `kubectl`](https://docs.aws.amazon.com/eks/latest/userguide/install-kubectl.html).
+
+To check if you have `kubectl` installed:
+
+```bash
+kubectl version --short --client
+```
+
+### Helm
+
+You must have the following minimum required Helm version: <Versions name="helm"/>
+
+[Install Helm](https://helm.sh/docs/intro/install/).
+
+To check if you have Helm installed:
+
+```bash
+helm version
+```
+
+## Create an EKS cluster
+
+In this step, you create three worker nodes (one worker node for each Redpanda broker).
+
+:::info
+Each Redpanda broker must run on its own worker node. As a result, the Helm chart configures `podAntiAffinity` rules to make sure that only one Redpanda broker Pod is scheduled on each worker node. For more information, see [Kubernetes Cluster Requirements](../kubernetes-cluster-requirements#number-of-worker-nodes).
+:::
+
+You also configure your EKS cluster to allow external access to the node ports on which the Redpanda deployment will be exposed. You'll use these node ports in later steps to configure external access to your Redpanda cluster.
+
+1. Create an EKS cluster in your default region and give it a unique name:
+
+  ```bash
+  eksctl create cluster --name <cluster-name> \
+      --external-dns-access \
+      --nodegroup-name standard-workers \
+      --node-type m5.xlarge \
+      --nodes 3 \
+      --nodes-min 3 \
+      --nodes-max 4
+  ```
+
+  If your account is configured for OIDC, add the `--with-oidc` flag to the `create cluster` command:
+
+  ```bash
+  eksctl create cluster --with-oidc --name <cluster-name> \
+      --external-dns-access \
+      --nodegroup-name standard-workers \
+      --node-type m5.xlarge \
+      --nodes 3 \
+      --nodes-min 3 \
+      --nodes-max 4
+  ```
+
+  :::tip
+  To see all options that you can specify when creating a cluster, use the following command:
+
+  ```bash
+  eksctl create cluster --help
+  ```
+
+  Or, for help creating an EKS cluster, see the [EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/create-cluster.html).
+  :::
+
+1. Make sure that your local `kubeconfig` file points to your EKS cluster:
+
+  ```bash
+  kubectl get service
+  ```
+
+  You should see the a ClusterIP Service called `kubernetes`.
+
+  If the `kubectl` command cannot connect to your cluster, update your local `kubeconfig` file to point to your EKS cluster.
+
+  Your default region is located in the `~/.aws/credentials` file.
+
+  ```bash
+  aws eks update-kubeconfig --region <region> --name <cluster-name>
+  ```
+
+1. Create the IAM role needed for the Amazon Elastic Block Store (EBS) Cluster Storage Interface (CSI):
+
+  ```bash
+  eksctl create iamserviceaccount \
+      `# Do not change the name. It is required by EKS.` \
+      --name ebs-csi-controller-sa \
+      `# Do not change the namespace. It is required by EKS.` \
+      --namespace kube-system \
+      --cluster <cluster-name> \
+      --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+      --approve \
+      --role-only \
+      --role-name AmazonEKS_EBS_CSI_DriverRole-<cluster-name>
+  ```
+
+1. Get your AWS account ID:
+
+  ```bash
+  AWS_ACCOUNT_ID=`aws sts get-caller-identity | jq -r '.Account'`
+  ```
+
+1. Add the EBS CSI add-on:
+
+  ```bash
+  eksctl create addon \
+      --name aws-ebs-csi-driver \
+      --cluster <cluster-name> \
+      --service-account-role-arn arn:aws:iam::${AWS_ACCOUNT_ID}:role/AmazonEKS_EBS_CSI_DriverRole-<cluster-name> \
+      --force
+  ```
+
+1. Get the ID of the security group associated with the nodes in your EKS cluster:
+
+  ```bash
+  AWS_SECURITY_GROUP_ID=`aws eks describe-cluster --name <cluster-name> | jq -r '.cluster.resourcesVpcConfig.clusterSecurityGroupId'`
+  ```
+
+1. Add inbound firewall rules to your EC2 instances so that external traffic can reach the node ports exposed on all Kubernetes worker nodes in the cluster:
+
+  ```bash
+  aws ec2 authorize-security-group-ingress \
+    --group-id ${AWS_SECURITY_GROUP_ID} \
+    --ip-permissions "[ \
+                        { \
+                          \"IpProtocol\": \"tcp\", \
+                          \"FromPort\": 30081, \
+                          \"ToPort\": 30081, \
+                          \"IpRanges\": [{\"CidrIp\": \"0.0.0.0/0\"}] \
+                        }, \
+                        { \
+                          \"IpProtocol\": \"tcp\", \
+                          \"FromPort\": 30082, \
+                          \"ToPort\": 30082, \
+                          \"IpRanges\": [{\"CidrIp\": \"0.0.0.0/0\"}] \
+                        }, \
+                        { \
+                          \"IpProtocol\": \"tcp\", \
+                          \"FromPort\": 31644, \
+                          \"ToPort\": 31644, \
+                          \"IpRanges\": [{\"CidrIp\": \"0.0.0.0/0\"}] \
+                        }, \
+                        { \
+                          \"IpProtocol\": \"tcp\", \
+                          \"FromPort\": 31092, \
+                          \"ToPort\": 31092, \
+                          \"IpRanges\": [{\"CidrIp\": \"0.0.0.0/0\"}] \
+                        } \
+                      ]"
+  ```
+
+  :::caution
+  If you use `0.0.0.0/0`, you enable all IPv4 addresses to access your instances on those node ports. In production, you should authorize only a specific IP address or range of addresses to access your instances.
+  :::
+
+  For help creating firewall rules, see the [Amazon EC2 documentation](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/authorizing-access-to-an-instance.html).
+
+## Deploy Redpanda and Redpanda Console
+
+<DeployRedpanda/>
+
+## Create a user
+
+<CreateUser/>
+
+## Start streaming
+
+<StartStreaming/>
+
+## Explore your topic in Redpanda Console
+
+<ExploreTopics/>
+
+## Configure external access to the Redpanda brokers
+
+<ExternalAccessIntro/>
+
+<ExternalAccessSteps/>
+
+## Explore the default Kubernetes components
+
+<DefaultComponents/>
+
+## Troubleshooting
+
+Before troubleshooting your cluster, make sure that you have all the [prerequisites](#prerequisites).
+
+For troubleshooting steps, see [Troubleshoot Redpanda in Kubernetes](../../../../../manage/kubernetes/troubleshooting/troubleshoot).
+
+## Next steps
+
+<NextSteps/>
+
+## Suggested reading
+
+<SuggestedReading/>

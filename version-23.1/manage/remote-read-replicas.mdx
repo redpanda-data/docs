@@ -1,0 +1,91 @@
+---
+title: Remote Read Replicas
+linkRoot: ../../
+deployment: Linux
+contextLinks:
+  - name: 'Linux'
+    to: 'manage/remote-read-replicas'
+  - name: 'Kubernetes'
+    to: manage/kubernetes/remote-read-replicas
+---
+
+<head>
+    <meta name="title" content="Remote Read Replicas | Redpanda Docs"/>
+    <meta name="description" content="Create read-only topics (Remote Read Replica topics) that mirror topics on a different cluster."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/manage/remote-read-replicas/" />
+</head>
+
+import ReduceLag from './shared/remote-read-replicas/_reduce-lag.mdx';
+import AboutRemoteReadReplicas from './shared/remote-read-replicas/_intro.mdx';
+
+import ContextLink from '@site/src/components/ContextButton.js'
+
+<ContextLink frontmatter={frontMatter}
+/>
+
+<AboutRemoteReadReplicas frontmatter={frontMatter}/>
+
+:::tip
+To create a Remote Read Replica topic in another region, consider using a [multi-region bucket](https://aws.amazon.com/s3/features/multi-region-access-points/) to simplify deployment and optimize performance. 
+:::
+
+## Create a topic with object storage
+
+Before you can create a Remote Read Replica topic, you must create a topic on the origin cluster and set up a bucket or container for the topic's object storage. 
+
+1. Create a bucket or container to store the original data.
+2. Create the original topic by running `rpk topic create <topic_name>` and specifying the number of partitions and the number of replicas.
+3. Enable object storage on the origin cluster by running `rpk cluster config edit`, and then specifying cluster properties specific to your object storage provider:
+
+    | Property | Description |
+    | :------  | :---------  |
+    | [`cloud_storage_enabled`](../../reference/cluster-properties/#cloud_storage_enabled) | Must be set to `true` to enable object storage. |
+    | [`cloud_storage_enable_remote_write`](../../reference/tunable-properties/#cloud_storage_enable_remote_write) | When using Tiered Storage on the origin cluster, set to `true` to enable data to be uploaded from Redpanda and written to object storage for all topics. <br/><br/>To only enable data upload for a specific topic, set `cloud_storage_enable_remote_write: false` and run `rpk topic create <topic_name> -c redpanda.remote.write=true` when you create the topic. |
+    | [`cloud_storage_enable_remote_read`](../../reference/tunable-properties/#cloud_storage_enable_remote_read) | When using Tiered Storage on the origin cluster, set to `true` to enable consumers to read from all topics in object storage. <br/><br/>To enable consumers to only read from one topic, set `cloud_storage_enable_remote_read: false` and run `rpk topic create <topic_name> -c redpanda.remote.read=true` when you create the topic.
+    | [`cloud_storage_bucket`](../../reference/cluster-properties/#cloud_storage_bucket) | AWS or GCS bucket name where the original data is stored. <br/>Required for AWS and GCS. |
+    | [`cloud_storage_access_key`](../../reference/cluster-properties/#cloud_storage_access_key) | AWS or GCS access key. <br/>Required for AWS and GCS authentication with access keys. |
+    | [`cloud_storage_secret_key`](../../reference/cluster-properties/#cloud_storage_secret_key) | AWS or GCS secret key. <br/>Required for AWS and GCS authentication with access keys.  |
+    | [`cloud_storage_region`](../../reference/cluster-properties/#cloud_storage_region) | Object storage region. <br/>Required for AWS and GCS. |
+    | [`cloud_storage_api_endpoint`](../../reference/cluster-properties/#cloud_storage_api_endpoint) | AWS or GCS API endpoint. <br/>- For AWS, this can be left blank. It’s generated automatically using the region and bucket. <br/>- For GCS, use `storage.googleapis.com`. |
+    | [`cloud_storage_azure_container`](../../reference/cluster-properties/#cloud_storage_azure_container) | Azure container name. <br/>Required for ABS. |
+    | [`cloud_storage_azure_storage_account`](../../reference/cluster-properties/#cloud_storage_azure_storage_account) | Azure account name. <br/>Required for ABS. |
+    | [`cloud_storage_azure_shared_key`](../../reference/cluster-properties/#cloud_storage_azure_shared_key) | Azure shared key. <br/>Required for ABS. |
+
+## Create a Remote Read Replica topic
+
+To set up a Remote Read Replica topic on a separate remote cluster:
+
+1. Create a remote cluster for the Remote Read Replica topic. 
+   - If that's a multi-region bucket/container, you can create the read replica cluster in any region that has that bucket/container. 
+   - If that's a single-region bucket/container, the remote cluster must be in the same region as the bucket/container.
+2. Run `rpk cluster config edit`, and then specify properties specific to your object storage provider:
+
+    | Property | Description |
+    | :------  | :---------  |
+    | `cloud_storage_enabled` | Must be set to `true` to enable object storage. |
+    | `cloud_storage_bucket: "none"` | No AWS or GCS bucket is needed for the remote cluster. |
+    | `cloud_storage_access_key` | AWS or GCS access key. <br/>Required for AWS and GCS authentication with access keys. |
+    | `cloud_storage_secret_key` | AWS or GCS secret key. <br/>Required for AWS and GCS authentication with access keys.  |
+    | `cloud_storage_region` | Object storage region of the remote cluster. <br/>Required for AWS and GCS. |
+    | `cloud_storage_api_endpoint` | AWS or GCS API endpoint. <br/>- For AWS, this can be left blank. It’s generated automatically using the region and bucket. <br/>- For GCS, use `storage.googleapis.com`. |
+    | `cloud_storage_azure_container` | Azure container name. <br/>Required for ABS. |
+    | `cloud_storage_azure_storage_account` | Azure account name. <br/>Required for ABS. |
+    | `cloud_storage_azure_shared_key` | Azure shared key. <br/>Required for ABS. |
+
+3. Create the Remote Read Replica topic by running `rpk topic create <topic_name> -c redpanda.remote.readreplica=<bucket_name>`. 
+    - For `<topic_name>`, use the same name as the original topic. 
+    - For `<bucket_name>`, use the bucket or container specified in the `cloud_storage_bucket` or `cloud_storage_azure_container` property for the origin cluster.
+
+    :::info
+    - The Remote Read Replica cluster must run on the same version of Redpanda as the origin cluster, or just one feature release ahead of the origin cluster. For example, if the origin cluster is version 23.1, the Remote Read Replica cluster can be 23.2, but not 23.4. It cannot skip feature releases.
+    - During upgrades, upgrade the Remote Read Replica cluster before upgrading the origin cluster. 
+    - Do not use `redpanda.remote.read` or `redpanda.remote.write` with `redpanda.remote.readreplica`. Redpanda ignores the values for remote read and remote write properties on read replica topics. 
+    :::
+
+## Reduce lag in data availability
+
+<ReduceLag frontmatter={frontMatter}/>
+
+## Suggested reading
+
+- [Remote Read Replicas: Read-only topics in Tiered Storage](https://redpanda.com/blog/remote-read-replicas-for-distributing-work)

@@ -1,0 +1,187 @@
+---
+title: Troubleshoot Redpanda in Kubernetes
+tags:
+  - Kubernetes
+description: Find advice on how to diagnose and troubleshoot problems with Redpanda in Kubernetes.
+---
+
+<head>
+    <meta name="title" content="Troubleshoot Redpanda in Kubernetes | Redpanda Docs"/>
+    <meta name="description" content="Find advice on how to diagnose and troubleshoot problems with Redpanda in Kubernetes."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/manage/kubernetes/troubleshooting/troubleshoot/" />
+</head>
+
+import Versions from '../../../shared/_versions.mdx'
+
+This topic provides guidance on how to diagnose and troubleshoot problems with Redpanda in Kubernetes.
+
+## Prerequisites
+
+Before troubleshooting Redpanda, make sure that Kubernetes isn't the cause of the problem. For information about debugging applications in a Kubernetes cluster, see the [Kubernetes documentation](https://kubernetes.io/docs/tasks/debug/).
+
+## Collect all debugging data
+
+If you're unsure of what is wrong, you can generate a diagnostics bundle that contains a wide range of data to help debug and diagnose issues with a Redpanda cluster, a broker, or the machines on which the brokers are running.
+
+See [Diagnostics Bundles in Kubernetes](../diagnostics-bundle).
+
+## View Helm chart configuration
+
+To check the values that were set in the Redpanda Helm chart:
+
+```bash
+helm get values redpanda -n redpanda --all
+```
+
+## StatefulSet never rolls out
+
+If the StatefulSet Pods remain in a pending state, they are waiting for resources to become available.
+
+To identify the Pods that are pending, use the following command:
+
+```
+kubectl get pod -n redpanda
+```
+
+The response includes a list of Pods in the StatefulSet and their status.
+
+To view logs for a specific Pod, use the following command.
+
+```bash
+kubectl logs -f <pod-name>
+```
+
+You can use the output to debug your deployment.
+
+### Unable to mount volume
+
+If you see volume mounting errors in the Pod events or in the Redpanda logs, make sure that each of your Pods has a volume available in which to store data.
+
+- If you're using PersistentVolumes, make sure that you have one PersistentVolume available for each Redpanda broker, and that each one has the storage capacity that's set in `storage.persistentVolume.size`:
+
+  ```bash
+  kubectl get pv -n redpanda
+  ```
+
+- If you're using StorageClasses with dynamic provisioners (default), make sure they exist:
+
+  ```bash
+  kubectl get storageclass
+  ```
+
+:::note
+If you're running on EKS, the [Amazon EBS CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html) is required to allow EKS to create PersistentVolumes.
+:::
+
+To learn how to configure different storage volumes, see [Configure Storage](../../configure-storage).
+
+## Dig not defined
+
+This error means that you are using an unsupported version of [Helm](https://helm.sh/docs/intro/install/):
+
+```
+Error: parse error at (redpanda/templates/statefulset.yaml:203): function "dig" not defined
+```
+
+Make sure that you are using the minimum required version: <Versions name="helm"/>.
+
+```bash
+helm version
+```
+
+## Repository name already exists
+
+If you see this error, remove the `redpanda` chart repository, then try installing it again.
+
+```bash
+helm repo remove redpanda
+helm repo add redpanda https://charts.redpanda.com
+helm repo update
+```
+
+## Invalid large response size
+
+This error appears when your cluster is configured to use TLS, but you don't specify that you are connecting over TLS.
+
+```
+unable to request metadata: invalid large response size 352518912 > limit 104857600; the first three bytes received appear to be a tls alert record for TLS v1.2; is this a plaintext connection speaking to a tls endpoint?
+```
+
+If you're using rpk, make sure to add the `--tls-enabled` flag, and any other necessary TLS flags such as the TLS certificate:
+
+```
+kubectl exec redpanda-0 -c redpanda -n redpanda -- rpk cluster info --brokers <subdomain>.<domain>:<external-port> --tls-enabled
+```
+
+For all available flags, see the [rpk command reference](../../../../reference/rpk).
+
+## I/O timeout
+
+This error appears when your worker nodes are unreachable through the given address.
+
+Check the following:
+
+- The address and port are correct.
+
+- Your DNS records point to addresses that resolve to your worker nodes.
+
+## Is SASL missing?
+
+This error appears when you try to interact with a cluster that has SASL enabled without passing a user's credentials.
+
+```
+unable to request metadata: broker closed the connection immediately after a request was issued, which happens when SASL is required but not provided: is SASL missing?
+```
+
+If you're using rpk, make sure to specify the `--username`, `--password`, and `--sasl-mechanism` flags.
+
+For all available flags, see the [rpk command reference](../../../../reference/rpk).
+
+## Malformed HTTP response
+
+This error appears when a cluster has TLS enabled, and you try to access the admin API without passing the required TLS parameters.
+
+```
+Retrying POST for error: Post "http://127.0.0.1:9644/v1/security/users": net/http: HTTP/1.x transport connection broken: malformed HTTP response "\x15\x03\x03\x00\x02\x02"
+```
+
+If you're using rpk, make sure to include the TLS flags.
+
+For all available flags, see the [rpk command reference](../../../../reference/rpk).
+
+## Fatal error during checker "Data directory is writable" execution
+
+This error appears when Redpanda does not have write access to your configured storage volume under `storage` in the Helm chart.
+
+```
+Error: fatal error during checker "Data directory is writable" execution: open /var/lib/redpanda/data/test_file: permission denied
+```
+
+To fix this error, set `statefulset.initContainers.setDataDirOwnership.enabled` to `true` so that the initContainer can set the correct permissions on the data directories.
+
+## Cannot patch "redpanda" with kind StatefulSet
+
+This error appears when you run `helm upgrade` with the `--values` flag but do not include all your previous overrides.
+
+```
+Error: UPGRADE FAILED: cannot patch "redpanda" with kind StatefulSet: StatefulSet.apps "redpanda" is invalid: spec: Forbidden: updates to statefulset spec for fields other than 'replicas', 'template', 'updateStrategy', 'persistentVolumeClaimRetentionPolicy' and 'minReadySeconds' are forbidden
+```
+
+Make sure to do one of the following:
+
+- Include all the value overrides from the previous installation or upgrade using either the `--set` or the `--values` flags.
+- Use the `--reuse-values` flag.
+
+  :::info
+  Do not use the `--reuse-values` flag to upgrade from one version of the Helm chart to another. This flag stops Helm from using any new values in the upgraded chart.
+  :::
+
+## Cannot patch "redpanda-console" with kind Deployment
+
+This error appears if you try to upgrade your deployment and you already have `console.enabled` set to `true`.
+
+```
+Error: UPGRADE FAILED: cannot patch "redpanda-console" with kind Deployment: Deployment.apps "redpanda-console" is invalid: spec.selector: Invalid value: v1.LabelSelector{MatchLabels:map[string]string{"app.kubernetes.io/instance":"redpanda", "app.kubernetes.io/name":"console"}, MatchExpressions:[]v1.LabelSelectorRequirement(nil)}: field is immutable
+```
+
+To fix this error, set `console.enabled` to `false` in your `helm upgrade` command so that Helm doesn't try to deploy Redpanda Console again.

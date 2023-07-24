@@ -1,0 +1,110 @@
+---
+title: TLS Termination
+---
+
+<head>
+    <meta name="title" content="TLS Termination for Redpanda Console | Redpanda Docs"/>
+    <meta name="description" content="To secure Redpanda Console using TLS (Transport Layer Security), you can let Redpanda Console handle TLS termination or you can offload it to an upstream component, such as a reverse proxy or a Cloud HTTPS LoadBalancer."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/manage/console/tls-termination/" />
+</head>
+
+To secure Redpanda Console using TLS (Transport Layer Security), you can either let Redpanda Console handle TLS termination or you can offload it to an upstream component, such as a reverse proxy or a Cloud HTTPS LoadBalancer. TLS termination refers to the process of decrypting incoming TLS-encrypted traffic. Choosing the right approach depends on various factors, such as your application's traffic load, the complexity of your infrastructure, security requirements, and resource availability:
+
+- Redpanda Console handles TLS termination
+
+  | Advantages | Drawbacks |
+  |------------|------------|
+  | **Simplicity**: You don't need an additional component to handle the TLS termination.|**Performance**: TLS termination can be computationally expensive, especially for high-traffic applications. |
+  | **Control**: Because the TLS termination happens within Redpanda Console, you have direct control over the process, which can be beneficial for troubleshooting and custom configurations. | |
+
+- An upstream component handles TLS termination
+
+  | Advantages | Drawbacks |
+  |------------|------------|
+  | **Performance**: Offloading the task of TLS termination to another component can help improve the performance of Redpanda Console by reducing its computational load. | **Complexity**: Using another component for TLS termination can increase the overall complexity of your system.|
+  | **Flexibility**: You can use different types of upstream components (like various reverse proxies or load balancers) depending on your infrastructure needs and preferences. | |
+  |**Simplicity**: Reverse proxies like NGINX Ingress can integrate with other components such as cert-manager, which automatically renews certificates from LetsEncrypt. | |
+
+
+## Use Redpanda Console for TLS termination
+
+When you use Redpanda Console to terminate the TLS connection, Redpanda Console starts two HTTP servers:
+
+- An HTTPS server on the configured HTTPS port.
+- An HTTP server on the configured HTTP port which redirects HTTP requests to the HTTPS port.
+
+Use this example YAML configuration to let Redpanda Console handle TLS:
+
+```yaml
+server:
+  # httpsListenPort defines the port on which Redpanda Console is listening for TLS connections, while advertisedHttpsListenPort defines the port that is advertised to clients, which may be different due to network configurations such as load balancers or proxies. advertisedHttpsListenPort is needed when redirecting a HTTP request to an HTTPS URL.
+  httpsListenPort: 443
+  advertisedHttpsListenPort: 443
+  listenPort: 8080
+  tls:
+    enabled: true
+    certFilepath: <path-to-cert>
+    keyFilepath: <path-to-key>
+    # AllowedOrigins is a list of origins that can send requests from a browser to the Redpanda Console
+    # API. By default, a same-site policy is enforced to prevent CSRF-attacks.
+    # Only in very specific deployment models you may need to change the secure default.
+    # For example, during development, it's common to have the API server and the client running on different ports of localhost, which are treated as different origins by browsers. In this case, you would need to set `allowedOrigins` to include the origin of your client's development server.
+  # allowedOrigins: []
+```
+
+Replace `<path-to-cert>` and `<path-to-key>` with the paths of your TLS certificate and key, respectively.
+
+In this example, Redpanda Console is serving HTTPS traffic on port 443, where both `httpsListenPort` and `advertisedHttpsListenPort` are set to the same value. Any requests to the `listenPort` 8080 are redirected to the `advertisedHttpsListenPort`.
+
+If you want Redpanda Console to serve HTTPS on a non-standard port like 8081, but you want to present the URL to users as though it's serving on the standard HTTPS port 443, you can set `httpsListenPort` to 8081 and `advertisedHttpsListenPort` to 443. This configuration might be useful in development or testing scenarios. For example, if Redpanda Console's internal address is `https://192.168.1.100:8081` but externally it's accessed through `https://public-address.com:443`, set `httpsListenPort` to 8081 and `advertisedHttpsListenPort` to 443. Despite listening internally on 8081, Redpanda Console will generate URLs for clients using port 443.
+
+:::info
+If you host Redpanda Console under a sub-path of your domain, such as `https://my-company.com/redpanda/console`, configure [HTTP path rewrites](../../../console/http-path-rewrites) in Redpanda Console.
+:::
+
+## Use an upstream component for TLS termination
+
+When you use an upstream component for TLS termination, the upstream component handles the secure TLS connection, and Redpanda Console receives unencrypted HTTP traffic from this component. You can use various upstream components, including reverse proxies, such as NGINX and HAProxy, as well as cloud HTTPS load balancers. To use this option, you must:
+
+1. Configure the upstream component to handle TLS termination.
+
+1. Ensure that the upstream component routes traffic to the address and port of Redpanda Console.
+
+1. Ensure that the upstream component is configured to pass along the original host header so that Redpanda Console can generate correct URLs, even when it's behind a reverse proxy or load balancer.
+
+1. Disable TLS in Redpanda Console:
+
+  ```yaml
+  server:
+    listenPort: 8080
+    tls:
+      enabled: false
+  ```
+
+  :::note
+  TLS is disabled by default.
+  :::
+
+  Although Redpanda Console isn't using TLS, the traffic remains secure because the upstream component handles TLS.
+
+:::info
+If you host Redpanda Console under a sub-path of your domain, such as `https://my-company.com/redpanda/console`, configure [HTTP path rewrites](../../../console/http-path-rewrites) in Redpanda Console.
+:::
+
+## Suggested reading
+
+- See all [`server` configuration options](../../../../reference/console/config).
+
+- NGINX
+  - [NGINX Beginner's Guide](http://nginx.org/en/docs/beginners_guide.html)
+  - [NGINX SSL Termination](https://docs.nginx.com/nginx/admin-guide/security-controls/terminating-ssl-http/)
+
+- HAProxy
+  - [HAProxy Documentation](https://www.haproxy.com/documentation/)
+  - [HAProxy SSL Termination](https://www.haproxy.com/blog/haproxy-ssl-termination)
+
+- [AWS Elastic Load Balancing Documentation](https://docs.aws.amazon.com/elasticloadbalancing/)
+
+- [Cloud Load Balancing Documentation](https://cloud.google.com/load-balancing/docs)
+
+- [OpenSSL Documentation](https://www.openssl.org/docs/)

@@ -1,0 +1,514 @@
+= Diagnostics Bundles in Kubernetes
+:description: 
+:description: A diagnostics bundle is a ZIP file with data that can help debug and diagnose issues with a Redpanda cluster, a broker, or the machines on which the brokers are running. You can use this file to debug issues yourself, or you can send it to the Redpanda support team to help resolve your issue.
+:tags: ["Kubernetes"]
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import BundleContentsK8s from '../../../reference/rpk/rpk-debug/shared/_bundle-contents-k8s.mdx'
+
+A diagnostics bundle is a ZIP file with data that can help debug and diagnose issues with a Redpanda cluster, a broker, or the machines on which the brokers are running. You can use this file to debug issues yourself, or you can send it to the Redpanda support team to help resolve your issue.
+
+== Prerequisites
+
+Most files in the diagnostics bundle are JSON files. To make it easier to read these files, this guide uses jq. To install jq, see the https://stedolan.github.io/jq/download/[jq downloads page].
+
+These examples use the default values in Helm chart. If you've customized the Helm chart, you may need to provide custom values and/or flags.
+
+== Generate a diagnostics bundle
+
+To generate a diagnostics bundle, execute the xref:reference:rpk:rpk-debug:rpk-debug-bundle.adoc[`rpk debug bundle`] command inside the container of a Redpanda broker.
+
+. Create a ClusterRole to allow Redpanda to collect information from the Kubernetes API:+++<Tabs groupId="helm-config">++++++<TabItem value="values" label="--values">+++```yaml title="serviceaccount.yaml" serviceAccount: create: true rbac: enabled: true ``` ```bash helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \ --values serviceaccount.yaml --reuse-values ```+++</TabItem>+++ +++<TabItem value="flags" label="--set">+++```bash helm upgrade --install redpanda redpanda/redpanda -n redpanda --create-namespace \ --set serviceAccount.create=true \ --set rbac.enabled=true ```+++</TabItem>++++++</Tabs>+++
+
+:::tip
+
+If you aren't using the Helm chart, you can create the ClusterRole manually:
+
+[,bash]
+----
+  kubectl create clusterrolebinding redpanda --clusterrole=view --serviceaccount=redpanda:default
+----
+
+:::
+
+. Execute the xref:reference:rpk:rpk-debug:rpk-debug-bundle.adoc[`rpk debug bundle`] command inside a Pod container that's running a Redpanda broker.
+
+In this example, the command is executed on a Pod called `redpanda-0` in the `redpanda` namespace. You can provide your own namespace in the `--namespace` and `-n` flags.+++<Tabs groupId="tls" queryString="">++++++<TabItem value="enabled" label="TLS Enabled">+++```bash kubectl exec -it -n redpanda redpanda-0 -c redpanda -- rpk debug bundle \ --admin-api-tls-truststore=+++<path-to-root-ca>+++\ --api-urls=http://redpanda-0.redpanda.redpanda.svc.cluster.local.:9644 \ --admin-api-tls-enabled ``` </TabItem> +++<TabItem value="disabled" label="TLS Disabled">+++```bash kubectl exec -it -n redpanda redpanda-0 -c redpanda -- rpk debug bundle \ --namespace redpanda \ --api-urls=http://redpanda-0.redpanda.redpanda.svc.cluster.local.:9644 ```+++</TabItem>+++ </Tabs> If you have an upload URL from the Redpanda support team, provide it in the `--upload-url` flag to upload your diagnostics bundle to Redpanda. ```bash kubectl exec -it -n redpanda redpanda-0 -c redpanda -- rpk debug bundle \ --upload-url +++<url>+++\ --namespace redpanda \ --api-urls=http://redpanda-0.redpanda.redpanda.svc.cluster.local.:9644 ``` +++<details>++++++<summary>+++Example output+++</summary>+++ ``` Creating bundle file\... Debug bundle saved to "/var/lib/redpanda/1675440652-bundle.zip" ```+++</details>+++ 1. On your host machine, make a directory in which to save the diagnostics bundle: ```bash mkdir diagnostics-bundle ``` 1. Copy the diagnostics bundle from the Pod to your host machine: Replace `+++<bundle-name>+++` with the name of your ZIP file. ```bash kubectl cp redpanda/redpanda-0:/var/lib/redpanda/+++<bundle-name>+++diagnostics-bundle/+++<bundle-name>+++``` 1. Unzip the file on your host machine. ```bash cd diagnostics-bundle unzip +++<bundle-name>+++``` 1. Remove the diagnostics bundle from the Redpanda container: ```bash kubectl exec redpanda-0 -c redpanda -n redpanda -- rm /var/lib/redpanda/+++<bundle-name>+++``` :::info When you've finished troubleshooting, remove the diagnostics bundle from your host machine: ```bash rm -r diagnostics-bundle ``` ::: For a description of the files and directories, see [Contents of the diagnostics bundle](#contents-of-the-diagnostics-bundle). ## Inspect the diagnostics bundle This section provides some useful data points to check while troubleshooting. ### View the version of Redpanda on all brokers ```bash cat admin/brokers.json | jq '.[] | .version' ```
+
+////
+.Example output
+[%collapsible]
+====
+```json
+"v23.1.1"
+"v23.1.1"
+"v23.1.1"
+```
+====
+//// ### View the maintenance status of all brokers ```bash cat admin/brokers.json | jq '.[] | .node_id, .maintenance_status' ```
+
+////
+.Example output
+[%collapsible]
+====
+```json
+0
+{
+  "draining": false,
+  "finished": false,
+  "errors": false,
+  "partitions": 0,
+  "eligible": 0,
+  "transferring": 0,
+  "failed": 0
+}
+1
+{
+  "draining": false,
+  "finished": false,
+  "errors": false,
+  "partitions": 0,
+  "eligible": 0,
+  "transferring": 0,
+  "failed": 0
+}
+2
+{
+  "draining": false,
+  "finished": false,
+  "errors": false,
+  "partitions": 0,
+  "eligible": 0,
+  "transferring": 0,
+  "failed": 0
+}
+```
+====
+//// ### View the cluster configuration ```bash cat admin/cluster_config.json | jq ```
+
+////
+.Example output
+[%collapsible]
+====
+```json
+{
+  "abort_index_segment_size": 50000,
+  "abort_timed_out_transactions_interval_ms": 10000,
+  "admin_api_require_auth": false,
+  "aggregate_metrics": false,
+  "alter_topic_cfg_timeout_ms": 5000,
+  "append_chunk_size": 16384,
+  "auto_create_topics_enabled": false,
+  "cloud_storage_access_key": null,
+  "cloud_storage_api_endpoint": null,
+  "cloud_storage_api_endpoint_port": 443,
+  "cloud_storage_azure_container": null,
+  "cloud_storage_azure_shared_key": null,
+  "cloud_storage_azure_storage_account": null,
+  "cloud_storage_bucket": null,
+  ...
+  "target_quota_byte_rate": 2147483648,
+  "tm_sync_timeout_ms": 10000,
+  "topic_fds_per_partition": 5,
+  "topic_memory_per_partition": 1048576,
+  "topic_partitions_per_shard": 1000,
+  "topic_partitions_reserve_shard0": 2,
+  "transaction_coordinator_cleanup_policy": "delete",
+  "transaction_coordinator_delete_retention_ms": 604800000,
+  "transaction_coordinator_log_segment_size": 1073741824,
+  "transactional_id_expiration_ms": 604800000,
+  "tx_log_stats_interval_s": 10,
+  "tx_timeout_delay_ms": 1000,
+  "wait_for_leader_timeout_ms": 5000,
+  "zstd_decompress_workspace_bytes": 8388608
+}
+```
+====
+//// ### Check Enterprise license keys ```bash cat admin/license.json | jq ```
+
+////
+.Example output
+[%collapsible]
+====
+```json
+{
+  "loaded": false,
+  "license": {
+    "format_version": 0,
+    "org": "",
+    "type": "",
+    "expires": 0,
+    "sha256": ""
+  }
+}
+```
+====
+//// ### View metadata about the Redpanda data directory To check the size of the directories and look for anomalies: ```bash cat du.txt ```
+
+////
+.Example output
+[%collapsible]
+====
+```
+33M	/var/lib/redpanda/data/redpanda/kvstore/0_0
+33M	/var/lib/redpanda/data/redpanda/kvstore
+33M	/var/lib/redpanda/data/redpanda/controller/0_0
+33M	/var/lib/redpanda/data/redpanda/controller
+65M	/var/lib/redpanda/data/redpanda
+65M	/var/lib/redpanda/data
+```
+====
+//// To check the file permissions, file size, and last modification date of the files: ```bash cat data-dir.txt | jq ```
+
+////
+.Example output
+[%collapsible]
+====
+```json
+{
+  "/var/lib/redpanda/data": {
+    "size": "4.096kB",
+    "mode": "dgrwxrwxrwx",
+    "modified": "2023-02-02 15:21:12.430878371 +0000 UTC",
+    "user": "",
+    "group": "redpanda"
+  },
+  "/var/lib/redpanda/data/config_cache.yaml": {
+    "size": "340B",
+    "mode": "-rw-r--r--",
+    "modified": "2023-02-02 15:21:22.434878593 +0000 UTC",
+    "user": "",
+    "group": "redpanda"
+  },
+  "/var/lib/redpanda/data/pid.lock": {
+    "size": "2B",
+    "mode": "-rw-r--r--",
+    "modified": "2023-02-02 15:21:10.502878322 +0000 UTC",
+    "user": "",
+    "group": "redpanda"
+  },
+  "/var/lib/redpanda/data/redpanda": {
+    "size": "4.096kB",
+    "mode": "dgrwxr-xr-x",
+    "modified": "2023-02-02 15:21:10.650878326 +0000 UTC",
+    "user": "",
+    "group": "redpanda"
+  },
+  "/var/lib/redpanda/data/redpanda/controller": {
+    "size": "4.096kB",
+    "mode": "dgrwxr-xr-x",
+    "modified": "2023-02-02 15:21:10.650878326 +0000 UTC",
+    "user": "",
+    "group": "redpanda"
+  },
+  "/var/lib/redpanda/data/redpanda/controller/0_0": {
+    "size": "4.096kB",
+    "mode": "dgrwxr-xr-x",
+    "modified": "2023-02-02 15:21:12.346878368 +0000 UTC",
+    "user": "",
+    "group": "redpanda"
+  },
+  "/var/lib/redpanda/data/redpanda/controller/0_0/0-1-v1.log": {
+    "size": "4.096kB",
+    "mode": "-rw-r--r--",
+    "modified": "2023-02-02 15:21:32.450878771 +0000 UTC",
+    "user": "",
+    "group": "redpanda"
+  },
+  "/var/lib/redpanda/data/redpanda/kvstore": {
+    "size": "4.096kB",
+    "mode": "dgrwxr-xr-x",
+    "modified": "2023-02-02 15:21:10.590878324 +0000 UTC",
+    "user": "",
+    "group": "redpanda"
+  },
+  "/var/lib/redpanda/data/redpanda/kvstore/0_0": {
+    "size": "4.096kB",
+    "mode": "dgrwxr-xr-x",
+    "modified": "2023-02-02 15:21:10.602878325 +0000 UTC",
+    "user": "",
+    "group": "redpanda"
+  },
+  "/var/lib/redpanda/data/redpanda/kvstore/0_0/0-0-v1.log": {
+    "size": "8.192kB",
+    "mode": "-rw-r--r--",
+    "modified": "2023-02-02 15:21:32.458878772 +0000 UTC",
+    "user": "",
+    "group": "redpanda"
+  },
+  "/var/lib/redpanda/data/startup_log": {
+    "size": "26B",
+    "mode": "-rw-r--r--",
+    "modified": "2023-02-02 15:21:10.510878323 +0000 UTC",
+    "user": "",
+    "group": "redpanda"
+  }
+}
+```
+====
+//// ### View cluster metadata ```bash cat kafka.json | jq '.[0]' ```
+
+////
+.Example output
+[%collapsible]
+====
+```json
+{
+  "Name": "metadata",
+  "Response": {
+    "Cluster": "redpanda.14a3f9b6-1c74-4ffd-806a-4ab48db78120",
+    "Controller": 0,
+    "Brokers": [
+      {
+        "NodeID": 0,
+        "Port": 9093,
+        "Host": "redpanda-0.redpanda.redpanda.svc.cluster.local.",
+        "Rack": null
+      },
+      {
+        "NodeID": 1,
+        "Port": 9093,
+        "Host": "redpanda-1.redpanda.redpanda.svc.cluster.local.",
+        "Rack": null
+      },
+      {
+        "NodeID": 2,
+        "Port": 9093,
+        "Host": "redpanda-2.redpanda.redpanda.svc.cluster.local.",
+        "Rack": null
+      }
+    ],
+    "Topics": {}
+  },
+  "Error": null
+}
+```
+====
+//// ### View topic and broker configurations ```bash cat kafka.json | jq '.[1:]' ```
+
+////
+.Example output
+[%collapsible]
+====
+```json
+[
+  {
+    "Name": "topic_configs",
+    "Response": null,
+    "Error": null
+  },
+  {
+    "Name": "broker_configs",
+    "Response": [
+      {
+        "Name": "0",
+        "Configs": [
+          {
+            "Key": "listeners",
+            "Value": "internal://0.0.0.0:9093,default://0.0.0.0:9094",
+            "Sensitive": false,
+            "Source": "STATIC_BROKER_CONFIG",
+            "Synonyms": [
+              {
+                "Key": "kafka_api",
+                "Value": "internal://0.0.0.0:9093,default://0.0.0.0:9094",
+                "Source": "STATIC_BROKER_CONFIG"
+              },
+              {
+                "Key": "kafka_api",
+                "Value": "plain://127.0.0.1:9092",
+                "Source": "DEFAULT_CONFIG"
+              }
+            ]
+          },
+          {
+            "Key": "advertised.listeners",
+            "Value": "internal://redpanda-0.redpanda.redpanda.svc.cluster.local.:9093,default://203.0.113.3:31092",
+            "Sensitive": false,
+            "Source": "STATIC_BROKER_CONFIG",
+            "Synonyms": [
+              {
+                "Key": "advertised_kafka_api",
+                "Value": "internal://redpanda-0.redpanda.redpanda.svc.cluster.local.:9093,default://203.0.113.3:31092",
+                "Source": "STATIC_BROKER_CONFIG"
+              },
+              {
+                "Key": "advertised_kafka_api",
+                "Value": "",
+                "Source": "DEFAULT_CONFIG"
+              }
+            ]
+          },
+          {
+            "Key": "log.segment.bytes",
+            "Value": "134217728",
+            "Sensitive": false,
+            "Source": "DEFAULT_CONFIG",
+            "Synonyms": [
+              {
+                "Key": "log_segment_size",
+                "Value": "134217728",
+                "Source": "DEFAULT_CONFIG"
+              }
+            ]
+          },
+          {
+            "Key": "log.retention.bytes",
+            "Value": "18446744073709551615",
+            "Sensitive": false,
+            "Source": "DEFAULT_CONFIG",
+            "Synonyms": [
+              {
+                "Key": "retention_bytes",
+                "Value": "18446744073709551615",
+                "Source": "DEFAULT_CONFIG"
+              }
+            ]
+          },
+          {
+            "Key": "log.retention.ms",
+            "Value": "604800000",
+            "Sensitive": false,
+            "Source": "DEFAULT_CONFIG",
+            "Synonyms": [
+              {
+                "Key": "delete_retention_ms",
+                "Value": "604800000",
+                "Source": "DEFAULT_CONFIG"
+              }
+            ]
+          },
+          {
+            "Key": "num.partitions",
+            "Value": "1",
+            "Sensitive": false,
+            "Source": "DEFAULT_CONFIG",
+            "Synonyms": [
+              {
+                "Key": "default_topic_partitions",
+                "Value": "1",
+                "Source": "DEFAULT_CONFIG"
+              }
+            ]
+          },
+          {
+            "Key": "default.replication.factor",
+            "Value": "1",
+            "Sensitive": false,
+            "Source": "DEFAULT_CONFIG",
+            "Synonyms": [
+              {
+                "Key": "default_topic_replications",
+                "Value": "1",
+                "Source": "DEFAULT_CONFIG"
+              }
+            ]
+          },
+          {
+            "Key": "log.dirs",
+            "Value": "/var/lib/redpanda/data",
+            "Sensitive": false,
+            "Source": "STATIC_BROKER_CONFIG",
+            "Synonyms": [
+              {
+                "Key": "data_directory",
+                "Value": "/var/lib/redpanda/data",
+                "Source": "STATIC_BROKER_CONFIG"
+              }
+            ]
+          },
+          {
+            "Key": "auto.create.topics.enable",
+            "Value": "false",
+            "Sensitive": false,
+            "Source": "DEFAULT_CONFIG",
+            "Synonyms": [
+              {
+                "Key": "auto_create_topics_enabled",
+                "Value": "false",
+                "Source": "DEFAULT_CONFIG"
+              }
+            ]
+          }
+        ],
+        "Err": null
+      },
+      {
+        "Name": "1",
+        "Configs": [
+          ...
+        ]
+        ...
+      },
+      {
+        "Name": "1",
+        "Configs": [
+          ...
+        ]
+        ...
+      },
+    ],
+    "Error": null
+  },
+  {
+    "Name": "log_start_offsets",
+    "Response": {},
+    "Error": null
+  },
+  {
+    "Name": "last_stable_offsets",
+    "Response": {},
+    "Error": null
+  },
+  {
+    "Name": "high_watermarks",
+    "Response": {},
+    "Error": null
+  },
+  {
+    "Name": "groups",
+    "Response": null,
+    "Error": null
+  }
+]
+```
+====
+//// ### View the Redpanda logs ```bash cat logs/redpanda-0.txt # logs/redpanda-1.txt logs/redpanda-2.txt ``` ### Check for clock drift ```bash cat ntp.txt | jq ``` Use the output to check for clock drift. For details about how NTP works, see the [NTP documentation](http://www.ntp.org/ntpfaq/NTP-s-algo.htm).
+
+////
+.Example output
+[%collapsible]
+====
+```json
+{
+  "host": "pool.ntp.org",
+  "roundTripTimeMs": 3,
+  "remoteTimeUTC": "2023-02-02T15:22:51.763175934Z",
+  "localTimeUTC": "2023-02-02T15:22:51.698044603Z",
+  "precisionMs": 0,
+  "offset": -458273
+}
+```
+====
+//// ### View Kubernetes manifests ```bash tree k8s ```
+
+////
+.Example output
+[%collapsible]
+====
+```
+k8s
+├── configmaps.json
+├── endpoints.json
+├── events.json
+├── limitranges.json
+├── persistentvolumeclaims.json
+├── pods.json
+├── replicationcontrollers.json
+├── resourcequotas.json
+├── serviceaccounts.json
+└── services.json
+```
+====
+//// ## Contents of the diagnostics bundle The diagnostics bundle includes the following files and directories: +++<BundleContentsK8s>++++++</BundleContentsK8s>+++ ## Suggested reading - [`rpk debug bundle`](../../../../reference/rpk/rpk-debug/rpk-debug-bundle) - [jq manual](https://stedolan.github.io/jq/manual/#Basicfilters)+++</bundle-name>++++++</bundle-name>++++++</bundle-name>++++++</bundle-name>++++++</bundle-name>++++++</url>++++++</path-to-root-ca>++++++</TabItem>++++++</Tabs>+++
