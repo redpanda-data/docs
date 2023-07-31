@@ -1,0 +1,263 @@
+= Build a Chat Room Application with Redpanda and Java
+:description: Create a basic chat room application with Redpanda and Kafka Java clients.
+:page-context-links: [{"name": "Docker", "to": "develop:guide-java.adoc" },{"name": "Cloud", "to": "develop:guide-java-cloud.adoc" } ]
+
+Create a basic chat room application with Redpanda and https://central.sonatype.com/artifact/org.apache.kafka/kafka-clients[Kafka Java clients].
+
+This tutorial describes how to:
+
+* Start a Redpanda cluster to store and stream chat room messages.
+* Write a client application in Java to produce and consume chat room messages.
+* Build and run multiple clients to exchange chat messages streamed through Redpanda.
+
+image::shared:chat-room.gif[Demo of the application, where two users are chatting to each other]
+
+== Prerequisites
+
+You must have
+
+* Java 11 or 17 (OpenJDK is recommended)
+* Maven
+
+[tabs]
+====
+Windows/Linux::
++
+--
+You can download OpenJDK from https://adoptium.net/temurin/releases[Adoptium], and can follow the installation instructions for Maven on the https://maven.apache.org/install.html[official Maven website].
+--
+macOS::
++
+--
+Mac users with Homebrew installed can run the following commands to install these dependencies:
+
+```bash
+brew install openjdk@11 maven
+```
+
+Make sure to follow any symlinking instructions in the Caveats output.
+--
+====
+
+When the prerequisites are installed, the following commands should print the version of both Java and Maven:
+
+[,bash]
+----
+java --version
+mvn --version
+----
+
+== Set up a Redpanda environment
+
+Complete the xref:get-started:quick-start.adoc[Redpanda Quickstart] before continuing. This tutorial expands on the quickstart. You can choose to run either one or three brokers.
+
+CAUTION: If you're running Redpanda in a shared development environment, avoid running
+`sudo rpk redpanda tune all` or manually configuring Redpanda for production. The optimized production settings might affect your experience with other applications running on your machine.
+
+== Set up your environment
+
+. Bootstrap a new Java project using the following Maven command:
++
+[,bash]
+----
+mvn archetype:generate \
+  -DgroupId=com.example \
+  -DartifactId=chat-room \
+  -DarchetypeArtifactId=maven-archetype-quickstart \
+  -DarchetypeVersion=1.4 \
+  -DinteractiveMode=false
+----
+
+. Set your working directory to the project folder:
++
+[,bash]
+----
+cd chat-room
+----
+
+. Add the required dependencies to your `pom.xml` file:
++
+[,xml]
+----
+<dependencies>
+  <dependency>
+  <groupId>org.apache.kafka</groupId>
+  <artifactId>kafka-clients</artifactId>
+  <version>3.4.0</version>
+  </dependency>
+  <dependency>
+  <groupId>com.google.code.gson</groupId>
+  <artifactId>gson</artifactId>
+  <version>2.8.9</version>
+  </dependency>
+</dependencies>
+----
++
+TIP: You can check for new versions of the Kafka Java client on the https://search.maven.org/artifact/org.apache.kafka/kafka-clients[Sonatype website].
+
+. Set the source and target Java version to 11 in your `pom.xml` file:
++
+[,xml]
+----
+<properties>
+  <maven.compiler.source>11</maven.compiler.source>
+  <maven.compiler.target>11</maven.compiler.target>
+</properties>
+----
+
+. Install the dependencies by building the project:
++
+[,bash]
+----
+mvn package
+----
++
+The output is verbose, but you should see a successful build message:
++
+----
+[INFO] BUILD SUCCESS
+----
+
+== Create a topic
+
+You need a topic named `chat-room` for both Redpanda and the client to use to store chat room messages. If you completed the Redpanda Quickstart, this topic already exists in your cluster.
+
+. Verify that the `chat-room` topic exists in your cluster by listing all topics:
++
+[,bash]
+----
+docker exec -it redpanda-0 rpk topic list
+----
++
+Output:
++
+[.no-copy]
+----
+NAME       PARTITIONS  REPLICAS
+chat-room  1           1
+----
+
+. If the topic doesn't exist yet, use xref:reference:rpk/index.adoc[rpk] to create a `chat-room` topic:
++
+[,bash]
+----
+docker exec -it redpanda-0 rpk topic create chat-room
+----
++
+Output:
++
+[.no-copy]
+----
+TOPIC      STATUS
+chat-room  OK
+----
+
+== Confirm that the topic exists on the client side
+
+The client may not always know that the topic exists. You can verify that it exists and create it if not.
+
+In `chat-room/` create a source file called `src/main/java/com/example/Admin.java` with the following content.
+
+NOTE: The broker settings in this code are from the Redpanda Quickstart, where the external port for broker `redpanda-0` is set to port 19092. If you're not using the Redpanda Quickstart, make sure that the broker's port is correct for your deployment.
+
+.`src/main/java/com/example/Admin.java`
+[,java]
+----
+include::develop:example$java/docker/chat-room/src/main/java/com/example/Admin.java[]
+----
+
+This code is a utility class that provides methods for checking if a topic exists, creating a topic, and returning producer and consumer configuration properties. You will use these methods in the other classes in the chat room application.
+
+## Create a producer
+
+A client needs a producer to publish `chat-room` topic messages.
+
+To create a producer for the client, in `chat-room/` create a source file `src/main/java/com/example/ChatProducer.java` with the following content.
+
+.`src/main/java/com/example/ChatProducer.java`
+[,java]
+----
+include::develop:example$java/docker/chat-room/src/main/java/com/example/ChatProducer.java[]
+----
+
+You now have a working producer that sends strings entered by the user to the
+`chat-room` topic. Messages are sent as JSON encoded strings here,
+but keep in mind that the producer only sends buffers, so you can encode the
+messages however you like.
+
+== Create a consumer
+
+A client needs a consumer to receive `chat-room` topic messages.
+
+To create a consumer for the client, in `chat-room/` create a source file `src/main/java/com/example/ChatConsumer.java` with the following content.
+
+.`src/main/java/com/example/ChatConsumer.java`
+[,java]
+----
+include::develop:example$java/docker/chat-room/src/main/java/com/example/ChatConsumer.java[]
+----
+
+You now have a consumer that reads all messages from the `chat-room`
+topic and prints them to the console. You can start as many consumer groups as
+you like, but remember that each group reads a message only once, which is
+why the example is using a generated UUID for the group ID.
+
+## Create a client application
+
+The client needs an application that creates the topic, producer, and consumer and implements the chat logic.
+
+To create a client application, in `chat-room/` create a source file `src/main/java/com/example/Main.java` with the following content.
+
+.`src/main/java/com/example/Main.java`
+[,java]
+----
+include::develop:example$java/docker/chat-room/src/main/java/com/example/Main.java[]
+----
+
+== Build and run the application
+
+Compile the client chat application, run it from multiple client terminals, and chat between the clients.
+
+. From `chat-room/`, compile the client application:
++
+[,bash]
+----
+mvn compile
+----
+
+. Open at least two terminals, and for each terminal:
+.. Run the client application:
++
+[,bash]
+----
+mvn exec:java -Dexec.mainClass="com.example.Main"
+----
+.. When prompted with `Enter user name:`, enter a unique name for the chat room.
+. Use the chat application: enter a message in a terminal, and verify that the message is received in the other terminals.
++
+For example:
++
+----
+Enter user name:
+Alice
+Connected, press Ctrl+C to exit
+Alice: Hi, I'm Alice
+Bob: Hi Alice, I'm Bob, nice to meet you
+----
+
+== Next steps
+
+This is a basic example of a chat room application. You can improve this application by implementing additional features and components, such as:
+
+* A user interface to make it more interactive and user-friendly.
+* A user registration and login system to authenticate users before they can access the chat room.
+* Rate limiting and other measures to prevent spamming and abuse in the chat room.
+
+== Suggested reading
+
+For additional resources to help you build stream processing
+applications that can aggregate, join, and filter your data streams, see:
+
+* https://university.redpanda.com/[Redpanda University]
+* https://redpanda.com/blog[Redpanda Blog]
+* https://redpanda.com/resources[Resources]

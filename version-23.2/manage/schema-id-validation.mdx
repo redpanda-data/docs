@@ -1,0 +1,113 @@
+---
+title: Server-side Schema ID Validation
+linkRoot: ../../
+---
+
+<head>
+    <meta name="title" content="Server-side Schema ID Validation | Redpanda Docs"/>
+    <meta name="description" content="Learn about server-side schema ID validation for clients using Confluent's SerDes format that produce to Redpanda brokers, and learn how to configure Redpanda to inspect and reject records with schema IDs that aren't valid according to the configured Subject Name Strategy and registered with the Schema Registry."/>
+    <link rel="canonical" href="https://docs.redpanda.com/manage/schema-registry/" />
+</head>
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import EnterpriseLicenseNote from '@site/docs/shared/_enterprise-license.mdx'
+
+Learn about server-side schema ID validation for clients using Confluent's SerDes format that produce to Redpanda brokers, and learn how to configure Redpanda to inspect and reject records with schema IDs that aren't valid according to the configured Subject Name Strategy and registered with the Schema Registry.
+
+:::info
+<EnterpriseLicenseNote frontmatter={frontMatter}/>
+:::
+
+## About schema ID validation
+
+Records produced to a topic may use a serializer/deserializer client library, such as Confluent's SerDes library, to encode their keys and values according to a schema in [Schema Registry](../schema-registry).
+
+When a client produces a record, the *schema ID* for the topic is encoded in the record's payload header. 
+The schema ID must be associated with a subject and a version in the Schema Registry. That subject is determined by the *subject name strategy*, which maps the topic and schema onto a subject.
+
+A client may be misconfigured with either the wrong schema or the wrong subject name strategy, resulting in unexpected data on the topic. A produced record for an unregistered schema shouldn't be stored by brokers or fetched by consumers. Yet, it may not be detected or dropped until after it's been fetched and a consumer deserializes its mismatched schema ID.
+
+
+Schema ID validation enables brokers (servers) to detect and drop records that were produced with an incorrectly configured subject name strategy, that don't conform to the SerDes wire format, or encode an incorrect schema ID. With schema ID validation, records associated with unregistered schemas are detected and dropped earlier, by a broker rather than a consumer. 
+
+:::info
+Schema ID validation doesn't verify that a record's payload is correctly encoded according to the associated schema. Schema ID validation only checks that the schema ID encoded in the record is registered in the Schema Registry.
+:::
+
+
+## Configure schema ID validation
+
+To use schema ID validation:
+- [Enable the feature in Redpanda](#enable-schema-id-validation)
+- [Customize the subject name strategy per topic on the client](#set-subject-name-strategy-per-topic)
+
+### Enable schema ID validation
+
+By default, server-side schema ID validation is disabled in Redpanda. To enable schema ID validation, change the [`enable_schema_id_validation`](../../reference/cluster-properties#enable_schema_id_validation) cluster property from its default value of `none` to either `redpanda` or `compat`:
+
+- `none`: schema validation is disabled (no schema ID checks are done). Associated topic properties cannot be modified.
+- `redpanda`: schema validation is enabled. Only Redpanda topic properties are accepted.
+- `compat`: schema validation is enabled. Both Redpanda and compatible topic properties are accepted.
+
+For example, use `rpk` to set the value of `enable_schema_id_validation` to `redpanda` through the Admin API:
+
+```bash
+rpk cluster config set enable_schema_id_validation redpanda --api-urls=<admin-api-IP>:9644
+```
+
+### Set subject name strategy per topic
+
+The subject name strategies supported by Redpanda:
+
+| Subject Name Strategy | Subject Name Source | Subject Name Format (Key) | Subject Name Format (Value) |
+|- | - | - | - |
+| `TopicNameStrategy` | Topic name | `<topic-name>-key` | `<topic-name>-value` |
+| `RecordNameStrategy` | Fully-qualified record name | `<record-name>` | `<record-name>` |
+| `TopicRecordNameStrategy` | Both topic name and fully-qualified record name | `<topic-name>-<record-name>` | `<topic-name>-<record-name>`
+
+When [schema ID validation is enabled](#enable-schema-id-validation), Redpanda uses `TopicNameStrategy` by default.
+
+To customize the subject name strategy per topic, set the following client topic properties:
+
+- Set `redpanda.key.schema.id.validation` to `true` to enable key schema ID validation for the topic, and set `redpanda.key.subject.name.strategy` to the desired subject name strategy for keys of the topic (default: `TopicNameStrategy`). 
+- Set `redpanda.value.schema.id.validation` to `true` to enable value schema ID validation for the topic, and set `redpanda.value.subject.name.strategy` to the desired subject name strategy for values of the topic (default: `TopicNameStrategy`). 
+
+:::info
+The `redpanda.*` properties have corresponding `confluent.*` properties.
+
+| Redpanda property | Confluent property |
+| - | - |
+| `redpanda.key.schema.id.validation` | `confluent.key.schema.validation` |
+| `redpanda.key.subject.name.strategy` | `confluent.key.subject.name.strategy`  |
+| `redpanda.value.schema.id.validation` | `confluent.value.schema.validation` |
+| `redpanda.value.subject.name.strategy` | `confluent.value.subject.name.strategy` |
+
+The `redpanda.*` and `confluent.*` properties are compatible. Either or both can be set simultaneously.
+
+If `subject.name.strategy` is prefixed with `confluent.`, the available subject name strategies must be prefixed with `io.confluent.kafka.serializers.subject.`. For example, `io.confluent.kafka.serializers.subject.TopicNameStrategy`.
+:::
+
+:::note
+To support schema ID validation for compressed topics, a Redpanda broker decompresses each batch written to it so it can access the schema ID.
+:::
+
+### Configuration examples
+
+Create a topic with with `RecordNameStrategy`:
+
+```bash
+rpk topic create topic_foo \
+  --topic-config redpanda.value.schema.id.validation=true \
+  --topic-config redpanda.value.subject.name.strategy=RecordNameStrategy \
+  -X brokers=<broker-addr>:9092
+```
+
+Alter a topic to `RecordNameStrategy`:
+
+```bash
+rpk topic alter-config topic_foo \
+  --set redpanda.value.schema.id.validation=true \
+  --set redpanda.value.subject.name.strategy=RecordNameStrategy \
+  -X brokers=<broker-addr>:9092
+```

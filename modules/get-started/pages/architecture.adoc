@@ -13,6 +13,8 @@ Redpanda xref:manage:tiered-storage.adoc[Tiered Storage] is a multi-tiered objec
 
 Consumers that read from more recent offsets continue to read from local storage, and consumers that read from historical offsets read from object storage, all with the same API. Consumers can read and reread events from any point within the maximum retention period, whether the events reside on local or object storage.
 
+As data in object storage grows, the metadata for it grows. To support efficient long-term data retention, Redpanda splits the metadata in object storage, storing metadata of only recently-updated segments, and safely archiving the remaining metadata in object storage and caching it locally on disk. Archived metadata can be loaded when historical data is accessed. This allows Tiered Storage to handle partitions of virtually any size.
+
 == Partitions
 
 To scale topics, Redpanda shards them into one or more partitions that are distributed across the nodes in a cluster. This allows for concurrent writing and reading from multiple nodes. When producers write to a topic, they route events to one of the topic's partitions. Events with the same key (like a stock ticker) are always routed to the same partition, and Redpanda guarantees the order of events at the partition level. Consumers read events from a partition in the order that they were written. If a key is not specified, then events are sent to all topic-partitions in a round-robin fashion.
@@ -23,7 +25,7 @@ Redpanda provides strong guarantees for data safety and fault tolerance. Events 
 
 Every topic-partition forms a Raft group consisting of a single elected leader and zero or more followers (as specified by the topic's replication factor). A Raft group can tolerate ƒ failures given 2ƒ+1 nodes. For example, in a cluster with five nodes and a topic with a replication factor of five, the topic remains fully operational if two nodes fail.
 
-Raft is a majority vote algorithm. For a leader to acknowledge that an event has been committed to a partition, a majority of its replicas must have written that event to their copy of the log. When a majority (quorum) of responses have been received, the leader can make the event available to consumers and acknowledge receipt of the event when `acks=all (-1)`. xref:develop:produce-data/configure-producers.adoc#producer-acknowledgement-settings[Producer acknowledgement settings] define how producers and leaders communicate their status while transferring data.
+Raft is a majority vote algorithm. For a leader to acknowledge that an event has been committed to a partition, a majority of its replicas must have written that event to their copy of the log. When a majority (quorum) of responses have been received, the leader can make the event available to consumers and acknowledge receipt of the event when `acks=all (-1)`. xref:develop:produce-data:configure-producers:.adoc#producer-acknowledgement-settings[Producer acknowledgement settings] define how producers and leaders communicate their status while transferring data.
 
 As long as the leader and a majority of the replicas are stable, Redpanda can tolerate disturbances in a minority of the replicas. If https://blog.acolyer.org/2017/06/15/gray-failure-the-achilles-heel-of-cloud-scale-systems/[gray failures] cause a minority of replicas to respond slower than normal, then the leader does not have to wait for their responses to progress, and any additional latency is not passed on to the clients. The result is that Redpanda is less sensitive to faults and can deliver predictable performance.
 
@@ -38,6 +40,12 @@ https://raft.github.io/[Raft] uses a heartbeat mechanism to maintain leader auth
 As long as there is a timing inequality between heartbeat time, election timeout, and mean time between node failures (MTBF), then Raft can elect and maintain a steady leader and make progress. A leader can maintain its position as long as one of the ten heartbeat messages it sends to all of its followers every 1.5 seconds is received; otherwise, a new leader is elected.
 
 If a follower triggers an election, but the incumbent leader subsequently springs back to life and starts sending data again, then it's too late. As part of the election process, the follower (now an election candidate) incremented the term and rejects requests from the previous term, essentially forcing a leadership change. If a cluster is experiencing wider network infrastructure problems that result in latencies above the heartbeat timeout, then back-to-back election rounds can be triggered. During this period, unstable Raft groups may not be able to form a quorum. This results in partitions rejecting writes, but no data loss can occur. Redpanda has a Raft-priority implementation that allows the system to settle quickly after network outages.
+
+== Controller partition and snapshots
+
+Redpanda stores metadata update commands (such as creating and deleting topics or users) in a system partition called the controller partition. A new snapshot is created after each controller command is added, or, with rapid updates, after a set period of time (default is 60 seconds). Controller snapshots save the current cluster metadata state to disk, so startup is fast. For example, with a partition that has moved several times, a snapshot can restore the latest state without replaying every move command.
+
+Each broker has a snapshot file stored in the controller log directory, such as `/var/lib/redpanda/data/redpanda/controller/0_0/snapshot`. The controller partition is replicated by a Raft group that includes all cluster brokers, and the controller snapshot is the Raft snapshot for this group. Snapshots are hydrated when a broker joins the cluster or restarts. Controller snapshots are enabled by default only in new clusters. To enable controller snapshots in existing or upgraded clusters, contact https://support.redpanda.com/hc/en-us[Redpanda Support].
 
 == Optimized platform performance
 
@@ -61,6 +69,8 @@ From a sizing perspective, Redpanda's ability to efficiently use all available h
 == Next steps
 
 xref:get-started:quick-start.adoc[Try out Redpanda], or learn about xref:get-started:licenses.adoc[Redpanda Licensing].
+
+'''
 
 == Suggested reading
 

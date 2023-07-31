@@ -1,0 +1,144 @@
+= Migrate from the Redpanda Helm chart
+:description: If you are using the Redpanda Helm chart, you can migrate to the Redpanda Operator and use it to manage your deployment.
+
+If you are using the Redpanda Helm chart, you can migrate to the Redpanda Operator and use it to manage your Helm deployment.
+
+The Redpanda Operator complements the Redpanda Helm chart by extending Kubernetes with custom resource definitions (CRDs). These CRDs allow Redpanda clusters to be represented as native Kubernetes resources. This abstraction makes it simpler to manage the lifecycle of Redpanda deployments, as the Redpanda Operator takes the specifications declared in the Redpanda custom resources and passes them to Helm for execution.
+
+When using the Redpanda Operator, configurations defined in the custom resources are passed to Helm, which then deploys the Redpanda cluster using the Redpanda Helm chart.
+
+:::caution
+Redpanda Operator is in beta. Do not migrate existing production clusters to the Redpanda Operator.
+:::
+
+== Prerequisites
+
+Before migrating to the Redpanda Operator, you must have:
+
+* The name of your existing Helm release and the latest version of the Redpanda Helm chart that you have deployed.
++
+[,bash]
+----
+helm list -A
+----
++
+In this example the chart version is 5.0.1 and the release name is `redpanda`.
++
+[,nocopy]
+----
+NAME       CHART
+redpanda   redpanda-5.0.1
+----
++
+Make a note of your name and version for the next steps. You'll need to configure your Redpanda custom resource with these details.
+
+* Your values overrides.
++
+[,bash]
+----
+helm get values <release-name> --namespace <namespace>
+----
++
+You should see your overrides in YAML format. You'll need to configure your Redpanda custom resource with these details.
+
+:::tip
+Before implementing any changes in your production environment, Redpanda Data recommends testing the migration in a non-production environment.
+:::
+
+== Migrate to the Redpanda Operator and Helm
+
+To migrate to the latest Redpanda Operator and use it to manage your Helm deployment, follow these steps.
+
+. Make sure that you have permission to install custom resource definitions (CRDs):
+
+[,bash]
+----
+  kubectl auth can-i create CustomResourceDefinition
+----
+
+You need cluster-level permissions to install the Redpanda Operator CRDs in the next steps.
+
+. Install the Redpanda Operator custom resource definitions (CRDs):
+
+[,bash]
+----
+  kubectl kustomize https://github.com/redpanda-data/redpanda//src/go/k8s/config/crd | kubectl apply -f -
+----
+
+. Install the Redpanda Operator _in the same namespace as your Redpanda Helm chart_:
+
+[,bash]
+----
+  helm repo add redpanda https://charts.redpanda.com
+  helm upgrade --install redpanda-controller redpanda/operator \
+    --namespace <namespace> \
+    --set image.repository=docker.redpanda.com/redpandadata/redpanda-operator \
+    --set image.tag=v23.2.1 \
+    --create-namespace
+----
+
+. Ensure that the Deployment is successfully rolled out:
+
+[,bash]
+----
+  kubectl --namespace <namespace> rollout status --watch deployment/redpanda-controller
+----
+
+[,text-nocopy]
+----
+  deployment "redpanda-controller" successfully rolled out
+----
+
+. Configure a Redpanda custom resource that Redpanda Operator will use to adopt your Redpanda cluster.
+
+Replace the placeholders with the values identified in the <<prerequisites,prerequisites>>.
+
+```yaml title="redpanda-cluster.yaml"
+  apiVersion: cluster.redpanda.com/v1alpha1
+  kind: Redpanda
+  metadata:
+    annotations:
+      cluster.redpanda.com/managed: "true"
+    creationTimestamp: null
+    name: +++<release-name>+++spec: chartRef: chartVersion: +++<chart-version>+++clusterSpec: +++<chart-overrides>++++++</chart-overrides>++++++</chart-version>++++++</release-name>+++
+
+----
+
+  :::note
+  By selecting the correct chart version, you ensure control over your deployment. If you don't select a chart version, the operator may upgrade your chart, potentially causing unintended downtime.
+  :::
+
+  :::tip
+  The Redpanda Operator passes these values to the Redpanda Helm chart. The keys in the `clusterSpec` field are the same as those in the Redpanda Helm chart. For details on the structure and configuration options of the Redpanda custom resource, refer to the [Redpanda Operator CRD reference](../../../../reference/crd#redpandaclusterspec).
+  :::
+
+1. Adopt the Redpanda cluster by creating an instance of the Redpanda custom resource in the same namespace as the Redpanda Operator:
+
+  ```bash
+  kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+----
+
+. Wait for the Redpanda resource to successfully reach a `deployed` state:
+
+[,bash]
+----
+  kubectl get redpanda --namespace <namespace> --watch
+----
+
+Example output:
+
+[,nocopy]
+----
+  NAME       READY   STATUS
+  redpanda   True    Redpanda reconciliation succeeded
+----
+
+== Troubleshooting
+
+While the deployment process can sometimes take a few minutes, a prolonged 'not ready' status may indicate an issue. See xref:manage:kubernetes:troubleshooting:troubleshoot.adoc#helmrelease-is-not-ready[Troubleshoot Redpanda in Kubernetes] for more details.
+
+If you cannot solve the issue or you need assistance during the migration process, https://github.com/redpanda-data/redpanda/issues/new/choose[open a GitHub issue] in the Redpanda repository. Before opening a new issue, search the existing issues on GitHub to see if someone has already reported a similar problem or if any relevant discussions that can help you.
+
+== Next steps
+
+For information about the latest Redpanda Operator and the new Redpanda custom resource, see xref:deploy:deployment-option:self-hosted:kubernetes:kubernetes-production-deployment.adoc[Redpanda in Kubernetes].

@@ -1,0 +1,251 @@
+---
+title: Configure Redpanda in Kubernetes
+tags:
+  - Kubernetes
+---
+
+<head>
+    <meta name="title" content="Configure Redpanda in Kubernetes | Redpanda Docs"/>
+    <meta name="description" content="To configure the cluster and the Kubernetes components that the chart deploys, you can customize the values of the Redpanda Helm chart."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/manage/kubernetes/configure-helm-chart/" />
+</head>
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import ValuesYaml from './shared/_values-yaml.mdx'
+
+To configure the cluster and the Kubernetes components that the chart deploys, you can customize the values of the Redpanda Helm chart.
+
+Helm does a three-way merge with the following:
+
+- Your overridden values
+- The values in the existing Helm release
+- The default values in the new Helm release (if you're upgrading)
+
+## Find configuration options
+
+To see what options you can override in the chart, use the `helm show values` command:
+
+```bash
+helm repo add redpanda https://charts.redpanda.com
+helm repo update
+helm show values redpanda/redpanda
+```
+
+This command displays all the values, descriptions, and defaults, which are also documented in the [Redpanda Helm Chart Specification](../../../reference/redpanda-helm-spec).
+
+## Configure Redpanda
+
+To customize the Redpanda Helm chart values, you can either override the defaults in the Redpanda custom resource when using Helm and Redpanda Operator, or override the defaults using the `--values` option or `--set` option in the command line when using only Helm.
+
+<Tabs groupId="kubernetes-tool">
+<TabItem value="operator" label="Helm + Operator">
+
+To customize the values of the Redpanda Helm chart, you can override the defaults in the [Redpanda custom resource](../../../reference/crd#redpanda).
+
+You must add all your overrides to the `spec.clusterSpec` configuration.
+
+```yaml
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec: {}
+```
+
+For example, to override the `storage.persistentVolume.storageClass` configuration:
+
+```yaml title="redpanda-cluster.yaml"
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    storage:
+      persistentVolume:
+        storageClass: "<storage-class>"
+```
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+The values in your Redpanda custom resource override their counterparts in the Helm chart's `values.yaml` file. Any values that are not overridden maintain their defaults.
+
+</TabItem>
+<TabItem value="helm" label="Helm">
+
+To customize the values of the Redpanda Helm chart, you can override the defaults in your own YAML file with the `--values` option or in the command line with the `--set` option.
+
+:::tip
+Redpanda Data recommends using the `--values` option and creating separate YAML files for each configuration block that you need to override. The Redpanda documentation follows this best practice.
+This way, it's clearer to understand what you've overridden from the `helm` command.
+
+You can pass more than one `--values` option in the same command. For example, if you wanted to override the TLS configuration and the storage configuration, you could put those overrides in separate files:
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda \
+    --namespace <namespace> --create-namespace \
+    --values custom-storage-class.yaml \
+    --values enable-tls.yaml
+```
+:::
+
+
+<!--
+[tabs]
+=====
+--values::
++
+--
+The `--values` option enables you to keep your overrides in one or more YAML files.
+If you specify multiple files and then override the same values in two or more of them, the rightmost file takes precedence.
+For example, you might override the `storage.persistentVolume.storageClass` configuration in a file called `storage-class.yaml`:
+
+```yaml title="storage-class.yaml"
+storage:
+  persistentVolume:
+    storageClass: "my-storage-class"
+
+----
+
+The `helm` command to apply this configuration override looks something like the following:
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda \
+    --namespace <namespace> --create-namespace \
+    --values storage-class.yaml --reuse-values
+----
+
+The values in your YAML files override their counterparts in the Helm chart's `values.yaml` file. Any values that are not overridden maintain their defaults.
+
+Use the `--reuse-values` flag to apply your overrides on top of existing overrides that you've already made. Don't include this flag if you're upgrading to a new version of the Helm chart. If you're upgrading to a new version of the Helm chart, this flag prevents any values in the new release from being applied.
+
+--
+--set::
++
+--
+The `--set` option allows you to specify configuration overrides in the command line.
+For example, you might override the `storage.persistentVolume.storageClass` configuration like so:
+
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda \
+    --namespace <namespace> --create-namespace \
+    --set storage.persistentVolume.storageClass=my-storage-class
+----
+
+For more details, see the https://helm.sh/docs/intro/using_helm/#customizing-the-chart-before-installing[Helm documentation].
+
+The values in the `--set` options override their counterparts in the Helm chart's `values.yaml` file. Any values that are not overridden maintain their defaults.
+
+--
+=====
+-->
+</TabItem>
+</Tabs>
+
+:::info
+If you're upgrading and you already have Redpanda Console installed, set `console.enabled` to `false` to stop Helm from trying to deploy it again.
+:::
+
+## Configure Redpanda Console
+
+Redpanda Console is included as a subchart of the Redpanda Helm chart.
+
+You can configure Redpanda Console in the `console.config` object using the [Redpanda Console configuration values](../../../reference/console/config).
+
+For example, to enable the admin API for Redpanda Console:
+
+<Tabs groupId="kubernetes-tool">
+<TabItem value="operator" label="Helm + Operator">
+
+```yaml title="redpanda-cluster.yaml"
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    console:
+      enabled: true
+      config:
+        console:
+          redpanda:
+            adminApi:
+              enabled: true
+              urls:
+              - http://redpanda-0.redpanda.redpanda.svc.cluster.local.:9644
+```
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+
+
+</TabItem>
+<TabItem value="helm" label="Helm">
+
+
+<!--
+[tabs]
+=====
+--values::
++
+--
+```yaml title="console-enable-admin-api.yaml"
+console:
+  enabled: true
+  config:
+    console:
+      redpanda:
+        adminApi:
+          enabled: true
+          urls:
+          - http://redpanda-0.redpanda.redpanda.svc.cluster.local.:9644
+
+----
+
+```bash
+helm upgrade --install redpanda redpanda/redpanda \
+    --namespace <namespace> --create-namespace \
+    --values console-enable-admin-api.yaml --reuse-values
+----
+
+--
+--set::
++
+--
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda \
+    --namespace <namespace> --create-namespace \
+    --set console.console.config.redpanda.adminApi.enabled=true \
+    --set console.console.config.redpanda.adminApi.urls={"http://redpanda-0.redpanda.redpanda.svc.cluster.local.:9644"}
+----
+
+--
+=====
+-->
+If you want to use the separate Redpanda Console Helm chart, disable Redpanda Console in the Redpanda Helm chart with `console.enabled=false`.
+To see what options you can override in the Redpanda Console chart, use the `helm show values` command:
+
+```bash
+helm repo add redpanda https://charts.redpanda.com
+helm repo update
+helm show values redpanda/console
+```
+
+For default values and documentation for configuration options, see the [`values.yaml`](https://artifacthub.io/packages/helm/redpanda-data/console?modal=values) file.
+</TabItem>
+</Tabs>
+
+## Suggested reading
+
+See the [Helm documentation](https://helm.sh/docs/intro/using_helm/#customizing-the-chart-before-installing).

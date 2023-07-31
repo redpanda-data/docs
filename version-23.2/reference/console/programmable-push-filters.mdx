@@ -1,0 +1,60 @@
+---
+title: Programmable Push Filters
+---
+
+<head>
+    <meta name="title" content="Filtering Kafka Records In Message Viewer | Redpanda Docs"/>
+    <meta name="description" content="Filtering Kafka records in Console's message viewer based on your provided JavaScript code."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/reference/console/programmable-push-filters/" />
+</head>
+
+You can use Redpanda Console's programmable push filters to search for a specific message within a Kafka topic.
+Programmable push filters enable you to write a TypeScript/JavaScript function body that **runs in the backend** and is called for 
+every individual Kafka record. The code has to return a boolean. If your code returns `true`, the backend sends the record to the frontend. 
+Otherwise the record will be skipped and Redpanda Console will continue to consume records until the selected number
+of max search results has been reached or "the end" of the topic hit.
+
+Redpanda Console injects the following variables into your function, which you can use in your filter code:
+
+- `partitionId` - the record's partition ID
+- `offset` - the record's offset within its' partition
+- `key` - the record's key in its decoded form
+- `value` - the record's value in its decoded form
+
+:::note
+Keys and values are passed into your JavaScript code in their decoded form. That means the
+deserialization logic (for example, decode an Avro serialized byte array to a JSON object)is applied first, before injecting it into
+the JavaScript function. If your message is presented as a JSON object in the UI, you can also access it
+like a JavaScript object in your filter code.
+:::
+
+If you have a series of Avro, JSON or Protobuf encoded record values which deserialize to JSON objects like this:
+
+```json
+{
+    "event_type": "BASKET_ITEM_ADDED",
+    "event_id": "777036dd-1bac-499c-993a-8cc86cee3ccc"
+    "item": {
+        "id": "895e443a-f1b7-4fe5-ad66-b9adfe5420b9",
+        "name": "milk"
+    }
+}
+```
+
+```ts
+return value.item.id == "895e443a-f1b7-4fe5-ad66-b9adfe5420b9"
+```
+
+Redpanda Console allows you to use more than one filter function at the same time. If you start a search while having multiple
+filters active, they are combined with a logical OR. Accordingly, as soon as one function returns true, the record will be sent
+to the frontend.
+
+## Resource usage and performance
+
+You can use Redpanda Console's filter engine against topics with millions of messages, as the filter code is evaluated in the backend
+where more resources are available. However, while the filter engine is fairly efficient it will potentially consume all available CPU
+resources and may cause significant network traffic due to the number of consumed Kafka messages.
+
+Usually the performance is constrained by the available CPU resources. Depending on the used JavaScript code and the messages, the expected
+performance is around ~15k-20k filtered messages per second for each available core. The request is only processed on a single instance and
+cannot be shared across multiple instances.

@@ -1,0 +1,103 @@
+---
+title: Upgrade Kubernetes on Worker Nodes Running Redpanda
+tags:
+  - Kubernetes
+deployment: Kubernetes
+linkRoot: ../../../
+description: Upgrading the Kubernetes version in a cluster ensures that your infrastructure is up to date and secure. This process involves updating the Kubernetes control plane and worker nodes to a new version while also making sure that the Redpanda cluster continues to function with minimal downtime.
+---
+
+<head>
+    <meta name="title" content="Upgrade Kubernetes on Worker Nodes Running Redpanda | Redpanda Docs"/>
+    <meta name="description" content="Upgrading the Kubernetes version in a cluster ensures that your infrastructure is up to date and secure. This process involves updating the Kubernetes control plane and worker nodes to a new version while also making sure that the Redpanda cluster continues to function with minimal downtime."/>
+    <link rel="canonical" href="https://docs.redpanda.com/docs/manage/kubernetes/upgrade-kubernetes/" />
+</head>
+
+Upgrading the Kubernetes version in a cluster ensures that your infrastructure is up to date and secure. This process involves updating the Kubernetes control plane and worker nodes to a new version while also making sure that the Redpanda cluster continues to function with minimal downtime.
+
+## Prerequisites
+
+- A staging environment in which to test the upgrade procedure before performing it in production.
+
+- A running Redpanda deployment on a Kubernetes cluster.
+
+- Familiarity with your hosting platform (GKE, EKS, AKS, or self-hosted) and any CLI tools your platform provides, such as `gcloud` or `eksctl`.
+
+- Confirmation that the new version of Kubernetes is compatible with the version of Redpanda you are using. See the [Helm chart requirements](../../../reference/redpanda-helm-spec#requirements).
+
+## Minimize data loss and downtime during Kubernetes upgrades
+
+Upgrading the Kubernetes version involves updating Kubernetes components and other dependencies, which requires node restarts. To minimize data loss and downtime during the upgrade process, you must take precautions. This section outlines essential information on how the Helm chart helps maintain high availability and what steps you can take to avoid data loss, depending on the type of storage volumes that you use.
+
+The Helm chart provides the following features to minimize data loss and downtime during the upgrade process:
+
+- A Pod Disruption Budget (PDB) that limits the number of concurrently unavailable Pods within the StatefulSet, ensuring the desired level of redundancy. Hosting platforms such as EKS and GKE respect the PDB during node upgrades, providing a safer upgrade process. For the default PDB, see [`budget.maxUnavailable`](../../../reference/redpanda-helm-spec#statefulsetbudgetmaxunavailable) in the Helm chart.
+
+- Graceful shutdowns for all Pods within the StatefulSet to reduce potential data corruption.
+
+Depending on your type of storage volume, you must take precautions to ensure your deployment can tolerate node restarts and avoid data loss:
+
+### PersistentVolumes
+
+If you use PersistentVolumes (PV) to store Redpanda data, take the following precautions:
+
+- Verify compatibility between your storage classes and PersistentVolumes (PV) configurations with the new Kubernetes version.
+
+- If you use local-storage-backed PVs (such as Rancher Local Path Provisioner), your data is bound to the node where the PV is created, risking data loss during node deletions or failures. To minimize the risk of data loss, see [Best practices for local storage](#best-practices-for-local-storage).
+
+  Data in remote PVs remains safe during upgrades, as the PV is decoupled from the worker nodes.
+
+### `hostPath`
+
+Data in `hostPath` volumes is bound to a specific node, risking data loss during node deletions or failures. To minimize the risk of data loss, see [Best practices for local storage](#best-practices-for-local-storage).
+
+### `emptyDir`
+
+Data in `emptyDir` volumes is ephemeral and will be lost when the container is terminated or the node is deleted. To minimize the risk of data loss, see [Best practices for local storage](#best-practices-for-local-storage).
+
+### Best practices for local storage
+
+When using local storage (local PV, `hostPath`, or `emptyDir`), data loss can occur during Kubernetes upgrades. To minimize the risk of data loss, follow these best practices before you upgrade:
+
+
+- **Replicate all topics**: If you have topics with a replication factor of 1, temporarily increase the replication factor of those topics before you upgrade. A replication factor of at least 2 ensures that even if one node experiences data loss, you can still recover the data from a replica on another node. See [`rpk topic alter-config`](../../../reference/rpk/rpk-topic/rpk-topic-alter-config).
+
+  ```bash
+  rpk topic alter-config [<topic-name>,] --set replication.factor=<replication-factor>
+  ```
+
+  After increasing the replication factor, [monitor for under-replicated partitions](../monitor#under-replicated-partitions) and wait until all partitions are replicated.
+
+- **Delete PVCs**: If you are using local-storage-backed PVs in Kubernetes version 1.26 or earlier, make sure to delete the PersistentVolumeClaims (PVC) before upgrading the worker node. Otherwise, your Pods will remain in a pending state when they are rescheduled because the PVs are bound to the node through node affinity. Keep in mind that deleting a PVC does not remove it from the system immediately. Instead, a `deletionTimestamp` is set on the PVC, but it will not be deleted until the associated Pod is terminated.
+
+- **Decommission brokers**: Decommission the broker on the worker node planned for an upgrade. Decommissioning ensures no data loss by gracefully moving the broker's topic partitions and replicas to other brokers in the cluster. See [Decommission Brokers](../decommission-brokers).
+
+## Upgrade Kubernetes on your hosting platform
+
+In this section, you can find helpful resources for upgrading Kubernetes on different hosting platforms.
+
+Before you upgrade, make sure that you've read the [prerequisites](#prerequisites) and the section on [minimizing data loss and downtime](#minimize-data-loss-and-downtime-during-kubernetes-upgrades).
+
+For all hosting platforms, you must upgrade the control plane first. Control plane components are backward-compatible with older worker node versions. Some hosting platforms may upgrade the control plane for you automatically.
+
+Before you upgrade a worker node, make sure that it is cordoned to prevent new Pods from being scheduled on it. Then, make sure that it is drained to ensure that any running Pods are safely evicted before the upgrade. The eviction process minimizes the risk of data loss or corruption by triggering a graceful shutdown of the Pods.
+
+- [Upgrade on GKE (Google Kubernetes Engine)](https://cloud.google.com/kubernetes-engine/docs/how-to/upgrading-a-cluster)
+
+- [Upgrade on EKS (Elastic Kubernetes Service)](https://docs.aws.amazon.com/eks/latest/userguide/update-cluster.html)
+
+- [Upgrade on AKS (Azure Kubernetes Service)](https://learn.microsoft.com/en-us/azure/aks/upgrade-cluster?tabs=azure-cli)
+
+- [Upgrade on Self-Hosted](https://kubernetes.io/docs/tasks/administer-cluster/cluster-upgrade/)
+
+After completing the upgrade process, verify the health of your Redpanda deployment and ensure that data has been retained as expected.
+
+## Suggested reading
+
+- [Kubernetes Pod Disruption Budgets](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/)
+
+- [Helm documentation](https://helm.sh/docs/)
+
+- [Decommission brokers](../decommission-brokers)
+
+- [`rpk topic alter-config`](../../../reference/rpk/rpk-topic/rpk-topic-alter-config)
