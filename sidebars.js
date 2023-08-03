@@ -22,6 +22,7 @@
       label: "Get Started",
       link: { type: "doc", id: "get-started/index" },
       items: [
+        "get-started/whats-new",
         {
           type: "doc",
           label: "Introduction to Redpanda",
@@ -282,7 +283,12 @@
                     },
                   ]
                 },
-              ]
+                {
+                  type: "doc",
+                  label: "Connectors",
+                  id: "deploy/deployment-option/self-hosted/docker-image",
+                },
+                 ]
             },
             {
               type: "category",
@@ -492,12 +498,13 @@
     },
     {
       "type": "category",
-      "label": "Migrate",
+      "label": "Upgrade",
       "link": {
         "type": "doc",
         "id": "upgrade/migrate/index"
       },
       "items": [
+        "manage/cluster-maintenance/rolling-upgrade",
         {
           "type": "doc",
           "label": "Migrate from the Redpanda Helm chart",
@@ -750,11 +757,6 @@
                     type: "doc",
                     label: "Decommission Brokers",
                     id: "manage/cluster-maintenance/decommission-brokers",
-                  },
-                  {
-                    type: "doc",
-                    label: "Upgrade",
-                    id: "manage/cluster-maintenance/rolling-upgrade",
                   },
                   {
                     type: "doc",

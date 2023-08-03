@@ -1,0 +1,81 @@
+= Delete PersistentVolumes in Kubernetes
+:description: Deleting a PersistentVolume (PV) can be necessary for a variety of reasons, such as removing a broker and its data from the cluster or performing maintenance or upgrades on the PersistentVolume.
+:tags: ["Kubernetes"]
+
+Deleting a PersistentVolume (PV) can be necessary for a variety of reasons, such as removing a broker and its data from the cluster or performing maintenance or upgrades on the PersistentVolume.
+
+== Prerequisites
+
+* A running Redpanda deployment on a Kubernetes cluster.
+* PersistentVolumes for either the Redpanda data directory or the Tiered Storage cache.
+
+== Delete a PersistentVolume
+
+To delete a PersistentVolume, follow these steps to ensure that your data is moved to other brokers in the cluster.
+
+. Identify the PV that you want to delete:
++
+[,bash]
+----
+kubectl get persistentvolume
+----
+
+. Decommission the broker that has a PersistentVolumeClaim (PVC) bound to the PV. Decommissioning ensures no data loss by gracefully moving the broker's topic partitions and replicas to other brokers in the cluster. See xref:./decommission-brokers.adoc[Decommission Brokers].
+. Delete the PVC that is bound to your PV:
++
+[,bash]
+----
+kubectl delete persistentvolumeclaim <pvc-name> --namespace <namespace>
+----
+
+. If the `reclaimPolicy` of your PV is not `Delete`, delete the PV:
++
+[,bash]
+----
+kubectl delete persistentvolume <pv-name>
+----
+
+. Delete the Pod whose PVC was bound to the deleted PV:
++
+The StatefulSet schedules a new Pod on the same worker node and assigns it a unique node ID.
++
+If you use PVs for the Redpanda data directory, the Pod will have a new PVC bound to a PV that is set in xref:reference:redpanda-helm-spec.adoc#storagepersistentvolumestorageclass[`storage.persistentVolume.storageClass`]. See xref:./configure-storage.adoc[Use PersistentVolumes].
++
+If you use PVs for the Tiered Storage cache, the Pod will have a new PVC bound to a PV that is set in xref:reference:redpanda-helm-spec.adoc#storagetieredstoragepersistentvolumestorageclass[`storage.tieredStoragePersistentVolume.storageClass`]. See xref:./tiered-storage.adoc#caching[Tiered Storage Caching].
+
+. Verify that the new Redpanda broker is running and that it has access to the appropriate PersistentVolume.
++
+[tabs]
+====
+TLS Enabled::
++
+--
+
+```bash
+kubectl --namespace <namespace> exec -ti redpanda-0 -c redpanda -- \
+  rpk cluster info \
+    -X brokers=<broker-url>:<kafka-api-port> \
+    --tls-enabled \
+    --tls-truststore <path-to-kafka-api-ca-certificate>
+```
+
+--
+TLS Disabled::
++
+--
+
+```bash
+kubectl --namespace <namespace> exec -ti redpanda-0 -c redpanda -- \
+  rpk cluster info \
+    -X brokers=<broker-url>:<kafka-api-port>
+```
+
+--
+====
+
+You should see your new broker running with a new node ID.
+
+== Suggested reading
+
+- https://kubernetes.io/docs/concepts/storage/persistent-volumes/[PersistentVolume documentation]
+- https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/[StatefulSet documentation]
