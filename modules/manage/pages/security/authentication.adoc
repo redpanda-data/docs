@@ -63,7 +63,7 @@ rpk acl user create admin \
 -X admin.hosts=localhost:9644
 ----
 
-For information about using `rpk` to manage ACL users, see xref:reference:rpk/rpk-acl.adoc[rpk acl].
+For information about using `rpk` to manage ACL users, see xref:reference:rpk/rpk-acl/rpk-acl.adoc[rpk acl].
 
 TIP: As a security best practice, don't use the superuser to interact with the cluster, and don't delete the superuser (in case you need to grant permissions to new users later). In addition, when you create the superuser, you specify a password, which adds a level of security. If you delete the user, someone else could re-create the user with a different password.
 
@@ -112,7 +112,6 @@ redpanda:
       name: sasl_listener
 
       authentication_method: sasl
-
 ----
 
 === Enable SASL with TLS encryption
@@ -139,7 +138,6 @@ redpanda:
       truststore_file: ca.crt
       enabled: true
       require_client_auth: false
-
 ----
 
 === Enable Kerberos
@@ -186,72 +184,86 @@ rpk cluster config set sasl_kerberos_principal <name>
 ----
 rpk cluster config set sasl_kerberos_principal_mapping '["RULE:[1:$1@$0](.*@MYDOMAIN.COM)s/@.*//","DEFAULT"]'
 ----
-
++
 By default, Redpanda matches the primary of the Kerberos UPN of the user. Each rule has the following format:
-
++
 * `RULE:[n:string](regexp)s/pattern/replacement/g/c` where:
- ** `n` is an integer that indicates how many components the target principal should have.
- ** If this matches, then a string is formed from `string`, substituting the realm of the principal for `$0` and the `n``'th component of the principal for `$n`. (For example, if the principal is `johndoe/admin@realm.com`, then `[2:$2$1foo]` results in the string `adminjohndoefoo`.)
- ** If this string matches `regexp`, then the `s//[g]` substitution command is run over the string.
- ** `g` is optional. It causes the substitution to be global over the string, instead of replacing only the first match in the string.
- ** `c` is optional. It can be either `/L` or `/U` to make the match lowercase or uppercase.
-
-....
+** `n` is an integer that indicates how many components the target principal should have.
+** If this matches, then a string is formed from `string`, substituting the realm of the principal for `$0` and the `n``'th component of the principal for `$n`. (For example, if the principal is `johndoe/admin@realm.com`, then `[2:$2$1foo]` results in the string `adminjohndoefoo`.)
+** If this string matches `regexp`, then the `s//[g]` substitution command is run over the string.
+** `g` is optional. It causes the substitution to be global over the string, instead of replacing only the first match in the string.
+** `c` is optional. It can be either `/L` or `/U` to make the match lowercase or uppercase.
 * `DEFAULT` The principal name is used as the local user name. If the principal has more than one component or is not in the default realm, then the conversion fails.
-....
-
++
 Examples of a Kerberos UPN without a host (`jdoe@EXAMPLE.COM`) and with a host (`jdoe/host@EXAMPLE.COM`):
++
+|===
+| Translation | `jdoe@EXAMPLE.COM` | `jdoe/host@EXAMPLE.COM`
+| `[1:$1@$0]`
+| `jdoe@EXAMPLE.COM`
+| Rule does not matchfootnote:two-components[Rule does not match because there are two components in principal name `jdoe/host@EXAMPLE.COM`.]
 
-| Translation | `jdoe@EXAMPLE.COM` | `jdoe/host@EXAMPLE.COM` |
-  | -- | -- | -- |
-  | `[1:$1@$0]` | `jdoe@EXAMPLE.COM` | Rule does not match ¹ |
-  | `[1:$1]` | `jdoe` | Rule does not match ¹ |
-  | `[1:$1.foo]` | `jdoe.foo` | Rule does not match ¹ |
-  | `[2:$1/$2@$0]` | Rule does not match ² | `jdoe/host@EXAMPLE.COM` |
-  | `[2:$1/$2]` | Rule does not match ² | `jdoe/host` |
-  | `[2:$1@$0]` | Rule does not match ² | `jdoe@EXAMPLE.COM` |
-  | `[2:$1]` | Rule does not match ² | `jdoe` |
-  | `DEFAULT` | `jdoe` | `jdoe` |
-  ¹ Rule does not match because there are two components in principal name `jdoe/host@EXAMPLE.COM`.
+| `[1:$1]`
+| `jdoe`
+| Rule does not matchfootnote:two-components[]
 
-² Rule does not match because there is one component in principal name `jdoe@EXAMPLE.COM`.
+| `[1:$1.foo]`
+| `jdoe.foo`
+| Rule does not matchfootnote:two-components[]
 
+| `[2:$1/$2@$0]`
+| Rule does not matchfootnote:one-component[Rule does not match because there is one component in principal name `jdoe@EXAMPLE.COM`.]
+| `jdoe/host@EXAMPLE.COM`
+
+| `[2:$1/$2]`
+| Rule does not matchfootnote:one-component[]
+| `jdoe/host`
+
+| `[2:$1@$0]`
+| Rule does not matchfootnote:one-component[]
+| `jdoe@EXAMPLE.COM`
+
+| `[2:$1]`
+| Rule does not matchfootnote:one-component[]
+| `jdoe`
+
+| `DEFAULT`
+| `jdoe`
+| `jdoe`
+|===
++
 The first rule that matches is used to extract a principal.
 
 . Append the list of allowed SASL mechanisms that clients can use to authenticate against the Kafka API.
-
++
 To get the list of all allowed SASL mechanisms, run:
-
++
 [,bash]
 ----
-   rpk cluster config get sasl_mechanisms
-----+++<details>++++++<summary>+++Example output+++</summary>+++ In this case, Redpanda supports only SCRAM: ```bash SCRAM ```+++</details>+++
-
+rpk cluster config get sasl_mechanisms
+----
++
 To add support for Kerberos, append the `sasl_mechanisms` property with the value `GSSAPI`:
-
++
 [,bash]
 ----
-  rpk cluster config set sasl_mechanisms '["SCRAM","GSSAPI"]'
+rpk cluster config set sasl_mechanisms '["SCRAM","GSSAPI"]'
 ----
 
 . Enable SASL, if not already enabled:
-
++
 [,bash]
 ----
-  rpk cluster config set kafka_enable_authorization true
+rpk cluster config set kafka_enable_authorization true
 ----
 
-:::note
-If you're configuring authentication for the first time, you may need to configure xref:security:authorization.adoc#acls[ACLs] before users can access Redpanda resources.
-:::
+NOTE: If you're configuring authentication for the first time, you may need to configure xref:./authorization.adoc#acls[ACLs] before users can access Redpanda resources.
 
 === Configure Schema Registry and HTTP Proxy to connect to Redpanda with SASL
 
 Schema Registry and HTTP Proxy connect to Redpanda over the Kafka API. For the Kafka username and password, Redpanda uses ephemeral credentials internal to the cluster. Ephemeral credentials are regular SCRAM credentials, but they're only stored in memory and are lost when a broker restarts. When the Schema Registry or HTTP Proxy start up, they broadcast an ephemeral credential to other brokers over the internal RPC. If authentication fails to a particular broker, new ephemeral credentials are sent to that broker, and the service reconnects.
 
-:::note
-Schema Registry and HTTP Proxy support SASL/SCRAM but do not support SASL/GSSAPI.
-:::
+NOTE: Schema Registry and HTTP Proxy support SASL/SCRAM but do not support SASL/GSSAPI.
 
 ==== Manual configuration
 
@@ -261,7 +273,6 @@ In `redpanda.yaml`, for `schema_registry_client`, add:
 
 [,yaml]
 ----
-
 schema_registry_client:
   brokers:
     - address: 127.0.0.1
@@ -269,7 +280,6 @@ schema_registry_client:
   scram_username: <username>
   scram_password: <password>
   sasl_mechanism: SCRAM-SHA-256
-
 ----
 
 If TLS is in use, additional configuration is required:
@@ -280,13 +290,11 @@ schema_registry_client:
   brokers:
     - address: 127.0.0.1
       port: 9092
-
   broker_tls:
     key_file: broker.key
     cert_file: broker.crt
     truststore_file: ca.crt
     enabled: true
-
   scram_username: <username>
   scram_password: <password>
   sasl_mechanism: SCRAM-SHA-256
@@ -296,9 +304,7 @@ HTTP Proxy has a similar configuration, but in `redpanda.yaml`, for `pandaproxy_
 
 [,yaml]
 ----
-
 pandaproxy_client:
-
   brokers:
     - address: 127.0.0.1
       port: 9092
@@ -322,7 +328,7 @@ rpk topic describe test-topic \
 --user admin \
 --password <password> \
 --sasl-mechanism SCRAM-SHA-256 \
--X brokers=localhost:9092
+--brokers localhost:9092
 ----
 
 [,bash]
@@ -342,18 +348,14 @@ message.timestamp.type  CreateTime  DEFAULT_CONFIG
 ...
 ----
 
-:::note
-rpk supports SASL/SCRAM, but not SASL/GSSAPI. To create a SASL/SCRAM user, see xref:security:authorization.adoc#user-create[User create].
-:::
+NOTE: rpk supports SASL/SCRAM, but not SASL/GSSAPI. To create a SASL/SCRAM user, see xref:./authorization.adoc#user-create[User create].
 
 == Configure basic authentication
 
-:::note
-Basic authentication is supported on the Admin API, Schema Registry, and HTTP Proxy.
-:::
+NOTE: Basic authentication is supported on the Admin API, Schema Registry, and HTTP Proxy.
 
 To configure basic authentication on the Admin API, set xref:reference:cluster-properties.adoc#admin[`admin_api_require_auth`] to `true`.
-Administrators create users with xref:reference:rpk:rpk-acl:rpk-acl-user-create.adoc[`rpk acl user create`]. This adds users to the Redpanda credential store that HTTP basic authentication uses.
+Administrators create users with xref:reference:rpk/rpk-acl/rpk-acl-user-create.adoc[`rpk acl user create`]. This adds users to the Redpanda credential store that HTTP basic authentication uses.
 
 You can enable basic authentication to use Kafka API username/password credentials to authenticate to HTTP Proxy and Schema Registry. This requires that SASL is turned on for Kafka API endpoints.
 
@@ -401,21 +403,15 @@ redpanda:
   kafka_api:
     - address: 0.0.0.0
       port: 9092
-
       name: mtls_listener
       authentication_method: mtls_identity
-
   kafka_api_tls:
-
     - name: mtls_listener
-
       key_file: mtls_broker.key
       cert_file: mtls_broker.crt
       truststore_file: mtls_ca.crt
-
       enabled: true
       require_client_auth: true
-
 ----
 
 By default, Redpanda matches the entire DN. To override the default, specify `kafka_mtls_principal_mapping_rules`. This is a list of rules that provide a mapping from DN to principal.
@@ -469,30 +465,27 @@ schema_registry_client:
   brokers:
     - address: 127.0.0.1
       port: 9092
-
   broker_tls:
     key_file: schema_registry.key
     cert_file: schema_registry.crt
     truststore_file: ca.crt
     enabled: true
-
 pandaproxy_client:
   brokers:
     - address: 127.0.0.1
       port: 9092
-
   broker_tls:
     key_file: pandaproxy.key
     cert_file: pandaproxy.crt
     truststore_file: ca.crt
     enabled: true
-
 ----
 
 == Disable authentication
 
 To disable authentication for a listener, set `authentication_method` to `none`:
 
+[,yaml]
 ----
 pandaproxy:
   pandaproxy_api:
@@ -513,6 +506,7 @@ To disable authentication on the Kafka API, disable `kafka_enable_authorization`
 
 For example, run `rpk cluster config set kafka_enable_authorization false`, and set the following:
 
+[,yaml]
 ----
 redpanda:
   kafka_api:
