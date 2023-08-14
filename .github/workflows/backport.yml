@@ -1,4 +1,4 @@
-name: Backport changes to maintenance branches
+name: Backport changes to all maintenance branches
 
 on:
   pull_request:
@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       branches: ${{ steps.get-labels.outputs.branches }}
+      user: ${{ steps.get-labels.outputs.user }}
     steps:
       - name: Determine branches to cherry-pick to
         id: get-labels
@@ -20,6 +21,7 @@ jobs:
           set -e
           RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }})
           LABELS_JSON=$(echo "$RESPONSE" | jq .labels[])
+          USER=$(echo $RESPONSE | jq -r '.user.login')
 
           if [[ $? -ne 0 ]]; then
             echo "Failed to fetch labels from GitHub API."
@@ -37,8 +39,11 @@ jobs:
           fi
 
           # Convert BRANCHES into a valid JSON array
-          BRANCHES_ARRAY=$(echo "[\"$(echo $BRANCHES | sed 's/,/","/g')\"]")
+          BRANCHES_ARRAY=$(echo "$BRANCHES" | tr ', ' '\n\n' | sed 's/^/"/;s/$/"/' | tr '\n' ',' | sed 's/,$//')
+          BRANCHES_ARRAY="[$BRANCHES_ARRAY]"
+
           echo "branches=$BRANCHES_ARRAY" >> $GITHUB_OUTPUT
+          echo "user=$USER" >> $GITHUB_OUTPUT
 
   backport:
     needs: get-labels
@@ -92,10 +97,10 @@ jobs:
 
 
             response=$(curl -sS -w "%{http_code}" -X POST \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              https://api.github.com/repos/${{ github.repository }}/issues \
-              -d "{ \"title\": \"$issue_title\", \"body\": \"$issue_body\" }")
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/issues \
+            -d "{ \"title\": \"$issue_title\", \"body\": \"$issue_body\", \"assignees\": [\"${{ needs.get-labels.outputs.user }}\"] }")
 
             status_code=$(echo "$response" | tail -n 1)
 
