@@ -1,0 +1,123 @@
+name: Generate CRD Reference Docs
+
+on:
+  workflow_dispatch: # Allows manual trigger of the workflow
+    inputs:
+      branch:
+        description: 'Redpanda maintenance branch to generate CRD Docs from'
+        required: true
+  repository_dispatch: # Allows other repositories to trigger this workflow
+    types: [generate-crd-docs]
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      # Set the branch name from either workflow_dispatch or repository_dispatch event.
+      - name: Set branch variable
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "BRANCH=${{ github.event.inputs.branch }}" >> $GITHUB_ENV
+          elif [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            echo "BRANCH=${{ github.event.client_payload.branch }}" >> $GITHUB_ENV
+          fi
+
+      # Ensure the provided branch exists in the target repository.
+      - name: Verify branch exists
+        run: |
+          response=$(curl -fs -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${{ secrets.ACTIONS_BOT_TOKEN }}" "https://api.github.com/repos/redpanda-data/redpanda/branches/${{ env.BRANCH }}")
+          if [ "$response" -ne 200 ]; then
+            echo "Branch '${{ env.BRANCH }}' does not exist." >&2
+            exit 1
+          fi
+
+      # Checkout the specified branch from redpanda repository.
+      - name: Checkout redpanda repository
+        uses: actions/checkout@v2
+        with:
+          repository: redpanda-data/redpanda
+          ref: ${{ env.BRANCH }}
+          path: redpanda
+          token: ${{ secrets.ACTIONS_BOT_TOKEN }}
+
+      # Get the latest release tag from the repository.
+      - name: Get latest release tag
+        id: get_latest_release
+        run: |
+          response=$(curl -fs -H "Authorization: Bearer ${{ secrets.ACTIONS_BOT_TOKEN }}" "https://api.github.com/repos/redpanda-data/redpanda/releases/latest")
+          latest_release_tag=$(echo $response | jq -r .tag_name)
+          if [ "$latest_release_tag" == "null" ]; then
+            echo "No tag_name in the release info." >&2
+            exit 1
+          fi
+          echo "tag=$latest_release_tag" >> $GITHUB_ENV
+
+      # Convert tag into a major.minor.x format.
+      - name: Format latest tag for latest maintenance branch
+        id: format_tag
+        run: |
+          tag=${{ env.tag }}
+          formatted_tag="$(echo "$tag" | sed 's/\([0-9]*\.[0-9]*\)\.[0-9]*/\1.x/')"
+          echo "formatted_tag=$formatted_tag" >> $GITHUB_ENV
+
+      # Set or reformat branch name based on its comparison with formatted tag.
+      - name: Set FORMATTED_BRANCH
+        run: |
+          if [ "${{ env.formatted_tag }}" == "${{ env.BRANCH }}" ]; then
+            echo "FORMATTED_BRANCH=main" >> $GITHUB_ENV
+          else
+            branch="${{ env.BRANCH }}"
+            echo "Before transformation: $branch"
+            formatted_branch="$(echo "$branch" | sed -E 's/v([0-9]+)\.([0-9]+)\..*/v\/\1.\2/')"
+            echo "After transformation: $formatted_branch"
+            echo "FORMATTED_BRANCH=$formatted_branch" >> $GITHUB_ENV
+          fi
+
+      # Checkout the redpanda-docs repository based on the FORMATTED_BRANCH.
+      - name: Checkout this repository
+        uses: actions/checkout@v2
+        with:
+          ref: ${{env.FORMATTED_BRANCH}}
+          repository: JakeSCahill/redpanda-docs
+          path: redpanda-docs
+
+      # Download crd-ref-docs utility for doc generation.
+      - name: Download crd-ref-docs
+        run: |
+          curl -fLO https://github.com/elastic/crd-ref-docs/releases/download/v0.0.9/crd-ref-docs
+          chmod +x crd-ref-docs
+          sudo mv crd-ref-docs /usr/local/bin/
+
+      # Generate documentation using crd-ref-docs utility.
+      - name: Generate CRD Docs
+        run: |
+          crd-ref-docs --source-path=./redpanda/src/go/k8s/apis/redpanda/v1alpha1 --max-depth=10 --templates-dir=./redpanda-docs/.github/crd-config/templates/asciidoctor --config=./redpanda-docs/.github/crd-config/config.yaml --renderer=asciidoctor --output-path=./redpanda-docs/modules/reference/pages
+
+      - name: Rename the output file
+        run: |
+          mv ./redpanda-docs/modules/reference/pages/out.asciidoc ./redpanda-docs/modules/reference/pages/crd.adoc
+
+      # Check for any changes made in the documentation.
+      - name: Check if changes were made
+        id: check_changes
+        run: |
+          cd ./redpanda-docs
+          changes=$(git status --porcelain)
+          if [ -z "$changes" ]; then
+            echo "has_changes=false" >> $GITHUB_ENV
+          else
+            echo "has_changes=true" >> $GITHUB_ENV
+          fi
+
+      # If changes were detected, commit those changes.
+      - name: Commit changes
+        if: env.has_changes == 'true'
+        run: |
+          cd ./redpanda-docs
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git add .
+          git commit -m "auto-docs: Update CRD doc for ${{ env.BRANCH }}"
+          git push origin ${{env.FORMATTED_BRANCH}}
+        env:
+          ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
