@@ -3,22 +3,37 @@
 
 If you are using the Redpanda Helm chart, you can migrate to the Redpanda Operator and use it to manage your Helm deployment.
 
-The Redpanda Operator complements the Redpanda Helm chart by extending Kubernetes with custom resource definitions (CRDs). These CRDs allow Redpanda clusters to be represented as native Kubernetes resources. This abstraction makes it simpler to manage the lifecycle of Redpanda deployments, as the Redpanda Operator takes the specifications declared in the Redpanda custom resources and passes them to Helm for execution.
+The Redpanda Operator extends Kubernetes with custom resource definitions (CRDs), which allow Redpanda clusters to be treated as native Kubernetes resources. The primary resource that the Redpanda Operator uses to represent a Redpanda cluster is the Redpanda resource.
 
-When using the Redpanda Operator, configurations defined in the custom resources are passed to Helm, which then deploys the Redpanda cluster using the Redpanda Helm chart.
+When you define a Redpanda cluster using this Redpanda resource, the Redpanda Operator takes that configuration and passes it to https://fluxcd.io/flux/concepts/[Flux]. Flux, in turn, interacts with Helm, creating the necessary HelmRepository and HelmRelease resources to deploy and manage the Redpanda Helm chart.
 
-CAUTION: Redpanda Operator is in beta. Do not migrate existing production clusters to the Redpanda Operator.
+Here is an example of a Redpanda custom resource:
+
+```yaml
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: <cluster-name>
+spec:
+  chartRef:
+    helmRepositoryName:
+  clusterSpec:
+```
+
+- `metadata.name`: Name to assign the Redpanda cluster. This name is also assigned to the Helm release.
+- xref:reference:crd.adoc#chartref[`spec.chartRef`]: Information about the Helm chart that will be used to deploy Redpanda.
+- xref:reference:crd.adoc#helmrepositoryname[`spec.chartRef.helmRepositoryName`]: Name of the Helm repository where the Redpanda chart is located.
+- xref:reference:crd.adoc#redpandaclusterspec[`spec.clusterSpec`]: This is where you can override default values in the Redpanda Helm chart.
 
 == Prerequisites
 
 Before migrating to the Redpanda Operator, you must have:
 
-* The name of your existing Helm release and the latest version of the Redpanda Helm chart that you have deployed.
+- The name of your existing Helm release and the latest version of the Redpanda Helm chart that you have deployed.
 +
-[,bash]
-----
+```bash
 helm list -A
-----
+```
 +
 In this example the chart version is 5.0.1 and the release name is `redpanda`.
 +
@@ -30,12 +45,11 @@ redpanda   redpanda-5.0.1
 +
 Make a note of your name and version for the next steps. You'll need to configure your Redpanda custom resource with these details.
 
-* Your values overrides.
+- Your values overrides.
 +
-[,bash]
-----
-helm get values <release-name> --namespace <namespace>
-----
+```bash
+helm get values <cluster-name> --namespace <namespace>
+```
 +
 You should see your overrides in YAML format. You'll need to configure your Redpanda custom resource with these details.
 
@@ -47,39 +61,38 @@ To migrate to the latest Redpanda Operator and use it to manage your Helm deploy
 
 . Make sure that you have permission to install custom resource definitions (CRDs):
 +
-[,bash]
-----
-kubectl auth can-i create CustomResourceDefinition
-----
+```bash
+kubectl auth can-i create CustomResourceDefinition --all-namespaces
+```
 +
-You need cluster-level permissions to install the Redpanda Operator CRDs in the next steps.
+You should see `yes` in the output.
++
+You need these cluster-level permissions to install the Redpanda Operator CRDs in the next steps.
 
 . Install the Redpanda Operator custom resource definitions (CRDs):
 +
-[,bash]
-----
+```bash
 kubectl kustomize https://github.com/redpanda-data/redpanda//src/go/k8s/config/crd | kubectl apply -f -
-----
+```
 
-. Install the Redpanda Operator _in the same namespace as your Redpanda Helm chart_:
+. Install the Redpanda Operator *in the same namespace as your Redpanda Helm chart*:
 +
-[,bash]
+[,bash,subs="attributes+"]
 ----
 helm repo add redpanda https://charts.redpanda.com
 helm upgrade --install redpanda-controller redpanda/operator \
   --namespace <namespace> \
   --set image.repository=docker.redpanda.com/redpandadata/redpanda-operator \
-  --set image.tag=v23.2.1 \
+  --set image.tag=v{full-version} \
   --create-namespace
 ----
 
 . Ensure that the Deployment is successfully rolled out:
 +
-[,bash]
-----
-kubectl --namespace <namespace> rollout status --watch deployment/redpanda-controller
-----
-
+```bash
+kubectl --namespace <namespace> rollout status -w deployment/redpanda-controller-operator
+```
++
 [.no-copy]
 ----
 deployment "redpanda-controller" successfully rolled out
@@ -87,7 +100,7 @@ deployment "redpanda-controller" successfully rolled out
 
 . Configure a Redpanda custom resource that Redpanda Operator will use to adopt your Redpanda cluster.
 +
-Replace the placeholders with the values identified in the <<prerequisites,prerequisites>>.
+Replace the placeholders with the values identified in the <<Prerequisites>>.
 +
 .`redpanda-cluster.yaml`
 [,yaml]
@@ -98,7 +111,7 @@ metadata:
   annotations:
     cluster.redpanda.com/managed: "true"
   creationTimestamp: null
-  name: <release-name>
+  name: <cluster-name>
 spec:
   chartRef:
     chartVersion: <chart-version>
@@ -112,31 +125,133 @@ TIP: The Redpanda Operator passes these values to the Redpanda Helm chart. The k
 
 . Adopt the Redpanda cluster by creating an instance of the Redpanda custom resource in the same namespace as the Redpanda Operator:
 +
-[,bash]
-----
-  kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-----
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
 
 . Wait for the Redpanda resource to successfully reach a `deployed` state:
 +
-[,bash]
-----
+```bash
 kubectl get redpanda --namespace <namespace> --watch
-----
-
+```
++
 Example output:
-
++
 [.no-copy]
 ----
-  NAME       READY   STATUS
-  redpanda   True    Redpanda reconciliation succeeded
+NAME       READY   STATUS
+redpanda   True    Redpanda reconciliation succeeded
 ----
 
 == Troubleshooting
 
-While the deployment process can sometimes take a few minutes, a prolonged 'not ready' status may indicate an issue. See xref:manage:kubernetes/troubleshooting/troubleshoot.adoc#helmrelease-is-not-ready[Troubleshoot Redpanda in Kubernetes] for more details.
+While the deployment process can sometimes take a few minutes, a prolonged 'not ready' status may indicate an issue.
 
-If you cannot solve the issue or you need assistance during the migration process, https://github.com/redpanda-data/redpanda/issues/new/choose[open a GitHub issue^] in the Redpanda repository. Before opening a new issue, search the existing issues on GitHub to see if someone has already reported a similar problem or if any relevant discussions that can help you.
+=== HelmRelease is not ready
+
+If you are using the Redpanda Operator with Helm, you may see the following message while waiting for a Redpanda custom resource to be deployed:
+
+[.no-copy]
+----
+NAME       READY   STATUS
+redpanda   False   HelmRepository 'redpanda/redpanda-repository' is not ready
+redpanda   False   HelmRelease 'redpanda/redpanda' is not ready
+----
+
+While the deployment process can sometimes take a few minutes, a prolonged 'not ready' status may indicate an issue. Follow the steps below to investigate:
+
+. Check the status of the HelmRelease:
++
+```bash
+kubectl describe helmrelease redpanda --namespace <namespace>
+```
+
+. Review the Redpanda Operator logs:
++
+```bash
+kubectl logs -l app.kubernetes.io/name=redpanda-operator -c manager --namespace <namespace>
+```
+
+Replace `<namespace>` with the namespace in which you deployed the Redpanda Operator.
+
+=== HelmRelease retries exhausted
+
+The `HelmRelease retries exhausted` error occurs when the Helm Controller has tried to reconcile the HelmRelease a number of times, but these attempts have failed consistently.
+
+The Helm Controller watches for changes in HelmRelease objects. When changes are detected, it tries to reconcile the state defined in the HelmRelease with the state in the cluster. The process of reconciliation includes installation, upgrade, testing, rollback or uninstallation of Helm releases.
+
+You may see this error due to:
+
+- Incorrect configuration in the HelmRelease.
+- Issues with the chart, such as a non-existent chart version or the chart repository not being accessible.
+- Missing dependencies or prerequisites required by the chart.
+- Issues with the underlying Kubernetes cluster, such as insufficient resources or connectivity issues.
+
+To debug this error do the following:
+
+. Check the status of the HelmRelease:
++
+```bash
+kubectl describe helmrelease <cluster-name> --namespace <namespace>
+```
+
+. Review the Redpanda Operator logs:
++
+```bash
+kubectl logs -l app.kubernetes.io/name=redpanda-operator -c manager --namespace <namespace>
+```
+
+When you find and fix the error, you must use the Flux CLI, `fluxctl`, to suspend and resume the reconciliation process:
+
+. https://fluxcd.io/flux/installation/#install-the-flux-cli[Install Flux CLI].
+
+. Suspend the HelmRelease:
++
+```bash
+flux suspend helmrelease <cluster-name> --namespace <namespace>
+```
+
+. Resume the HelmRelease:
++
+```bash
+flux resume helmrelease <cluster-name> --namespace <namespace>
+```
+
+=== Open an issue
+
+If you cannot solve the issue or you need assistance during the migration process, https://github.com/redpanda-data/redpanda/issues/new/choose[open a GitHub issue] in the Redpanda repository. Before opening a new issue, search the existing issues on GitHub to see if someone has already reported a similar problem or if any relevant discussions that can help you.
+
+== Roll back from Redpanda Operator to Helm
+
+If you migrated to the Redpanda Operator and want to revert to using only Helm, follow these steps:
+
+. Uninstall or disable the Redpanda Operator.
++
+You can uninstall the Redpanda Operator using Helm or disable it by changing the image to one that does not exist:
++
+```bash
+kubectl edit pod <operator-name> --namespace <namespace>
+```
+
+. Remove the https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/[finalizers] from the Redpanda, HelmRelease, HelmChart, and HelmRepository resources:
++
+```bash
+kubectl --namespace <namespace> patch redpanda <cluster-name> -p '{"metadata":{"finalizers":null}}' --type=merge
+kubectl --namespace <namespace> patch helmrelease <cluster-name> -p '{"metadata":{"finalizers":null}}' --type=merge
+kubectl --namespace <namespace> patch helmchart <cluster-name> -p '{"metadata":{"finalizers":null}}' --type=merge
+kubectl --namespace <namespace> patch helmrepository <cluster-name> -p '{"metadata":{"finalizers":null}}' --type=merge
+```
+
+. Delete the resources:
++
+```bash
+kubectl delete redpanda <cluster-name> --namespace <namespace>
+kubectl delete helmrelease <cluster-name> --namespace <namespace>
+kubectl delete helmchart <cluster-name> --namespace <namespace>
+kubectl delete helmrepository <cluster-name> --namespace <namespace>
+```
+
+After completing these steps, the Redpanda Operator is no longer managing your Helm deployment.
 
 == Next steps
 

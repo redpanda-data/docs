@@ -1,0 +1,449 @@
+= Migrate from Cluster and Console Custom Resources
+:description: To ensure compatibility with future versions of Redpanda and to benefit from new features, enhancements, and security updates, you must migrate from the deprecated Cluster and Console custom resources to the Redpanda custom resource.
+
+To ensure compatibility with future versions of Redpanda and to benefit from new features, enhancements, and security updates, you must migrate from the deprecated Cluster and Console custom resources to the Redpanda custom resource. The migration process involves the following steps:
+
+. <<Deploy the updated Redpanda Operator, Deploy at least version 23.2 of the updated Redpanda Operator>> in the same Kubernetes cluster as your deprecated Redpanda Operator.
+. <<Prepare existing Kubernetes resources>>.
+. <<install-the-cluster-to-redpanda-migration-cli,Install the `cluster-to-redpanda-migration` CLI>>
+. <<Migrate Cluster and Console resources to Redpanda resources>>.
+
+For a description of what's changed, see xref:upgrade:deprecated/cluster-resource.adoc[Deprecated Cluster and Console Custom Resources].
+
+CAUTION: Before implementing any changes in your production environment, Redpanda Data recommends testing the migration in a non-production environment.
+
+== Prerequisites
+
+Before migrating to the Redpanda Operator, you must have the name of your Cluster resource and the namespace in which it's deployed. If you have multiple clusters, migrate one at a time.
+
+```bash
+kubectl get cluster -A
+```
+
+Example output:
+
+[.no-copy]
+----
+NAMESPACE   NAME                AGE
+redpanda    one-node-external   17m
+----
+
+If you also have a Console resource, you need the name of your Console resource and the namespace in which it's deployed:
+
+```bash
+kubectl get console -A
+```
+
+== Deploy the updated Redpanda Operator
+
+The first step in the migration process is to deploy the updated Redpanda Operator in the same namespace as an existing Cluster resource.
+
+. Make sure that you have permission to install custom resource definitions (CRDs):
++
+```bash
+kubectl auth can-i create CustomResourceDefinition --all-namespaces
+```
++
+You should see `yes` in the output.
++
+You need cluster-level permissions to install the Redpanda Operator CRDs in the next steps.
+
+. Install the Redpanda Operator custom resource definitions (CRDs):
++
+```bash
+kubectl kustomize https://github.com/redpanda-data/redpanda//src/go/k8s/config/crd | kubectl apply -f -
+```
+
+. Install the Redpanda Operator *in the same namespace as your Cluster custom resource*:
++
+[,bash,subs="attributes+"]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <namespace> \
+  --set image.repository=docker.redpanda.com/redpandadata/redpanda-operator \
+  --set image.tag=v{full-version} \
+  --create-namespace
+----
+
+. Ensure that the Deployment is successfully rolled out:
++
+```bash
+kubectl --namespace <namespace> rollout status -w deployment/redpanda-controller-operator
+```
++
+[.no-copy]
+----
+deployment "redpanda-controller" successfully rolled out
+----
+
+== Prepare existing Kubernetes resources
+
+After you've deployed the updated Redpanda Operator, you must stop the deprecated Redpanda Operator from reconciling the deprecated resources and adopt some existing Kubernetes resources that are part of the Redpanda deployment.
+
+. Stop the deprecated Redpanda Operator from reconciling the Cluster and Console custom resources:
++
+```bash
+kubectl --namespace <namespace> annotate cluster <cluster-name> redpanda.vectorized.io/managed="false"
+kubectl --namespace <namespace> annotate console <console-name> redpanda.vectorized.io/managed="false"
+```
+
+. Delete your Cluster resource's existing StatefulSet:
++
+```bash
+kubectl --namespace <namespace> delete statefulset <cluster-name> --cascade=orphan
+```
+
+. Update the label selectors of all Pods that were in the deleted StatefulSet:
+
+.. To get the Pod names:
++
+```bash
+kubectl get pod -l app.kubernetes.io/instance=<cluster-name> --namespace <namespace>
+```
+
+.. To update the label selectors, do the following for each Pod:
++
+```bash
+kubectl --namespace <namespace> label pod <pod-name> app.kubernetes.io/component=redpanda-statefulset --overwrite
+```
+
+. Adopt your existing Services.
++
+--
+.. Label and annotate the Services:
++
+```bash
+kubectl --namespace <namespace> annotate service <cluster-name> meta.helm.sh/release-name=<cluster-name> --overwrite
+kubectl --namespace <namespace> annotate service <cluster-name> meta.helm.sh/release-namespace=<namespace> --overwrite
+kubectl --namespace <namespace> label service <cluster-name> app.kubernetes.io/managed-by=Helm --overwrite
+kubectl --namespace <namespace> annotate service <cluster-name>-external meta.helm.sh/release-name=<cluster-name> --overwrite
+kubectl --namespace <namespace> annotate service <cluster-name>-external meta.helm.sh/release-namespace=<namespace> --overwrite
+kubectl --namespace <namespace> label service <cluster-name>-external app.kubernetes.io/managed-by=Helm --overwrite
+```
+
+.. Update the selectors of the `<cluster-name>` Service:
++
+```bash
+kubectl --namespace <namespace> edit service <cluster-name>
+```
++
+Change the selector to:
++
+```yaml
+selector:
+  app.kubernetes.io/instance: <cluster-name>
+  app.kubernetes.io/name: redpanda
+```
+--
++
+This step prevents Services from being redeployed, which reduces downtime. Because the names of these Services match the names of the Services that the Redpanda Helm chart will try to deploy, these annotations and labels bring the existing Services under the management of Helm so that they do not get deleted and redeployed when you apply the Redpanda resource.
+
+. Adopt the ServiceAccount:
++
+```bash
+kubectl --namespace <namespace> annotate serviceaccount <cluster-name> meta.helm.sh/release-name=<cluster-name>
+kubectl --namespace <namespace> annotate serviceaccount <cluster-name> meta.helm.sh/release-namespace=$NAMESPACE
+kubectl --namespace <namespace> label serviceaccount <cluster-name> app.kubernetes.io/managed-by=Helm --overwrite
+```
+
+. Delete the PodDisruptionBudget:
++
+```bash
+kubectl --namespace <namespace> delete PodDisruptionBudget <cluster-name>
+```
+
+== Install the cluster-to-redpanda-migration CLI
+
+The resource that the updated Redpanda Operator uses to represent a Redpanda cluster is the Redpanda resource. The `cluster-to-redpanda-migration` CLI is a single binary that migrates deprecated Cluster and Console resources to Redpanda resources.
+
+Install the `cluster-to-redpanda-migration` CLI:
+
+[tabs]
+======
+Linux::
++
+--
+. Download the `cluster-to-redpanda-migration` archive for Linux:
++
+```bash
+curl -LO https://github.com/redpanda-data/redpanda/releases/latest/download/cluster-to-redpanda-migration-linux-amd64.zip
+```
+
+. Ensure that you have the folder `~/.local/bin`:
++
+```bash
+mkdir -p ~/.local/bin
+```
+
+. Add it to your `$PATH`:
++
+```bash
+export PATH="~/.local/bin:$PATH"
+```
+
+. Unzip the `cluster-to-redpanda-migration` files to your `~/.local/bin/` directory:
++
+```bash
+unzip cluster-to-redpanda-migration-linux-amd64.zip -d ~/.local/bin/
+```
+
+. Ensure that the tool is correctly installed by checking the version:
++
+```bash
+cluster-to-redpanda-migration version
+```
++
+You should see a version.
+--
+
+macOS::
++
+--
+To install `cluster-to-redpanda-migration` CLI on macOS, choose the option that corresponds to your system architecture. For example, if you have an M1 or M2 chip, use the **Apple Silicon** instructions.
+
+[tabs]
+====
+Intel macOS::
++
+. Download the `cluster-to-redpanda-migration` archive for macOS:
++
+```bash
+curl -LO https://github.com/redpanda-data/redpanda/releases/latest/download/cluster-to-redpanda-migration-darwin-amd64.zip
+```
++
+. Ensure that you have the folder `~/.local/bin`:
++
+```bash
+mkdir -p ~/.local/bin
+```
++
+. Add it to your `$PATH`:
++
+```bash
+export PATH=$PATH:~/.local/bin
+```
++
+. Unzip the `cluster-to-redpanda-migration` files to your `~/.local/bin/` directory:
++
+```bash
+unzip cluster-to-redpanda-migration-darwin-amd64.zip -d ~/.local/bin/
+```
+
+. Ensure that the tool is correctly installed by checking the version:
++
+```bash
+cluster-to-redpanda-migration version
+```
++
+You should see a version.
+
+Apple Silicon::
++
+. Download the `cluster-to-redpanda-migration` archive for macOS:
++
+```bash
+curl -LO https://github.com/redpanda-data/redpanda/releases/latest/download/cluster-to-redpanda-migration-darwin-arm64.zip
+```
++
+. Ensure that you have the folder `~/.local/bin`:
++
+```bash
+mkdir -p ~/.local/bin
+```
++
+. Add it to your `$PATH`:
++
+```bash
+export PATH=$PATH:~/.local/bin
+```
++
+. Unzip the `cluster-to-redpanda-migration` files to your `~/.local/bin/` directory:
++
+```bash
+unzip cluster-to-redpanda-migration-darwin-amd64.zip -d ~/.local/bin/
+```
+
+. Ensure that the tool is correctly installed by checking the version:
++
+```bash
+cluster-to-redpanda-migration version
+```
++
+You should see a version.
+====
+--
+======
+
+== Migrate Cluster and Console resources to Redpanda resources
+
+You can convert your deprecated Cluster and Console resources to Redpanda resources using a combination of the `cluster-to-redpanda-migration` CLI and manual changes.
+
+. Migrate your Cluster and Console manifests to a Redpanda resource:
++
+```bash
+cluster-to-redpanda-migration \
+  --cluster <path-to-cluster-resource.yaml> \
+  --console <path-to-console-resource.yaml> \
+  --output=redpanda.yaml
+```
++
+Replace `path-to-cluster-resource.yaml` with the absolute path to your Cluster manifest.
++
+Replace `path-to-console-resource.yaml` with the absolute path to your Console manifest.
+
+. Ensure that your migrated Redpanda resource is configured correctly. You can compare the xref:reference:redpanda-operator/crd.adoc[Cluster and Console CRD reference] to the xref:reference:crd.adoc[Redpanda CRD reference].
++
+[NOTE]
+====
+- The migration tool does not migrate all configurations. For example, if your cluster had SASL enabled, you must manually add any SASL configuration to the Redpanda resource.
+- If the `additionalConfiguration` section of your Cluster resource includes `redpanda.empty_seed_starts_cluster: true`, make sure that this configuration is not present in the migrated `redpanda.yaml` file. The Redpanda Helm chart includes this configuration by default, so if your Redpanda resource also includes it, Redpanda will throw an error due to the duplicated configuration.
+- Make sure that `resources.memory.container.min` and `resources.memory.container.max` are both set to at least 2.5Gi. Otherwise, Redpanda will be unable to start.
+====
+
+. Enable the Redpanda Operator to manage your Redpanda resource.
++
+Edit your `redpanda.yaml` file to include the following:
++
+```yaml
+annotations:
+  cluster.redpanda.com/managed: "true"
+```
+
+. Deploy the Redpanda resource:
++
+```bash
+kubectl apply -f redpanda.yaml --namespace <namespace>
+```
++
+The updated Redpanda Operator will delete the Pods sequentially causing them to be redeployed using Helm and your Redpanda resource.
+
+. Wait for the Redpanda resource to successfully reach a `deployed` state:
++
+```bash
+kubectl get redpanda <cluster-name> --namespace <namespace> --watch
+```
++
+Example output:
++
+[.no-copy]
+----
+NAME       READY   STATUS
+redpanda   True    Redpanda reconciliation succeeded
+----
+
+== Troubleshooting
+
+While the deployment process can sometimes take a few minutes, a prolonged 'not ready' status may indicate an issue.
+
+=== HelmRelease is not ready
+
+If you are using the Redpanda Operator with Helm, you may see the following message while waiting for a Redpanda custom resource to be deployed:
+
+[.no-copy]
+----
+NAME       READY   STATUS
+redpanda   False   HelmRepository 'redpanda/redpanda-repository' is not ready
+redpanda   False   HelmRelease 'redpanda/redpanda' is not ready
+----
+
+While the deployment process can sometimes take a few minutes, a prolonged 'not ready' status may indicate an issue. Follow the steps below to investigate:
+
+. Check the status of the HelmRelease:
++
+```bash
+kubectl describe helmrelease <cluster-name> --namespace <namespace>
+```
+
+. Review the Redpanda Operator logs:
++
+```bash
+kubectl logs -l app.kubernetes.io/name=redpanda-operator -c manager --namespace <namespace>
+```
+
+Replace `<namespace>` with the namespace in which you deployed the Redpanda Operator.
+
+=== HelmRelease retries exhausted
+
+The `HelmRelease retries exhausted` error occurs when the Helm Controller has tried to reconcile the HelmRelease a number of times, but these attempts have failed consistently.
+
+The Helm Controller watches for changes in HelmRelease objects. When changes are detected, it tries to reconcile the state defined in the HelmRelease with the actual state in the cluster. The process of reconciliation includes installation, upgrade, testing, rollback or uninstallation of Helm releases.
+
+You may see this error due to:
+
+- Incorrect configuration in the HelmRelease.
+- Issues with the chart, such as a non-existent chart version or the chart repository not being accessible.
+- Missing dependencies or prerequisites required by the chart.
+- Issues with the underlying Kubernetes cluster, such as insufficient resources or connectivity issues.
+
+To debug this error do the following:
+
+. Check the status of the HelmRelease:
++
+```bash
+kubectl describe helmrelease <cluster-name> --namespace <namespace>
+```
+
+. Review the Redpanda Operator logs:
++
+```bash
+kubectl logs -l app.kubernetes.io/name=redpanda-operator -c manager --namespace <namespace>
+```
+
+When you find and fix the error, you must use the Flux CLI to suspend and resume the reconciliation process:
+
+. https://fluxcd.io/flux/installation/#install-the-flux-cli[Install the Flux CLI].
+
+. Suspend the HelmRelease:
++
+```bash
+flux suspend helmrelease <cluster-name> --namespace <namespace>
+```
+
+. Resume the HelmRelease:
++
+```bash
+flux resume helmrelease <cluster-name> --namespace <namespace>
+```
+
+=== Resources aren't being updated
+
+If you are deleting, annotating, or labeling resources and they appear unchanged, the Redpanda Operator may still be managing your Cluster or Console resource.
+
+Make sure the following annotation is set on your Cluster and Console resources:
+
+`redpanda.vectorized.io/managed="false"`
+
+```bash
+kubectl describe cluster <cluster-name> --namespace <namespace>
+kubectl describe console <cluster-name> --namespace <namespace>
+```
+
+=== Open an issue
+
+If you cannot solve the issue or you need assistance during the migration process, https://github.com/redpanda-data/redpanda/issues/new/choose[open a GitHub issue] in the Redpanda repository. Before opening a new issue, search the existing issues on GitHub to see if someone has already reported a similar problem or if any relevant discussions that can help you.
+
+== Rollback to the deprecated Redpanda Operator
+
+If you still have the Cluster resource you may undo and revert your changes, but there may be downtime depending on how far you have moved into the migration process.
+
+. Delete the Redpanda resource:
++
+```bash
+kubectl delete redpanda <cluster-name> --namespace <namespace>
+```
++
+This step triggers a deletion of all resources created by the HelmRelease
+
+. Enable the deprecated Redpanda Operator to manage your Cluster and Console resources:
++
+```bash
+kubectl --namespace <namespace> annotate cluster <cluster-name> redpanda.vectorized.io/managed=”true”
+kubectl --namespace <namespace> annotate console <console-name> redpanda.vectorized.io/managed=”true”
+```
+
+The deprecated Redpanda Operator is now managing your resources. Any changes that the Redpanda Operator made to your deployment will be undone and any resources that you deleted will be reapplied.
+
+== Next steps
+
+For information about the updated Redpanda Operator and the Redpanda custom resource, see xref:deploy:deployment-option/self-hosted/kubernetes/kubernetes-production-deployment.adoc[Redpanda in Kubernetes].
