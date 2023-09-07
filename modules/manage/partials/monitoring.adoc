@@ -27,11 +27,21 @@ https://prometheus.io/[Prometheus^] is a system monitoring and alerting tool. It
 
 NOTE: Redpanda recommends creating monitoring dashboards with `/public_metrics`.
 
+:env-kubernetes:
+
 ifdef::env-kubernetes[]
 
-To configure Prometheus to monitor Redpanda metrics, you can use the https://github.com/prometheus-community/helm-charts/tree/main/charts/prometheus[Prometheus Helm chart^]:
+To configure Prometheus to monitor Redpanda metrics in Kubernetes, you can use the https://prometheus-operator.dev/[Prometheus Operator^]:
 
-. Add annotations to your Pods to allow the Prometheus Helm chart to find and scrape the `/public_metrics` endpoint:
+. Install Prometheus Operator CRDs:
++
+[,bash]
+----
+LATEST=$(curl -s https://api.github.com/repos/prometheus-operator/prometheus-operator/releases/latest | jq -cr .tag_name)
+curl -sL https://github.com/prometheus-operator/prometheus-operator/releases/download/${LATEST}/bundle.yaml | kubectl create -f -
+----
+
+. Deploy Redpanda with monitoring enabled:
 +
 [tabs]
 ======
@@ -48,11 +58,9 @@ metadata:
 spec:
   chartRef: {}
   clusterSpec:
-    statefulset:
-      annotations:
-        "prometheus.io/scrape": "true"
-        "prometheus.io/path": "public_metrics"
-        "prometheus.io/port": "<admin-api-port>"
+    monitoring:
+      enabled: true
+      scrapeInterval: 30s
 ----
 
 ```bash
@@ -70,11 +78,9 @@ Helm::
 .`prometheus-monitoring.yaml`
 [,yaml]
 ----
-statefulset:
-  annotations:
-    "prometheus.io/scrape": "true"
-    "prometheus.io/path": "public_metrics"
-    "prometheus.io/port": "<admin-api-port>"
+monitoring:
+  enabled: true
+  scrapeInterval: 30s
 ----
 +
 ```bash
@@ -88,7 +94,8 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 helm upgrade --install redpanda redpanda/redpanda \
   --namespace <namespace> \
   --create-namespace \
-  --set-string statefulset.annotations."prometheus\.io/scrape"="true",statefulset.annotations."prometheus\.io/path"=public_metrics,statefulset.annotations."prometheus\.io/port"="<admin-api-port>"
+  --set monitoring.enabled=true \
+  --set monitoring.scrapeInterval="30s"
 ```
 
 ====
@@ -99,24 +106,129 @@ helm upgrade --install redpanda redpanda/redpanda \
 +
 [,bash]
 ----
-kubectl -n redpanda rollout status statefulset redpanda --watch
+kubectl -n <namespace> rollout status statefulset redpanda --watch
 ----
 
-. Install Prometheus:
+. Create RBAC rules for Prometheus:
 +
+.`prometheus-rbac.yaml`
 [,yaml]
 ----
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-helm install prometheus prometheus-community/prometheus --namespace monitoring --create-namespace
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+- apiGroups: [""]
+  resources:
+  - nodes
+  - nodes/metrics
+  - services
+  - endpoints
+  - pods
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources:
+  - configmaps
+  verbs: ["get"]
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: default
+----
++
+[,bash]
+----
+kubectl apply -f prometheus-rbac.yaml
+----
+
+. Deploy Prometheus:
++
+.`prometheus.yaml`
+[,yaml]
+----
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus
+spec:
+  serviceAccountName: prometheus
+  serviceMonitorNamespaceSelector:
+    matchLabels:
+      name: redpanda
+  serviceMonitorSelector:
+    matchLabels:
+      app.kubernetes.io/name: redpanda
+  resources:
+    requests:
+      memory: 400Mi
+  enableAdminAPI: false
+----
++
+[,bash]
+----
+kubectl apply -f prometheus.yaml
+----
+
+. Wait until Prometheus is ready:
++
+[,bash]
+----
+kubectl get --namespace default prometheus prometheus --watch
+----
+
+. Deploy a NodePort Service for external access to Prometheus:
++
+.`prometheus-nodeport.yaml`
+[,yaml]
+----
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+spec:
+  type: NodePort
+  ports:
+  - name: web
+    nodePort: 30900
+    port: 9090
+    protocol: TCP
+    targetPort: web
+  selector:
+    prometheus: prometheus
+----
++
+[,bash]
+----
+kubectl apply -f prometheus-nodeport.yaml
 ----
 
 . Expose the Prometheus server to your localhost:
 +
 [,bash]
 ----
-export POD_NAME=$(kubectl get pods --namespace monitoring -l "app=prometheus,component=server" -o jsonpath="{.items[0].metadata.name}")
-kubectl --namespace monitoring port-forward $POD_NAME 9090
+kubectl port-forward svc/prometheus 9090
 ----
 
 . http://localhost:9090/graph[Open Prometheus^], and see that metrics from Redpanda endpoints are scraped.
@@ -191,7 +303,7 @@ rpk generate grafana-dashboard --datasource <name> --metrics-endpoint <url> > <o
 ----
 rpk generate grafana-dashboard \
   --datasource prometheus \
-  --metrics-endpoint <broker-address>:9644/public_metrics> redpanda-dashboard.json
+  --metrics-endpoint <broker-address>:9644/public_metrics > redpanda-dashboard.json
 ----
 
 * For `/metrics`, for example, run the following command:
@@ -200,7 +312,7 @@ rpk generate grafana-dashboard \
 ----
 rpk generate grafana-dashboard \
   --datasource prometheus \
-  --metrics-endpoint <broker-address>:9644/metrics> redpanda-dashboard.json
+  --metrics-endpoint <broker-address>:9644/metrics > redpanda-dashboard.json
 ----
 
 For details about the command, see xref:reference:rpk/rpk-generate/rpk-generate-grafana-dashboard.adoc[`rpk generate grafana-dashboard`].
