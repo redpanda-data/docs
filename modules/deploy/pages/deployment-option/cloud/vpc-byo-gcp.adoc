@@ -1,0 +1,553 @@
+= Add a BYOC Customer-Managed VPC on GCP
+:description: Use the Redpanda UI to create a customer-managed VPC peering connection for a BYOC cluster.
+:page-cloud: true
+
+You can connect a Redpanda Cloud BYOC cluster with your existing VPC. Using your own VPC gives you control over the CIDR range, as well as your service accounts, IAM roles, subnetworks, firewall rules, and storage buckets. After following these steps, you can use the *Customer Managed* network connection type for a BYOC cluster on GCP.
+
+== Prerequisites
+
+* A GCP account
+* A running BYOC cluster in GCP. See xref:./create-byoc-cluster-gcp.adoc[Create a BYOC Cluster on GCP].
+* A project with access to the internet, and an agent with public access. 
+* An appropriate CIDR range: pods require /21, services require /24, GKE requires /28.
+
+== Configure the host project 
+
+The VPC and the Redpanda cluster can be in the same GCP project or in different GCP projects.
+
+NOTE: The _host_ project is the GCP project where the VPC network is created, and the _service_ project is the GCP project where the Redpanda cluster is created. Some steps are only required if the host project and the service project are different.
+
+. Enable customer-managed VPC at the host project: 
++
+(skip if host and service project are the same)
++
+```bash
+gcloud compute shared-vpc enable <host-project-id>
+```
+
+. Allow the service project to use the customer-managed VPC: 
++
+(skip if host and service project are the same)
++
+```bash
+gcloud compute shared-vpc associated-projects add <service-project-id> --host-project <host-project-id>
+```
+
+. Create VPC:
++
+```bash
+gcloud compute networks create <shared-vpc-name> --subnet-mode custom --project <host-project-id>
+```
+
+. Create primary and secondary subnets in the VPC.
++
+Redpanda clusters require one subnet, and that subnet should have two secondary IP ranges. General guidelines:
++
+* Subnet IP range is a /24 CIDR; for example, 10.0.0.0/24
+* Secondary IP for Pods is a /21 CIDR; for example, 10.0.8.0/21
+* Secondary IP for Services is a /24 CIDR; for example, 10.0.1.0/24
++
+Additionally, a CIDR is needed for the GKE master IP addresses. This CIDR is not used in the GCP networking configuration, but rather is input into the Redpanda UI. A /28 range works; for example, 10.0.7.240/28.
++
+```unset
+gcloud compute networks subnets create <primary-subnet-name> \
+    --project <host-project-id> \
+    --network <shared-vpc-name> \
+    --range 10.0.0.0/24 \
+    --region <region> \
+    --secondary-range <secondary-ipv4-range-name-for-pods>=10.0.8.0/21,<secondary-ipv4-range-name-for-pods>=10.0.1.0/24
+```
+
+. Get IAM permissions at the host project: 
++
+(skip if host and service project are the same)
++
+.. Get IAM permission of the primary subnet, and save the output etag:
++
+```unset
+gcloud compute networks subnets get-iam-policy <primary-subnet-name> \
+   --project <host-project-id> \
+   --region <region>
+```
++
+.. Get the project number (`PROJECT_NUMBER` column) of the service project:
++
+```unset
+gcloud projects list
+
+PROJECT_ID                      NAME                            PROJECT_NUMBER
+rp-byo-host                  rp-byo-service                     1030959231549
+rp-byoc-service              rp-byoc-host                       268950748084
+```
++
+.. Create the policy file with the content.
++
+```unset
+bindings:
+- members:
+  - serviceAccount:<service-project-number>@cloudservices.gserviceaccount.com
+  - serviceAccount:service-<service-project-number>@container-engine-robot.iam.gserviceaccount.com
+  role: roles/compute.networkUser
+etag: <etag>
+```
++
+.. Apply the policy saved to the above file:
++
+```unset
+gcloud compute networks subnets set-iam-policy <primary-subnet-name>  \
+    --project <host-project-id> \
+    --region <region> <policy-file-created-above>
+```
++
+.. Grant the host service agent the User role to the service account. Without this, there will be the errors:
++
+```unset
+- gcloud projects add-iam-policy-binding <host-project-id> \
+    --member serviceAccount:service-<service-project-number>@container-engine-robot.iam.gserviceaccount.com \
+    --role roles/container.hostServiceAgentUser
+```
++
+.. Grant granting service project's GKE SA to manage firewall resources.
++
+```unset
+gcloud projects add-iam-policy-binding <host-project-id> \
+    --member=serviceAccount:service-<service-project-number>@container-engine-robot.iam.gserviceaccount.com \
+    --role=roles/compute.securityAdmin
+```
+For more information, see the https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-shared-vpc#managing_firewall_resources[Google documentation^].
+
+. Create a cloud router and NAT at the host project. For example:
+```unset
+gcloud compute routers create <route-name> \
+   --project <host-project-id> \
+   --region <region> \
+   --network <shared-vpc-name>
+
+gcloud compute addresses create <address-name>
+
+gcloud compute routers nats create <nat-config-name> \
+   --project <host-project-id> \
+   --router <router-name> \
+   --region <region> \
+   --nat-all-subnet-ip-ranges \
+   --nat-external-ip-pool <address-name> \
+   --enable-endpoint-independent-mapping
+```
+
+. Create VPC firewall rules
++
+** Redpanda ingress
+*** Target
+**** Tags redpanda-node
+*** Source
+**** IPv4 Range (e.g. 0.0.0.0/0 public access, otherwise RFC1918 and RFC6598: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10)
+**** Tags redpanda
+*** Protocols and ports
+**** tcp:9092-9094
+**** tcp:30081
+**** tcp:30082
+**** tcp:30092
++
+** Master webhooks
+*** Target
+**** Source
+***** IPv4 Range (e.g. 10.0.7.240/28 or the GKE master CIDR range)
+**** Protocols and ports
+***** tcp:9443
+***** tcp:8443
+***** tcp:6443
+
+== Configure the service project
+
+. Enable GCP APIs
++
+The following GCP APIs must be enabled in the service project. For example: 
++
+```unset
+gcloud services enable container.googleapis.com --project <service-project-id>
+```
++
+.Expand APIs
+[%collapsible]
+====
+* cloudresourcemanager.googleapis.com
+* dns.googleapis.com
+* secretmanager.googleapis.com
+* compute.googleapis.com
+* iam.googleapis.com
+* storage-api.googleapis.com
+* container.googleapis.com
+* Serviceusage.googleapis.com
+====
+
+. Create storage buckets at the service project:
++
+Redpanda requires two storage buckets in the same region as the cluster for two purposes:
++
+* Tiered Storage bucket: Redpanda cluster uses Tiered Storage for writing log segments.
+* Management Storage bucket: Redpanda uses this bucket to store cluster metadata.
++
+Versioning can be enabled for the management bucket only. The Tiered Storage bucket should not be versioned.
+
+. Create service accounts at the service project
+
+.. Redpanda agent SA
+
+... Redpanda agent custom role permissions
++
+.Expand permissions
+[%collapsible]
+====
+* `compute.firewalls.get`
+* `compute.globalOperations.get`
+* `compute.instances.list`
+* `compute.instanceGroupManagers.get`
+* `compute.instanceGroupManagers.delete`
+* `compute.instanceGroups.delete`
+* `compute.instanceTemplates.delete`
+* `compute.zones.list`
+* `dns.changes.create`
+* `dns.changes.get`
+* `dns.changes.list`
+* `dns.managedZones.create`
+* `dns.managedZones.delete`
+* `dns.managedZones.get`
+* `dns.managedZones.list`
+* `dns.managedZones.update`
+* `dns.projects.get`
+* `dns.resourceRecordSets.create`
+* `dns.resourceRecordSets.delete`
+* `dns.resourceRecordSets.get`
+* `dns.resourceRecordSets.list`
+* `dns.resourceRecordSets.update`
+* `iam.roles.get`
+* `iam.roles.list`
+* `iam.serviceAccounts.actAs`
+* `iam.serviceAccounts.get`
+* `iam.serviceAccounts.getIamPolicy`
+* `resourcemanager.projects.get`
+* `resourcemanager.projects.getIamPolicy`
+* `storage.buckets.get`
+* `storage.buckets.getIamPolicy`
+====
+
+... Project Bindings
+
+* Redpanda Agent Custom Role
+* `roles/container.admin`
+
+... Storage Bindings
+
+* `roles/storage.objectAdmin` to Management Bucket
+
+.. Redpanda Cluster SA
+
+... Storage Bindings
+
+* roles/storage.objectAdmin to Tiered Bucket
+
+.. Redpanda GKE
+
+... GKE custom role permissions
++
+.Expand permissions
+[%collapsible]
+====
+* `artifactregistry.dockerimages.get`
+* `artifactregistry.dockerimages.list`
+* `artifactregistry.files.get`
+* `artifactregistry.files.list`
+* `artifactregistry.locations.get`
+* `artifactregistry.locations.list`
+* `artifactregistry.mavenartifacts.get`
+* `artifactregistry.mavenartifacts.list`
+* `artifactregistry.npmpackages.get`
+* `artifactregistry.npmpackages.list`
+* `artifactregistry.packages.get`
+* `artifactregistry.packages.list`
+* `artifactregistry.projectsettings.get`
+* `artifactregistry.pythonpackages.get`
+* `artifactregistry.pythonpackages.list`
+* `artifactregistry.repositories.downloadArtifacts`
+* `artifactregistry.repositories.get`
+* `artifactregistry.repositories.list`
+* `artifactregistry.repositories.listEffectiveTags`
+* `artifactregistry.repositories.listTagBindings`
+* `artifactregistry.repositories.readViaVirtualRepository`
+* `artifactregistry.tags.get`
+* `artifactregistry.tags.list`
+* `artifactregistry.versions.get`
+* `artifactregistry.versions.list`
+* `logging.logEntries.create`
+* `logging.logEntries.route`
+* `monitoring.metricDescriptors.create`
+* `monitoring.metricDescriptors.get`
+* `monitoring.metricDescriptors.list`
+* `monitoring.monitoredResourceDescriptors.get`
+* `monitoring.monitoredResourceDescriptors.list`
+* `monitoring.timeSeries.create`
+* `monitoring.alertPolicies.get`
+* `monitoring.alertPolicies.list`
+* `monitoring.dashboards.get`
+* `monitoring.dashboards.list`
+* `monitoring.groups.get`
+* `monitoring.groups.list`
+* `monitoring.metricDescriptors.get`
+* `monitoring.metricDescriptors.list`
+* `monitoring.monitoredResourceDescriptors.get`
+* `monitoring.monitoredResourceDescriptors.list`
+* `monitoring.notificationChannelDescriptors.get`
+* `monitoring.notificationChannelDescriptors.list`
+* `monitoring.notificationChannels.get`
+* `monitoring.notificationChannels.list`
+* `monitoring.publicWidgets.get`
+* `monitoring.publicWidgets.list`
+* `monitoring.services.get`
+* `monitoring.services.list`
+* `monitoring.slos.get`
+* `monitoring.slos.list`
+* `monitoring.snoozes.get`
+* `monitoring.snoozes.list`
+* `monitoring.timeSeries.list`
+* `monitoring.uptimeCheckConfigs.get`
+* `monitoring.uptimeCheckConfigs.list`
+* `cloudnotifications.activities.list`
+* `opsconfigmonitoring.resourceMetadata.list`
+* `resourcemanager.projects.get`
+* `stackdriver.projects.get`
+* `stackdriver.resourceMetadata.list`
+* `stackdriver.resourceMetadata.write`
+* `dns.changes.create`
+* `dns.changes.get`
+* `dns.changes.list`
+* `dns.managedZones.list`
+* `dns.resourceRecordSets.create`
+* `dns.resourceRecordSets.delete`
+* `dns.resourceRecordSets.get`
+* `dns.resourceRecordSets.list`
+* `dns.resourceRecordSets.update`
+* `secretmanager.versions.access`
+* `storage.objects.get`
+* `storage.objects.list`
+====
+
+... Project Bindings
+
+* GKE Custom Role
+
+.. Redpanda Console SA
+
+... Console custom role permissions
++
+.Expand permissions
+[%collapsible]
+====
+* `secretmanager.secrets.create`
+* `secretmanager.secrets.delete`
+* `secretmanager.secrets.list`
+* `secretmanager.secrets.update`
+* `secretmanager.versions.add`
+* `secretmanager.versions.destroy`
+* `secretmanager.versions.disable`
+* `secretmanager.versions.enable`
+* `secretmanager.versions.list`
+* `iam.serviceAccounts.getAccessToken`
+====
+
+NOTE: If `iam.serviceAccounts.getAccessToken`` is not added, there will be errors in the console pod log.
+
+... Project Bindings
+
+* Console Custom Role
+
+.. Redpanda Connectors SA
+
+... Connectors custom role permissions
+
+* `resourcemanager.projects.get`
+* `secretmanager.versions.access`
+
+... Project Bindings
+
+* Connectors Custom Role
+
+. Create RP cluster at RP the Cloud UI and Get the Redpanda ID
+
+.. Pre-RPK execution
+
+Some resources can only be created after the Redpanda ID is known.
+Before running the `rpk` command provided in the UI, note the `redpanda-id` (for example,  cisld88gfi809ee1qjcg) in the apply command. The service accounts must be bound with the following roles:
+
+... Service Account Bindings
+
+.... Redpanda Cluster SA
+
+..... Principal: serviceAccount:<service-project-id>.svc.id.goog[redpanda/rp-<redpanda-id>]
+
+..... Role: roles/iam.workloadIdentityUser
++
+The following bindings can be added with the `gcloud` CLI.
++
+```unset
+gcloud iam service-accounts add-iam-policy-binding <service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+    --role roles/iam.workloadIdentityUser \
+    --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda/rp-<redpanda-id>]"
+
+.... Console SA
+
+..... Principal: `serviceAccount:<service-project-id>.svc.id.goog[redpanda/console-<redpanda-id>]`
+
+..... Role: `roles/iam.workloadIdentityUser`
++
+The following bindings can be added with the gcloud CLI.
++
+```unset
+gcloud iam service-accounts add-iam-policy-binding <service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+    --role roles/iam.workloadIdentityUser \
+    --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda/console-<redpanda-id>]"
+```
+
+.... Connectors SA
+
+..... Principal: `serviceAccount:<service-project-id>.svc.id.goog[redpanda-connectors/connectors-<redpanda-id>]`
+
+..... Role: `roles/iam.workloadIdentityUser`
++
+The following bindings can be added with the `gcloud` CLI.
++
+```unset
+gcloud iam service-accounts add-iam-policy-binding <service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+    --role roles/iam.workloadIdentityUser \
+    --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda-connectors/connectors-<redpanda-id>]"
+```
+
+.... GKE SA
+
+NOTE: The bindings do not need Redpanda cluster ID. They can be run before the Redpanda cluster ID is available. They are put here for grouping the bindings on all the service accounts.
+
+..... Principal: `serviceAccount:<service-project-id>.svc.id.goog[cert-manager/cert-manager]`
+
+..... Role: `roles/iam.workloadIdentityUser`
+
+..... Principal: `serviceAccount:<service-project-id>.svc.id.goog[external-dns/external-dns]`
+
+..... Role: `roles/iam.workloadIdentityUser`
++
+The following bindings can be added with the `gcloud` CLI.
++
+```unset
+gcloud iam service-accounts add-iam-policy-binding <gke-service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+    --role roles/iam.workloadIdentityUser \
+    --member "serviceAccount:<service-project-id>.svc.id.goog[cert-manager/cert-manager]"
+gcloud iam service-accounts add-iam-policy-binding <gke-service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+    --role roles/iam.workloadIdentityUser \
+    --member "serviceAccount:<service-project-id>.svc.id.goog[external-dns/external-dns]"
+```
+
+== rpk user permissions
+
+The user running `rpk` requires certain permissions. This can be done through a Google account, a service account, or any principal identity supported by GCP.
+
+.Expand permissions
+[%collapsible]
+====
+* `compute.disks.create`
+* `compute.disks.setLabels`
+* `compute.instanceGroupManagers.create`
+* `compute.instanceGroupManagers.delete`
+* `compute.instanceGroupManagers.get`
+* `compute.instanceGroups.create`
+* `compute.instanceGroups.delete`
+* `compute.instanceTemplates.create`
+* `compute.instanceTemplates.delete`
+* `compute.instanceTemplates.get`
+* `compute.instanceTemplates.useReadOnly`
+* `compute.instances.create`
+* `compute.instances.setLabels`
+* `compute.instances.setMetadata`
+* `compute.instances.setTags`
+* `compute.networks.get`
+* `compute.subnetworks.get`
+* `compute.subnetworks.use`
+* `compute.zones.list`
+* `iam.roles.get`
+* `iam.serviceAccounts.actAs`
+* `iam.serviceAccounts.get`
+* `resourcemanager.projects.get`
+* `resourcemanager.projects.getIamPolicy`
+* `serviceusage.services.list`
+* `storage.buckets.get`
+* `storage.buckets.getIamPolicy`
+* `storage.objects.create`
+* `storage.objects.delete`
+* `storage.objects.get`
+* `storage.objects.list`
+====
+
+If running `rpk` from a Google account, the user should first acquire new user credentials to use for https://cloud.google.com/sdk/gcloud/reference/auth/application-default/login[Application Default Credentials^].
+
+If running `rpk` as a service account, the user should create a https://cloud.google.com/iam/docs/keys-create-delete#creating[service account key^], then https://cloud.google.com/docs/authentication/application-default-credentials#GAC[export GOOGLE_APPLICATION_CREDENTIALS^] and https://cloud.google.com/sdk/gcloud/reference/config/set[set the account as the default in gcloud^].
+
+```unset
+export GOOGLE_APPLICATION_CREDENTIALS=<keyfile for service account>
+gcloud config set account $SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com
+```
+
+== Errors
+
+=== Host service agent user role not granted to service account
+
+==== Terraform 
+
+2023-07-20T19:50:35.033Z ERROR main zapio/writer.go:145 Error: googleapi: Error 403: The Kubernetes Engine service account is missing required permissions on this project. See the https://cloud.google.com/kubernetes-engine/docs/troubleshooting#gke_service_account_deleted[Google documentation].
+
+.Expand error
+[%collapsible]
+====
+hostServiceAgent.use" permission(s) for "projects/rp-byo-vpc-paul". - `container.hostServiceAgent.use` 2023-07-20T20:37:01.346Z ERROR main zapio/writer.go:145 Error: googleapi: Error 403: The Kubernetes Engine service account is missing required permissions on this project. See https://cloud.google.com/kubernetes-engine/docs/troubleshooting#gke_service_account_deleted for more info: required "container.hostServiceAgent.use" permission(s) for "projects/rp-byo-vpc-paul".
+====
+
+=== IAM service account getAccessToken not added to Console service account
+
+==== Console pod logs
+
+.Expand error
+[%collapsible]
+====
+{"level":"error","ts":"2023-07-21T17:23:07.304Z","logger":"secret_store","msg":"failed to test secret store connectivity","error":"failed to create a test secret at initialization: rpc error: code = Unauthenticated desc = transport: per-RPC creds failed due to error: compute: Received 403 `Unable to generate access token; IAM returned 403 Forbidden: Permission 'iam.serviceAccounts.getAccessToken' denied on resource (or it may not exist).\nThis error could be caused by a missing IAM policy binding on the target IAM service account.\nFor more information, refer to the Workload Identity documentation:\n\thttps://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity#authenticating_to\n\n`"} {"level":"info","ts":"2023-07-21T17:23:08.633Z","msg":"Server listening on address","address":"[::]:8080","port":8080} {"level":"error","ts":"2023-07-21T18:13:44.001Z","msg":"Sending REST error","provider_id":"5","internal_identifier":"auth0|64348789afcabaeea6e8f7ba","user_id":"auth0|64348789afcabaeea6e8f7ba","reason":"user does not exist in user repository","route":"/api/cluster/overview","method":"GET","status_code":401,"remote_address":"10.0.0.10","public_error":"You don't have permissions to use Console"} {"level":"error","ts":"2023-07-21T18:13:44.002Z","msg":"Sending REST error","provider_id":"5","internal_identifier":"auth0|64348789afcabaeea6e8f7ba","user_id":"auth0|64348789afcabaeea6e8f7ba","reason":"user does not exist in user repository","route":"/api/console/endpoints","method":"GET","status_code":401,"remote_address":"10.0.0.10","public_error":"You don't have permissions to use Console"} {"level":"error","ts":"2023-07-21T18:13:44.002Z","msg":"Sending REST error","provider_id":"5","internal_identifier":"auth0|64348789afcabaeea6e8f7ba","user_id":"auth0|64348789afcabaeea6e8f7ba","reason":"user does not exist in user repository","route":"/api/brokers","method":"GET","status_code":401,"remote_address":"10.0.0.10","public_error":"You don't have permissions to use Console"} {"level":"error","ts":"2023-07-21T18:13:44.005Z","msg":"Sending REST error","provider_id":"5","internal_identifier":"auth0|64348789afcabaeea6e8f7ba","user_id":"auth0|64348789afcabaeea6e8f7ba","reason":"user does not exist in user repository","route":"/api/cluster","method":"GET","status_code":401,"remote_address":"10.0.0.10","public_error":"You don't have permissions to use Console"}
+====
+
+=== API enablement prerequisite
+
+If the `serviceusage.googleapis.com` API is not enabled, the following error can occur during the `rpk` prerequisite checks.
+
+.Expand error
+[%collapsible]
+====
+```unset
+Checking APIs enabled... FAILED
+rpc error: code = PermissionDenied desc = Service Usage API has not been used in project xxx before or it is disabled.
+Enable it by visiting https://console.developers.google.com/apis/api/serviceusage.googleapis.com/overview?project=xxx then retry.
+If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.
+error details: name = ErrorInfo reason = SERVICE_DISABLED domain = googleapis.com metadata = map[consumer:projects/xxx service:serviceusage.googleapis.com]
+error details: name = Help desc = Google developers console API activation url = https://console.developers.google.com/apis/api/serviceusage.googleapis.com/overview?project=xxx
+To correct this issue: To enable the missing APIs, run 'gcloud services enable <service-name>'
+```
+====
+
+=== workloadIdentity binding
+
+If the project has never had any Kubernetes cluster created before, the following error can occur when attempting to bind the workloadIdentity. There is no API that Google exposes to enable this functionality: you must create a temporary Kubernetes cluster that can immediately be deleted to resolve the error.
+
+.Expand error
+[%collapsible]
+====
+```unset
+googleapi: Error 400: Identity Pool does not exist (<PROJECT_NAME>).
+Please check that you specified a valid resource name as returned in the `name` attribute in the configuration API., badRequest
+```
+====
+
+== Upgrade considerations
+
+Likely we won't be able to upgrade as often. If we can't create service accounts or IAM roles, how to handle upgrades that require introducing either (or both) of these things? This impacts our ability to automatically upgrade our fleet.
