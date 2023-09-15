@@ -10,7 +10,7 @@ NOTE: To unlock this functionality in your Redpanda Cloud UI, contact https://su
 
 Your VPC and Redpanda cluster can be in the same GCP project or in different GCP projects.
 
-NOTE: The _host_ project is the GCP project where the VPC network is created, and the _service_ project is the GCP project where the Redpanda cluster is created. If your host project and service project are in different GCP projects, you must first create a shared VPC. 
+NOTE: The _host_ project is the GCP project where the VPC network is created, and the _service_ project is the GCP project where the Redpanda cluster is created. If your host project and service project are in different projects, you must first provision a shared VPC in Google Cloud. For more information, see the https://cloud.google.com/vpc/docs/provisioning-shared-vpc[Google documentation^]. 
 
 === Create a shared VPC
 
@@ -24,12 +24,6 @@ gcloud compute shared-vpc enable <host-project-id>
 +
 ```unset
 gcloud compute shared-vpc associated-projects add <service-project-id> --host-project <host-project-id>
-```
-
-. Create the VPC.
-+
-```unset
-gcloud compute networks create <shared-vpc-name> --subnet-mode custom --project <host-project-id>
 ```
 
 . Get IAM permissions at the host project. 
@@ -86,11 +80,18 @@ gcloud projects add-iam-policy-binding <host-project-id> \
     --member=serviceAccount:service-<service-project-number>@container-engine-robot.iam.gserviceaccount.com \
     --role=roles/compute.securityAdmin
 ```
++
 For more information, see the https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-shared-vpc#managing_firewall_resources[Google documentation^].
+
+. Create the VPC.
++
+```unset
+gcloud compute networks create <shared-vpc-name> --subnet-mode custom --project <host-project-id>
+```
 
 == Configure the host project 
 
-. Create the primary and secondary subnets in the VPC. Redpanda clusters require one subnet, and that subnet should have two secondary IP ranges.
+. Create the primary and secondary subnets in your VPC. Redpanda clusters require one subnet, and that subnet should have two secondary IP ranges.
 +
 * Subnet IP range is a /24 CIDR; for example, 10.0.0.0/24.
 * Secondary IP for Pods is a /21 CIDR; for example, 10.0.8.0/21.
@@ -357,10 +358,11 @@ NOTE: If `iam.serviceAccounts.getAccessToken`` is not added, there will be error
 
 * Connectors custom role
 
-. Create a cluster in the Redpanda Cloud UI to get the Redpanda ID.
+. Because some resources can only be created after the Redpanda ID is known, xref:./create-byoc-cluster-gcp.adoc[create a BYOC cluster] in the https://cloudv2.redpanda.com[Redpanda Cloud UI^] to get the Redpanda ID.
 +
-Some resources can only be created after the Redpanda ID is known.
-Before running the `rpk` command provided in the UI, note the `redpanda-id` in the Apply command (for example, cisld88gfi809ee1qjcg). The service accounts must be bound with the following roles:
+IMPORTANT: On the Network page, select the *Customer-managed* network connection type. Redpanda validates your network, service account, and storage bucket configuration. Click *Next*, but before running the `rpk` command on the Deploy page of the UI, note the redpanda-id (for example, cisld88gfi809ee1qjcg). You finish the cluster deployment in a later step.  
++
+Now use the redpanda-id to bind the service accounts with the following roles:
 +
 .. Service account bindings
 
@@ -422,22 +424,12 @@ gcloud iam service-accounts add-iam-policy-binding <gke-service-account-name>@<s
     --member "serviceAccount:<service-project-id>.svc.id.goog[external-dns/external-dns]"
 ```
 
-== Next steps
+== Deploy the BYOC cluster
 
-You can now xref:./create-byoc-cluster-gcp.adoc[create a BYOC cluster on GCP]: 
+In a previous step, you started to create a BYOC cluster on GCP, stopping just before deploying the cluster with `rpk`. Now, you can finish deploying the cluster. In the Redpanda Cloud UI, on the Deploy page, you deploy the agent. 
 
-. To use your own VPC and security resources, select the *Customer-managed* network connection type.
+In a standard BYOC cluster, `rpk` configures the permissions required by the agent to provision and actively maintain the cluster. With *customer-managed* networks, you must grant the user deploying the cluster with `rpk` the following permissions. 
 
-. Grant the user running `rpk` the following permissions. This can be done through a Google account, a service account, or any principal identity supported by GCP.
-+
-- If running `rpk` from a Google account, the user should first acquire new user credentials to use for https://cloud.google.com/sdk/gcloud/reference/auth/application-default/login[Application Default Credentials^].
-- If running `rpk` from a service account, the user should create a https://cloud.google.com/iam/docs/keys-create-delete#creating[service account key^], then https://cloud.google.com/docs/authentication/application-default-credentials#GAC[export GOOGLE_APPLICATION_CREDENTIALS^] and https://cloud.google.com/sdk/gcloud/reference/config/set[set the account as the default in gcloud^]:
-+
-```unset
-export GOOGLE_APPLICATION_CREDENTIALS=<keyfile for service account>
-gcloud config set account $SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com
-```
-+
 .Expand necessary permissions
 [%collapsible]
 ====
@@ -473,3 +465,13 @@ gcloud config set account $SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com
 * `storage.objects.get`
 * `storage.objects.list`
 ====
+
+This can be done through a Google account, a service account, or any principal identity supported by GCP.
+
+- If running `rpk` from a Google account, the user should first acquire new user credentials to use for https://cloud.google.com/sdk/gcloud/reference/auth/application-default/login[Application Default Credentials^].
+- If running `rpk` from a service account, the user should create a https://cloud.google.com/iam/docs/keys-create-delete#creating[service account key^], then https://cloud.google.com/docs/authentication/application-default-credentials#GAC[export GOOGLE_APPLICATION_CREDENTIALS^] and https://cloud.google.com/sdk/gcloud/reference/config/set[set the account as the default in gcloud^]:
++
+```unset
+export GOOGLE_APPLICATION_CREDENTIALS=<keyfile for service account>
+gcloud config set account $SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com
+```
