@@ -1,106 +1,43 @@
-= Configure Self-Managed VPC Resources for a BYOC Cluster on GCP
+= Configure Customer-Managed VPC on GCP
 :description: Connect Redpanda Cloud to your existing VPC resources for additional security.
 :page-cloud: true
 
-You can connect Redpanda Cloud to your virtual private cloud (VPC) and completely control your security resources and policies, including subnetworks, service accounts, IAM roles, firewall rules, and storage buckets. You can then create a Redpanda Cloud BYOC cluster on GCP with the most security. 
+You can connect Redpanda Cloud to your customer-managed virtual private cloud (VPC), and you can then create clusters with the most security. With standard BYOC clusters using a Redpanda-managed VPC, Redpanda creates a VPC in your Google Cloud account and manages its resources. With a customer-managed VPC:
 
-== Prerequisites
+* You provide your own VPC in your Google Cloud account. 
+* You control your security resources and policies, including subnetworks, service accounts, IAM roles, firewall rules, and storage buckets.
+* Redpanda requires less permissions than standard BYOC clusters. 
 
 [NOTE]
 ====
 include::shared:partial$feature-flag.adoc[]
 ====
 
-Your VPC and your Redpanda cluster can be in the same GCP project or in different GCP projects. The _host_ project is the GCP project where the VPC network is created, and the _service_ project is the GCP project where the Redpanda cluster is created. If your host project and service project are in different projects, you must first provision a shared VPC in Google Cloud. For more information, see the https://cloud.google.com/vpc/docs/provisioning-shared-vpc[Google documentation^], or follow these steps: 
+== Prerequisites
 
-=== Create a shared VPC
+* Redpanda creates a private Google Kubernetes Engine (GKE) cluster in the VPC. The subnet and secondary IP ranges you provide must allow public internet access. 
 
-. Enable the customer-managed VPC at the host project: 
-+
-```bash
-gcloud compute shared-vpc enable <host-project-id>
-```
+* As part of configuring your VPC, you need to provide reserved CIDR ranges for the subnet and GKE Pods, Services, and master IP addresses.
 
-. Allow the service project to use the customer-managed VPC: 
-+
-```bash
-gcloud compute shared-vpc associated-projects add <service-project-id> --host-project <host-project-id>
-```
+* Your VPC and your Redpanda cluster can be in the same GCP project or in different GCP projects. The _host_ project is where the VPC network is created, and the _service_ project is where the Redpanda cluster is created. If your host project and your service project are in different projects, you must first provision a shared VPC in Google Cloud. For details, see the https://cloud.google.com/vpc/docs/provisioning-shared-vpc[Google documentation^]. 
 
-. Get IAM permissions at the host project. 
-+
-.. Get IAM permission of the primary subnet, and save the output etag:
-+
-```bash
-gcloud compute networks subnets get-iam-policy <primary-subnet-name> \
-   --project <host-project-id> \
-   --region <region>
-```
-+
-.. Get the project number (`PROJECT_NUMBER` column) of the service project:
-+
-```bash
-gcloud projects list
+== Limitations
 
-PROJECT_ID                      NAME                            PROJECT_NUMBER
-rp-byo-host                  rp-byo-service                     1030959231549
-rp-byoc-service              rp-byoc-host                       268950748084
-```
-+
-.. Create the policy file with the content:
-+
-```bash
-bindings:
-- members:
-  - serviceAccount:<service-project-number>@cloudservices.gserviceaccount.com
-  - serviceAccount:service-<service-project-number>@container-engine-robot.iam.gserviceaccount.com
-  role: roles/compute.networkUser
-etag: <etag>
-```
-+
-.. Apply the policy saved to that policy file:
-+
-```bash
-gcloud compute networks subnets set-iam-policy <primary-subnet-name>  \
-    --project <host-project-id> \
-    --region <region> <policy-file-created-above>
-```
-+
-.. Grant the host service agent the user role to the service account:
-+
-```bash
-- gcloud projects add-iam-policy-binding <host-project-id> \
-    --member serviceAccount:service-<service-project-number>@container-engine-robot.iam.gserviceaccount.com \
-    --role roles/container.hostServiceAgentUser
-```
-+
-.. Grant the service project's GKE service account (SA) to manage firewall resources:
-+
-```bash
-gcloud projects add-iam-policy-binding <host-project-id> \
-    --member=serviceAccount:service-<service-project-number>@container-engine-robot.iam.gserviceaccount.com \
-    --role=roles/compute.securityAdmin
-```
-+
-For more information, see the https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-shared-vpc#managing_firewall_resources[Google documentation^].
+* Existing clusters cannot be moved to a customer-managed VPC.
 
-. Create the VPC.
-+
-```bash
-gcloud compute networks create <shared-vpc-name> --subnet-mode custom --project <host-project-id>
-```
+* After creating a cluster with a customer-managed VPC, you cannot change the VPC.
 
 == Configure your VPC
 
-Your VPC must have reserved CIDR ranges for Pods, Services, and Google Kubernetes Engine (GKE) and firewall rules that grant the subnet internet access.
-
-. Create the primary and secondary subnets in your VPC. Redpanda clusters require one subnet, and that subnet should have two secondary IP ranges:
-
-* Subnet IP range should be at least /20 CIDR; for example, 10.0.0.0/20.
-* Secondary IP for Pods is a /21 CIDR; for example, 10.0.8.0/21.
-* Secondary IP for Services is a /24 CIDR; for example, 10.0.1.0/24.
+. Create the primary and secondary subnets in your VPC using CIDR notation. Redpanda clusters require one subnet, and that subnet should have two secondary IP ranges:
++
+* Subnet IP range should be at least /20 CIDR, such as 10.0.0.0/20.
+* Secondary IP for GKE Pods is a /21 CIDR, such as 10.0.8.0/21.
+* Secondary IP for GKE Services is a /24 CIDR, such as 10.0.1.0/24.
 +
 Additionally, a /28 CIDR is required for the GKE master IP addresses. This CIDR is not used in the GCP networking configuration, but is input into the Redpanda UI; for example, 10.0.7.240/28.
++
+Replace all `<placeholders>` with your own values.
 +
 ```bash
 gcloud compute networks subnets create <primary-subnet-name> \
@@ -111,7 +48,7 @@ gcloud compute networks subnets create <primary-subnet-name> \
     --secondary-range <secondary-ipv4-range-name-for-pods>=10.0.8.0/21,<secondary-ipv4-range-name-for-pods>=10.0.1.0/24
 ```
 
-. Create a cloud router and NAT at the host project: 
+. To enable egress, create a cloud router and NAT at the host project: 
 +
 ```bash
 gcloud compute routers create <route-name> \
@@ -189,7 +126,7 @@ gcloud storage buckets update gs://<management-storage-bucket-name> --versioning
 * Redpanda uses the Tiered Storage bucket for writing log segments. This should not be versioned.
 * Redpanda uses the Management Storage bucket to store cluster metadata. This can have versioning enabled.
 
-. Create service accounts at the service project.
+. Create service accounts at the service project for the Redpanda agent, the Redpanda cluster, the Redpanda GKE cluster, Redpanda Console, and Redpanda connectors. 
 
 .. Redpanda agent SA:
 +
@@ -462,7 +399,7 @@ gcloud iam service-accounts add-iam-policy-binding <gke-service-account-name>@<s
 
 . Because some resources can only be created after the Redpanda ID is known, xref:./create-byoc-cluster-gcp.adoc[create a BYOC cluster] in the https://cloudv2.redpanda.com[Redpanda Cloud UI^] to get the Redpanda ID.
 +
-IMPORTANT: On the Network page, select the *Customer-managed* network connection type, and enter the network, service account, and storage bucket information you created. However, before running the `rpk` command, note the redpanda-id (for example, `cisld88gfi809ee1qjcg`). You finish the cluster deployment in a later step.  
+IMPORTANT: On the Network page, select the *Customer-managed* network connection type, and enter the network, service account, and storage bucket information you created. However, before running the `rpk` command, note the `redpanda-id` (for example, `cisld88gfi809ee1qjcg`). You finish the cluster deployment in a later step.  
 +
 . Use the `redpanda-id` to bind the service accounts with the following roles:
 
@@ -492,7 +429,7 @@ gcloud iam service-accounts add-iam-policy-binding <service-account-name>@<servi
 
 == Validate configuration
 
-In a previous step, you created a BYOC cluster in the Redpanda Cloud UI, stopping just before validating your configuration with `rpk`. Now, you run that final step to deploy your cluster. To validate your configuration, run:
+In a previous step, you created a BYOC cluster in the Redpanda Cloud UI, stopping just before validating your configuration with `rpk`. Now, you can run the final step to deploy your cluster:
 
 ```bash
 rpk byoc gcp apply --validate-only --redpanda-id=<redpanda-id> --project_id=<service-project-id>
