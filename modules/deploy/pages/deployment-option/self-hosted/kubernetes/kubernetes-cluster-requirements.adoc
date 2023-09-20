@@ -1,70 +1,182 @@
-= Kubernetes Cluster Requirements
-:description: A list of requirements for provisioning Kubernetes clusters and worker nodes for running Redpanda in production.
+= Kubernetes Requirements and Recommendations
+:description: A list of requirements and recommendations for provisioning Kubernetes clusters and worker nodes for running Redpanda in production.
 :tags: ["Kubernetes"]
+:page-aliases: deploy:deployment-option/self-hosted/kubernetes/kubernetes-best-practices.adoc
 
-This topic is a checklist with the prerequisites and system requirements for installing production Redpanda in a Kubernetes cluster using the Helm chart.
+This topic provides you with the requirements and recommendations for provisioning Kubernetes clusters and worker nodes for running Redpanda in production.
 
-== Operating system
+== Kubernetes cluster
 
-* Minimum recommended version of RHEL of RHEL/CentOS: {supported-rhel-version}
-* Minimum version of Ubuntu: {supported-ubuntu-version}
+This section provides the requirements and recommendations for setting up a Kubernetes cluster to run Redpanda.
 
-== CPU and memory
+=== Operating system
 
-* A minimum of three physical worker nodes or virtual machines are required.
-* Two physical (not virtual) cores are required. Four physical cores are strongly recommended.
-* x86_64 (Westmere or newer) and AWS Graviton family processors are supported.
-* 2 GB or more of memory per core is required.
+*Requirement*:
 
-== Kubernetes
+- Minimum recommended version of RHEL/CentOS: {supported-rhel-version}
 
-Minimum required Kubernetes version: {supported-kubernetes-version}
+- Minimum version of Ubuntu: {supported-ubuntu-version}
+
+=== Kubernetes version
+
+*Requirement*: Minimum required Kubernetes version: {supported-kubernetes-version}
 
 Make sure to do the following:
 
 . https://kubernetes.io/docs/tasks/tools/[Install kubectl^].
 . https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/[Configure the `kubeconfig` file for your cluster^].
 
-== Helm
+=== Helm version
 
-Minimum required Helm version: {supported-helm-version}
+*Requirement*: Minimum required Helm version: {supported-helm-version}
 
 https://helm.sh/docs/intro/install/[Install Helm^].
 
-== Number of worker nodes
+=== Worker nodes
 
-You must provision one worker node for each Redpanda broker that you plan to deploy in your Redpanda cluster. Each Pod replica that runs a Redpanda broker requires its own dedicated worker node for the following reasons:
+*Requirement*: Provision one dedicated worker node for each Redpanda broker that you plan to deploy in your Redpanda cluster.
+
+Each Pod replica that runs a Redpanda broker requires its own dedicated worker node for the following reasons:
 
 * Redpanda brokers are designed to have access to all resources, such as CPU and memory, on their host machine.
 * External clients access Redpanda brokers using the address of a worker node. See <<External networking>>.
 
-NOTE: The Helm chart configures `podAntiAffinity` rules to make sure that each Redpanda broker runs on its own worker node.
+NOTE: The Redpanda Helm chart configures `podAntiAffinity` rules to make sure that each Redpanda broker runs on its own worker node.
 
-== Storage volumes
+*Recommendation*: <<Deploy at least three Pod replicas>>.
 
-Redpanda brokers must store their data on disk. As a result, each Pod that runs a Redpanda broker must have its own storage volume.
+=== CPU
 
-NOTE: Do not colocate multiple Redpanda instances on a single host in Kubernetes.
+*Requirement*: Two physical, not virtual, cores for each worker node.
 
-For production, follow these requirements and recommendations:
+*Requirement*: x86_64 (Westmere or newer) and AWS Graviton family processors are supported.
 
-* Mount an XFS or ext4 file system on any storage volumes that host the data directory of Redpanda (`/var/lib/redpanda/data`) or the Tiered Storage cache. XFS is highly recommended. NFS is not supported.
-* Use locally-attached NVMe devices. RAID-0 is required if you use multiple disks.
-* Use ephemeral cloud instance storage only in combination with Tiered Storage or for Tiered Storage cache. Without Tiered Storage, attached persistent volumes (for example, EBS).
+*Recommendation*: Four physical cores are strongly recommended.
 
-To learn what volumes Redpanda recommends, see the xref:./kubernetes-best-practices.adoc#storage[storage best practices].
-To learn how to configure storage, see xref:manage:kubernetes/configure-storage.adoc[Configure storage].
+*Recommendation*: <<Set resource requests and limits for memory and CPU>>.
 
-== Object storage providers for Tiered Storage
+=== Memory
 
-* Amazon Simple Storage Service (S3)
-* Google Cloud Storage (GCS), using the Google Cloud Platform S3 API
-* Azure Blob Storage (ABS)
+*Requirement*: 2 GB or more of memory per core.
 
-== External networking
+=== Storage
 
-For external access, each worker node in your cluster must have a static, externally accessible IP address to allow clients to connect to the NodePort Service and access the Redpanda broker.
-Redpanda uses the following default ports:
+*Requirement*: The Redpanda data directory (`/var/lib/redpanda/data`) and the Tiered Storage cache must be mounted on an XFS or ext4 filesystem. For information about supported volume types for different data, see xref:manage:kubernetes/storage/volume-types.adoc[].
+
+CAUTION: Avoid using NFS (Network File System) for the Redpanda data directory or the Tiered Storage cache.
+
+*Recommendation*: Use an XFS filesystem for its enhanced performance with Redpanda workloads.
+
+*Recommendation*: <<kubernetes-volumes, Use local PersistentVolumes that are backed by locally attached NVMe disks>> to store the Redpanda data directory.
+
+*Recommendation*: For setups with multiple disks, use a RAID-0 (striped) array. It boosts speed but lacks redundancy. A disk failure can lead to data loss.
+
+=== Cloud instance types
+
+*Recommendation*: Use instance types that supports local NVMe disks. See xref:./cloud-instance-local-storage.adoc[].
+
+For help sizing your Kubernetes cluster, see xref:deploy:deployment-option/self-hosted/manual/sizing.adoc[Sizing Guidelines].
+
+=== Security
+
+*Recommendation*: If you're using a cloud platform, use xref:manage:security/iam-roles.adoc[IAM roles] to restrict access to resources in your cluster.
+
+=== Object storage providers for Tiered Storage
+
+Redpanda supports the following storage providers for Tiered Storage:
+
+- Amazon Simple Storage Service (S3)
+- Google Cloud Storage (GCS), using the Google Cloud Platform S3 API
+- Azure Blob Storage (ABS)
+
+=== External networking
+
+*Requirement*: Minimum 10 GigE (10 Gigabit Ethernet). A 10 GigE connection ensures:
+
+* High data throughput
+* Reduced data transfer latency
+* Scalability for increased network traffic
+
+*Requirement*: For external access, each worker node in your cluster must have a static, externally accessible IP address.
+
+*Recommendation*: <<use-a-nodeport-service-for-external-access, Use the NodePort Service to give external clients access to the Redpanda brokers>> that are running on those nodes.
+
+== Redpanda cluster
+
+This section provides the requirements and recommendations for deploying Redpanda.
+
+=== Tuning
+
+*Requirement*: Before deploying Redpanda to production, each worker node that runs Redpanda must be tuned to optimize the Linux kernel for Redpanda processes. See xref:./kubernetes-tune-workers.adoc[Tuning Kubernetes Worker Nodes for Production].
+
+=== Deploy at least three Pod replicas
+
+*Recommendation*: Redpanda Data recommends at least three Pod replicas (Redpanda brokers) to use as _seed servers_. Seed servers are used to bootstrap the gossip process for new brokers joining a cluster. When a new broker joins, it connects to the seed servers to find out the topology of the Redpanda cluster. A larger number of seed servers makes consensus more robust and minimizes the chance of unwanted clusters forming when brokers are restarted without any data.
+
+NOTE: By default, the Redpanda Helm chart deploys a StatefulSet with three Redpanda brokers. You can specify the number of Redpanda brokers in the xref:reference:redpanda-helm-spec.adoc#statefulset-replicas[`statefulset.replicas`] configuration.
+
+=== Set resource requests and limits for memory and CPU
+
+*Recommendation*: In a production cluster, the resources you allocate to Redpanda should be proportionate to your machine type. Redpanda Data recommends that you determine and set these values before deploying the cluster, but you can also update the values on a running cluster. For instructions on setting Pod resources, see xref:manage:kubernetes/manage-resources.adoc[Manage Pod Resources in Kubernetes].
+
+=== Use local PersistentVolumes backed by NVMe disks
+
+*Recommendation*: Use PersistentVolumes that are backed by locally attached NVMe devices to store the Redpanda data directory. NVMe devices outperform traditional SSDs or HDDs.
+
+By default, the Redpanda Helm chart uses the default StorageClass in your Kubernetes cluster to create one PersistentVolumeClaim for each Redpanda broker.
+
+- See xref:manage:kubernetes/storage/volume-types.adoc[]
+- To learn how to configure different volumes see xref:manage:kubernetes/storage/configure-storage.adoc[].
+
+When working with local NVMe disks, provisioning can pose challenges. Dynamic provisioners, though highly scalable and automated, may not always support local PVs. You can either create the PV manually or to automatically create one PV on each node that has local SSDs available, you can use one of the following CSI drivers:
+
+- https://github.com/openebs/lvm-localpv[Local volume manager] (LVM)
+- https://github.com/kubernetes-sigs/sig-storage-local-static-provisioner[local volume static provisioner]
+
+When you have a PV, you can use a StorageClass to provide the Redpanda Helm chart a way of creating PersistentVolumeClaims that use your local NVMe disks.
+
+. When the Redpanda Helm chart creates PVCs with a StorageClass, the Kubernetes scheduler will look for a PV that:
+** Has the same storage class.
+** Meets the storage capacity requirements specified in the PVC.
+** Is not yet bound to any other PVC.
+
+. When a Pod is created that references the PVC:
+
+.. The scheduler will ensure that the Pod is scheduled to the node where the PV resides.
+.. If there's no suitable PV available, the Pod will remain in a pending state until a suitable PV is provided or the PVC's specifications are changed.
+
+This example configures a StorageClass for provisioning locally attached storage with an XFS filesystem.
+
+.storageclass.yaml
+[source,yaml,lines=4-6+8]
+----
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-xfs-storage <1>
+provisioner: kubernetes.io/no-provisioner <2>
+volumeBindingMode: WaitForFirstConsumer <3>
+parameters:
+  fsType: xfs <4>
+----
+
+<1> The name of the StorageClass.
+
+<2> The provisioner to use.
++
+Because the provisioner is set to `kubernetes.io/no-provisioner`, Kubernetes will not automatically provision a new PV for this PVC. Instead, it expects that a PV exists that matches the requirements of the PVC that the Redpanda Helm chart creates.
+
+<3> Delays the binding of the PVC to a PV until a Pod that uses the PVC is created. This value ensures that the volume is bound to a node on which the Pod is going to run, which is essential for local volumes that have node affinity.
+
+<4> Any PV that this PVC binds to should either be already formatted with the XFS filesystem or should be intended to be formatted with XFS when being initialized.
+
+=== Use a NodePort Service for external access
+
+*Recommendation*: Use a NodePort Service for external access to Redpanda brokers.
+
+The NodePort Service provides the lowest latency of all the Services because it does not include any unnecessary routing or middleware. Client connections go to the Redpanda brokers in the most direct way possible, through the worker nodes.
+
+By default, the Redpanda Helm chart creates a NodePort Service with the following ports:
 
 |===
 | Node port | Purpose
@@ -82,20 +194,39 @@ Redpanda uses the following default ports:
 | Admin API
 |===
 
-Minimum 10 GigE.
+To change these ports, see xref:manage:kubernetes/networking/configure-listeners.adoc[].
 
-Redpanda recommends using NodePorts instead of Loadbalancers. See the xref:./kubernetes-best-practices.adoc#external-networking[external networking best practices].
+Depending on your deployment and security policies, you may not be able to access worker nodes through a NodePort Service.
+If you choose to use another Service, consider the impact on the cost and performance of your deployment:
 
-== Tuning
+* LoadBalancer Service - To make each Redpanda broker accessible with LoadBalancer Services, you need one LoadBalancer Service for each Redpanda broker so that requests can be routed to specific brokers rather than balancing requests across all brokers. Load balancers are expensive, add latency and occasional packet loss, and add an unnecessary layer of complexity.
+* Ingress - To make each Redpanda broker accessible with Ingress, you need to run an Ingress controller and set up routing to each Redpanda broker. Routing adds latency and can be a throughput bottleneck.
 
-Before deploying Redpanda to production, each worker node that runs Redpanda must be tuned to optimize the Linux kernel for Redpanda processes.
+See xref:manage:kubernetes/networking/networking-and-connectivity.adoc[Networking and Connectivity].
 
-See xref:./kubernetes-tune-workers.adoc[Tuning Kubernetes Worker Nodes for Production].
+=== Use ExternalDNS for external access
 
-== Sizing
+*Recommendation*: Redpanda Data recommends using ExternalDNS to manage DNS records for your Pods' domains. ExternalDNS synchronizes exposed Kubernetes Services with various DNS providers, rendering Kubernetes resources accessible through DNS servers.
 
-For help sizing your Kubernetes cluster, see xref:deploy:deployment-option/self-hosted/manual/sizing.adoc[Sizing Guidelines].
+Benefits of ExternalDNS include:
+
+* *Automation*: ExternalDNS automatically configures public DNS records when you create, update, or delete Kubernetes Services or Ingresses. This eliminates the need for manual DNS configuration which can be error-prone.
+* *Compatibility*: ExternalDNS is compatible with a wide range of DNS providers, including major cloud providers such as AWS, Google Cloud, and Azure, and DNS servers like CoreDNS and PowerDNS.
+* *Integration with other tools*: ExternalDNS can be used in conjunction with other Kubernetes tools, such as ingress controllers or cert-manager for managing TLS certificates.
+
+You can use ExternalDNS with the default xref:manage:kubernetes/networking/configure-external-access-nodeport.adoc#externaldns[NodePort Service] or with xref:manage:kubernetes/networking/configure-external-access-loadbalancer.adoc#externaldns[LoadBalancer Services].
+
+=== Secure your cluster
+
+*Recommendation*: Deploy Redpanda in a separate namespace to protect your data from other resources in your Kubernetes cluster.
+
+*Recommendation*: To protect your Redpanda cluster, enable and configure the following:
+
+* xref:manage:kubernetes/security/sasl-kubernetes.adoc[Authentication through SASL]
+* xref:manage:kubernetes/security/kubernetes-tls.adoc[Network encryption through TLS]
+
+By default, the Redpanda Helm chart enables TLS using cert-manager.
 
 == Next steps
 
-xref:./kubernetes-best-practices.adoc[Review the best practices].
+xref:./kubernetes-deploy.adoc[].

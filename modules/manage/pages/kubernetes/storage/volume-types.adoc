@@ -1,0 +1,208 @@
+= Supported Volume Types for Redpanda Deployments
+:description: Understand the three Kubernetes volume types supported by Redpanda, their lifecycles, use cases, storage locations, and their suitability for different Redpanda data requirements.
+
+Redpanda supports PersistentVolumes (PV), `emptyDir` volumes, and `hostPath`  volumes for storing the <<redpanda-data, Redpanda data directory>> and the <<ts-cache, Tiered Storage cache>> in Kubernetes. The volume type you choose directly impacts performance and data integrity. This topic explains the three Kubernetes volume types supported by Redpanda, their lifecycles, use cases, storage locations, and their suitability for different Redpanda data requirements.
+
+.Comparison of volume types
+[cols="1a,2a"]
+|===
+| Volume Type |Data Persistence
+
+| <<hostPath, `hostPath`>>
+| Persists across Pod restarts but lost if the worker node fails.
+
+| <<emptyDir, `emptyDir`>>
+| Lost if the Pod is deleted or evicted.
+
+| <<PersistentVolumes>>
+| Persists beyond the Pod's lifecycle.
+|===
+
+== Data in Redpanda that can be stored in separate volumes
+
+Redpanda allows you to select separate volume types for the Redpanda data directory and the Tiered Storage cache.
+
+[[redpanda-data]]
+=== Redpanda data directory
+
+Essential data that each Redpanda broker requires to operate, including:
+
+- *ring0*: The Raft group holding all Redpanda configurations.
+- *Partition segments*: If the particular broker participates in partition replication as either the leader or a follower, the data directory includes those partition segments.
+- *Crash loop tracker*: A file that logs recurrent Redpanda system crashes.
+
+The Redpanda data directory is always required.
+
+[[ts-cache]]
+=== Tiered storage cache
+
+Older, less frequently accessed data segments in Tiered Storage. When a client fetches data not available locally, Redpanda retrieves these segments from object storage and caches them to optimize subsequent data access requests.
+
+The Tiered Storage cache is required only when Tiered Storage is enabled
+
+== hostPath
+
+With `hostPath` volumes, each Pod that runs a Redpanda broker stores data on the host worker node's filesystem. This volume provides storage that lasts as long as the worker node is alive.
+
+- *Lifecycle*: A hostPath volume mounts a file or directory from the host worker node's filesystem into your Pod.
+
+- *Use case*: For containers that need access to specific files or directories on the host.
+
+- *Storage location*: Points to a specific location on the host worker node's filesystem.
+
+- *Suitability for the Redpanda data directory*: For development environments where fast data access is important but data integrity is secondary.
+
+- *Suitability for Tiered Storage cache*: For efficient for cache retrieval. However, if the worker node fails, Redpanda must rebuild the cache, potentially leading to increased fetches from the primary storage.
+
+WARNING: If the worker node fails, the data in `hostPath` volumes is lost.
+
+== emptyDir
+
+With `emptyDir` volumes, data is stored on the worker node's local storage. This volume provides temporary storage that lasts only as long as the Pod is alive. If a container within the Pod restarts, the data persists.
+
+WARNING: If the Pod is deleted or evicted from the worker node, the `emptyDir` volume is deleted, and data is lost.
+
+- *Lifecycle*: An `emptyDir` volume is tied to the lifecycle of the Pod that uses it. When the Pod is deleted, the `emptyDir` volume is also deleted and the data is permanently lost.
+
+- *Use case*: For temporary storage.
+
+- *Storage location*: The data in `emptyDir` volumes is stored on the worker node's local storage where the Pod runs.
+
+- *Suitability for the Redpanda data directory*: Not recommended. Due to its transient nature, `emptyDir` volumes are unsuitable for essential data in the Redpanda data directory.
+
+- *Suitability for the Tiered Storage cache*: Suitable if the primary concern is latency and the cost to request data from primary storage is minimal. If the Pod restarts, Redpanda must rebuild the cache, potentially leading to increased fetches from the primary storage.
+
+== PersistentVolumes
+
+PersistentVolumes (PV) offer data retention beyond the Pod's lifecycle. Pods access storage by creating a PersistentVolumeClaim (PVC). The PVC requests specific attributes and a size. Kubernetes then binds that PVC to a suitable PV.
+
+- *Lifecycle*: PersistentVolumes (PV) are resources in the cluster that have a lifecycle independent of any individual Pod that uses the PV. Data persists beyond the life of a Pod.
+
+- *Use case*: For long-term storage and when you want to manage storage resources separately from the Pod lifecycle.
+
+- *Storage location*: Can be backed by various storage systems including local storage on the worker node or cloud providers, such as AWS EBS, Azure Disk, and Google Persistent Disk.
+
+- *Provisioning*: PVs can be provisioned either statically, where the admin creates a PV, or dynamically, where the system automatically creates a PV in response to a PVC.
+
+- *Suitability for the Redpanda data directory*: Recommended for safeguarding Redpanda topics and crucial data.
+
+- *Suitability for the Tiered Storage cache*: Strikes a balance between persistence and performance. Ensures cache data is preserved, reducing fetches from primary storage.
+
+TIP: Make regular backups of PersistentVolumes to reduce the risk of data loss in cases where the volume is lost.
+
+=== Local and remote storage
+
+PersistentVolumes can be backed by local or remote storage:
+
+[cols"1a,2a,1a"]
+|===
+| PersistentVolume | Description| Best Use
+
+| Local (recommended)
+| Local PersistentVolumes store Redpanda data on a local disk that's attached to the worker node. Redpanda reads and writes data faster on a local disk.
+However, local disks are tied to the lifecycle of the worker node.
+If the worker node fails for any reason, you may lose access to the Redpanda data.
+| High throughput and low latency
+
+| Remote
+| Remote storage persists data outside of the worker node so that the data is not tied to a specific worker node and it can be recovered.
+| High availability
+|===
+
+=== Reclaim policies
+
+PersistentVolumeClaims are not deleted when Redpanda brokers are removed from a cluster. It is your responsibility to delete PersistentVolumeClaims when they are no longer needed. As a result, it's important to consider your volume's reclaim policy:
+
+* *Delete*: The associated storage is removed once the PVC is deleted.
+* *Retain*: Even after the PVC is deleted, the actual storage persists. You can reclaim it with a new PVC.
+
+TIP: Considering the importance of data,  Redpanda Data recommends the `Retain` policy to ensure no accidental data loss.
+
+=== Persistent Volume Provisioners in Kubernetes
+
+Kubernetes offers two methods to provision Persistent Volumes (PVs): static provisioning and dynamic provisioning.
+
+==== Static provisioners
+
+Static provisioners require manual intervention from administrators. An administrator pre-provisions a set of PersistentVolumes. These volumes are physical storage spaces within the cluster that are ready for use but aren't bound to any specific PersistentVolumeClaims (PVCs) yet. When a PVC is created, the Kubernetes control plane looks for a PV that matches the requirements of the PVC and binds them together.
+
+When you use a static provisioner, You must create one PersistentVolume for each Redpanda broker. When the Redpanda Helm chart is deployed, an existing PersistentVolume in the cluster is selected and bound to one PersistentVolumeClaim for each Redpanda broker.
+
+[cols="1a,1a"]
+|===
+|Advantages|Disadvantages
+
+|Offers more control over the specific pieces of infrastructure that get attached to the cluster.
+|More manual work and overhead for the administrator.
+
+|Useful for non-cloud environments or for storage solutions that don't support dynamic provisioning.
+|Requires advanced planning of the size and number of PVs.
+|===
+
+==== Dynamic provisioners
+
+Dynamic provisioners eliminate the manual step of creating PersistentVolumes. Instead, a dynamic provisioner creates a PersistentVolume on demand for each Redpanda broker.
+
+This automatic provisioning is achieved using StorageClasses. A StorageClass provides a way for administrators to describe the classes of storage they offer. Each class can specify:
+
+- The type of provisioner to use
+- The type of storage backend
+- Other storage-specific parameters
+
+When the Redpanda Helm chart creates a PVC that specifies a StorageClass with a dynamic provisioner, Kubernetes automatically creates a new PV that matches the requirements of the PVC.
+
+Managed Kubernetes services and cloud environments usually provide a dynamic provisioner. If you are not using a managed service, you may need to install a dynamic provisioner for your storage type.
+
+[cols="1a,1a"]
+|===
+|Advantages|Disadvantages
+
+|Reduces manual administrative tasks. It's easy to scale up the storage as the PVs are created on-the-fly.
+|Might require a better understanding of the storage solution being used, especially to configure StorageClasses appropriately.
+
+|Efficient storage utilization as volumes are created based on demand.
+|Though rare, if not configured correctly, dynamic provisioning can lead to unexpected costs in cloud environments.
+|===
+
+== Differences between hostPath volumes and local PersistentVolumes
+
+While both `hostPath` volumes and local PVs allow for local storage on worker nodes, local PVs are a more robust and controlled solution designed for production workloads. They integrate better with the Kubernetes storage and scheduling primitives. On the other hand, `hostPath` volumes are simpler but come with more risks and are less suitable for multi-node, production environments.
+
+[cols="1a,2a,2a"]
+|===
+| | `hostPath` | Local PV
+
+| *Persistence*
+| Data is not guaranteed to persist across Pod rescheduling. Data exists as long as the worker node does.
+| The data is persistent across Pod restarts. Unavailable if the worker node fails.
+
+| *Scheduling Awareness*
+| If the Pod is deleted and scheduled onto another worker node, it won't have access to the original data.
+| Kubernetes ensures the Pod using the local PV is scheduled on the correct worker node.
+
+| *Protection*
+| Pods from different namespaces can overwrite or delete data if they specify the same path.
+| Kubernetes protects against accidental data loss. PVCs bound to a local PV are kept in a "Terminating" state if they are deleted while in use.
+|===
+
+== Data safety with local disks
+
+Because Redpanda uses the Raft protocol to replicate data, it is safe to store the Redpanda data directory on local disks as long as your Redpanda cluster consists of the following:
+
+* At least three brokers
+* Topics configured with a replication factor of at least 3
+
+This way, even if a worker node fails and you lose its local disk, the data still exists on at least two other worker nodes.
+
+include::shared:partial$suggested-reading.adoc[]
+
+- Kubernetes official documentation:
+** link:https://kubernetes.io/docs/concepts/storage/persistent-volumes/[PersistentVolumes^]
+** link:https://kubernetes.io/docs/concepts/storage/volumes/#hostpath[hostPath volumes^]
+** link:https://kubernetes.io/docs/concepts/storage/volumes/#emptydir[emptyDir volumes^]
+
+- xref:deploy:deployment-option/self-hosted/kubernetes/kubernetes-cluster-requirements.adoc[]
+
+== Next steps
+
+xref:./configure-storage.adoc[]
