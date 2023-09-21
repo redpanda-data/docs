@@ -25,23 +25,41 @@ This topic covers the following about monitoring Redpanda metrics:
 
 https://prometheus.io/[Prometheus^] is a system monitoring and alerting tool. It collects and stores metrics as time-series data identified by a metric name and key/value pairs.
 
-NOTE: Redpanda recommends creating monitoring dashboards with `/public_metrics`.
-
-:env-kubernetes:
+NOTE: Redpanda Data recommends creating monitoring dashboards with `/public_metrics`.
 
 ifdef::env-kubernetes[]
 
-To configure Prometheus to monitor Redpanda metrics in Kubernetes, you can use the https://prometheus-operator.dev/[Prometheus Operator^]: 
+To configure Prometheus to monitor Redpanda metrics in Kubernetes, you can use the https://prometheus-operator.dev/[Prometheus Operator^]:
 
-. Install Prometheus Operator CRDs:
+. Follow the steps to https://prometheus-operator.dev/docs/user-guides/getting-started/#exposing-the-prometheus-service[deploy the Prometheus Operator^].
 +
-[,bash]
+Make sure to configure the Prometheus resource to target your Redpanda cluster:
++
+.`prometheus.yaml`
+[,yaml,lines=9+12]
 ----
-LATEST=$(curl -s https://api.github.com/repos/prometheus-operator/prometheus-operator/releases/latest | jq -cr .tag_name)
-curl -sL https://github.com/prometheus-operator/prometheus-operator/releases/download/${LATEST}/bundle.yaml | kubectl create -f -
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus
+spec:
+  serviceAccountName: prometheus
+  serviceMonitorNamespaceSelector:
+    matchLabels:
+      name: <namespace>
+  serviceMonitorSelector:
+    matchLabels:
+      app.kubernetes.io/name: redpanda
+  resources:
+    requests:
+      memory: 400Mi
+  enableAdminAPI: false
 ----
++
+- `serviceMonitorNamespaceSelector.matchLabels.name`: The namespace in which you will deploy Redpanda. The Prometheus Operator looks for ServiceMonitor resources in this namespace.
+- `serviceMonitorSelector.matchLabels.app.kubernetes.io/name`: The name of your Redpanda chart. The default is `redpanda`. The Redpanda Helm chart creates the ServiceMonitor resource with this label.
 
-. Deploy Redpanda with monitoring enabled:
+. Deploy Redpanda with monitoring enabled to deploy the ServiceMonitor resource:
 +
 [tabs]
 ======
@@ -49,7 +67,7 @@ Helm + Operator::
 +
 --
 .`redpanda-cluster.yaml`
-[,yaml]
+[,yaml,lines=8-10]
 ----
 apiVersion: cluster.redpanda.com/v1alpha1
 kind: Redpanda
@@ -90,13 +108,14 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 
 --set::
 +
-```bash
+[,bash,lines=4-5]
+----
 helm upgrade --install redpanda redpanda/redpanda \
   --namespace <namespace> \
   --create-namespace \
   --set monitoring.enabled=true \
   --set monitoring.scrapeInterval="30s"
-```
+----
 
 ====
 --
@@ -109,120 +128,14 @@ helm upgrade --install redpanda redpanda/redpanda \
 kubectl -n <namespace> rollout status statefulset redpanda --watch
 ----
 
-. Create RBAC rules for Prometheus:
-+
-.`prometheus-rbac.yaml`
-[,yaml]
-----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: prometheus
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: prometheus
-rules:
-- apiGroups: [""]
-  resources:
-  - nodes
-  - nodes/metrics
-  - services
-  - endpoints
-  - pods
-  verbs: ["get", "list", "watch"]
-- apiGroups: [""]
-  resources:
-  - configmaps
-  verbs: ["get"]
-- apiGroups:
-  - networking.k8s.io
-  resources:
-  - ingresses
-  verbs: ["get", "list", "watch"]
-- nonResourceURLs: ["/metrics"]
-  verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: prometheus
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: prometheus
-subjects:
-- kind: ServiceAccount
-  name: prometheus
-  namespace: default
-----
+. Ensure that the ServiceMonitor was deployed:
 +
 [,bash]
 ----
-kubectl apply -f prometheus-rbac.yaml
+kubectl get servicemonitor --namespace <namespace>
 ----
 
-. Deploy Prometheus:
-+
-.`prometheus.yaml`
-[,yaml]
-----
-apiVersion: monitoring.coreos.com/v1
-kind: Prometheus
-metadata:
-  name: prometheus
-spec:
-  serviceAccountName: prometheus
-  serviceMonitorNamespaceSelector:
-    matchLabels:
-      name: redpanda
-  serviceMonitorSelector:
-    matchLabels:
-      app.kubernetes.io/name: redpanda
-  resources:
-    requests:
-      memory: 400Mi
-  enableAdminAPI: false
-----
-+
-[,bash]
-----
-kubectl apply -f prometheus.yaml
-----
-
-. Wait until Prometheus is ready:
-+
-[,bash]
-----
-kubectl get --namespace default prometheus prometheus --watch
-----
-
-. Deploy a NodePort Service for external access to Prometheus:
-+
-.`prometheus-nodeport.yaml`
-[,yaml]
-----
-apiVersion: v1
-kind: Service
-metadata:
-  name: prometheus
-spec:
-  type: NodePort
-  ports:
-  - name: web
-    nodePort: 30900
-    port: 9090
-    protocol: TCP
-    targetPort: web
-  selector:
-    prometheus: prometheus
-----
-+
-[,bash]
-----
-kubectl apply -f prometheus-nodeport.yaml
-----
+. Ensure that you've https://prometheus-operator.dev/docs/user-guides/getting-started/#exposing-the-prometheus-service[exposed the Prometheus Service^].
 
 . Expose the Prometheus server to your localhost:
 +
@@ -231,7 +144,7 @@ kubectl apply -f prometheus-nodeport.yaml
 kubectl port-forward svc/prometheus 9090
 ----
 
-. http://localhost:9090/graph[Open Prometheus^], and see that metrics from Redpanda endpoints are scraped.
+. http://localhost:9090/graph[Open Prometheus^], and see that Prometheus is scraping metrics from your Redpanda endpoints.
 
 endif::[]
 
