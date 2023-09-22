@@ -14,7 +14,7 @@ The Redpanda Helm chart supports SASL/SCRAM (Salted Challenge Response Authentic
 
 SCRAM provides strong encryption for usernames and passwords by default and does not require an external data store for user information. Redpanda supports  `SCRAM-SHA-256` and `SCRAM-SHA-512` authentication mechanisms.
 
-The Helm chart does not currently support Kerberos authentication.
+The Redpanda Helm chart does not currently support Kerberos authentication.
 
 == Enable SASL
 
@@ -44,9 +44,9 @@ echo '<superuser-name>:<superuser-password>:<superuser-authentication-mechanism>
 +
 Replace the following placeholders with your own values for the superuser:
 +
-- `<superuser-name>`
-- `<superuser-password>`
-- `<superuser-authentication-mechanism>` (`SCRAM-SHA-256` or `SCRAM-SHA-512`)
+- `<superuser-name>`: The name of the superuser.
+- `<superuser-password>`: The superuser's password.
+- `<superuser-authentication-mechanism>`: The authentication mechanism. Valid values are `SCRAM-SHA-256` or `SCRAM-SHA-512`.
 
 . Use the file to create a Secret in the same namespace as your Redpanda cluster.
 +
@@ -63,7 +63,7 @@ Helm + Operator::
 +
 --
 .`redpanda-cluster.yaml`
-[,yaml]
+[,yaml,lines=10-12]
 ----
 apiVersion: cluster.redpanda.com/v1alpha1
 kind: Redpanda
@@ -76,7 +76,7 @@ spec:
       sasl:
         enabled: true
         secretRef: "redpanda-superusers"
-        users: null
+        users: []
 ----
 
 ```bash
@@ -92,13 +92,13 @@ Helm::
 --values::
 +
 .`enable-sasl.yaml`
-[,yaml]
+[,yaml,lines=3-5]
 ----
 auth:
   sasl:
     enabled: true
     secretRef: "redpanda-superusers"
-    users: null
+    users: []
 ----
 +
 ```bash
@@ -108,15 +108,33 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 
 --set::
 +
-```bash
+[,bash,lines=2-4]
+----
 helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
   --set auth.sasl.enabled=true \
   --set auth.sasl.secretRef=redpanda-superusers \
-  --set auth.sasl.users=null
-```
+  --set "auth.sasl.users=[]"
+----
 ====
 --
 ======
+
+- `auth.sasl.enabled`: Enable SASL authentication.
+- `auth.sasl.secretRef`: The name of the Secret that contains the superuser credentials. The Secret must be in the same namespace as the Redpanda cluster.
+- `auth.sasl.users`: Make sure that this list is empty. Otherwise, the Redpanda Helm chart will try to create a new Secret with the same name as the one set in `auth.sasl.secretRef` and fail because it already exists.
+
+To add new superusers to the cluster or change existing users, edit the `superusers.txt` file and reapply the Secret.
+
+[,bash]
+----
+kubectl create secret generic redpanda-superusers \
+  --namespace redpanda \
+  --from-file=superusers.txt \
+  --save-config \
+  --dry-run=client -o yaml | kubectl apply -f -
+----
+
+A sidecar in the Pod polls the Secret for changes and triggers a rolling upgrade to add the new superusers to the Redpanda cluster.
 
 helm_ref:auth.sasl[]
 
@@ -126,21 +144,9 @@ To use a YAML list item to store superuser credentials in configuration settings
 
 Replace the following placeholders with your own values for the superuser:
 
-* `<superuser-name>`
-* `<superuser-password>`
-* `<superuser-authentication-mechanism>` (`SCRAM-SHA-256` or `SCRAM-SHA-512`)
-
-[IMPORTANT]
-====
-If you have an existing Secret in your `redpanda` namespace called `redpanda-superusers`, make sure to either delete that Secret or replace `auth.sasl.secretRef` in these examples with the name of a Secret that doesn't currently exist in the namespace.
-
-When you use a YAML list to specify superusers, the Helm chart creates a Secret using the value of `auth.sasl.secretRef` as the Secret's name, and stores those superusers in the Secret as a TXT file. If the Secret already exists in the namespace when you deploy Redpanda, the following error is displayed:
-
-[.no-copy]
-----
-Error: UPGRADE FAILED: rendered manifests contain a resource that already exists. Unable to continue with update: Secret
-----
-====
+- `<superuser-name>`: The name of the superuser.
+- `<superuser-password>`: The superuser's password.
+- `<superuser-authentication-mechanism>`: The authentication mechanism. Valid values are `SCRAM-SHA-256` or `SCRAM-SHA-512`.
 
 [tabs]
 ======
@@ -148,7 +154,7 @@ Helm + Operator::
 +
 --
 .`redpanda-cluster.yaml`
-[,yaml]
+[,yaml,lines=10-15]
 ----
 apiVersion: cluster.redpanda.com/v1alpha1
 kind: Redpanda
@@ -180,7 +186,7 @@ Helm::
 --values::
 +
 .`enable-sasl.yaml`
-[,yaml]
+[,yaml,lines=3-8]
 ----
 auth:
   sasl:
@@ -199,18 +205,23 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 
 --set::
 +
-```bash
+[,bash,lines=2-6]
+----
 helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
   --set auth.sasl.enabled=true \
   --set auth.sasl.secretRef=redpanda-superusers \
   --set "auth.sasl.users[0].name=<superuser-name>" \
   --set "auth.sasl.users[0].password=<superuser-password>" \
   --set "auth.sasl.users[0].mechanism=<superuser-authentication-mechanism>"
-```
+----
 
 ====
 --
 ======
+
+- `auth.sasl.enabled`: Enable SASL authentication.
+- `auth.sasl.secretRef`: The name of the Secret that the Redpanda Helm chart will create and use to store the user credentials listed in `auth.sasl.users`.
+- `auth.sasl.users`: A list of superusers.
 
 == Create users
 
@@ -264,11 +275,11 @@ kubectl exec -n redpanda -c redpanda redpanda-0 -- \
   rpk acl create --allow-principal User:myuser \
   --operation create,describe \
   --cluster \
-  --user <superuser-name> \
-  --password '<superuser-password>' \
-  --sasl-mechanism <superuser-authentication-mechanism> \
-  --tls-enabled \
-  --tls-truststore <path-to-ca-certificate> \
+  -X user=<superuser-name> \
+  -X pass='<superuser-password>' \
+  -X sasl.mechanism=<superuser-authentication-mechanism> \
+  -X tls.enabled=true \
+  -X tls.ca=<path-to-ca-certificate> \
   -X brokers=<broker-urls>
 ```
 
@@ -282,9 +293,9 @@ kubectl exec -n redpanda -c redpanda redpanda-0 -- \
   rpk acl create --allow-principal User:myuser \
   --operation create,describe \
   --cluster \
-  --user <superuser-name> \
-  --password '<superuser-password>' \
-  --sasl-mechanism <superuser-authentication-mechanism> \
+  -X user=<superuser-name> \
+  -X pass='<superuser-password>' \
+  -X sasl.mechanism=<superuser-authentication-mechanism> \
   -X brokers=<broker-urls>
 ```
 
@@ -306,11 +317,11 @@ kubectl exec -n redpanda -c redpanda redpanda-0 -- \
   rpk acl create --allow-principal User:myuser \
   --operation describe \
   --topic myfirsttopic \
-  --user <superuser-name> \
-  --password '<superuser-password>' \
-  --sasl-mechanism <superuser-authentication-mechanism> \
-  --tls-enabled \
-  --tls-truststore <path-to-ca-certificate> \
+  -X user=<superuser-name> \
+  -X pass='<superuser-password>' \
+  -X sasl.mechanism=<superuser-authentication-mechanism> \
+  -X tls.enabled=true \
+  -X tls.ca=<path-to-ca-certificate> \
   -X brokers=<broker-url>:<kafka-api-port>
 ```
 
@@ -324,9 +335,9 @@ kubectl exec -n redpanda -c redpanda redpanda-0 -- \
   rpk acl create --allow-principal User:myuser \
   --operation describe \
   --topic myfirsttopic \
-  --user <superuser-name> \
-  --password '<superuser-password>' \
-  --sasl-mechanism <superuser-authentication-mechanism> \
+  -X user=<superuser-name> \
+  -X pass='<superuser-password>' \
+  -X sasl.mechanism=<superuser-authentication-mechanism> \
   -X brokers=<broker-url>:<kafka-api-port>
 ```
 
@@ -350,11 +361,11 @@ TLS Enabled::
 ```bash
 kubectl exec -n redpanda -c redpanda redpanda-0 -- \
   rpk topic create myfirsttopic \
-  --user myuser \
-  --password 'changethispassword' \
-  --sasl-mechanism SCRAM-SHA-256 \
-  --tls-enabled \
-  --tls-truststore <path-to-ca-certificate> \
+  -X user=myuser \
+  -X pass='changethispassword' \
+  -X sasl.mechanism=SCRAM-SHA-256 \
+  -X tls.enabled=true \
+  -X tls.ca=<path-to-ca-certificate> \
   -X brokers=<broker-url>:<kafka-api-port>
 ```
 
@@ -366,9 +377,9 @@ TLS Disabled::
 ```bash
 kubectl exec -n redpanda -c redpanda redpanda-0 -- \
   rpk topic create myfirsttopic \
-  --user myuser \
-  --password 'changethispassword' \
-  --sasl-mechanism SCRAM-SHA-256 \
+  -X user=myuser \
+  -X pass='changethispassword' \
+  -X sasl.mechanism=SCRAM-SHA-256 \
   -X brokers=<broker-url>:<kafka-api-port>
 ```
 
@@ -386,11 +397,11 @@ TLS Enabled::
 ```bash
 kubectl exec -n redpanda -c redpanda redpanda-0 -- \
   rpk topic describe myfirsttopic \
-  --user myuser \
-  --password 'changethispassword' \
-  --sasl-mechanism SCRAM-SHA-256 \
-  --tls-enabled \
-  --tls-truststore <path-to-ca-certificate> \
+  -X user=myuser \
+  -X pass='changethispassword' \
+  -X sasl.mechanism=SCRAM-SHA-256 \
+  -X tls.enabled=true \
+  -X tls.ca=<path-to-ca-certificate> \
   -X brokers=<broker-url>:<kafka-api-port>
 ```
 
@@ -402,14 +413,27 @@ TLS Disabled::
 ```bash
 kubectl exec -n redpanda -c redpanda redpanda-0 -- \
   rpk topic describe myfirsttopic \
-  --user myuser \
-  --password 'changethispassword' \
-  --sasl-mechanism SCRAM-SHA-256 \
+  -X user=myuser \
+  -X pass='changethispassword' \
+  -X sasl.mechanism=SCRAM-SHA-256 \
   -X brokers=<broker-url>:<kafka-api-port>
 ```
 
 --
 ====
+
+== Troubleshoot
+
+This section lists error messages and provides ways to diagnose and solve issues.
+
+=== Unable to continue with update: Secret
+
+When you use a YAML list to specify superusers, the Helm chart creates a Secret using the value of `auth.sasl.secretRef` as the Secret's name, and stores those superusers in the Secret. If the Secret already exists in the namespace when you deploy Redpanda, the following error is displayed:
+
+[.no-copy]
+----
+Error: UPGRADE FAILED: rendered manifests contain a resource that already exists. Unable to continue with update: Secret
+----
 
 include::shared:partial$suggested-reading.adoc[]
 
