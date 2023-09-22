@@ -42,7 +42,7 @@ gcloud compute networks subnets create <primary-subnet-name> \
     --network <shared-vpc-name> \
     --range 10.0.0.0/24 \
     --region <region> \
-    --secondary-range <secondary-ipv4-range-name-for-pods>=10.0.8.0/21,<secondary-ipv4-range-name-for-pods>=10.0.1.0/24
+    --secondary-range <secondary-ipv4-range-name-for-pods>=10.0.8.0/21,<secondary-ipv2-range-name-for-services>=10.0.1.0/24
 ```
 +
 Additionally, a /28 CIDR is required for the GKE master IP addresses. This CIDR is not used in the GCP networking configuration, but is input into the Redpanda UI; for example, 10.0.7.240/28.
@@ -50,7 +50,7 @@ Additionally, a /28 CIDR is required for the GKE master IP addresses. This CIDR 
 . To enable egress, create a cloud router and NAT at the host project: 
 +
 ```bash
-gcloud compute routers create <route-name> \
+gcloud compute routers create <router-name> \
    --project <host-project-id> \
    --region <region> \
    --network <shared-vpc-name>
@@ -123,7 +123,7 @@ gcloud storage buckets update gs://<management-storage-bucket-name> --versioning
 ``` 
 +
 * Redpanda uses the Tiered Storage bucket for writing log segments. This should not be versioned.
-* Redpanda uses the Management Storage bucket to store cluster metadata. This can have versioning enabled.
+* Redpanda uses the management storage bucket to store cluster metadata. This can have versioning enabled.
 
 . Create service accounts at the service project for the Redpanda agent, the Redpanda cluster, the Redpanda GKE cluster, Redpanda Console, and Redpanda connectors. 
 
@@ -137,66 +137,68 @@ gcloud iam service-accounts create redpanda-agent \
 * Redpanda agent custom role permissions:
 +
 ```bash
-gcloud iam roles create redpanda_agent_role \
-  --project="<project-id>" \
-  --title="Redpanda Agent Role" \
-  --description="A role comprising general permissions allowing the agent to manage Redpanda cluster resources." \
-  --permissions=compute.firewalls.get,compute.globalOperations.get,compute.instanceGroupManagers.get,compute.instanceGroupManagers.delete,compute.instanceGroups.delete,compute.instanceTemplates.delete,compute.projects.get,compute.zones.list,dns.changes.create,dns.changes.get,dns.changes.list,dns.managedZones.create,dns.managedZones.delete,dns.managedZones.get,dns.managedZones.list,dns.managedZones.update,dns.projects.get,dns.resourceRecordSets.create,dns.resourceRecordSets.delete,dns.resourceRecordSets.get,dns.resourceRecordSets.list,dns.resourceRecordSets.update,iam.roles.get,iam.roles.list,iam.serviceAccounts.actAs,iam.serviceAccounts.get,iam.serviceAccounts.getIamPolicy,resourcemanager.projects.get,resourcemanager.projects.getIamPolicy,storage.buckets.get,storage.buckets.getIamPolicy,compute.instances.list
+cat << EOT > redpanda-agent.role
+{
+  "name": "redpanda_agent_role",
+  "title": "Redpanda Agent Role",
+  "description": "A role comprising general permissions allowing the agent to manage Redpanda cluster resources.",
+  "includedPermissions": [
+    "compute.firewalls.get",
+    "compute.globalOperations.get",
+    "compute.instanceGroupManagers.get",
+    "compute.instanceGroupManagers.delete",
+    "compute.instanceGroups.delete",
+    "compute.instanceTemplates.delete",
+    "compute.projects.get",
+    "compute.zones.list",
+    "dns.changes.create",
+    "dns.changes.get",
+    "dns.changes.list",
+    "dns.managedZones.create",
+    "dns.managedZones.delete",
+    "dns.managedZones.get",
+    "dns.managedZones.list",
+    "dns.managedZones.update",
+    "dns.projects.get",
+    "dns.resourceRecordSets.create",
+    "dns.resourceRecordSets.delete",
+    "dns.resourceRecordSets.get",
+    "dns.resourceRecordSets.list",
+    "dns.resourceRecordSets.update",
+    "iam.roles.get",
+    "iam.roles.list",
+    "iam.serviceAccounts.actAs",
+    "iam.serviceAccounts.get",
+    "iam.serviceAccounts.getIamPolicy",
+    "resourcemanager.projects.get",
+    "resourcemanager.projects.getIamPolicy",
+    "storage.buckets.get",
+    "storage.buckets.getIamPolicy",
+    "compute.instances.list"
+  ],
+}
+EOT
+
+gcloud iam roles create redpanda_agent_role --project=<service-project-id> --file redpanda-agent.role
 ```
-+
-.Expand permissions
-[%collapsible]
-====
-* `compute.firewalls.get`
-* `compute.globalOperations.get`
-* `compute.instances.list`
-* `compute.instanceGroupManagers.get`
-* `compute.instanceGroupManagers.delete`
-* `compute.instanceGroups.delete`
-* `compute.instanceTemplates.delete`
-* `compute.zones.list`
-* `dns.changes.create`
-* `dns.changes.get`
-* `dns.changes.list`
-* `dns.managedZones.create`
-* `dns.managedZones.delete`
-* `dns.managedZones.get`
-* `dns.managedZones.list`
-* `dns.managedZones.update`
-* `dns.projects.get`
-* `dns.resourceRecordSets.create`
-* `dns.resourceRecordSets.delete`
-* `dns.resourceRecordSets.get`
-* `dns.resourceRecordSets.list`
-* `dns.resourceRecordSets.update`
-* `iam.roles.get`
-* `iam.roles.list`
-* `iam.serviceAccounts.actAs`
-* `iam.serviceAccounts.get`
-* `iam.serviceAccounts.getIamPolicy`
-* `resourcemanager.projects.get`
-* `resourcemanager.projects.getIamPolicy`
-* `storage.buckets.get`
-* `storage.buckets.getIamPolicy`
-====
 
 * Project bindings:
 +
 ```bash
-gcloud iam service-accounts add-iam-policy-binding <redpanda-agent-service-account-email> \
-  --member="<redpanda-agent-service-account-email>" \
-  --role='projects/<project-id>/roles/redpanda_agent_role'
+gcloud projects add-iam-policy-binding <service-project-id> \
+  --member="serviceAccount:redpanda-agent@<service-project-id>.iam.gserviceaccount.com" \
+  --role="projects/<service-project-id>/roles/redpanda_agent_role"
 
-gcloud iam service-accounts add-iam-policy-binding <redpanda-agent-service-account-email> \
-  --member="<redpanda-agent-service-account-email>" \
-  --role='roles/container.admin'
+gcloud projects add-iam-policy-binding <service-project-id> \
+  --member="serviceAccount:redpanda-agent@<service-project-id>.iam.gserviceaccount.com" \
+  --role="roles/container.admin"
 ```
 
 * Storage bindings:
 +
 ```bash
 gcloud storage buckets add-iam-policy-binding gs://<management-storage-bucket-name> \
-  --member="<redpanda-agent-service-account-email>" \
+  --member="serviceAccount:redpanda-agent@<service-project-id>.iam.gserviceaccount.com" \
   --role="roles/storage.objectAdmin"
 ```
 
@@ -211,7 +213,7 @@ gcloud iam service-accounts create redpanda-cluster \
 +
 ```bash
 gcloud storage buckets add-iam-policy-binding gs://<tiered-storage-bucket-name> \
-  --member="<redpanda-cluster-service-account-email>" \
+  --member="serviceAccount:redpanda-cluster@<service-project-id>.iam.gserviceaccount.com" \
   --role="roles/storage.objectAdmin"
 ```
 
@@ -224,100 +226,98 @@ gcloud iam service-accounts create redpanda-gke \
 
 * GKE custom role permissions:
 +
+```bash
+cat << EOT > redpanda-gke.role
+{
+  "name": "redpanda_gke_utility_role",
+  "title": "Redpanda cluster utility node role",
+  "description": "Redpanda cluster utility node role",
+  "includedPermissions": [
+    "artifactregistry.dockerimages.get",
+    "artifactregistry.dockerimages.list",
+    "artifactregistry.files.get",
+    "artifactregistry.files.list",
+    "artifactregistry.locations.get",
+    "artifactregistry.locations.list",
+    "artifactregistry.mavenartifacts.get",
+    "artifactregistry.mavenartifacts.list",
+    "artifactregistry.npmpackages.get",
+    "artifactregistry.npmpackages.list",
+    "artifactregistry.packages.get",
+    "artifactregistry.packages.list",
+    "artifactregistry.projectsettings.get",
+    "artifactregistry.pythonpackages.get",
+    "artifactregistry.pythonpackages.list",
+    "artifactregistry.repositories.downloadArtifacts",
+    "artifactregistry.repositories.get",
+    "artifactregistry.repositories.list",
+    "artifactregistry.repositories.listEffectiveTags",
+    "artifactregistry.repositories.listTagBindings",
+    "artifactregistry.repositories.readViaVirtualRepository",
+    "artifactregistry.tags.get",
+    "artifactregistry.tags.list",
+    "artifactregistry.versions.get",
+    "artifactregistry.versions.list",
+    "logging.logEntries.create",
+    "logging.logEntries.route",
+    "monitoring.metricDescriptors.create",
+    "monitoring.metricDescriptors.get",
+    "monitoring.metricDescriptors.list",
+    "monitoring.monitoredResourceDescriptors.get",
+    "monitoring.monitoredResourceDescriptors.list",
+    "monitoring.timeSeries.create",
+    "cloudnotifications.activities.list",
+    "monitoring.alertPolicies.get",
+    "monitoring.alertPolicies.list",
+    "monitoring.dashboards.get",
+    "monitoring.dashboards.list",
+    "monitoring.groups.get",
+    "monitoring.groups.list",
+    "monitoring.notificationChannelDescriptors.get",
+    "monitoring.notificationChannelDescriptors.list",
+    "monitoring.notificationChannels.get",
+    "monitoring.notificationChannels.list",
+    "monitoring.publicWidgets.get",
+    "monitoring.publicWidgets.list",
+    "monitoring.services.get",
+    "monitoring.services.list",
+    "monitoring.slos.get",
+    "monitoring.slos.list",
+    "monitoring.snoozes.get",
+    "monitoring.snoozes.list",
+    "monitoring.timeSeries.list",
+    "monitoring.uptimeCheckConfigs.get",
+    "monitoring.uptimeCheckConfigs.list",
+    "opsconfigmonitoring.resourceMetadata.list",
+    "resourcemanager.projects.get",
+    "stackdriver.projects.get",
+    "stackdriver.resourceMetadata.list",
+    "dns.changes.create",
+    "dns.changes.get",
+    "dns.changes.list",
+    "dns.managedZones.list",
+    "dns.resourceRecordSets.create",
+    "dns.resourceRecordSets.delete",
+    "dns.resourceRecordSets.get",
+    "dns.resourceRecordSets.list",
+    "dns.resourceRecordSets.update",
+    "secretmanager.versions.access",
+    "stackdriver.resourceMetadata.write",
+    "storage.objects.get",
+    "storage.objects.list"
+  ],
+}
+EOT
+
+gcloud iam roles create redpanda_gke_utility_role --project=<service-project-id> --file redpanda-gke.role
 ```
-gcloud iam roles create redpanda_gke_utility_role \
-  --project="<project-id>" \
-  --title="Redpanda cluster utility node role" \
-  --permissions=artifactregistry.dockerimages.get,artifactregistry.dockerimages.list,artifactregistry.files.get,artifactregistry.files.list,artifactregistry.locations.get,artifactregistry.locations.list,artifactregistry.mavenartifacts.get,artifactregistry.mavenartifacts.list,artifactregistry.npmpackages.get,artifactregistry.npmpackages.list,artifactregistry.packages.get,artifactregistry.packages.list,artifactregistry.projectsettings.get,artifactregistry.pythonpackages.get,artifactregistry.pythonpackages.list,artifactregistry.repositories.downloadArtifacts,artifactregistry.repositories.get,artifactregistry.repositories.list,artifactregistry.repositories.listEffectiveTags,artifactregistry.repositories.listTagBindings,artifactregistry.repositories.readViaVirtualRepository,artifactregistry.tags.get,artifactregistry.tags.list,artifactregistry.versions.get,artifactregistry.versions.list,logging.logEntries.create,logging.logEntries.route,monitoring.metricDescriptors.create,monitoring.metricDescriptors.get,monitoring.metricDescriptors.list,monitoring.monitoredResourceDescriptors.get,monitoring.monitoredResourceDescriptors.list,monitoring.timeSeries.create,cloudnotifications.activities.list,monitoring.alertPolicies.get,monitoring.alertPolicies.list,monitoring.dashboards.get,monitoring.dashboards.list,monitoring.groups.get,monitoring.groups.list,monitoring.notificationChannelDescriptors.get,monitoring.notificationChannelDescriptors.list,monitoring.notificationChannels.get,monitoring.notificationChannels.list,monitoring.publicWidgets.get,monitoring.publicWidgets.list,monitoring.services.get,monitoring.services.list,monitoring.slos.get,monitoring.slos.list,monitoring.snoozes.get,monitoring.snoozes.list,monitoring.timeSeries.list,monitoring.uptimeCheckConfigs.get,monitoring.uptimeCheckConfigs.list,opsconfigmonitoring.resourceMetadata.list,resourcemanager.projects.get,stackdriver.projects.get,stackdriver.resourceMetadata.list,dns.changes.create,dns.changes.get,dns.changes.list,dns.managedZones.list,dns.resourceRecordSets.create,dns.resourceRecordSets.delete,dns.resourceRecordSets.get,dns.resourceRecordSets.list,dns.resourceRecordSets.update,secretmanager.versions.access,stackdriver.resourceMetadata.write,storage.objects.get,storage.objects.list
-```
-+
-.Expand permissions
-[%collapsible]
-====
-* `artifactregistry.dockerimages.get`
-* `artifactregistry.dockerimages.list`
-* `artifactregistry.files.get`
-* `artifactregistry.files.list`
-* `artifactregistry.locations.get`
-* `artifactregistry.locations.list`
-* `artifactregistry.mavenartifacts.get`
-* `artifactregistry.mavenartifacts.list`
-* `artifactregistry.npmpackages.get`
-* `artifactregistry.npmpackages.list`
-* `artifactregistry.packages.get`
-* `artifactregistry.packages.list`
-* `artifactregistry.projectsettings.get`
-* `artifactregistry.pythonpackages.get`
-* `artifactregistry.pythonpackages.list`
-* `artifactregistry.repositories.downloadArtifacts`
-* `artifactregistry.repositories.get`
-* `artifactregistry.repositories.list`
-* `artifactregistry.repositories.listEffectiveTags`
-* `artifactregistry.repositories.listTagBindings`
-* `artifactregistry.repositories.readViaVirtualRepository`
-* `artifactregistry.tags.get`
-* `artifactregistry.tags.list`
-* `artifactregistry.versions.get`
-* `artifactregistry.versions.list`
-* `logging.logEntries.create`
-* `logging.logEntries.route`
-* `monitoring.metricDescriptors.create`
-* `monitoring.metricDescriptors.get`
-* `monitoring.metricDescriptors.list`
-* `monitoring.monitoredResourceDescriptors.get`
-* `monitoring.monitoredResourceDescriptors.list`
-* `monitoring.timeSeries.create`
-* `monitoring.alertPolicies.get`
-* `monitoring.alertPolicies.list`
-* `monitoring.dashboards.get`
-* `monitoring.dashboards.list`
-* `monitoring.groups.get`
-* `monitoring.groups.list`
-* `monitoring.metricDescriptors.get`
-* `monitoring.metricDescriptors.list`
-* `monitoring.monitoredResourceDescriptors.get`
-* `monitoring.monitoredResourceDescriptors.list`
-* `monitoring.notificationChannelDescriptors.get`
-* `monitoring.notificationChannelDescriptors.list`
-* `monitoring.notificationChannels.get`
-* `monitoring.notificationChannels.list`
-* `monitoring.publicWidgets.get`
-* `monitoring.publicWidgets.list`
-* `monitoring.services.get`
-* `monitoring.services.list`
-* `monitoring.slos.get`
-* `monitoring.slos.list`
-* `monitoring.snoozes.get`
-* `monitoring.snoozes.list`
-* `monitoring.timeSeries.list`
-* `monitoring.uptimeCheckConfigs.get`
-* `monitoring.uptimeCheckConfigs.list`
-* `cloudnotifications.activities.list`
-* `opsconfigmonitoring.resourceMetadata.list`
-* `resourcemanager.projects.get`
-* `stackdriver.projects.get`
-* `stackdriver.resourceMetadata.list`
-* `stackdriver.resourceMetadata.write`
-* `dns.changes.create`
-* `dns.changes.get`
-* `dns.changes.list`
-* `dns.managedZones.list`
-* `dns.resourceRecordSets.create`
-* `dns.resourceRecordSets.delete`
-* `dns.resourceRecordSets.get`
-* `dns.resourceRecordSets.list`
-* `dns.resourceRecordSets.update`
-* `secretmanager.versions.access`
-* `storage.objects.get`
-* `storage.objects.list`
-====
 
 * Project bindings:
 +
 ```bash
-gcloud iam service-accounts add-iam-policy-binding <redpanda-gke-service-account-email> \
-  --member="<redpanda-gke-service-account-email>" \
-  --role='projects/<project-id>/roles/redpanda_gke_utility_role'
+gcloud projects add-iam-policy-binding <service-project-id> \
+  --member="serviceAccount:redpanda-gke@<service-project-id>.iam.gserviceaccount.com" \
+  --role='projects/<service-project-id>/roles/redpanda_gke_utility_role'
 ```
 
 .. Redpanda Console SA:
@@ -330,35 +330,35 @@ gcloud iam service-accounts create redpanda-console \
 * Redpanda Console custom role permissions:
 +
 ```bash
-gcloud iam roles create redpanda_console_secret_manager_role \
-  --project="<project-id>" \
-  --title="Redpanda Console Secret Manager Writer" \
-  --permissions=secretmanager.secrets.create,secretmanager.secrets.delete,secretmanager.secrets.list,secretmanager.secrets.update,secretmanager.versions.add,secretmanager.versions.destroy,secretmanager.versions.disable,secretmanager.versions.enable,secretmanager.versions.list,iam.serviceAccounts.getAccessToken
-```
-+
-.Expand permissions
-[%collapsible]
-====
-* `secretmanager.secrets.create`
-* `secretmanager.secrets.delete`
-* `secretmanager.secrets.list`
-* `secretmanager.secrets.update`
-* `secretmanager.versions.add`
-* `secretmanager.versions.destroy`
-* `secretmanager.versions.disable`
-* `secretmanager.versions.enable`
-* `secretmanager.versions.list`
-* `iam.serviceAccounts.getAccessToken`
+cat << EOT > redpanda-console.role
+{
+  "name": "redpanda_console_secret_manager_role",
+  "title": "Redpanda Console Secret Manager Writer",
+  "description": "Redpanda Console Secret Manager Writer",
+  "includedPermissions": [
+    "secretmanager.secrets.create",
+    "secretmanager.secrets.delete",
+    "secretmanager.secrets.list",
+    "secretmanager.secrets.update",
+    "secretmanager.versions.add",
+    "secretmanager.versions.destroy",
+    "secretmanager.versions.disable",
+    "secretmanager.versions.enable",
+    "secretmanager.versions.list",
+    "iam.serviceAccounts.getAccessToken"
+  ],
+}
+EOT
 
-NOTE: If `iam.serviceAccounts.getAccessToken`` is not added, there will be errors in the Redpanda Console Pod log.
-====
+gcloud iam roles create redpanda_console_secret_manager_role --project=<service-project-id> --file redpanda-console.role
+```
 
 * Project bindings:
 +
 ```
-gcloud iam service-accounts add-iam-policy-binding <redpanda-console-service-account-email> \
-  --member="<redpanda-console-service-account-email>" \
-  --role='projects/<project-id>/roles/redpanda_console_secret_manager_role'
+gcloud projects add-iam-policy-binding <service-project-id> \
+  --member="serviceAccount:redpanda-console@<service-project-id>.iam.gserviceaccount.com" \
+  --role='projects/<service-project-id>/roles/redpanda_console_secret_manager_role'
 ```
 
 .. Redpanda Connectors SA:
@@ -371,27 +371,36 @@ gcloud iam service-accounts create redpanda-connectors \
 * Connectors custom role permissions:
 +
 ```bash
-gcloud iam roles create redpanda_connectors_role \
-  --project="<project-id>" \
-  --title="Redpanda Connectors Custom Role" \
-  --permissions=resourcemanager.projects.get,secretmanager.versions.access
+cat << EOT > redpanda-connectors.role
+{
+  "name": "redpanda_connectors_role",
+  "title": "Redpanda Connectors Custom Role",
+  "description": "Redpanda Connectors Custom Role",
+  "includedPermissions": [
+    "resourcemanager.projects.get",
+    "secretmanager.versions.access"
+  ],
+}
+EOT
+
+gcloud iam roles create redpanda_connectors_role --project=<service-project-id> --file redpanda-connectors.role
 ```
 
 * Project bindings:
 +
 ```bash
-gcloud iam service-accounts add-iam-policy-binding <redpanda-connectors-service-account-email> \
-  --member="<redpanda-connectors-service-account-email>" \
-  --role='projects/<project-id>/roles/redpanda_connectors_role'
+gcloud projects add-iam-policy-binding <service-project-id> \
+  --member="serviceAccount:redpanda-connectors@<service-project-id>.iam.gserviceaccount.com" \
+  --role='projects/<service-project-id>/roles/redpanda_connectors_role'
 ```
 
 * GKE SA:
 +
 ```bash
-gcloud iam service-accounts add-iam-policy-binding <gke-service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+gcloud iam service-accounts add-iam-policy-binding redpanda-gke@<service-project-id>.iam.gserviceaccount.com \
     --role roles/iam.workloadIdentityUser \
     --member "serviceAccount:<service-project-id>.svc.id.goog[cert-manager/cert-manager]"
-gcloud iam service-accounts add-iam-policy-binding <gke-service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+gcloud iam service-accounts add-iam-policy-binding redpanda-gke@<service-project-id>.iam.gserviceaccount.com \
     --role roles/iam.workloadIdentityUser \
     --member "serviceAccount:<service-project-id>.svc.id.goog[external-dns/external-dns]"
 ```
@@ -405,7 +414,7 @@ IMPORTANT: On the Network page, select the *Customer-managed* network connection
 * Redpanda cluster SA:
 +
 ```bash
-gcloud iam service-accounts add-iam-policy-binding <service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+gcloud iam service-accounts add-iam-policy-binding redpanda-cluster@<service-project-id>.iam.gserviceaccount.com \
     --role roles/iam.workloadIdentityUser \
     --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda/rp-<redpanda-id>]"
 ```
@@ -413,7 +422,7 @@ gcloud iam service-accounts add-iam-policy-binding <service-account-name>@<servi
 * Redpanda Console SA:
 +
 ```bash
-gcloud iam service-accounts add-iam-policy-binding <service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+gcloud iam service-accounts add-iam-policy-binding redpanda-console@<service-project-id>.iam.gserviceaccount.com \
     --role roles/iam.workloadIdentityUser \
     --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda/console-<redpanda-id>]"
 ```
@@ -421,7 +430,7 @@ gcloud iam service-accounts add-iam-policy-binding <service-account-name>@<servi
 * Connectors SA:
 +
 ```bash
-gcloud iam service-accounts add-iam-policy-binding <service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+gcloud iam service-accounts add-iam-policy-binding redpanda-connectors@<service-project-id>.iam.gserviceaccount.com \
     --role roles/iam.workloadIdentityUser \
     --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda-connectors/connectors-<redpanda-id>]"
 ```
@@ -431,7 +440,7 @@ gcloud iam service-accounts add-iam-policy-binding <service-account-name>@<servi
 In a previous step, you created a BYOC cluster in the Redpanda Cloud UI, stopping just before validating your configuration with `rpk`. Now, you can run the final step to deploy your cluster:
 
 ```bash
-rpk byoc gcp apply --validate-only --redpanda-id=<redpanda-id> --project_id=<service-project-id>
+rpk cloud byoc gcp apply --redpanda-id='<redpanda-id>' --project-id='<service-project-id>' --validate-only
 ```
 
 With *customer-managed* networks, you must grant the user deploying the cluster with `rpk` the following permissions. 
