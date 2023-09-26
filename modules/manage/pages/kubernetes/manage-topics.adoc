@@ -1,0 +1,164 @@
+= Manage Topics with the Redpanda Operator
+:description: Use the Topic resource to declaratively create Kafka topics as part of Redpanda deployment. Each Topic resource is mapped to a topic in your Redpanda cluster. The topic controller keeps the corresponding Kafka topic in sync with the Topic resource.
+
+The Redpanda Operator allows you to declaratively create and manage Kafka topics using Topic custom resources (resources) in Kubernetes. Each Topic resource is mapped to a topic in your Redpanda cluster. The topic controller, a component of the Redpanda Operator, keeps the corresponding Kafka topic in sync with the Topic resource. This resource allows you to create topics as part of Redpanda deployment.
+
+== Prerequisites
+
+You must have the following:
+
+* Kubernetes cluster: Ensure you have a running Kubernetes cluster, either locally, such as with minikube or kind, or remotely.
+
+* https://kubernetes.io/docs/tasks/tools/#kubectl[Kubectl^]: Ensure you have the `kubectl` command-line tool installed and configured to communicate with your cluster.
+
+* Redpanda: Ensure you have the xref:deploy:deployment-option/self-hosted/kubernetes/kubernetes-deploy.adoc[Redpanda Operator and a Redpanda resource deployed] in your Kubernetes cluster.
+
+== Create a topic
+
+You can create a topic using a Topic resource:
+
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Topic
+metadata:
+  name: <1>
+spec:
+  kafkaApiSpec: <2>
+    brokers: []
+    tls: {}
+    sasl: {}
+  partitions: <3>
+  replicationFactor: <4>
+  additionalConfig: {} <5>
+  metricsNamespace: <6>
+  overwriteTopicName: <7>
+  interval: <8>
+----
+
+<1> *Required*: The name of the topic. You can overwrite this name using the `overwriteTopicName` property.
+
+<2> *Required*: Configuration details for connecting to Redpanda brokers.
+
+<3> The number of topic shards distributed across the brokers in a Redpanda cluster. This value cannot be decreased post-creation. Overrides the default cluster property xref:reference:cluster-properties.adoc#default_topic_partitions[`default_topic_partitions`].
+
+<4> Specifies the number of topic replicas. The value must be an odd number. Overrides the default cluster property xref:reference:cluster-properties.adoc#default_topic_replications[`default_topic_replications`].
+
+<5> A map of any topic-specific configuration options. See xref:reference:topic-properties.adoc[]
+
+<6> Overrides the fully-qualified name of the topic metrics for use in multi-operator environments. Defaults to `redpanda-operator`.
+
+<7> Overwrites the topic name in `metadata.name`.
+
+<8> Sets the reconciliation interval for the topic controller. Default is 3 seconds (`3s`).
+
+This example creates a topic called `chat-room`. The `kafkaApiSpec` contains the configuration details for connecting to a Redpanda cluster using the defaults in the Redpanda Helm chart:
+
+.`example-topic.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Topic
+metadata:
+  name: chat-room
+spec:
+  partitions: 3
+  replicationFactor: 3
+  kafkaApiSpec:
+    brokers:
+      - "redpanda-0.redpanda.<namespace>.svc.cluster.local:9093"
+      - "redpanda-1.redpanda.<namespace>.svc.cluster.local:9093"
+      - "redpanda-2.redpanda.<namespace>.svc.cluster.local:9093"
+    tls:
+      caCertSecretRef:
+        name: "redpanda-default-cert"
+        key: "ca.crt"
+----
+
+== Verify a topic
+
+After deploying a Topic resource, verify that the Redpanda Operator reconciled the Topic resource.
+
+[,bash]
+----
+kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace redpanda
+----
+
+Example output:
+
+[,json,.no-copy,lines=5+17]
+----
+{
+  "level":"info",
+  "ts":"2023-09-25T16:20:09.538Z",
+  "logger":"TopicReconciler.Reconcile",
+  "msg":"Starting reconcile loop",
+  "controller":"topic",
+  "controllerGroup":"cluster.redpanda.com",
+  "controllerKind":"Topic",
+  "Topic":{"name":"chat-room","namespace":"<namespace>"},
+  "namespace":"<namespace>",
+  "name":"chat-room","reconcileID":"c0cf9abc-a553-48b7-9b6e-2de3cdfb4432"}
+{
+  "level":"info",
+  "ts":"2023-09-25T16:20:09.581Z",
+  "logger":"TopicReconciler.Reconcile",
+  "msg":"reconciliation finished in 43.436125ms, next run in 3s",
+  "controller":"topic",
+  "controllerGroup":"cluster.redpanda.com",
+  "controllerKind":"Topic",
+  "Topic":{"name":"chat-room","namespace":"<namespace>"},
+  "namespace":"<namespace>",
+  "name":"chat-room",
+  "reconcileID":"c0cf9abc-a553-48b7-9b6e-2de3cdfb4432",
+  "result":{"Requeue":false,"RequeueAfter":3000000000}
+}
+----
+
+Then, verify that the topic now exists in your Redpanda cluster:
+
+[,bash]
+----
+
+
+== Update a topic
+
+To update a topic, edit the Topic resource configuration, and apply the changes.
+
+The following example adds a cleanup policy to the `chat-room` topic:
+
+.`example-topic.yaml`
+[,yaml,lines=9-10]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Topic
+metadata:
+  name: chat-room
+spec:
+  partitions: 3
+  replicationFactor: 3
+  additionalConfig:
+    cleanup.policy: "compact"
+  kafkaApiSpec:
+    brokers:
+      - "redpanda-0.redpanda.<namespace>.svc.cluster.local:9093"
+      - "redpanda-1.redpanda.<namespace>.svc.cluster.local:9093"
+      - "redpanda-2.redpanda.<namespace>.svc.cluster.local:9093"
+    tls:
+      caCertSecretRef:
+        name: "redpanda-default-cert"
+        key: "ca.crt"
+----
+
+== Delete a topic
+
+To delete a topic, delete the Topic resource.
+
+For example:
+
+[,bash]
+----
+kubectl delete -f example-topic.yaml
+----
+
+NOTE: If you delete the Kafka topic directly using a client such as rpk, the topic controller will recreate an empty topic, and you will lose all records inside the topic.
