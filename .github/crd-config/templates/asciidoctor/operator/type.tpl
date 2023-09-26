@@ -12,12 +12,11 @@ These fields are used to configure the Redpanda Helm chart. For descriptions and
 {{ end }}
 
 {{ if $type.References -}}
-.Appears In:
-****
+.Appears in:
+
 {{- range $type.SortedReferences }}
 - {{ asciidocRenderTypeLink . }}
 {{- end }}
-****
 {{- end }}
 
 {{ if $type.Members -}}

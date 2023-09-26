@@ -7,17 +7,16 @@
 
 {{ $type.Doc }}
 
-{{ if eq $type.Name "RedpandaClusterSpec" }}
-These fields are used to configure the Redpanda Helm chart. For descriptions and default values, see xref:redpanda-helm-spec.adoc[].
+{{ if eq $type.Name "TopicSpec" }}
+For descriptions and default values of topic properties, see xref:topic-properties.adoc[].
 {{ end }}
 
 {{ if $type.References -}}
-.Appears In:
-****
+.Appears in:
+
 {{- range $type.SortedReferences }}
 - {{ asciidocRenderTypeLink . }}
 {{- end }}
-****
 {{- end }}
 
 {{ if $type.Members -}}
