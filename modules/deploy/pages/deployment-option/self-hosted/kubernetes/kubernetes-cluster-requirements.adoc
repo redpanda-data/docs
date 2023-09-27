@@ -3,7 +3,7 @@
 :tags: ["Kubernetes"]
 :page-aliases: deploy:deployment-option/self-hosted/kubernetes/kubernetes-best-practices.adoc
 
-This topic provides you with the requirements and recommendations for provisioning Kubernetes clusters and worker nodes for running Redpanda in production.
+This topic provides the requirements and recommendations for provisioning Kubernetes clusters and worker nodes for running Redpanda in production.
 
 == Kubernetes cluster requirements
 
@@ -36,7 +36,7 @@ Provision one dedicated worker node for each Redpanda broker that you plan to de
 Each Pod replica that runs a Redpanda broker requires its own dedicated worker node for the following reasons:
 
 - *Resource isolation*: Redpanda brokers are designed to make full use of available system resources, including CPU and memory. By dedicating a worker node to each broker, you ensure that these resources aren't shared with other applications or processes, avoiding potential performance bottlenecks or contention.
-- *External networking*: External clients should connect directly to the broker that owns the partition they're interested in. This means that each broker must be individually addressable. As clients need to connect to the specific broker owning the partition, they need a mechanism to directly address each broker in the cluster. Assigning each broker to its own dedicated worker node makes this direct addressing feasible, since each worker node will have a unique address. See the <<External networking>> section.
+- *External networking*: External clients should connect directly to the broker that owns the partition they're interested in. This means that each broker must be individually addressable. As clients must connect to the specific broker owning the partition, they need a mechanism to directly address each broker in the cluster. Assigning each broker to its own dedicated worker node makes this direct addressing feasible, since each worker node will have a unique address. See the <<External networking>> section.
 - *Fault tolerance*: Ensuring each broker operates on a separate node enhances fault tolerance. If one node experiences issues, it won't directly impact the other brokers.
 
 NOTE: The Redpanda Helm chart configures xref:reference:redpanda-helm-spec.adoc#statefulset-podantiaffinity[`podAntiAffinity` rules] to make sure that each Redpanda broker runs on its own worker node.
@@ -63,7 +63,7 @@ NOTE: The Redpanda Helm chart configures xref:reference:redpanda-helm-spec.adoc#
 
 An XFS or ext4 filesystem.
 
-The Redpanda data directory (`/var/lib/redpanda/data`) and the Tiered Storage cache must be mounted on an XFS or ext4 filesystem. For information about supported volume types for different data, see xref:manage:kubernetes/storage/volume-types.adoc[].
+The Redpanda data directory (`/var/lib/redpanda/data`) and the Tiered Storage cache must be mounted on an XFS or ext4 filesystem. For information about supported volume types for different data in Redpanda, see xref:manage:kubernetes/storage/volume-types.adoc[].
 
 CAUTION: Avoid using NFS (Network File System) for the Redpanda data directory or the Tiered Storage cache.
 
@@ -125,15 +125,19 @@ In a production cluster, the resources you allocate to Redpanda should be propor
 
 Redpanda Data recommends using PersistentVolumes (PVs) that are backed by locally attached NVMe devices to store the Redpanda data directory. NVMe devices outperform traditional SSDs or HDDs.
 
-By default, the Redpanda Helm chart uses the default StorageClass in your Kubernetes cluster to create one PersistentVolumeClaim (PVC) for each Redpanda broker.
+By default, the Redpanda Helm chart uses the default StorageClass in your Kubernetes cluster to create one PersistentVolumeClaim (PVC) for each Redpanda broker. To learn how to configure different volumes see xref:manage:kubernetes/storage/configure-storage.adoc[].
 
-- See xref:manage:kubernetes/storage/volume-types.adoc[]
-- To learn how to configure different volumes see xref:manage:kubernetes/storage/configure-storage.adoc[].
+When working with local NVMe disks, provisioning can pose challenges. Dynamic provisioners, though highly scalable and automated, may not always support local PVs. You can either:
 
-When working with local NVMe disks, provisioning can pose challenges. Dynamic provisioners, though highly scalable and automated, may not always support local PVs. You can either create the PVs manually or to automatically create one PV on each node that has local SSDs available, you can use one of the following CSI drivers:
+- Create the PVs manually.
+- Automatically create one PV on each node that has local SSDs available.
 
-- https://github.com/openebs/lvm-localpv[Local volume manager] (LVM)
+To automatically create one PV on each node that has local SSDs available, you can use one of the following CSI drivers:
+
+- *Recommended*: https://github.com/openebs/lvm-localpv[Local volume manager] (LVM)
 - https://github.com/kubernetes-sigs/sig-storage-local-static-provisioner[local volume static provisioner]
+
+TIP: LVM is a more advanced tool for local storage management because it allows you to group physical storage devices into a logical volume group. Allocating logical volumes from the logical volume group provides greater flexibility in terms of storage expansion and management. LVM supports features such as resizing, snapshots, and striping, which are not available with the simpler local volume static provisioner.
 
 When you have your PVs, use a StorageClass to provide the Redpanda Helm chart a way of creating PVCs that use your local NVMe disks.
 
@@ -162,11 +166,11 @@ parameters:
   fsType: xfs
 ----
 
-For details, see the https://kubernetes.io/docs/concepts/storage/storage-classes/[Kubernetes documentation^].
+For details about StorageClasses, see the https://kubernetes.io/docs/concepts/storage/storage-classes/[Kubernetes documentation^].
 
 === Use a NodePort Service for external access
 
-The NodePort Service provides the lowest latency of all the Services because it does not include any unnecessary routing or middleware. Client connections go to the Redpanda brokers in the most direct way possible, through the worker nodes.
+The NodePort Service provides the lowest latency of all the Kubernetes Services because it does not include any unnecessary routing or middleware. Client connections go to the Redpanda brokers in the most direct way possible, through the worker nodes.
 
 By default, the Redpanda Helm chart creates a NodePort Service with the following ports:
 
@@ -191,10 +195,10 @@ To change these ports, see xref:manage:kubernetes/networking/configure-listeners
 Depending on your deployment and security policies, you may not be able to access worker nodes through a NodePort Service.
 If you choose to use another Service, consider the impact on the cost and performance of your deployment:
 
-* LoadBalancer Service - To make each Redpanda broker accessible with LoadBalancer Services, you need one LoadBalancer Service for each Redpanda broker so that requests can be routed to specific brokers rather than balancing requests across all brokers. Load balancers are expensive, add latency and occasional packet loss, and add an unnecessary layer of complexity.
-* Ingress - To make each Redpanda broker accessible with Ingress, you need to run an Ingress controller and set up routing to each Redpanda broker. Routing adds latency and can be a throughput bottleneck.
+* *LoadBalancer Service*: To make each Redpanda broker accessible with LoadBalancer Services, you need one LoadBalancer Service for each Redpanda broker so that requests can be routed to specific brokers rather than balancing requests across all brokers. Load balancers are expensive, add latency and occasional packet loss, and add an unnecessary layer of complexity.
+* *Ingress*: To make each Redpanda broker accessible with Ingress, you must run an Ingress controller and set up routing to each Redpanda broker. Routing adds latency and can be a throughput bottleneck.
 
-See xref:manage:kubernetes/networking/networking-and-connectivity.adoc[Networking and Connectivity].
+For more details, see xref:manage:kubernetes/networking/networking-and-connectivity.adoc[Networking and Connectivity].
 
 === Use ExternalDNS for external access
 
@@ -202,7 +206,7 @@ Redpanda Data recommends using ExternalDNS to manage DNS records for your Pods' 
 
 Benefits of ExternalDNS include:
 
-* *Automation*: ExternalDNS automatically configures public DNS records when you create, update, or delete Kubernetes Services or Ingresses. This eliminates the need for manual DNS configuration which can be error-prone.
+* *Automation*: ExternalDNS automatically configures public DNS records when you create, update, or delete Kubernetes Services or Ingresses. This eliminates the need for manual DNS configuration, which can be error-prone.
 * *Compatibility*: ExternalDNS is compatible with a wide range of DNS providers, including major cloud providers such as AWS, Google Cloud, and Azure, and DNS servers like CoreDNS and PowerDNS.
 * *Integration with other tools*: ExternalDNS can be used in conjunction with other Kubernetes tools, such as ingress controllers or cert-manager for managing TLS certificates.
 
