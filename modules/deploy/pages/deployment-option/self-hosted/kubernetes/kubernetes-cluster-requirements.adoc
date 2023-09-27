@@ -30,18 +30,18 @@ Minimum required Helm version: {supported-helm-version}
 
 https://helm.sh/docs/intro/install/[Install Helm^].
 
-=== Worker nodes
+=== Number of worker nodes
 
 Provision one dedicated worker node for each Redpanda broker that you plan to deploy in your Redpanda cluster.
 Each Pod replica that runs a Redpanda broker requires its own dedicated worker node for the following reasons:
 
 - *Resource isolation*: Redpanda brokers are designed to make full use of available system resources, including CPU and memory. By dedicating a worker node to each broker, you ensure that these resources aren't shared with other applications or processes, avoiding potential performance bottlenecks or contention.
-- *External networking*: External clients should connect directly to the broker that owns the partition they're interested in. This means that each broker must be individually addressable. As clients must connect to the specific broker owning the partition, they need a mechanism to directly address each broker in the cluster. Assigning each broker to its own dedicated worker node makes this direct addressing feasible, since each worker node will have a unique address. See the <<External networking>> section.
+- *External networking*: External clients should connect directly to the broker that owns the partition they're interested in. This means that each broker must be individually addressable. As clients must connect to the specific broker that is the leader of the partition, they need a mechanism to directly address each broker in the cluster. Assigning each broker to its own dedicated worker node makes this direct addressing feasible, since each worker node will have a unique address. See <<External networking>>.
 - *Fault tolerance*: Ensuring each broker operates on a separate node enhances fault tolerance. If one node experiences issues, it won't directly impact the other brokers.
 
 NOTE: The Redpanda Helm chart configures xref:reference:redpanda-helm-spec.adoc#statefulset-podantiaffinity[`podAntiAffinity` rules] to make sure that each Redpanda broker runs on its own worker node.
 
-*Recommendation*: <<Deploy at least three Pod replicas>>.
+*Recommendations*: <<Deploy at least three Pod replicas>>.
 
 === CPU
 
@@ -77,13 +77,11 @@ CAUTION: Avoid using NFS (Network File System) for the Redpanda data directory o
 
 === Security
 
-*Recommendations*:
-
-- If you're using a cloud platform, use xref:manage:security/iam-roles.adoc[IAM roles] to restrict access to resources in your cluster.
+*Recommendations*: If you're using a cloud platform, use xref:manage:security/iam-roles.adoc[IAM roles] to restrict access to resources in your cluster.
 
 === External networking
 
-- For external access, each worker node in your cluster must have a static, externally accessible IP address. See the <<Worker nodes>> section.
+- For external access, each worker node in your cluster must have a static, externally accessible IP address.
 
 - Minimum 10 GigE (10 Gigabit Ethernet) connection to ensure:
 
@@ -91,9 +89,7 @@ CAUTION: Avoid using NFS (Network File System) for the Redpanda data directory o
 * Reduced data transfer latency
 * Scalability for increased network traffic
 
-*Recommendations*:
-
-- <<use-a-nodeport-service-for-external-access, Use the default NodePort Service to give external clients access to the Redpanda brokers>> that are running on those nodes.
+*Recommendations*: <<use-a-nodeport-service-for-external-access, Use the default NodePort Service to give external clients access to the Redpanda brokers>> that are running on those nodes.
 
 === Tuning
 
@@ -125,31 +121,19 @@ In a production cluster, the resources you allocate to Redpanda should be propor
 
 Redpanda Data recommends using PersistentVolumes (PVs) that are backed by locally attached NVMe devices to store the Redpanda data directory. NVMe devices outperform traditional SSDs or HDDs.
 
-By default, the Redpanda Helm chart uses the default StorageClass in your Kubernetes cluster to create one PersistentVolumeClaim (PVC) for each Redpanda broker. To learn how to configure different volumes see xref:manage:kubernetes/storage/configure-storage.adoc[].
-
 When working with local NVMe disks, provisioning can pose challenges. Dynamic provisioners, though highly scalable and automated, may not always support local PVs. You can either:
 
 - Create the PVs manually.
-- Automatically create one PV on each node that has local SSDs available.
+- Use one of the following CSI drivers to automatically create one PV on each node that has local SSDs available:
 
-To automatically create one PV on each node that has local SSDs available, you can use one of the following CSI drivers:
+** *Recommended*: https://github.com/openebs/lvm-localpv[Local volume manager] (LVM)
+** https://github.com/kubernetes-sigs/sig-storage-local-static-provisioner[local volume static provisioner]
 
-- *Recommended*: https://github.com/openebs/lvm-localpv[Local volume manager] (LVM)
-- https://github.com/kubernetes-sigs/sig-storage-local-static-provisioner[local volume static provisioner]
+TIP: LVM is a more advanced tool for local storage management because it allows you to group physical storage devices into a logical volume group. Allocating logical volumes from a logical volume group provides greater flexibility in terms of storage expansion and management. LVM supports features such as resizing, snapshots, and striping, which are not available with the simpler local volume static provisioner.
 
-TIP: LVM is a more advanced tool for local storage management because it allows you to group physical storage devices into a logical volume group. Allocating logical volumes from the logical volume group provides greater flexibility in terms of storage expansion and management. LVM supports features such as resizing, snapshots, and striping, which are not available with the simpler local volume static provisioner.
+Configure your PVs with a reference to a StorageClass, then create that StorageClass to provide the Redpanda Helm chart a way of creating PVCs that use your local NVMe disks.
 
-When you have your PVs, use a StorageClass to provide the Redpanda Helm chart a way of creating PVCs that use your local NVMe disks.
-
-. When the Redpanda Helm chart creates PVCs with a StorageClass, the Kubernetes scheduler will look for a PV that:
-** Has the same storage class.
-** Meets the storage capacity requirements specified in the PVC.
-** Is not yet bound to any other PVC.
-
-. When a Pod is created that references the PVC:
-
-.. The scheduler will ensure that the Pod is scheduled to the node where the PV resides.
-.. If there's no suitable PV available, the Pod will remain in a pending state until a suitable PV is provided or the PVC's specifications are changed.
+By default, the Redpanda Helm chart uses the default StorageClass in your Kubernetes cluster to create one PersistentVolumeClaim (PVC) for each Redpanda broker. To learn how to configure a different StorageClass, see xref:manage:kubernetes/storage/configure-persistent-storage.adoc[].
 
 This example configures a StorageClass for provisioning locally attached storage with an XFS filesystem.
 
