@@ -19,37 +19,44 @@ Before you begin, make sure that you have the correct software for your Kubernet
 
 [tabs]
 ======
-All platforms::
+kind::
 +
 --
 
-* https://kubernetes.io/docs/tasks/tools/[`kubectl`^]. Minimum required Kubernetes version: {supported-kubernetes-version}
+* https://kubernetes.io/docs/tasks/tools/[Install `kubectl`^]. Minimum required Kubernetes version: {supported-kubernetes-version}
 +
 ```bash
 kubectl version --short --client
 ```
 
-* https://helm.sh/docs/intro/install/[Helm^]. Minimum required Helm version: {supported-helm-version}
+* https://helm.sh/docs/intro/install/[Install Helm^]. Minimum required Helm version: {supported-helm-version}
 +
 ```bash
 helm version
 ```
 
---
-kind::
-+
---
+* https://kind.sigs.k8s.io/docs/user/quick-start/#installation[Install kind^]
 
-* https://kind.sigs.k8s.io/docs/user/quick-start/#installation[kind^]
-
-* https://docs.docker.com/get-docker/[Docker^]
+* https://docs.docker.com/get-docker/[Install Docker^]
 
 --
 minikube::
 +
 --
 
-https://minikube.sigs.k8s.io/docs/start/[minikube^]
+* https://kubernetes.io/docs/tasks/tools/[Install `kubectl`^]. Minimum required Kubernetes version: {supported-kubernetes-version}
++
+```bash
+kubectl version --short --client
+```
+
+* https://helm.sh/docs/intro/install/[Install Helm^]. Minimum required Helm version: {supported-helm-version}
++
+```bash
+helm version
+```
+
+https://minikube.sigs.k8s.io/docs/start/[Install minikube^]
 
 --
 ======
@@ -165,7 +172,7 @@ kubectl --namespace <namespace> rollout status --watch deployment/redpanda-contr
 deployment "redpanda-controller-operator" successfully rolled out
 ----
 
-. Install a xref:reference:crd.adoc[Redpanda custom resource] with SASL enabled:
+. Install a xref:reference:crd.adoc[Redpanda custom resource] in the same namespace as the Redpanda Operator:
 +
 .`redpanda-cluster.yaml`
 [,yaml]
@@ -270,17 +277,101 @@ alias rpk-topic="kubectl --namespace <namespace> exec -i -t redpanda-0 -c redpan
 
 . Create a topic called `twitch_chat`:
 +
-```bash
+[tabs]
+======
+Helm + Operator::
++
+--
+
+.. Create a xref:manage:kubernetes/manage-topics.adoc[Topic resource]:
++
+.`topic.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Topic
+metadata:
+  name: twitch_chat
+spec:
+  kafkaApiSpec:
+    brokers:
+      - "redpanda-0.redpanda.<namespace>.svc.cluster.local:9093"
+      - "redpanda-1.redpanda.<namespace>.svc.cluster.local:9093"
+      - "redpanda-2.redpanda.<namespace>.svc.cluster.local:9093"
+    tls:
+      caCertSecretRef:
+        name: "redpanda-default-cert"
+        key: "ca.crt"
+----
+
+.. Apply the Topic resource in the same namespace as your Redpanda cluster:
++
+[,bash]
+----
+kubectl apply -f topic.yaml --namespace <namespace>
+----
+
+.. Check the logs of the Redpanda Operator to confirm that the topic was created:
++
+[,bash]
+----
+kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
+----
++
+You should see that the Redpanda Operator reconciled the Topic resource.
++
+.Example output
+[%collapsible]
+====
+[,json,.no-copy,lines=5+16]
+----
+{
+  "level":"info",
+  "ts":"2023-09-25T16:20:09.538Z",
+  "logger":"TopicReconciler.Reconcile",
+  "msg":"Starting reconcile loop",
+  "controller":"topic",
+  "controllerGroup":"cluster.redpanda.com",
+  "controllerKind":"Topic",
+  "Topic":{"name":"twitch_chat","namespace":""},
+  "namespace":"",
+  "name":"twitch_chat","reconcileID":"c0cf9abc-a553-48b7-9b6e-2de3cdfb4432"}
+{
+  "level":"info",
+  "ts":"2023-09-25T16:20:09.581Z",
+  "logger":"TopicReconciler.Reconcile",
+  "msg":"reconciliation finished in 43.436125ms, next run in 3s",
+  "controller":"topic",
+  "controllerGroup":"cluster.redpanda.com",
+  "controllerKind":"Topic",
+  "Topic":{"name":"twitch_chat","namespace":""},
+  "namespace":"",
+  "name":"twitch_chat",
+  "reconcileID":"c0cf9abc-a553-48b7-9b6e-2de3cdfb4432",
+  "result":{"Requeue":false,"RequeueAfter":3000000000}
+}
+----
+====
+
+--
+Helm::
++
+--
+
+[,bash]
+----
 rpk-topic create twitch_chat
-```
-+
+----
+
 Example output:
-+
+
 [.no-copy]
 ----
-  TOPIC       STATUS
-  twitch_chat  OK
+TOPIC STATUS twitch_chat OK
 ----
+
+--
+======
 
 . Describe the topic:
 +
@@ -363,10 +454,12 @@ include::deploy:partial$kubernetes/guides/explore-topics-localhost.adoc[leveloff
 
 include::deploy:partial$kubernetes/guides/external-access-intro.adoc[leveloffset=+1]
 
+NOTE: These steps work only on Linux operating systems.
+
 . Add mappings in your `/etc/hosts` file between your worker nodes' IP addresses and their custom domain names:
 +
 ```bash
-sudo true && kubectl -n redpanda get endpoints,node -A -o go-template='{{ range $_ := .items }}{{ if and (eq .kind "Endpoints") (eq .metadata.name "redpanda-external") }}{{ range $_ := (index .subsets 0).addresses }}{{ $nodeName := .nodeName }}{{ $podName := .targetRef.name }}{{ range $node := $.items }}{{ if and (eq .kind "Node") (eq .metadata.name $nodeName) }}{{ range $_ := .status.addresses }}{{ if eq .type "InternalIP" }}{{ .address }} {{ $podName }}.${DOMAIN}{{ "\n" }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}' | envsubst | sudo tee -a /etc/hosts
+sudo true && kubectl --namespace <namespace> get endpoints,node -A -o go-template='{{ range $_ := .items }}{{ if and (eq .kind "Endpoints") (eq .metadata.name "redpanda-external") }}{{ range $_ := (index .subsets 0).addresses }}{{ $nodeName := .nodeName }}{{ $podName := .targetRef.name }}{{ range $node := $.items }}{{ if and (eq .kind "Node") (eq .metadata.name $nodeName) }}{{ range $_ := .status.addresses }}{{ if eq .type "InternalIP" }}{{ .address }} {{ $podName }}.${DOMAIN}{{ "\n" }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}' | envsubst | sudo tee -a /etc/hosts
 ```
 +
 .`/etc/hosts`
@@ -380,28 +473,15 @@ sudo true && kubectl -n redpanda get endpoints,node -A -o go-template='{{ range 
 +
 [,bash]
 ----
-kubectl -n redpanda get secret redpanda-default-root-certificate -o go-template='{{ index .data "ca.crt" | base64decode }}' > ca.crt
+kubectl --namespace <namespace> get secret redpanda-default-root-certificate -o go-template='{{ index .data "ca.crt" | base64decode }}' > ca.crt
 ----
 
-. Install rpk on your local machine, not on a Pod:
-+
-[tabs]
-=====
-Linux::
+. Install rpk on your local Linux machine, not on a Pod:
 +
 --
-
+[loweralpha]
 include::get-started:partial$install-rpk-linux.adoc[]
-
 --
-macOS::
-+
---
-
-include::get-started:partial$install-rpk-homebrew.adoc[]
-
---
-=====
 
 . Set the `REDPANDA_BROKERS` environment variable to the custom domains of your Redpanda brokers:
 +
