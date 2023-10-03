@@ -2,7 +2,7 @@
 :description: Connect Redpanda Cloud to your existing VPC for additional security.
 :page-cloud: true
 
-With a standard BYOC cluster, Redpanda manages the VPC lifecycle. For additional security, you can deploy the Redpanda data plane into your existing VPC and manage the VPC lifecycle yourself. With a *customer-managed* VPC:
+With a standard BYOC cluster, Redpanda manages the VPC lifecycle. For additional security, you can deploy the Redpanda data plane into your existing shared VPC and manage the VPC lifecycle yourself. When you create a BYOC cluster, you specify your VPC and service account. The Redpanda Cloud agent doesn’t create any new resources or alter any settings in your account. With a *customer-managed* VPC:
 
 * You provide your own VPC in your Google Cloud account.
 * You maintain more control of your Google Cloud account, because Redpanda requires fewer permissions than standard BYOC clusters.
@@ -125,7 +125,7 @@ gcloud storage buckets update gs://<management-storage-bucket-name> --versioning
 * Redpanda uses the Tiered Storage bucket for writing log segments. This should not be versioned.
 * Redpanda uses the management storage bucket to store cluster metadata. This can have versioning enabled.
 
-. Create service accounts with necessary permissions and roles for the Redpanda agent, cluster, Redpanda Console, connectors, and the GKE cluster.
+. Create service accounts with necessary permissions and roles.
 
 * Redpanda agent service account
 +
@@ -374,47 +374,32 @@ gcloud projects add-iam-policy-binding <service-project-id> \
 ```
 ====
 
-* Bind GKE service account with the Workload Identity role
+. Bind the service accounts.
 +
-.Show commands
-[%collapsible]
-====
-```bash
-gcloud iam service-accounts add-iam-policy-binding redpanda-gke@<service-project-id>.iam.gserviceaccount.com \
-    --role roles/iam.workloadIdentityUser \
-    --member "serviceAccount:<service-project-id>.svc.id.goog[cert-manager/cert-manager]"
-gcloud iam service-accounts add-iam-policy-binding redpanda-gke@<service-project-id>.iam.gserviceaccount.com \
-    --role roles/iam.workloadIdentityUser \
-    --member "serviceAccount:<service-project-id>.svc.id.goog[external-dns/external-dns]"
-```
-====
-
-. In the https://cloudv2.redpanda.com[Redpanda Cloud UI^], start to xref:./create-byoc-cluster-gcp.adoc[create a BYOC cluster] so you can get the generated Redpanda ID. This is necessary to create certain required resources.
+The account ID of the GCP service account is used to configure service account bindings. This account ID is the local part of the email address for the GCP service account.
+For example, if the GCP service account is `my-gcp-sa@my-project.iam.gserviceaccount.com`, then the account ID is `my-gcp-sa`.
 +
-IMPORTANT: On the *Network* page, select the *Customer-managed* network connection type, and enter the network, service account, and storage bucket information you created. However, before running the Validation `rpk` command, note the `redpanda-id` (for example, `cisld88gfi809ee1qjcg`). You finish the cluster deployment in a later step.  
-+
-. Use the `redpanda-id` to bind service accounts with the Workload Identity role.
-
 * Redpanda cluster service account
 +
 .Show command
 [%collapsible]
 ====
-```bash
-gcloud iam service-accounts add-iam-policy-binding redpanda-cluster@<service-project-id>.iam.gserviceaccount.com \
-    --role roles/iam.workloadIdentityUser \
-    --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda/rp-<redpanda-id>]"
 ```
-==== 
+gcloud iam service-accounts add-iam-policy-binding <redpanda-cluster-gcp-sa-account-id>@<service-project-id>.iam.gserviceaccount.com \
+    --role roles/iam.workloadIdentityUser \
+    --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda/rp-<redpanda-cluster-gcp-sa-account-id>]"
+```
+====
+
 * Redpanda Console service account
 +
 .Show command
 [%collapsible]
 ====
-```bash
-gcloud iam service-accounts add-iam-policy-binding redpanda-console@<service-project-id>.iam.gserviceaccount.com \
+```
+gcloud iam service-accounts add-iam-policy-binding <console-gcp-sa-account-id>@<service-project-id>.iam.gserviceaccount.com \
     --role roles/iam.workloadIdentityUser \
-    --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda/console-<redpanda-id>]"
+    --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda/console-<console-gcp-sa-account-id>]"
 ```
 ====
 
@@ -423,16 +408,35 @@ gcloud iam service-accounts add-iam-policy-binding redpanda-console@<service-pro
 .Show command
 [%collapsible]
 ====
-```bash
-gcloud iam service-accounts add-iam-policy-binding redpanda-connectors@<service-project-id>.iam.gserviceaccount.com \
+```
+gcloud iam service-accounts add-iam-policy-binding <connectors-gcp-sa-account-id>@<service-project-id>.iam.gserviceaccount.com \
     --role roles/iam.workloadIdentityUser \
-    --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda-connectors/connectors-<redpanda-id>]"
+    --member "serviceAccount:<service-project-id>.svc.id.goog[redpanda-connectors/connectors-<connectors-gcp-sa-account-id>]"
 ```
 ====
 
-== Validate and deploy
+* Cert-manager and external-DNS service accounts
++
+.Show commands
+[%collapsible]
+====
+```
+gcloud iam service-accounts add-iam-policy-binding <gke-service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+    --role roles/iam.workloadIdentityUser \
+    --member "serviceAccount:<service-project-id>.svc.id.goog[cert-manager/cert-manager]"
+gcloud iam service-accounts add-iam-policy-binding <gke-service-account-name>@<service-project-id>.iam.gserviceaccount.com \
+    --role roles/iam.workloadIdentityUser \
+    --member "serviceAccount:<service-project-id>.svc.id.goog[external-dns/external-dns]"
+```
+====
 
-. In a previous step, you started to create a BYOC cluster in the Redpanda Cloud UI, stopping just before the Validation step. With *customer-managed* networks, you must grant yourself (the user deploying the cluster with `rpk`) the following permissions. 
+== Create a BYOC cluster with customer-managed VPC
+
+Log in to the https://cloudv2.redpanda.com[Redpanda Cloud UI^], and follow the steps to xref:./create-byoc-cluster-gcp.adoc[create a BYOC cluster], with the following exceptions:
+
+. On the *Network* page, select the *Customer-managed* network connection type, and enter the network, service account, and storage bucket information you created. 
+
+. With *customer-managed* networks, you must grant yourself (the user deploying the cluster with `rpk`) the following permissions. 
 +
 .Expand permissions
 [%collapsible]
@@ -488,4 +492,4 @@ rpk cloud byoc gcp apply --redpanda-id='<redpanda-id>' --project-id='<service-pr
 
 . Click *Next*. 
 
-. On the *Deploy* page, similar to standard BYOC clusters, you need to log in to Redpanda Cloud and deploy the agent.
+. On the *Deploy* page, similar to standard BYOC clusters, log in to Redpanda Cloud and deploy the agent.
