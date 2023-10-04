@@ -1,5 +1,7 @@
 = Manage Topics with the Redpanda Operator
 :description: Use the Topic resource to declaratively create Kafka topics as part of a Redpanda deployment. Each Topic resource is mapped to a topic in your Redpanda cluster. The topic controller keeps the corresponding Kafka topic in sync with the Topic resource.
+:page-context-links: [{"name": "Linux", "to": "develop:config-topics.adoc" },{"name": "Kubernetes", "to": "manage:kubernetes/manage-topics.adoc" } ]
+:env-kubernetes:
 
 The Redpanda Operator allows you to declaratively create and manage Kafka topics using xref:reference:topic-crd.adoc[Topic custom resources] (resources) in Kubernetes. Each Topic resource is mapped to a topic in your Redpanda cluster. The topic controller, a component of the Redpanda Operator, keeps the corresponding Kafka topic in sync with the Topic resource. This resource allows you to create topics as part of a Redpanda deployment.
 
@@ -58,6 +60,8 @@ spec:
 
 - xref:reference:topic-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-src-go-k8s-apis-cluster-redpanda-com-v1alpha1-topicspec[`spec.interval`]: Sets the reconciliation interval for the topic controller. Default is 3 seconds (`3s`).
 
+The default settings are best suited to a one-broker cluster in a development environment. To learn how to modify the default values in the configuration file, see xref:manage:cluster-maintenance/cluster-property-configuration.adoc[Configure Cluster Properties]. Even if you set default values that work for most topics, you may still want to change some properties for a specific topic.
+
 === Example Topic resource
 
 This example creates a topic called `chat-room`.
@@ -73,6 +77,8 @@ metadata:
 spec:
   partitions: 3
   replicationFactor: 3
+  additionalConfig:
+    cleanup.policy: "compact"
   kafkaApiSpec:
     brokers:
       - "redpanda-0.redpanda.<namespace>.svc.cluster.local:9093"
@@ -90,6 +96,30 @@ kubectl apply -f example-topic.yaml --namespace <namespace>
 ----
 
 Replace `<namespace>` with the namespace in which you deployed Redpanda.
+
+=== Choose the number of partitions
+
+A partition acts as a log file where topic data is written. Dividing topics into partitions allows producers to write messages in parallel and consumers to read messages in parallel. The higher the number of partitions, the greater the throughput.
+
+TIP: As a general rule, select a number of partitions that corresponds to the maximum number of consumers in any consumer group that will consume the data.
+
+=== Choose the replication factor
+
+Replicas are copies of partitions that are distributed across different brokers, so if one broker goes down, other brokers still have a copy of the data. The default replication factor in the cluster configuration is set to 1.
+
+By choosing a replication factor greater than 1, you ensure that each partition has a copy of its data on at least one other broker. One replica acts as the leader, and the other replicas are followers.
+
+NOTE: The replication factor must be an odd number. Redpanda Data recommends a replication factor of 3 for most use cases.
+
+=== Choose the cleanup policy
+
+The cleanup policy determines how to clean up the partition log files when they reach a certain size:
+
+* `delete` deletes data based on age or log size.
+* `compact` compacts the data by only keeping the latest values for each KEY.
+* `compact,delete` combines both methods.
+
+If the cleanup policy is `delete` or `compact,delete` you can <<Delete records from a topic>>.
 
 == Verify a topic
 
@@ -396,7 +426,7 @@ To update a topic, edit the Topic resource configuration, and apply the changes.
 
 CAUTION: Do not use rpk or any other Kafka clients to edit topics that you created using the Topic resource. The topic controller monitors the Redpanda cluster for changes to topics. If you use a Kafka client to edit the topic, the topic controller detects those changes as a drift from the desired state and attempts to reconcile by reverting the changes to match the Topic resource's state.
 
-The following example adds a cleanup policy to the `chat-room` topic:
+The following example changes the cleanup policy for the `chat-room` topic:
 
 .`example-topic.yaml`
 [,yaml,lines=8-9]
@@ -409,7 +439,7 @@ spec:
   partitions: 3
   replicationFactor: 3
   additionalConfig:
-    cleanup.policy: "compact"
+    cleanup.policy: "delete"
   kafkaApiSpec:
     brokers:
       - "redpanda-0.redpanda.<namespace>.svc.cluster.local:9093"
@@ -426,6 +456,8 @@ spec:
 kubectl apply -f example-topic.yaml --namespace <namespace>
 ----
 
+You can also remove a property that overrides the default setting, and the setting will use the default value again.
+
 == Delete a topic
 
 To delete a topic, delete the Topic resource.
@@ -437,7 +469,15 @@ For example:
 kubectl delete -f example-topic.yaml --namespace <namespace>
 ----
 
-NOTE: If you delete the Kafka topic directly using a client such as rpk, the topic controller will recreate an empty topic, and you will lose all records inside the topic.
+When a topic is deleted, its underlying data is deleted, too.
+
+NOTE: If you delete the Kafka topic directly using a client such as rpk, the topic controller will recreate an empty topic with the same name.
+
+include::develop:partial$delete-topic-records.adoc[]
+
+== Cluster-wide topic configurations
+
+include::develop:partial$topic-defaults.adoc[]
 
 == Suggested reading
 
