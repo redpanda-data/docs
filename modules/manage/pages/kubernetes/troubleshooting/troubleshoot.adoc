@@ -2,36 +2,45 @@
 :description: Find advice on how to diagnose and troubleshoot issues while deploying Redpanda in Kubernetes.
 :tags: ["Kubernetes"]
 
-This topic provides guidance on how to diagnose and troubleshoot issues while deploying Redpanda in Kubernetes.
+This topic provides guidance on how to diagnose and troubleshoot issues with Redpanda deployments in Kubernetes.
 
 == Prerequisites
 
-Before troubleshooting Redpanda, make sure that Kubernetes isn't the cause of the problem. For information about debugging applications in a Kubernetes cluster, see the https://kubernetes.io/docs/tasks/debug/[Kubernetes documentation^].
+Before troubleshooting Redpanda, make sure that Kubernetes isn't the cause of the issue. For information about debugging applications in a Kubernetes cluster, see the https://kubernetes.io/docs/tasks/debug/[Kubernetes documentation^].
 
 == Collect all debugging data
 
-If you're unsure of what is wrong, you can generate a diagnostics bundle that contains a wide range of data to help debug and diagnose issues with a Redpanda cluster, a broker, or the machines on which the brokers are running.
+If you're unsure of what is wrong, you can generate a diagnostics bundle that contains a wide range of data to help debug and diagnose a Redpanda cluster or the nodes on which the brokers are running.
 
 See xref:./diagnostics-bundle.adoc[Diagnostics Bundles in Kubernetes].
 
 == View Helm chart configuration
 
-To check the values that were set in the Redpanda Helm chart:
+To check the overrides that were applied to your deployment:
 
 [,bash]
 ----
-helm get values redpanda --namespace <namespace> --all
+helm get values <chart-name> --namespace <namespace>
+----
+
+If you're using the Redpanda Operator, the chart name matches the name of your Redpanda resource.
+
+To check all the values that were set in the Redpanda Helm chart, including any overrides:
+
+[,bash]
+----
+helm get values <chart-name> --namespace <namespace> --all
 ----
 
 == View Redpanda logs
 
-Logs are sent directory to STDOUT for each Pod. Use the command below to view the logs for a Pod:
+Logs for each Redpanda broker running inside a Pod are sent to STDOUT. To view the logs for one of the Pods use `kubectl logs` to get logs from STDOUT.
 
 ```bash
 kubectl logs <pod-name> --namespace <namespace>
 ```
 
-To change the log level to `debug`:
+To change the log level of the Redpanda brokers to `debug`:
 
 [tabs]
 ======
@@ -88,12 +97,39 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 
 == View Redpanda Operator logs
 
+To learn what's happening with the Redpanda Operator and the associated Redpanda resources, you can inspect a combination of Kubernetes events and the resource manifests. By monitoring these events and resources, you can troubleshoot any issues that arise during the lifecycle of a Redpanda deployment.
+
 [,bash]
 ----
 kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
 ----
 
-Replace `<namespace>` with the namespace in which you deployed the Redpanda Operator.
+=== View recent events
+
+To understand the latest events that occurred in your Redpanda cluster's namespace, you can sort events by their creation timestamp:
+
+[,bash]
+----
+kubectl get events --namespace <namespace> --sort-by='.metadata.creationTimestamp'
+----
+
+=== Inspect Helm releases
+
+The Redpanda Operator uses Flux to deploy the Redpanda Helm chart. By inspecting the `helmreleases.helm.toolkit.fluxcd.io` resource, you can get detailed information about the Helm installation process for your Redpanda resource:
+
+[,bash]
+----
+kubectl get helmreleases.helm.toolkit.fluxcd.io -o yaml <redpanda-resource-name> --namespace <namespace>
+----
+
+To check the Redpanda resource:
+
+[,bash]
+----
+kubectl get redpandas.cluster.redpanda.com -o yaml --namespace <namespace>
+----
+
+In both the HelmRelease and the Redpanda resource, the condition section reveals the ongoing status of the Helm installation. These conditions provide information on the success, failure, or pending status of various operations.
 
 == Troubleshoot known issues
 
@@ -116,7 +152,7 @@ While the deployment process can sometimes take a few minutes, a prolonged 'not 
 +
 [,bash]
 ----
-kubectl describe helmrelease redpanda --namespace <namespace>
+kubectl describe helmrelease <redpanda-resource-name> --namespace <namespace>
 ----
 
 . Review the Redpanda Operator logs:
@@ -125,8 +161,6 @@ kubectl describe helmrelease redpanda --namespace <namespace>
 ----
 kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
 ----
-
-Replace `<namespace>` with the namespace in which you deployed the Redpanda Operator.
 
 === StatefulSet never rolls out
 
@@ -145,7 +179,7 @@ To view logs for a specific Pod, use the following command.
 
 [,bash]
 ----
-kubectl logs -f <pod-name>
+kubectl logs -f <pod-name> --namespace <namespace>
 ----
 
 You can use the output to debug your deployment.
@@ -158,7 +192,7 @@ If you see volume mounting errors in the Pod events or in the Redpanda logs, mak
 +
 [,bash]
 ----
-kubectl get pv --namespace <namespace>
+kubectl get persistentvolume --namespace <namespace>
 ----
 
 * If you're using StorageClasses with dynamic provisioners (default), make sure they exist:
@@ -212,7 +246,7 @@ If you're using rpk, make sure to add the `--tls-enabled` flag, and any other ne
 
 [,bash]
 ----
-kubectl exec <pod-name> -c redpanda --namespace <namepsace> -- rpk cluster info -X brokers=<subdomain>.<domain>:<external-port> --tls-enabled
+kubectl exec <pod-name> -c redpanda --namespace <namepsace> -- rpk cluster info -X brokers=<subdomain>.<domain>:<external-port> -X tls.enabled=true
 ----
 
 For all available flags, see the xref:reference:rpk/index.adoc[rpk command reference].
@@ -235,7 +269,7 @@ This error appears when you try to interact with a cluster that has SASL enabled
 unable to request metadata: broker closed the connection immediately after a request was issued, which happens when SASL is required but not provided: is SASL missing?
 ----
 
-If you're using rpk, make sure to specify the `--username`, `--password`, and `--sasl-mechanism` flags.
+If you're using rpk, make sure to specify the `-X user`, `-X pass`, and `-X sasl.mechanism` flags.
 
 For all available flags, see the xref:reference:rpk/index.adoc[rpk command reference].
 
