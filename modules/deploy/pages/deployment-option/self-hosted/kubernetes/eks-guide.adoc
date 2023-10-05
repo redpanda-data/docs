@@ -1,5 +1,6 @@
 = Deploy a Redpanda Cluster in Amazon Elastic Kubernetes Service
 :description: Deploy a secure Redpanda cluster and Redpanda Console in Amazon Elastic Kubernetes Service (EKS).
+:env-eks:
 
 Deploy a secure Redpanda cluster and Redpanda Console in Amazon Elastic Kubernetes Service (EKS).
 Then, use rpk both as an internal client and an external client to interact with your Redpanda cluster from the command-line. Your Redpanda cluster will have the following security features:
@@ -201,7 +202,7 @@ Replace `<account-id>` with your own https://console.aws.amazon.com/iamv2/home[a
 ----
 ====
 
-==== AWS CLI
+=== AWS CLI
 
 You need the https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html[AWS CLI^] to configure `kubeconfig` and get information about your EC2 instances.
 
@@ -289,59 +290,7 @@ Your default region is in the `~/.aws/credentials` file.
 aws eks update-kubeconfig --region <region> --name <cluster-name>
 ```
 
-=== Create a StorageClass for your local NVMe disks
-
-When you provisioned the EKS cluster, you selected an instance type that comes with local NVMe disks. However, these disks are not automatically mounted or formatted upon creation. To use these local NVMe disks, you must mount and format them, and you must create the necessary PersistentVolumes (PVs). To automate this process, you can use a Container Storage Interface (CSI) driver.
-
-In this step, you install the recommended https://github.com/metal-stack/csi-driver-lvm[local volume manager (LVM) CSI driver]. Then, you create a StorageClass that references the LVM CSI driver and specifies the recommended XFS filesystem.
-
-. Install the LVM CSI driver:
-+
-[,yaml,lines=6]
-----
-helm repo add metal-stack https://helm.metal-stack.io
-helm repo update
-helm install csi-driver-lvm metal-stack/csi-driver-lvm \
-  --namespace csi-driver-lvm \
-  --create-namespace \
-  --set lvm.devicePattern='/dev/nvme[1-9]n[0-9]'
-----
-+
-The `lvm.devicePattern` property specifies the pattern that the CSI driver uses to identify available NVMe volumes on your worker nodes.
-
-. Create the StorageClass:
-+
-.`csi-driver-lvm-linear-xfs.yaml`
-[,yaml,lines=5-8+10-11]
-----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: csi-driver-lvm-linear-xfs
-provisioner: lvm.csi.metal-stack.io
-reclaimPolicy: Retain
-volumeBindingMode: WaitForFirstConsumer
-allowVolumeExpansion: true
-parameters:
-  type: "linear"
-  csi.storage.k8s.io/fstype: xfs
-----
-+
-- `provisioner`: The LVM CSI driver responsible for provisioning the volume.
-- `reclaimPolicy`: The `Retain` policy ensures that the underlying volume is not deleted when the corresponding PVC is deleted.
-- `volumeBindingMode`: The `WaitForFirstConsumer` mode delays the binding and provisioning of a PersistentVolume until a Pod that uses the PVC is created. This mode is important for ensuring that the PV is created on the same node where the Pod will run because the PV will use the node's local NVMe volumes.
-- `allowVolumeExpansion`: Allows the volume to be expanded after it has been provisioned.
-- `parameters.type`: Combines multiple physical volumes to create a single logical volume. In a linear setup, data is written sequentially to the first physical volume until it is full, then to the next, and so on.
-- `parameters.csi.storage.k8s.io/fstype`: Formats the volumes with the XFS filesystem. Redpanda Data recommends XFS for its enhanced performance with Redpanda workloads.
-
-. Apply the StorageClass:
-+
-[,bash]
-----
-kubectl apply -f csi-driver-lvm-linear-xfs.yaml
-----
-+
-After applying this StorageClass, any PVCs that references it will attempt to provision storage using the LVM CSI driver and the provided parameters.
+include::deploy:partial$kubernetes/guides/create-storageclass.adoc[leveloffset=+2]
 
 === Configure external access
 
