@@ -1,0 +1,67 @@
+[[create-sc]]
+= Create a StorageClass for your local NVMe disks
+
+When you provisioned the Kubernetes cluster, you selected an instance type that comes with local NVMe disks. However, these disks are not automatically mounted or formatted upon creation. To use these local NVMe disks, you must mount and format them, and you must create the necessary PersistentVolumes (PVs). To automate this process, you can use a Container Storage Interface (CSI) driver.
+
+In this step, you install the recommended https://github.com/metal-stack/csi-driver-lvm[local volume manager (LVM) CSI driver]. Then, you create a StorageClass that references the LVM CSI driver and specifies the recommended XFS file system.
+
+. Install the LVM CSI driver:
++
+ifdef::env-eks[]
+[,yaml,lines=6]
+----
+helm repo add metal-stack https://helm.metal-stack.io
+helm repo update
+helm install csi-driver-lvm metal-stack/csi-driver-lvm \
+  --namespace csi-driver-lvm \
+  --create-namespace \
+  --set lvm.devicePattern='/dev/nvme[1-9]n[0-9]'
+----
+endif::[]
+ifndef::env-eks[]
+[,yaml,lines=6]
+----
+helm repo add metal-stack https://helm.metal-stack.io
+helm repo update
+helm install csi-driver-lvm metal-stack/csi-driver-lvm \
+  --namespace csi-driver-lvm \
+  --create-namespace \
+  --set lvm.devicePattern='/dev/nvme[0-9]n[0-9]'
+----
+endif::[]
++
+The `lvm.devicePattern` property specifies the pattern that the CSI driver uses to identify available NVMe volumes on your worker nodes.
+
+. Create the StorageClass:
++
+.`csi-driver-lvm-striped-xfs.yaml`
+[,yaml,lines=5-8+10-11]
+----
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: csi-driver-lvm-striped-xfs
+provisioner: lvm.csi.metal-stack.io
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: "striped"
+  csi.storage.k8s.io/fstype: xfs
+----
++
+- `provisioner`: The LVM CSI driver responsible for provisioning the volume.
+- `reclaimPolicy`: The `Retain` policy ensures that the underlying volume is not deleted when the corresponding PVC is deleted.
+- `volumeBindingMode`: The `WaitForFirstConsumer` mode delays the binding and provisioning of a PersistentVolume until a Pod that uses the PVC is created. This mode is important for ensuring that the PV is created on the same node where the Pod will run because the PV will use the node's local NVMe volumes.
+- `allowVolumeExpansion`: Allows the volume to be expanded after it has been provisioned.
+- `parameters.type`: Combines multiple physical volumes to create a single logical volume. In a striped setup, data is spread across the physical volumes in a way that distributes the I/O load evenly, improving performance by allowing parallel disk I/O operations.
+- `parameters.csi.storage.k8s.io/fstype`: Formats the volumes with the XFS file system. Redpanda Data recommends XFS for its enhanced performance with Redpanda workloads.
+
+. Apply the StorageClass:
++
+[,bash]
+----
+kubectl apply -f csi-driver-lvm-striped-xfs.yaml
+----
++
+After applying this StorageClass, any PVC that references it will attempt to provision storage using the LVM CSI driver and the provided parameters.

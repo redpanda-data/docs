@@ -29,7 +29,7 @@ helm install cert-manager jetstack/cert-manager \
   --create-namespace
 ```
 +
-TLS is enabled by default. The Redpanda Helm chart uses cert-manager to manage TLS certificates by default.
+The Redpanda Helm chart uses cert-manager to enable TLS and manage TLS certificates by default.
 
 . Install the Redpanda Operator custom resource definitions (CRDs):
 +
@@ -64,7 +64,7 @@ deployment "redpanda-controller-operator" successfully rolled out
 . Install a xref:reference:crd.adoc[Redpanda custom resource] in the same namespace as the Redpanda Operator:
 +
 .`redpanda-cluster.yaml`
-[,yaml]
+[,yaml,lines=9+14+18]
 ----
 apiVersion: cluster.redpanda.com/v1alpha1
 kind: Redpanda
@@ -81,13 +81,18 @@ spec:
         users:
           - name: superuser
             password: secretpassword
+    storage:
+      persistentVolume:
+        storageClass: csi-driver-lvm-striped-xfs
 ----
 +
 ```bash
 kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
 ```
 +
-Here, you create a superuser called `superuser` that can grant permissions to new users in your cluster using access control lists (ACLs). You also define a custom domain that each broker will advertise externally.
+- `external.domain`: The custom domain that each broker will advertise to clients externally. This domain is added to the internal and external TLS certificates so that you can connect to the cluster using this domain.
+- `auth.sasl.name`: Creates a superuser called `superuser` that can grant permissions to new users in your cluster using access control lists (ACLs).
+- `storage.persistentVolume.storageClass`: Points each PVC associated with the Redpanda brokers to the `csi-driver-lvm-striped-xfs` StorageClass. This StorageClass allows the LVM CSI driver to provision the appropriate local PersistentVolumes backed by NVMe disks for each Redpanda broker.
 
 . Wait for the Redpanda Operator to deploy Redpanda using the Helm chart:
 +
@@ -109,23 +114,6 @@ kubectl get pod --namespace <namespace>
 +
 If it's taking too long, see <<Troubleshoot>>.
 
-. Verify that each Redpanda broker is scheduled on only one Kubernetes node:
-+
-```bash
-kubectl get pod --namespace <namespace>  \
--o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name -l \
-app.kubernetes.io/component=redpanda-statefulset
-```
-+
-Example output:
-+
-[.no-copy]
-----
-example-worker3   redpanda-0
-example-worker2   redpanda-1
-example-worker    redpanda-2
-----
-
 --
 
 Helm::
@@ -139,7 +127,7 @@ helm repo add jetstack https://charts.jetstack.io
 helm repo update
 helm install cert-manager jetstack/cert-manager \
   --set installCRDs=true \
-  --namespace cert-manager  \
+  --namespace cert-manager \
   --create-namespace
 ```
 +
@@ -147,39 +135,29 @@ TLS is enabled by default. The Redpanda Helm chart uses cert-manager to manage T
 
 . Install Redpanda with SASL enabled:
 +
-```bash
+[,bash,lines=6+8+9]
+----
 helm repo add redpanda https://charts.redpanda.com
 export DOMAIN=customredpandadomain.local && \
-helm install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+helm install redpanda redpanda/redpanda \
+  --namespace <namespace> --create-namespace \
   --set auth.sasl.enabled=true \
   --set "auth.sasl.users[0].name=superuser" \
   --set "auth.sasl.users[0].password=secretpassword" \
-  --set external.domain=${DOMAIN} --wait \
+  --set external.domain=${DOMAIN} \
+  --set "storage.persistentVolume.storageClass=csi-driver-lvm-striped-xfs" \
+  --wait \
   --timeout 1h
-```
+----
 +
-Here, you create a superuser called `superuser` that can grant permissions to new users in your cluster using access control lists (ACLs). You also define a custom domain that each broker will advertise externally.
-+
-The installation displays some tips for getting started.
-+
-If the installation is taking a long time, see <<Troubleshoot>>.
+- `external.domain`: The custom domain that each broker advertises to clients externally. This domain is added to the internal and external TLS certificates so that you can connect to the cluster using this domain.
+- `auth.sasl.name`: Creates a superuser called `superuser` that can grant permissions to new users in your cluster using access control lists (ACLs).
+- `storage.persistentVolume.storageClass`: Points each PVC associated with the Redpanda brokers to the `csi-driver-lvm-striped-xfs` StorageClass. This StorageClass allows the LVM CSI driver to provision the appropriate local PersistentVolumes backed by NVMe disks for each Redpanda broker.
 
-. Verify that each Redpanda broker is scheduled on only one Kubernetes node:
-+
-```bash
-kubectl get pod --namespace <namespace>  \
--o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name -l \
-app.kubernetes.io/component=redpanda-statefulset
-```
-+
-Example output:
-+
-[.no-copy]
-----
-example-worker3   redpanda-0
-example-worker2   redpanda-1
-example-worker    redpanda-2
-----
+
+The installation displays some tips for getting started.
+
+If the installation is taking a long time, see <<Troubleshoot>>.
 
 --
 ======
