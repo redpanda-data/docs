@@ -2,23 +2,37 @@
 :description: Deploy a Redpanda cluster in Kubernetes.
 :tags: ["Kubernetes"]
 
-This topic describes how to deploy a Redpanda cluster in Kubernetes.
+This topic describes how to deploy one or more Redpanda clusters in Kubernetes.
 
 == Prerequisites
 
-Make sure that your Kubernetes cluster meets the xref:./kubernetes-cluster-requirements.adoc[requirements].
+- Make sure that your Kubernetes cluster meets the xref:./kubernetes-cluster-requirements.adoc[requirements].
+- Review the xref:./redpanda-cluster-recommendations.adoc[best practices and recommendations] to ensure that you configure Redpanda with the correct settings.
 
-== Deploy Redpanda
+== Deploy a Redpanda cluster
 
-In this step, you deploy Redpanda and Redpanda Console.
+To deploy Redpanda, you can use the following methods:
 
-Redpanda Console is a developer-friendly web UI for managing and debugging your Redpanda cluster and your applications. Redpanda Console is included as a subchart in the Redpanda Helm chart.
+- *Helm and the Redpanda Operator*: Use the Redpanda Operator to manage your Redpanda cluster. To deploy a Redpanda cluster, you apply a Redpanda resource, which is used by the underlying Flux controllers to deploy the Redpanda Helm chart.
+- *Helm*: Deploy the Redpanda Helm chart directly.
+
+Regardless of the method you choose to deploy Redpanda, you'll deploy the Redpanda Helm chart, which includes Redpanda and the accompanying Redpanda Console. The Redpanda Console comes bundled as a subchart within the Redpanda Helm chart.
+
+TIP: For more details about the differences between these two methods, see xref:./kubernetes-production-deployment.adoc[]
 
 [tabs]
 ====
 Helm + Operator::
 +
 --
+
+The Redpanda Operator handles the deployment and management of the Redpanda Helm chart for you using https://fluxcd.io/flux/concepts/[Flux^].
+
+The Redpanda Operator extends Kubernetes with custom resource definitions (CRDs), allowing you to define Redpanda clusters as native Kubernetes resources. The resource that the Redpanda Operator uses to represent a Redpanda cluster is the Redpanda resource.
+
+When you deploy a Redpanda resource, the Redpanda Operator takes that configuration and passes it to Flux. Flux, in turn, interacts with Helm, creating the necessary HelmRepository and HelmRelease resources to deploy and manage the Redpanda Helm chart.
+
+NOTE: The Redpanda Operator is namespace scoped. You must install the Redpanda Operator in the same namespace as your Redpanda resource (Redpanda cluster).
 
 . Make sure that you have permission to install custom resource definitions (CRDs):
 +
@@ -30,7 +44,7 @@ You should see `yes` in the output.
 +
 You need these cluster-level permissions to install glossterm:cert-manager[^] and Redpanda Operator CRDs in the next steps.
 
-. Install https://cert-manager.io/docs/installation/helm/[cert-manager^] using Helm:
+. Install https://cert-manager.io/docs/installation/helm/[cert-manager^]:
 +
 ```bash
 helm repo add jetstack https://charts.jetstack.io
@@ -41,7 +55,7 @@ helm install cert-manager jetstack/cert-manager \
   --create-namespace
 ```
 +
-TLS is enabled by default. The Redpanda Helm chart uses cert-manager to manage TLS certificates by default.
+The Redpanda Helm chart enables TLS by default and uses cert-manager to manage TLS certificates.
 
 . Install the Redpanda Operator CRDs:
 +
@@ -72,10 +86,12 @@ kubectl --namespace <namespace> rollout status --watch deployment/redpanda-contr
 deployment "redpanda-controller-operator" successfully rolled out
 ----
 
-. Install a xref:reference:crd.adoc[Redpanda custom resource] to deploy a Redpanda cluster and Redpanda Console:
+. Install a xref:reference:crd.adoc[Redpanda custom resource] to deploy a Redpanda cluster and Redpanda Console.
++
+Ensure that you've read the <<Prerequisites>> section so that you can configure the cluster correctly.
 +
 .`redpanda-cluster.yaml`
-[,yaml]
+[,yaml,lines=4+6+7]
 ----
 apiVersion: cluster.redpanda.com/v1alpha1
 kind: Redpanda
@@ -86,11 +102,17 @@ spec:
   clusterSpec: {}
 ----
 +
+- `metadata.name`: Name to assign the Redpanda cluster. This name is also assigned to the Helm release.
+- xref:reference:crd.adoc#chartref[`spec.chartRef`]: Information about the Helm chart that will be used to deploy Redpanda.
+- xref:reference:crd.adoc#redpandaclusterspec[`spec.clusterSpec`]: This is where you can override default values in the Redpanda Helm chart.
+
+. Apply the Redpanda resource:
++
 ```bash
 kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
 ```
 +
-The empty `clusterSpec` field configures the default settings in the Redpanda Helm chart.
+NOTE: The Redpanda resource must be deployed in the same namespace as the Redpanda Operator. Each new deployment of Redpanda requires a new namespace.
 
 . Wait for the Redpanda Operator to deploy Redpanda using the Helm chart:
 +
@@ -129,28 +151,12 @@ example-worker2   redpanda-1
 example-worker    redpanda-2
 ----
 
-To deploy a fleet of two or more Redpanda clusters, use the RedpandaList resource.
-
-NOTE: All Redpanda custom resources must be deployed in the same namespace as the Redpanda Operator.
-
-```yaml
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: RedpandaList
-metadata:
-items:
-  - apiVersion: cluster.redpanda.com/v1alpha1
-    kind: Redpanda
-    metadata:
-      name: redpanda
-    spec:
-      chartRef: {}
-      clusterSpec: {}
-```
-
 --
 Helm::
 +
 --
+
+https://helm.sh/docs[Helm^] is a package manager for Kubernetes, which simplifies the process of defining, installing, and upgrading Kubernetes applications. Helm uses charts, a collection of files that describe a related set of Kubernetes resources, to deploy applications in a Kubernetes cluster.
 
 . Install cert-manager using Helm:
 +
@@ -163,9 +169,11 @@ helm install cert-manager jetstack/cert-manager \
   --create-namespace
 ```
 +
-TLS is enabled by default. The Redpanda Helm chart uses cert-manager to manage TLS certificates.
+The Redpanda Helm chart enables TLS by default and uses cert-manager to manage TLS certificates.
 
-. Install the Redpanda Helm chart to deploy a Redpanda cluster and Redpanda Console:
+. Install the Redpanda Helm chart to deploy a Redpanda cluster and Redpanda Console.
++
+Ensure that you've read the <<Prerequisites>> section so that you can configure the cluster correctly.
 +
 ```bash
 helm repo add redpanda https://charts.redpanda.com
@@ -173,6 +181,8 @@ helm install redpanda redpanda/redpanda \
   --namespace <namespace> \
   --create-namespace
 ```
++
+NOTE: Each deployment of the Redpanda Helm chart requires a separate namespace. Ensure you choose a unique namespace for each deployment.
 
 . Wait for the Redpanda cluster to be ready:
 +
@@ -209,6 +219,85 @@ example-worker    redpanda-2
 
 include::deploy:partial$kubernetes/default-components.adoc[leveloffset=+1]
 
+=== Deploy multiple Redpanda clusters
+
+You can deploy more than one Redpanda cluster in the same Kubernetes cluster by using a different namespace and unique node ports.
+
+[tabs]
+====
+Helm + Operator::
++
+--
+
+. Install another instance of the Redpanda Operator in a different namespace to your existing ones. This Redpanda Operator will manage Redpanda clusters only in its namespace.
++
+[,bash,subs="attributes+"]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <another-namespace> \
+  --set image.repository=docker.redpanda.com/redpandadata/redpanda-operator \
+  --set image.tag=v{full-version} \
+  --create-namespace
+----
+
+. Apply a Redpanda resource in the same namespace as your new Redpanda Operator to deploy your new Redpanda cluster.
++
+NOTE: Make sure to use unique node ports for the listeners in your Redpanda resource so that they don't conflict with any existing node ports in your other Redpanda clusters.
++
+.`redpanda-cluster-two.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda-two
+spec:
+  chartRef: {}
+  clusterSpec:
+    listeners:
+      kafka:
+        external:
+          default:
+            advertisedPorts: [31093]
+      admin:
+        external:
+          default:
+            advertisedPorts: [31645]
+      http:
+        external:
+          default:
+            advertisedPorts: [30083]
+      rpc:
+        port: 33146
+      schemaRegistry:
+        external:
+          default:
+            advertisedPorts: [30084]
+----
+--
+Helm::
++
+--
+Install the Redpanda Helm chart in a different namespace to your existing Redpanda clusters.
+
+NOTE: Make sure to use unique node ports for the listeners in your Redpanda resource so that they don't conflict with any existing node ports in your other Redpanda clusters.
+
+```bash
+helm repo add redpanda https://charts.redpanda.com
+helm install redpanda-two redpanda/redpanda \
+  --namespace <anothernamespace> \
+  --set listeners.kafka.external.default.advertisedPorts[0]=31093 \
+  --set listeners.admin.external.default.advertisedPorts[0]=31645 \
+  --set listeners.http.external.default.advertisedPorts[0]=30083 \
+  --set listeners.rpc.port=33146 \
+  --set listeners.schemaRegistry.external.default.advertisedPorts[0]=30084
+  --create-namespace
+```
+--
+
+====
+
 == Customize the deployment
 
 To learn how to customize the Redpanda Helm chart, see xref:manage:kubernetes/configure-helm-chart.adoc[Customize the Helm Chart].
@@ -244,5 +333,6 @@ See the xref:manage:kubernetes/index.adoc[Manage Kubernetes topics] to learn how
 
 include::shared:partial$suggested-reading.adoc[]
 
+- xref:./k-high-availability.adoc[].
 - xref:reference:redpanda-helm-spec.adoc[Redpanda Helm Specification]
 - xref:reference:crd.adoc[Redpanda CRD Reference]
