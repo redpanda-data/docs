@@ -93,6 +93,35 @@ gcloud compute firewall-rules create gke-redpanda-cluster-webhooks \
   --allow="tcp:9443,tcp:8443,tcp:6443"
 ```
 
+. Grant permission to read the VPC and related resources
+
+If your host project and service project are different it is helpful for our operations team to be granted read access
+to the resources VPC and related resources in the host project. If your host project and service project are the same,
+you can skip this step.
+
++
+** Redpanda Agent custom role:
++
+```bash
+cat << EOT > redpanda-agent.role
+{
+  "name": "redpanda_agent_role",
+  "title": "Redpanda Agent Role",
+  "description": "A role granting the redpanda agent permissions to view network resources in the project of the vpc.",
+  "includedPermissions": [
+    "compute.firewalls.get",
+    "compute.networks.get",
+    "compute.subnetworks.get",
+    "resourcemanager.projects.get",
+    "compute.networks.getRegionEffectiveFirewalls",
+    "compute.networks.getEffectiveFirewalls",
+  ],
+}
+EOT
+
+gcloud iam roles create redpanda_agent_role --project=<host-project-id> --file redpanda-agent.role
+```
+
 == Configure the service project
 
 . Enable Google APIs in the service project:
@@ -147,8 +176,13 @@ cat << EOT > redpanda-agent.role
     "compute.instanceGroupManagers.get",
     "compute.instanceGroupManagers.delete",
     "compute.instanceGroups.delete",
+    "compute.instances.list",
     "compute.instanceTemplates.delete",
+    "compute.networks.get",
+    "compute.networks.getRegionEffectiveFirewalls",
+    "compute.networks.getEffectiveFirewalls",
     "compute.projects.get",
+    "compute.subnetworks.get",
     "compute.zones.list",
     "dns.changes.create",
     "dns.changes.get",
@@ -173,7 +207,6 @@ cat << EOT > redpanda-agent.role
     "resourcemanager.projects.getIamPolicy",
     "storage.buckets.get",
     "storage.buckets.getIamPolicy",
-    "compute.instances.list"
   ],
 }
 EOT
@@ -191,6 +224,11 @@ gcloud projects add-iam-policy-binding <service-project-id> \
 gcloud storage buckets add-iam-policy-binding gs://<management-storage-bucket-name> \
   --member="serviceAccount:redpanda-agent@<service-project-id>.iam.gserviceaccount.com" \
   --role="roles/storage.objectAdmin"
+
+# skip this step if host project and service project are the same
+gcloud projects add-iam-policy-binding <host-project-id> \
+  --member="serviceAccount:redpanda-agent@<service-project-id>.iam.gserviceaccount.com" \
+  --role="projects/<host-project-id>/roles/redpanda_agent_role"
 ```
 ====
 
