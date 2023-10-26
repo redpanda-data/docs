@@ -47,7 +47,7 @@ async function serve (done) {
     if (livereload) watch(this.root).on('change', (filepath) => src(filepath, { read: false }).pipe(livereload()))
     if (isFirstRun) {
       import('open').then(open => {
-        open.default(`http://localhost:${serverConfig.port}/home`)
+        open.default(`http://localhost:${serverConfig.port}/api/admin-api.html`)
       })
       isFirstRun = false;
     }
