@@ -6,7 +6,7 @@ This topic provides guidance on how to diagnose and troubleshoot issues with Red
 
 == Prerequisites
 
-Before troubleshooting Redpanda, make sure that Kubernetes isn't the cause of the issue. For information about debugging applications in a Kubernetes cluster, see the https://kubernetes.io/docs/tasks/debug/[Kubernetes documentation^].
+Before troubleshooting Redpanda, ensure that Kubernetes isn't the cause of the issue. For information about debugging applications in a Kubernetes cluster, see the https://kubernetes.io/docs/tasks/debug/[Kubernetes documentation^].
 
 == Collect all debugging data
 
@@ -143,6 +143,8 @@ In both the HelmRelease and the Redpanda resource, the condition section reveals
 
 This section describes issues you might encounter while deploying Redpanda in Kubernetes and explains how to troubleshoot them.
 
+//tag::deployment[]
+//tag::deployment-helm-release-not-ready[]
 === HelmRelease is not ready
 
 If you are using the Redpanda Operator with Helm, you may see the following message while waiting for a Redpanda custom resource to be deployed:
@@ -169,7 +171,9 @@ kubectl describe helmrelease <redpanda-resource-name> --namespace <namespace>
 ----
 kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
 ----
+//end::deployment-helm-release-not-ready[]
 
+//tag::deployment-pod-pending[]
 === StatefulSet never rolls out
 
 If the StatefulSet Pods remain in a pending state, they are waiting for resources to become available.
@@ -191,29 +195,31 @@ kubectl logs -f <pod-name> --namespace <namespace>
 ----
 
 You can use the output to debug your deployment.
+//end::deployment-pod-pending[]
 
+//tag::deployment-unable-to-mount-volume[]
 === Unable to mount volume
 
-If you see volume mounting errors in the Pod events or in the Redpanda logs, make sure that each of your Pods has a volume available in which to store data.
+If you see volume mounting errors in the Pod events or in the Redpanda logs, ensure that each of your Pods has a volume available in which to store data.
 
-* If you're using PersistentVolumes, make sure that you have one PersistentVolume available for each Redpanda broker, and that each one has the storage capacity that's set in `storage.persistentVolume.size`:
-+
-[,bash]
-----
-kubectl get persistentvolume --namespace <namespace>
-----
-
-* If you're using StorageClasses with dynamic provisioners (default), make sure they exist:
+* If you're using StorageClasses with dynamic provisioners (default), ensure they exist:
 +
 [,bash]
 ----
 kubectl get storageclass
 ----
 
-NOTE: If you're running on EKS, the https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html[Amazon EBS CSI driver^] is required to allow EKS to create PersistentVolumes.
+* If you're using PersistentVolumes, ensure that you have one PersistentVolume available for each Redpanda broker, and that each one has the storage capacity that's set in `storage.persistentVolume.size`:
++
+[,bash]
+----
+kubectl get persistentvolume --namespace <namespace>
+----
 
 To learn how to configure different storage volumes, see xref:manage:kubernetes/configure-storage.adoc[Configure Storage].
 
+//end::deployment-unable-to-mount-volume[]
+//tag::deployment-dig-not-defined[]
 === Dig not defined
 
 This error means that you are using an unsupported version of https://helm.sh/docs/intro/install/[Helm^]:
@@ -223,13 +229,15 @@ This error means that you are using an unsupported version of https://helm.sh/do
 Error: parse error at (redpanda/templates/statefulset.yaml:203): function "dig" not defined
 ----
 
-Make sure that you are using the minimum required version: {supported-helm-version}.
+Ensure that you are using the minimum required version: {supported-helm-version}.
 
 [,bash]
 ----
 helm version
 ----
 
+//end::deployment-dig-not-defined[]
+//tag::deployment-name-exists[]
 === Repository name already exists
 
 If you see this error, remove the `redpanda` chart repository, then try installing it again.
@@ -241,59 +249,9 @@ helm repo add redpanda https://charts.redpanda.com
 helm repo update
 ----
 
-=== Invalid large response size
+//end::deployment-name-exists[]
 
-This error appears when your cluster is configured to use TLS, but you don't specify that you are connecting over TLS.
-
-[.no-copy]
-----
-unable to request metadata: invalid large response size 352518912 > limit 104857600; the first three bytes received appear to be a tls alert record for TLS v1.2; is this a plaintext connection speaking to a tls endpoint?
-----
-
-If you're using rpk, make sure to add the `--tls-enabled` flag, and any other necessary TLS flags such as the TLS certificate:
-
-[,bash]
-----
-kubectl exec <pod-name> -c redpanda --namespace <namepsace> -- rpk cluster info -X brokers=<subdomain>.<domain>:<external-port> -X tls.enabled=true
-----
-
-For all available flags, see the xref:reference:rpk/index.adoc[rpk command reference].
-
-=== I/O timeout
-
-This error appears when your worker nodes are unreachable through the given address.
-
-Check the following:
-
-* The address and port are correct.
-* Your DNS records point to addresses that resolve to your worker nodes.
-
-=== Is SASL missing?
-
-This error appears when you try to interact with a cluster that has SASL enabled without passing a user's credentials.
-
-[.no-copy]
-----
-unable to request metadata: broker closed the connection immediately after a request was issued, which happens when SASL is required but not provided: is SASL missing?
-----
-
-If you're using rpk, make sure to specify the `-X user`, `-X pass`, and `-X sasl.mechanism` flags.
-
-For all available flags, see the xref:reference:rpk/index.adoc[rpk command reference].
-
-=== Malformed HTTP response
-
-This error appears when a cluster has TLS enabled, and you try to access the admin API without passing the required TLS parameters.
-
-[.no-copy]
-----
-Retrying POST for error: Post "http://127.0.0.1:9644/v1/security/users": net/http: HTTP/1.x transport connection broken: malformed HTTP response "\x15\x03\x03\x00\x02\x02"
-----
-
-If you're using rpk, make sure to include the TLS flags.
-
-For all available flags, see the xref:reference:rpk/index.adoc[rpk command reference].
-
+//tag::deployment-data-dir-not-writable[]
 === Fatal error during checker "Data directory is writable" execution
 
 This error appears when Redpanda does not have write access to your configured storage volume under `storage` in the Helm chart.
@@ -304,7 +262,9 @@ Error: fatal error during checker "Data directory is writable" execution: open /
 ----
 
 To fix this error, set `statefulset.initContainers.setDataDirOwnership.enabled` to `true` so that the initContainer can set the correct permissions on the data directories.
+//end::deployment-data-dir-not-writable[]
 
+//tag::deployment-cannot-patch[]
 === Cannot patch "redpanda" with kind StatefulSet
 
 This error appears when you run `helm upgrade` with the `--values` flag but do not include all your previous overrides.
@@ -314,7 +274,7 @@ This error appears when you run `helm upgrade` with the `--values` flag but do n
 Error: UPGRADE FAILED: cannot patch "redpanda" with kind StatefulSet: StatefulSet.apps "redpanda" is invalid: spec: Forbidden: updates to statefulset spec for fields other than 'replicas', 'template', 'updateStrategy', 'persistentVolumeClaimRetentionPolicy' and 'minReadySeconds' are forbidden
 ----
 
-Make sure to do one of the following:
+Ensure to do one of the following:
 
 * Include all the value overrides from the previous installation or upgrade using either the `--set` or the `--values` flags.
 * Use the `--reuse-values` flag.
@@ -331,3 +291,113 @@ Error: UPGRADE FAILED: cannot patch "redpanda-console" with kind Deployment: Dep
 ----
 
 To fix this error, set `console.enabled` to `false` so that Helm doesn't try to deploy Redpanda Console again.
+//end::deployment-cannot-patch[]
+//end::deployment[]
+
+//tag::tls[]
+=== Invalid large response size
+
+This error appears when your cluster is configured to use TLS, but you don't specify that you are connecting over TLS.
+
+[.no-copy]
+----
+unable to request metadata: invalid large response size 352518912 > limit 104857600; the first three bytes received appear to be a tls alert record for TLS v1.2; is this a plaintext connection speaking to a tls endpoint?
+----
+
+If you're using rpk, ensure to add the `-X tls.enabled` flag, and any other necessary TLS flags such as the TLS certificate:
+
+[,bash]
+----
+kubectl exec <pod-name> -c redpanda --namespace <namespace> -- rpk cluster info -X brokers=<subdomain>.<domain>:<external-port> -X tls.enabled=true
+----
+
+For all available flags, see the xref:reference:rpk/index.adoc[rpk command reference].
+
+=== Malformed HTTP response
+
+This error appears when a cluster has TLS enabled, and you try to access the admin API without passing the required TLS parameters.
+
+[.no-copy]
+----
+Retrying POST for error: Post "http://127.0.0.1:9644/v1/security/users": net/http: HTTP/1.x transport connection broken: malformed HTTP response "\x15\x03\x03\x00\x02\x02"
+----
+
+If you're using rpk, ensure to include the TLS flags.
+
+For all available flags, see the xref:reference:rpk/index.adoc[rpk command reference].
+
+=== x509: certificate signed by unknown authority
+
+This error appears when the Certificate Authority (CA) that signed your certificates is not trusted by your system.
+
+Check the following:
+
+- Ensure you have installed the root CA certificate correctly on your local system.
+- If using a self-signed certificate, ensure it is properly configured and included in your system's trust store.
+- If you are using a certificate issued by a CA, ensure the issuing CA is included in your system's trust store.
+- If you are using cert-manager, ensure it is correctly configured and running properly.
+- Check the validity of your certificates. They might have expired.
+
+=== x509: certificate is not valid for any names
+
+This error indicates that the certificate you are using is not valid for the specific domain or IP address you are trying to use it with. This error typically occurs when there is a mismatch between the certificate's Subject Alternative Name (SAN) or Common Name (CN) field and the name being used to access the broker.
+
+To resolve this issue, you may need to obtain a new certificate that is valid for the specific domain or IP address you are using. Ensure that the certificate's SAN or CN entry matches the name being used, and that the certificate is not expired or revoked.
+
+=== cannot validate certificate for 127.0.0.1
+
+This error appears if you are using a CA certificate when you try to establish an internal connection using localhost. For example:
+
+```
+unable to request metadata: unable to dial: x509: cannot validate certificate for 127.0.0.1 because it doesn't contain any IP SANs
+```
+
+To resolve this issue, you must either specify the public domain or use self-signed certificates:
+
+```bash
+kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- \
+  rpk cluster info \
+  -X brokers=<subdomain>.<domain>:<external-port> \
+  -X tls.enabled=true
+```
+//end::tls[]
+
+//tag::networking[]
+=== I/O timeout
+
+This error appears when your worker nodes are unreachable through the given address.
+
+Check the following:
+
+* The address and port are correct.
+* Your DNS records point to addresses that resolve to your worker nodes.
+
+//end::networking[]
+//tag::sasl[]
+=== Is SASL missing?
+
+This error appears when you try to interact with a cluster that has SASL enabled without passing a user's credentials.
+
+[.no-copy]
+----
+unable to request metadata: broker closed the connection immediately after a request was issued, which happens when SASL is required but not provided: is SASL missing?
+----
+
+If you're using rpk, ensure to specify the `-X user`, `-X pass`, and `-X sasl.mechanism` flags.
+
+For all available flags, see the xref:reference:rpk/index.adoc[rpk command reference].
+
+=== Unable to continue with update: Secret
+
+When you use a YAML list to specify superusers, the Helm chart creates a Secret using the value of `auth.sasl.secretRef` as the Secret's name, and stores those superusers in the Secret. If the Secret already exists in the namespace when you deploy Redpanda, the following error is displayed:
+
+[.no-copy]
+----
+Error: UPGRADE FAILED: rendered manifests contain a resource that already exists. Unable to continue with update: Secret
+----
+
+To resolve this issue, ensure that you use only one of the following methods to create superusers:
+
+- `auth.sasl.secretRef`
+- `auth.sasl.users`
+//end::sasl[]
