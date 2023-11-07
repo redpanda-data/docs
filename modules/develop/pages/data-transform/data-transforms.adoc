@@ -1,17 +1,46 @@
-= Data Transforms
-:description: Learn about Redpanda data transforms with WebAssembly.
+= Run Data Transforms
+:description: Learn how to run data transforms with WebAssembly in Redpanda brokers.
 :page-aliases: reference:rpk/rpk-wasm/rpk-wasm.adoc, reference:rpk/rpk-wasm.adoc, reference:rpk/rpk-wasm/rpk-wasm-deploy.adoc, reference:rpk/rpk-wasm/rpk-wasm-generate.adoc, reference:rpk/rpk-wasm/rpk-wasm-remove.adoc, data-management:data-transform.adoc
 :latest-data-transforms-version: 0.0.0-20230830git604fcce
 
-Redpanda data transforms provide a framework to create, build, and deploy inline transformations on data written to Redpanda topics. You can develop custom data functions in Go, which run asynchronously using a WebAssembly (Wasm) engine inside a Redpanda broker. A transform function processes every message produced to an input topic and returns one or more messages that are then produced to an output topic.
+With Redpanda data transforms, you can perform common data streaming tasks within the Redpanda broker, like filtering, scrubbing/cleaning/redacting, and normalizing and transcoding. For example, you may have consumers that require you to convert JSON to Avro or require you to remove all PII, like credit card numbers. Data transforms let you do this directly inside the broker without a separate stream processing environment or 3rd-party tools. Data transforms dramatically simplify the effort of delivering validated and pre-processed data to consumers in the form they expect. Data transforms can also interact with the Redpanda Schema Registry to work with encoded data types.
 
-With data transforms, you can perform common data streaming tasks like filtering, scrubbing/cleaning/redacting, and normalizing and transcoding (for example, converting JSON to Avro). This is done efficiently within Redpanda, without the overhead of sending data to a separate stream processing environment or pushing this work onto consuming applications. Data transforms dramatically simplify the effort of delivering validated and pre-processed data to consumers in the form they expect. Data transforms can also interact with the Redpanda Schema Registry to work with encoded data types.
+Redpanda provides the framework to create, build, and deploy inline transformations on data written to Redpanda topics. The data transforms run asynchronously using a WebAssembly (Wasm) engine inside a Redpanda broker. The transform function processes every message produced to an input topic and returns one or more messages that are then produced to an output topic. Data transforms are applied to all partitions on an input topic. A records is processed after it has been successfully written to disk on the input topic. Each record in a partition is then copied into the Wasm runtime, transformed, and copied back out. The broker then writes the resulting records back out to the output topic.
 
-You can develop data transforms with xref:./rpk-transform.adoc[`rpk transform`] commands. This page provides steps to initialize a transform project with `rpk transform init`, edit the transform logic in `transform.go`, then build and deploy the transform to a Redpanda cluster.
+You can develop and manage data transforms with xref:./rpk-transform.adoc[`rpk transform`] commands. When you deploy a data transform, Redpanda pushes the generated `.wasm` files and metadata to the cluster, which then stores and replicates the bytecode and metadata using internal broker topics. Wasm is executed within a runtime in the broker. There is at most one runtime for a transform for any core, and memory for each function must be reserved within the broker. This is achieved with the cluster configuration properties: 
+
+- `wasm_per_core_memory_reservation`: the total amount of memory to reserve per core 
+- `wasm_per_function_memory_limit`: the limit for an individual transform's memory
+
+There may only be `wasm_per_core_memory_reservation`/ `wasm_per_function_memory_limit` transforms deployed to a cluster at once. CPU time is dynamically allocated to the Wasm runtime and ensures that the code does not run forever and cannot block the broker from handling traffic or doing other work (such as Tiered Storage uploads).
+
+== Data transform architecture
+
+**add images**
+
+Within Repdanda, there's a single Raft controller that manages cluster information, including data transforms. So on every core, Redpanda knows what transforms exist in the cluster, as well as metadata about the transform, such as input and output topics and environment variables. Data transforms take an input topic and map it to an output topic, running virtual machines (VMs) on the same core as the input topic. 
+
+To run Wasm, Redpanda uses just-in-time (JIT) compilation, which compiles it in memory, writes it to executable space, then runs the directly translated machine code. When it becomes leader of a given partition on the input topic, Redpanda spins up Wasm VMs and fetches the function's executable code in memory. Redpanda writes the output, which may go to the same core on the same machine, or to a different core on the same machine, or to a different machine. Because all transform function metadata is in memory, Redpanda can stop and start transforms when partitions are moved. 
+
+== Limitations
+
+- Transforms have no external access to disk or network resources. 
+- Only single message transforms are supported, not aggregations or joins. In other words, a Wasm function acts on a single message in an input topic.
+- The input and output topics must have the same number of partitions. Redpanda writes to the same output partition as the input partition. For example, all records on input Topic A partition 2 go to output Topic B partition 2. 
+- Only a single output topic is supported.
+- Transforms have at-least-once delivery.
+- Because data transforms are powered by Wasm, transform functions can be authored in any language. However, libraries to author transforms currently are only available in Golang. 
 
 == Run data transforms
 
-You can test Redpanda data transforms in a Docker container with a single broker. Follow these steps to set up, create, build, and deploy a Redpanda data transforms project in Golang.
+. Run `rpk transform init`: Initialize a transform project. 
+. Write a transforma function in Go, or configure prebuilt transforms with your topics and environment variables.
+. Run `rpk transform build`: Repdanda takes your Go code and compiles it down to Wasm.
+. Run `rpk transform deploy`: Redpanda packages up your Wasm with metadata and deploys it to the broker. 
+
+== Test data transforms in sandbox
+
+Follow these steps to set up, create, build, and deploy a Redpanda data transforms project in Go.
 
 === Prerequisites
 
@@ -20,7 +49,7 @@ You can test Redpanda data transforms in a Docker container with a single broker
 
 === Limitations
 
-- Golang WebAssembly transforms are compiled using https://tinygo.org/[tinygo^]. Some library modules may not work in this environment; for example, generated protocol buffer code is not supported.
+- Go WebAssembly transforms are compiled using https://tinygo.org/[tinygo^]. Some library modules may not work in this environment; for example, generated protocol buffer code is not supported.
 - The network and local disk are not accessible in this technical preview version.
 
 === Install rpk
@@ -142,7 +171,7 @@ A successful command generates project files in your current directory:
 +
 The `transform.go` file contains the transform logic, and the `transform.yaml` file configures the project.
 +
-TIP: When creating a custom data transform, initialization steps can be done either in `main` (because it's only run once at the start of the package) or in Golang's standard predefined `init()` function. Although state can be cached in global variables, Redpanda may restart a Wasm module at any point, which causes the state to be lost.
+TIP: When creating a custom data transform, initialization steps can be done either in `main` (because it's only run once at the start of the package) or in Go's standard predefined `init()` function. Although state can be cached in global variables, Redpanda may restart a Wasm module at any point, which causes the state to be lost.
 
 . Implement your project by adding transform logic to `transform.go`. The following examples show some basic transforms. Each example can be copied into the `transform.go` file.
 +
@@ -319,7 +348,7 @@ rpk topic consume demo-2
 
 NOTE: You can see `stdout` and `stderr` from the broker's logs. In the Docker container, use `rpk container logs --filter=transform`. Otherwise, see the broker's `stderr` output stream.
 
-== Update to new release
+=== Update to new release
 
 Follow these steps to update your project and container as new technical previews of Redpanda data transforms are released:
 
