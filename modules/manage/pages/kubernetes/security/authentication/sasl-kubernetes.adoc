@@ -1,27 +1,39 @@
-= Configure SASL for Redpanda in Kubernetes
-:description: Use the Simple Authentication and Security Layer (SASL) framework to provide authentication between Redpanda brokers and clients.
+= Configure Authentication for Redpanda in Kubernetes
+:description: Redpanda supports multiple forms of authentication including SASL/SCRAM, mTLS, and basic authentication.
 :page-context-links: [{"name": "Linux", "to": "manage:security/authentication.adoc" },{"name": "Kubernetes", "to": "manage:kubernetes/security/sasl-kubernetes.adoc" } ]
 :tags: ["Kubernetes", "Helm configuration"]
 :page-aliases: security:sasl-kubernetes.adoc, manage:kubernetes/security/sasl-kubernetes.adoc
 
-Simple Authentication and Security Layer (SASL) is a framework for adding authentication support to connection-based protocols. SASL supports multiple authentication mechanisms, meaning a server can offer options and the client can choose the one it supports or prefers.
+Redpanda supports multiple forms of authentication including SASL/SCRAM, mTLS, and basic authentication.
 
-You can use SASL with an authentication mechanism to give clients a username and password and restrict their access to the cluster through access control lists (ACLs).
+All listeners are configured without authentication by default. This topic presents the supported authentication methods and describes how to configure authentication for Redpanda in Kubernetes.
 
-In the Redpanda Helm chart, enabling SASL provides authentication for the following APIs:
+The Redpanda Helm chart supports three authentication methods:
 
-- Kafka API
-- Admin API
-- HTTP Proxy
-- Schema Registry
+- SASL (Simple Authentication and Security Layer): Provides a flexible and adaptable framework for implementing various authentication mechanisms, such as username and password validation through SCRAM (Salted Challenge Response Authentication Mechanism).
+- mTLS (Mutual Transport Layer Security): Offers a certificate-based authentication approach, using X.509 certificates for mutual validation between clients and Redpanda brokers.
+- Basic authentication: Provides a method for an HTTP user agent, such as a web browser, to provide a user name and password when making a request.
 
-HTTP Proxy and Schema Registry are HTTP APIs. As a result, these APIs use basic authentication for user credentials when SASL is enabled.
+Each of the APIs in Redpanda supports authentication methods:
 
-Schema Registry and HTTP Proxy connect to Redpanda over the Kafka API. For the Kafka username and password, Redpanda uses ephemeral credentials internal to the cluster. Ephemeral credentials are regular SCRAM credentials, but they're stored only in memory and are lost when a broker restarts. When the Schema Registry or HTTP Proxy start up, they broadcast ephemeral credentials to other brokers over the internal RPC API. If authentication fails to a particular broker, new ephemeral credentials are sent to that broker, and the service reconnects.
+[cols="1a,2a"]
+|===
+| API | Supported Authentication Methods
 
-The Redpanda Helm chart supports SASL/SCRAM (Salted Challenge Response Authentication Mechanism), also known as SCRAM. SCRAM provides strong encryption for usernames and passwords by default and does not require an external data store for user information. Redpanda supports `SCRAM-SHA-256` and `SCRAM-SHA-512` authentication mechanisms.
+| Admin API
+|Basic authentication (not supported in the Helm chart)
 
-NOTE: For secure authentication, use xref:manage:kubernetes/security/tls/index.adoc[TLS encryption]. TLS is enabled in the Helm chart by default.
+| Kafka API
+|
+- SASL/SCRAM
+- mTLS
+
+| HTTP Proxy (PandaProxy)
+| Basic authentication
+
+| Schema Registry
+| Basic authentication
+|===
 
 == Prerequisites
 
@@ -31,14 +43,25 @@ You must have the following:
 
 * https://kubernetes.io/docs/tasks/tools/#kubectl[Kubectl^]. Ensure you have the `kubectl` command-line tool installed and configured to communicate with your cluster.
 
+== Enable authentication
+
+You can enable SASL authentication to give clients a username and password and restrict their access to the Kafka API through access control lists (ACLs). Redpanda supports the following SASL/SCRAM authentication mechanisms for the Kafka API:
+
+- `SCRAM-SHA-256
+- `SCRAM-SHA-512`
+
+When authentication is enabled, all HTTP APIs are also configured with basic authentication. You can use superusers or regular users to authenticate to the HTTP APIs.
+
+For secure authentication, use xref:manage:kubernetes/security/tls/index.adoc[TLS encryption]. TLS is enabled in the Helm chart by default.
+
 == Create superusers
 
-To enable SASL authentication, you must define at least one superuser at startup. Superusers are special users that can create new users and grant them permissions through ACLS.
+To enable SASL authentication and create users with ACLs, you must define at least one superuser at startup. Superusers are special users that have xref:manage:security/authorization.adoc#operations[ALL permissions] on the cluster and can grant permissions to new users.
+
+NOTE: Without a superuser, you can create other users, but you can't grant them permissions to the cluster.
 
 To create one or more superusers, you must define a username and password.
 You can also set the authentication mechanism for each superuser.
-Or, you can set the default authentication mechanism for all superusers in the `auth.sasl.mechanism` configuration.
-This default authentication mechanism is applied to all superusers that don't include an explicit authentication mechanism.
 
 To define superusers and their credentials you can:
 
@@ -65,6 +88,8 @@ Replace the following placeholders with your own values for the superuser:
 - `<superuser-name>`: The name of the superuser.
 - `<superuser-password>`: The superuser's password.
 - `<superuser-authentication-mechanism>`: The authentication mechanism. Valid values are `SCRAM-SHA-256` or `SCRAM-SHA-512`.
++
+Or, leave this placeholder empty to set it to the default authentication mechanism. The default is defined in the Helm values: `auth.sasl.mechanism`. This default is applied to all superusers that don't include an explicit authentication mechanism.
 
 . Use the file to create a Secret resource in the same namespace as your Redpanda cluster.
 +
@@ -243,7 +268,7 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 
 == Create new users
 
-When you have SASL enabled for your Redpanda cluster and you have at least one superuser, you can create new users. By default, these users don't have any permissions in the cluster.
+When you have SASL enabled for your Redpanda cluster, you can create new users. By default, these users don't have any permissions in the cluster.
 
 TIP: As a security best practice, superusers should not run commands on the cluster. Instead, run commands as new users with specific permissions.
 
@@ -258,7 +283,7 @@ TIP: Enclose passwords in single quotes to avoid conflicts with special characte
 
 == Grant permissions to new users with ACLs
 
-By default, new users don't have any permissions in the cluster. The superuser can grant permissions to new users through access-control lists (ACLs).
+By default, new users don't have any permissions in the cluster. Only superusers can grant permissions to new users through access-control lists (ACLs).
 
 . Use the xref:reference:rpk/rpk-acl/rpk-acl-create.adoc[`rpk acl create`] command to grant `create` and `describe` permissions to `myuser` in the cluster:
 +
@@ -271,8 +296,6 @@ kubectl exec --namespace <namespace> -c redpanda redpanda-0 -- \
   -X pass='<superuser-password>' \
   -X sasl.mechanism=<superuser-authentication-mechanism>
 ```
-+
-NOTE: A user must explicitly be granted `describe` privileges for topics. Even if a user has `describe` privileges for a cluster, it does not mean that the user is granted `describe` privileges for topics.
 
 . Grant the new user `describe` privileges for a topic called `myfirsttopic`:
 +
@@ -285,8 +308,31 @@ kubectl exec --namespace <namespace> -c redpanda redpanda-0 -- \
   -X pass='<superuser-password>' \
   -X sasl.mechanism=<superuser-authentication-mechanism>
 ```
++
+NOTE: You must grant privileges for specific topics. Even if a user has `describe` privileges for a cluster, it does not mean that the user is granted `describe` privileges for topics.
 
-== Use `rpk` to test connections
+== Configure mTLS authentication
+
+When mTLS (Mutual Transport Layer Security) is enabled on a Redpanda cluster, you can configure listeners to authenticate clients based on the Distinguished Name (DN) in their X.509 certificates. mTLS authentication involves extracting a principal identifier from the DN of the client's mTLS certificate. The principal serves as the username or identity for authentication purposes. This method ensures a secure and reliable way of verifying client identities. By configuring Redpanda to authenticate using DNs, you can ensure that only clients with valid and recognized certificates can interact with the cluster.
+
+To enable mTLS authentication, set `authentication_method` for a listener to `mtls_identity`. For example, to enable mTLS authentication for the internal Kafka API listener:
+
+[source,yaml,lines=5-7]
+----
+listeners:
+  kafka:
+    port: 9093
+    tls:
+      enabled: true
+      requireClientAuth: true
+    authenticationMethod: "mtls_identity"
+----
+
+== Connect to Redpanda
+
+This section provides examples of connecting to Redpanda internally when authentication is enabled. For more details on connecting to Redpanda, see xref:manage:kubernetes/networking/connect-to-redpanda.adoc[].
+
+=== Use `rpk`
 
 Create a topic as the `myuser` user by running xref:reference:rpk/rpk-topic/rpk-topic-create.adoc[`rpk topic create`]:
 
@@ -320,7 +366,62 @@ kubectl exec --namespace <namespace> -c redpanda redpanda-0 -- \
   -X sasl.mechanism=SCRAM-SHA-256
 ```
 
-For more details on connecting to Redpanda, see xref:manage:kubernetes/networking/connect-to-redpanda.adoc[].
+=== Connect to the HTTP Proxy
+
+By default, the Redpanda Helm chart configures an internal and external listener for the HTTP Proxy API.
+
+To access the internal listener:
+
+[source,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:8082/topics -u <username>:<password> -sS
+----
+
+If TLS is enabled, specify the HTTPS protocol and pass the path to the `ca.crt` file:
+
+[source,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8082/topics --cacert /etc/tls/certs/default/ca.crt -u <username>:<password> -sS
+----
+
+NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
+
+For all available endpoints, see xref:api:ROOT:pandaproxy-rest.adoc[].
+
+=== Connect to Schema Registry
+
+By default, the Redpanda Helm chart configures an internal and external listener for the Schema Registry API.
+
+
+[source,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:8081/subjects -u <username>:<password> -sS
+----
+
+If TLS is enabled, specify the HTTPS protocol and pass the path to the `ca.crt` file:
+
+[source,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8081/subjects --cacert /etc/tls/certs/default/ca.crt -u <username>:<password> -sS
+----
+
+NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
+
+For all available endpoints, see xref:api:ROOT:pandaproxy-schema-registry.adoc[].
+
+== Disable authentication
+
+To disable authentication for a listener, set `authentication_method` to `none`:
+
+[source,yaml,lines=6]
+----
+listeners:
+  kafka:
+    port: 9093
+    tls:
+      enabled: true
+    authenticationMethod: "none"
+----
 
 == Troubleshoot
 
