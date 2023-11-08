@@ -14,7 +14,15 @@ NOTE: Ensure you have https://cert-manager.io/docs/installation/helm/[cert-manag
 
 === Use a self-signed certificate
 
-A self-signed certificate is signed with its own private key, instead of a public or private certificate authority (CA). The following steps provide the required configurations and commands for setting up self-signed certificates in your Redpanda cluster:
+By default, the Helm chart uses glossterm:cert-manager[] to generate four Certificate resources
+that provide Redpanda with self-signed certificates for internal and external connections.
+
+A self-signed certificate is signed with its own private key, instead of a public or private certificate authority (CA).
+Having separate self-signed certificates for internal and external connections provides security isolation.
+If an external certificate or its corresponding private key is compromised,
+it doesn't affect the security of internal communications.
+
+The following steps provide the required configurations and commands for setting up self-signed certificates in your Redpanda cluster:
 
 . Make sure that TLS is enabled (default):
 +
@@ -77,23 +85,32 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 kubectl get certificate --namespace <namespace>
 ```
 +
-```
-NAME                                 READY   SECRET                               AGE
-redpanda-default-cert                True    redpanda-default-cert                10m
-redpanda-default-root-certificate    True    redpanda-default-root-certificate    10m
-```
+[.no-copy]
+----
+NAME                                 READY
+redpanda-default-cert                True
+redpanda-default-root-certificate    True
+redpanda-external-cert               True
+redpanda-external-root-certificate   True
+----
+
+- `redpanda-default-cert`: Self-signed certificate for internal communications.
+- `redpanda-default-root-certificate`: Root certificate authority for the internal certificate.
+- `redpanda-external-cert`: Self-signed certificate for external communications.
+- `redpanda-external-root-certificate`: Root certificate authority for the external certificate.
 
 ==== Test internal connections
 
-Your self-signed certificate's SAN list includes the internal addresses of the ClusterIP Service. As such, you can use rpk within the Redpanda container to securely communicate with the cluster internally using the self-signed certificate for encryption.
+Your self-signed certificate's SAN list includes the internal addresses of the ClusterIP Service.
+As such, you can use rpk within the Redpanda container to securely communicate with the cluster internally using the self-signed certificate for encryption.
 
 You can validate your internal connection to Redpanda with rpk by executing the following command:
 
 ```bash
 kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- rpk cluster info \
-  --tls-enabled \
+  -X tls.enabled=true \
   -X brokers=<broker-url>:<kafka-api-port>\
-  --tls-truststore <path-to-ca-certificate>
+  -X tls.ca=<path-to-ca-certificate>
 ```
 
 .Expected output:
@@ -116,7 +133,10 @@ ID    HOST                                             PORT
 
 ==== Test external connections
 
-To test external connections, you must enable external access using a custom domain. The SAN list of your self-signed certificate does not contain the IP addresses of your worker nodes, but when you enable external access using a custom domain, that domain is included in the SAN list. Then, you can use rpk on your local machine to communicate with the cluster externally using the self-signed certificate for encryption.
+To test external connections, you must enable external access using a custom domain.
+The SAN list of your self-signed certificate does not contain the IP addresses of your worker nodes,
+but when you enable external access using a custom domain, that domain is included in the SAN list.
+Then, you can use rpk on your local machine to communicate with the cluster externally using the self-signed certificate for encryption.
 
 . Configure xref:manage:kubernetes/networking/networking-and-connectivity.adoc[external access] to your Redpanda cluster using a custom domain.
 +
@@ -138,10 +158,10 @@ include::get-started:partial$install-rpk-homebrew.adoc[]
 --
 =====
 
-. Save the root certificate authority (CA) to your local file system outside Kubernetes:
+. Save the external root certificate authority (CA) to your local file system outside Kubernetes:
 +
 ```bash
-kubectl --namespace <namespace> get secret redpanda-default-root-certificate -o go-template='{{ index .data "ca.crt" | base64decode }}' > ca.crt
+kubectl --namespace <namespace> get secret redpanda-external-root-certificate -o go-template='{{ index .data "ca.crt" | base64decode }}' > ca.crt
 ```
 
 . Pass the root CA to rpk to validate your external connection to Redpanda.
@@ -155,7 +175,8 @@ Replace the following placeholders:
 ```bash
 rpk cluster info \
   -X brokers=<subdomain>.<custom-domain>:<external-kafka-api-port> \
-  --tls-truststore ca.crt
+  -X tls.enabled=true \
+  -X tls.ca=ca.crt
 ```
 
 === Use a public CA certificate
@@ -253,20 +274,18 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 kubectl get certificate --namespace <namespace>
 ```
 
-```
-NAME                                 READY   SECRET                               AGE
-redpanda-default-cert                True    redpanda-default-cert                10m
-redpanda-default-root-certificate    True    redpanda-default-root-certificate    10m
-```
-
 ==== Test internal connections
 
-The SAN list of your CA certificate includes only your custom domains and subdomains. You can use rpk inside the `redpanda` container to communicate with the cluster internally using your domain as the address.
+The SAN list of your CA certificate includes only your custom domains and subdomains.
+You can use rpk inside the `redpanda` container to communicate with the cluster internally using your domain as the address.
 
 Validate your internal connection to Redpanda with rpk:
 
 ```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- rpk cluster info -X brokers=<subdomain>.<custom-domain>:<kafka-api-port>
+kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
+  rpk cluster info \
+  -X tls.enabled=true \
+  -X brokers=<subdomain>.<custom-domain>:<kafka-api-port>
 ```
 
 .Expected output:
@@ -298,7 +317,9 @@ Replace the following placeholders:
 - `<external-port>`: The port on which your cluster's Kafka API is exposed.
 
 ```bash
-rpk cluster info -X brokers=<subdomain>.<custom-domain>:<external-port>
+rpk cluster info \
+  -X tls.enabled=true \
+  -X brokers=<subdomain>.<custom-domain>:<external-port>
 ```
 
 == Use Secrets to manage TLS certificates without cert-manager
@@ -446,17 +467,17 @@ You can validate your internal connection to Redpanda with rpk by executing the 
 
 ```bash
 kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- rpk cluster info \
-  --tls-enabled \
+  -X tls.enabled=true \
   -X brokers=<broker-url>:<kafka-api-port>
 ```
 
-If you are using a private CA, include the path to your CA certificate in the `--tls-truststore` option.
+If you are using a private CA, include the path to your CA certificate in the `-X tls.ca` option.
 
 ```bash
 kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- rpk cluster info \
-  --tls-enabled \
+  -X tls.enabled=true \
   -X brokers=<broker-url>:<kafka-api-port> \
-  --tls-truststore <path-to-ca-certificate>
+  -X tls.ca=<path-to-ca-certificate>
 ```
 
 === Test external connections
@@ -465,15 +486,17 @@ To test external connections, you need to enable external access using a custom 
 
 ```bash
 rpk cluster info \
+  -X tls.enabled=true \
   -X brokers=<subdomain>.<custom-domain>:<external-kafka-api-port>
 ```
 
-If you are using a private CA, include the path to your CA certificate in the `--tls-truststore` option.
+If you are using a private CA, include the path to your CA certificate in the `-X tls.ca` option.
 
 ```bash
 rpk cluster info \
+  -X tls.enabled=true \
   -X brokers=<subdomain>.<custom-domain>:<external-kafka-api-port> \
-  --tls-truststore <path-to-ca-certificate>
+  -X tls.ca=<path-to-ca-certificate>
 ```
 
 == Use multiple certificates for different listeners
@@ -582,89 +605,11 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 --
 ======
 
-== Troubleshooting
+== Troubleshoot
 
-Here are some common troubleshooting scenarios and their solutions:
+Here are some common troubleshooting scenarios and their solutions. For more troubleshooting steps, see xref:manage:kubernetes/troubleshooting/troubleshoot.adoc[Troubleshoot Redpanda in Kubernetes].
 
-=== invalid large response size
-
-This error appears when you don't specify that you are connecting over TLS. For example:
-
-```bash
-kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- rpk cluster info \
-  -X brokers=<subdomain>.<domain>:<external-kafka-api-port>
-```
-
-Result:
-
-```
-unable to request metadata: invalid large response size 352518912 > limit 104857600; the first three bytes received appear to be a tls alert record for TLS v.2; is this a plaintext connection speaking to a tls endpoint?
-```
-
-Solution:
-
-Make sure to add the `--tls-enabled` option:
-
-```bash
-kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- rpk cluster info -X brokers=<subdomain>.<domain>:<external-kafka-api-port> --tls-enabled
-```
-
-=== i/o timeout
-
-This error appears when your worker nodes are unreachable through the given address.
-
-Solution:
-
-Check the following:
-
-- The address and port are correct.
-
-- Your DNS records point to addresses that resolve to your worker nodes.
-
-=== cannot validate certificate for 127.0.0.1
-
-This error appears if you are using a CA certificate when you try to establish an internal connection using localhost. For example:
-
-```bash
-kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- rpk cluster info --tls-enabled
-```
-
-Result:
-
-```
-unable to request metadata: unable to dial: x509: cannot validate certificate for 127.0.0.1 because it doesn't contain any IP SANs
-```
-
-Solution:
-
-You must specify the public domain:
-
-```bash
-kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- rpk cluster info -X brokers=<subdomain>.<domain>:<external-port> --tls-enabled
-```
-
-Or, <<use-a-self-signed-certificate,use self-signed certificates>>.
-
-
-=== x509: certificate signed by unknown authority
-
-This error appears when the Certificate Authority (CA) that signed your certificates is not trusted by your system.
-
-Solution:
-
-Check the following:
-
-- Make sure you have installed the Root CA certificate correctly on your local system.
-- If using a self-signed certificate, ensure it is properly configured and included in your system's trust store.
-- If you are using a certificate issued by a CA, make sure the issuing CA is included in your system's trust store.
-- If you are using cert-manager, ensure it is correctly configured and running properly.
-- Check the validity of your certificates. They might have expired.
-
-=== x509: certificate is not valid for any names
-
-This error indicates that the certificate you are using is not valid for the specific domain or IP address you are trying to use it with. This error typically occurs when there is a mismatch between the certificate's Subject Alternative Name (SAN) or Common Name (CN) field and the name being used to access the broker.
-
-To resolve this issue, you may need to obtain a new certificate that is valid for the specific domain or IP address you are using. Ensure that the certificate's SAN or CN entry matches the name being used, and make sure the certificate is not expired or revoked.
+include::manage:kubernetes/troubleshooting/troubleshoot.adoc[tags=tls;networking]
 
 == Next steps
 

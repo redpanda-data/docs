@@ -1,9 +1,7 @@
 = Deploy a Redpanda Cluster in Azure Kubernetes Service
 :description: Deploy a secure Redpanda cluster and Redpanda Console in Azure Kubernetes Service (AKS).
 
-Deploy a secure Redpanda cluster and Redpanda Console in Azure Kubernetes Service (AKS). After you deploy, use rpk both as an internal client and an external client to interact with your Redpanda cluster from the command line.
-
-The Redpanda cluster has the following security features:
+Deploy a secure Redpanda cluster and Redpanda Console in Azure Kubernetes Service (AKS). After you deploy, use `rpk` both as an internal client and an external client to interact with your Redpanda cluster from the command line. Your Redpanda cluster has the following security features:
 
 * SASL for authenticating users' connections.
 * TLS with self-signed certificates for secure communication between the cluster and clients.
@@ -30,11 +28,14 @@ helm version
 
 == Create an AKS cluster
 
-In this step, you create three worker nodes: one for each Redpanda broker.
+Your AKS cluster must have one worker node available for each Redpanda broker that you plan to deploy in your Redpanda cluster. You also need to run the worker nodes on a machine type that supports the xref:./kubernetes-cluster-requirements.adoc[requirements and recommendations] for production deployments.
 
-You also configure your AKS cluster to give each worker node a public IP address, and allow external access to the node ports on which the Redpanda deployment will be exposed. You'll use these node ports in later steps to configure external access to your Redpanda cluster.
+In this step, you create an AKS cluster with three nodes on https://learn.microsoft.com/en-us/azure/virtual-machines/lsv3-series[Standard_L8s_v3 Azure Virtual Machines (Azure VMs)]. Deploying three nodes allows your AKS cluster to support a Redpanda cluster with three brokers. The Standard_L8s_v3 Azure VMs come with:
 
-NOTE: The Helm chart configures `podAntiAffinity` rules to make sure that only one Redpanda broker Pod is scheduled on each worker node. For more information, see xref:./kubernetes-cluster-requirements.adoc#number-of-worker-nodes[Kubernetes Cluster Requirements].
+- 2 cores per worker node, which is a requirement for production.
+- Local NVMe disks, which is recommended for best performance.
+
+NOTE: The Helm chart configures `podAntiAffinity` rules to make sure that only one Pod running a Redpanda broker is scheduled on each worker node.
 
 . Create a resource group for Redpanda:
 +
@@ -43,17 +44,25 @@ NOTE: The Helm chart configures `podAntiAffinity` rules to make sure that only o
 az group create --name redpandaResourceGroup --location eastus
 ----
 
-. Create an AKS cluster with three worker nodes (one for each Redpanda broker):
+. Create an AKS cluster:
 +
 [,bash]
 ----
-az aks create -g redpandaResourceGroup -n redpanda \
+az aks create -g redpandaResourceGroup -n <cluster-name> \
   --node-count 3 \
   --generate-ssh-keys \
   --enable-node-public-ip
+  --node-vm-size Standard_L8s_v3 \
+  --disable-file-driver
 ----
 +
 TIP: For all available options, see the https://learn.microsoft.com/en-us/cli/azure/aks?view=azure-cli-latest#az-aks-create[AKS documentation^].
+
+include::deploy:partial$kubernetes/guides/create-storageclass.adoc[leveloffset=+2]
+
+=== Configure external access
+
+In this step, you configure your AKS cluster to allow external access to the node ports on which the Redpanda deployment will be exposed. You use these node ports in later steps to configure external access to your Redpanda cluster.
 
 . Get your subscription ID:
 +
@@ -67,7 +76,7 @@ export SUBSCRIPTION_ID=$(az account show --query id --output tsv)
 [,bash]
 ----
 az account set --subscription $SUBSCRIPTION_ID
-az aks get-credentials --resource-group redpandaResourceGroup --name redpanda
+az aks get-credentials --resource-group redpandaResourceGroup --name <cluster-name>
 ----
 
 . Open the https://portal.azure.com/[Azure Portal^], search for 'Network security groups', and click the name of the network security group in the *MC_redpandaResourceGroup_redpanda_eastus* resource group.
@@ -87,6 +96,8 @@ AllowRedpandaNodePorts
 ----
 
 include::deploy:partial$kubernetes/guides/deploy-redpanda.adoc[leveloffset=+1]
+
+include::deploy:partial$kubernetes/guides/verify-deployment.adoc[leveloffset=+1]
 
 include::deploy:partial$kubernetes/guides/create-user.adoc[leveloffset=+1]
 
