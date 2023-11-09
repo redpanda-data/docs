@@ -243,9 +243,11 @@ ID    HOST
 
 The IDs are the broker IDs. The output shows that the IDs don't match the StatefulSet ordinal, which appears in the hostname. In this example, the Pod with the highest ordinal is `redpanda-6` (ID 8).
 
-NOTE: You cannot choose which broker is decommissioned. Redpanda is deployed as a StatefulSet in Kubernetes. The StatefulSet controls which Pods are destroyed and always starts with the Pod that has the highest ordinal. So the first broker to be destroyed when the controller decommissions the brokers in this example is `redpanda-6` (ID 8).
+You cannot choose which broker is decommissioned. Redpanda is deployed as a StatefulSet in Kubernetes. The StatefulSet controls which Pods are destroyed and always starts with the Pod that has the highest ordinal. So the first broker to be destroyed when the controller decommissions the brokers in this example is `redpanda-6` (ID 8).
 
-If a Pod running a decommissioned broker uses a PersistentVolume (PV), the controller also sets the reclaim policy of that PV to `Retain` and deletes the corresponding PersistentVolumeClaim (PVC) so that you can recover data, if necessary.
+When you reduce the number of replicas, the controller terminates the Pod with the highest ordinal, removes its PVC, and then attempts to set the reclaim policy of the PV to `Retain`. Finally, the controller waits for the cluster state to become healthy before committing to decommissioning the broker that was running in the terminated Pod.
+
+NOTE: Always decommission one broker at a time.
 
 . Install the Decommission controller:
 +
@@ -377,7 +379,7 @@ helm upgrade --install redpanda redpanda/redpanda \
 kubectl exec redpanda-0 --namespace <namespace> -- rpk cluster health
 ```
 
-. Decrease the number of replicas in the Helm values to five:
+. Decrease the number of replicas in the Helm values to six:
 +
 [tabs]
 ======
@@ -395,7 +397,7 @@ spec:
   chartRef: {}
   clusterSpec:
     statefulset:
-      replicas: 5
+      replicas: 6
       sideCars:
         controllers:
           enabled: true
@@ -421,7 +423,7 @@ Helm::
 [,yaml]
 ----
 statefulset:
-  replicas: 5
+  replicas: 6
 ----
 +
 ```bash
@@ -434,7 +436,7 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 [,bash,lines=3]
 ----
 helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set statefulset.replicas=5 \
+  --set statefulset.replicas=6 \
   --set statefulset.sideCars.controllers.enabled=true \
   --set statefulset.sideCars.controllers.run={"decommission"} \
   --set rbac.enabled=true
@@ -467,6 +469,10 @@ If you're running the Decommission controller as a sidecar:
 ----
 kubectl logs <pod-name> --namespace <namespace> -c redpanda-controllers
 ----
+
+You can repeat this process to scale in to 5 brokers.
+
+NOTE: Be sure to take into account everything in <<should-you-decommission-brokers, this section>>, and that you have verified that your cluster and use cases will not be negatively impacted by losing brokers.
 
 [[Manual]]
 === Manually decommission a broker
@@ -551,7 +557,7 @@ Under-replicated partitions: []
 
 . Decommission any other brokers.
 +
-After decommissioning one broker and verifying that the process is complete, continue decommissioning another broker by repeating the previous two steps. In this example, you identified two brokers to decommission.
+After decommissioning one broker and verifying that the process is complete, continue decommissioning another broker by repeating the previous two steps.
 +
 NOTE: Be sure to take into account everything in <<should-you-decommission-brokers, this section>>, and that you have verified that your cluster and use cases will not be negatively impacted by losing brokers.
 
