@@ -1,13 +1,11 @@
-= Data Transforms
-:description: Learn how to run WebAssembly data transforms within Redpanda brokers.
+= Run Data Transforms
+:description: Learn how to build and deploy data transforms in Redpanda.
 :page-aliases: reference:rpk/rpk-wasm/rpk-wasm.adoc, reference:rpk/rpk-wasm.adoc, reference:rpk/rpk-wasm/rpk-wasm-deploy.adoc, reference:rpk/rpk-wasm/rpk-wasm-generate.adoc, reference:rpk/rpk-wasm/rpk-wasm-remove.adoc, data-management:data-transform.adoc
 :latest-data-transforms-version: 0.0.0-20230830git604fcce
 
-Redpanda provides the framework to build and deploy inline transformations on data written to Redpanda topics, delivering processed and validated data to consumers in the format they expect. Data transforms let you run common data streaming tasks, like filtering, scrubbing, and transcoding, within the Redpanda broker. For example, you may have consumers that require you to remove credit card numbers or convert JSON to Avro. Data transforms can also interact with the Redpanda Schema Registry to work with encoded data types. Redpanda does this directly inside the broker, eliminating the need to manage a separate stream processing environment or use 3rd-party tools. 
+Data transforms let you run common data streaming tasks, like filtering, scrubbing, and transcoding, within the Redpanda broker. For example, you may have consumers that require you to remove credit card numbers or convert JSON to Avro. Data transforms can also interact with the Redpanda Schema Registry to work with encoded data types. You can develop and manage data transforms with `rpk transform` commands.
 
-image::shared:wasm1.png[Data transforms in a broker] 
-
-Data transforms use a WebAssembly (Wasm) engine inside a Redpanda broker, allowing Redpanda to control the entire transform lifecycle. For example, Redpanda can stop and start transforms when partitions are moved or to free up system resources for other tasks. You can develop and manage data transforms with `rpk transform` commands.
+For more detailed information, see xref:./how-transforms-work.adoc[].
 
 == Limitations
 
@@ -15,26 +13,7 @@ Data transforms use a WebAssembly (Wasm) engine inside a Redpanda broker, allowi
 - Only single record transforms are supported, not aggregations or joins. In other words, a Wasm function acts on a single record in an input topic.
 - Only a single output topic is supported.
 - Transforms have at-least-once delivery.
-- Because data transforms are powered by Wasm, transform functions can be authored in any language. However, currently libraries to author transforms are only available in xref:reference:data-transform-api.adoc[Golang^]. 
-
-== How data transforms work
-
-Within Repdanda, there's a single Raft controller that manages cluster information, including data transforms. On every shard (core), Redpanda knows what data transforms exist in the cluster, as well as metadata about the transform, such as input and output topics and environment variables. 
-
-Wasm is executed within a runtime in the broker. Data transforms take an input topic and map it to an output topic, running a virtual machine (VM) on the same shard as the input partition leader. Redpanda uses just-in-time (JIT) compilation, which compiles the function in memory, writes it to executable space, then runs the directly translated machine code. When it becomes leader of a given partition on the input topic, Redpanda spins up a Wasm VM using the JIT-compiled WebAssembly module. Redpanda writes the output, which may go to the same shard on the same machine, or to a different shard on the same machine, or to a different machine. 
-
-image::shared:wasm_architecture.png[Wasm architecture in Redpanda]
-
-The transform function processes every record produced to an input topic and returns zero or more records that are then produced to an output topic. Data transforms are applied to all partitions on an input topic. A record is processed after it has been successfully written to disk on the input topic. Because the transform happens in the background after the write finishes, the transform doesn't affect the original produced record and it doesn't block writes to the input topic. The following diagram shows that Broker A has its own disk that it persistently writes to, and Broker B also has its own disk that it persistently writes to. 
-
-image::shared:wasm_flow.png[Flow of record transform]
-
-When you deploy a data transform, Redpanda pushes the generated `.wasm` files and metadata to the cluster, which then stores and replicates the bytecode and metadata using internal broker topics. Each shard of Redpanda runs its own copy of the transform function. There is at most one runtime for a transform for any shard, and memory for each function is reserved within the broker. This is achieved with the following cluster configuration properties: 
-
-- `wasm_per_core_memory_reservation`: Total amount of memory to reserve per shard 
-- `wasm_per_function_memory_limit`: Limit for an individual transform's memory
-
-At any moment, there may only be `wasm_per_core_memory_reservation`/ `wasm_per_function_memory_limit` transforms deployed to a cluster. CPU time is dynamically allocated to the Wasm runtime and ensures that the code does not run forever and cannot block the broker from handling traffic or doing other work, such as Tiered Storage uploads.
+- Because data transforms are powered by Wasm, transform functions can be authored in any language. However, currently libraries to author transforms are only available in xref:reference:data-transform-api.adoc[Golang]. 
 
 == Enable data transforms
 
@@ -247,5 +226,6 @@ NOTE: You can see `stdout` and `stderr` for your function in the broker's logs.
 
 == Related topics
 
+- xref:./how-transforms-work.adoc[]
 - xref:reference:data-transform-api.adoc[]
 - rpk transform **(link when we pull code include in Beta docs rpk section)**
