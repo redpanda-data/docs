@@ -1,120 +1,29 @@
-= Manage Schema Registry
-:description: Perform common Schema Registry management operations in Redpanda Console.
+= Redpanda Schema Registry
+:description: Redpanda's Schema Registry provides the interface to store and manage event schemas.
 :page-aliases: console:features/schema-registry.adoc
 
-In Redpanda, the messages exchanged between producers and consumers contain raw bytes. Schemas enable producers and consumers to share the information needed to properly serialize and deserialize those messages. They register and retrieve the schemas they use in the Schema Registry to ensure data verification. When used well, the Schema Registry can ensure that data flowing through a system is well-structured and easily evolves over time. 
+In Redpanda, the messages exchanged between producers and consumers contain raw bytes. Schemas enable producers and consumers to share the information needed to properly serialize and deserialize those messages. They register and retrieve the schemas they use in the Schema Registry to ensure data verification. 
+
+Schemas are versioned, and the registry supports configurable compatibility modes between schema versions. When a producer or a consumer makes a request to register a schema change, the registry checks for schema compatibility and returns an error for an incompatible change. When used well, the Schema Registry can ensure that data flowing through a system is well-structured and easily evolves over time. 
 
 [NOTE]
 ====
-Redpanda Schema Registry is built into Redpanda, and it can be managed through the API or the Redpanda Console UI. This section describes Schema Registry operations in the UI. Because clients generally exchange schema information through the programmatic API, see also xref:manage:schema-registry.adoc[Schema Registry operations with the API]. 
+The Schema Registry is built directly into the Redpanda binary. It runs out-of-the-box with Redpanda's default configuration, and it requires no new binaries to install and no new services to deploy or maintain. You can use it with the xref:manage:schema-registry/schema-reg-api.adoc[API] or the xref:manage:schema-registry/schema-reg-ui.adoc[Redpanda Console UI]. 
 ====
-
-== Prerequisite for self-hosted Redpanda
-
-Redpanda Schema Registry UI is automatically configured with new Redpanda Cloud deployments. However, if you're running Redpanda Console with self-hosted Redpanda, you must add a valid `schemaRegistry` configuration in Redpanda Console:
-
-.redpanda-console-config.yaml
-[,yaml]
-----
-kafka:
-  schemaRegistry:
-    enabled: true
-    urls: ["https://my-schema-registry.com"]
-    username: console
-    password: redacted # Or set using flags or env variable
-  # To enable protobuf support
-  protobuf:
-    enabled: true
-    schemaRegistry:
-      enabled: true
-      refreshInterval: 5m
-----
 
 == Schema terminology
 
-**Schema**: A schema is a set of rules that defines how information should be structured. Producers and consumers use schemas as an agreed-upon format for sending and receiving messages. In the Redpanda UI (Redpanda Console), the **Schema Registry** tab lists registered and verified schemas. 
+**Schema**: A schema is an external mechanism to describe the structure of data and its encoding. Producer clients and consumer clients use a schema as an agreed-upon format for sending and receiving messages. Schemas enable a loosely coupled, data-centric architecture that minimizes dependencies in code, between teams, and between producers and consumers.
 
 **Subject**: A subject is a logical grouping for schemas. When data formats are updated, a new version of the schema can be registered under the same subject, allowing for backward and forward compatibility. A subject may have more than one schema version assigned to it, with each schema having a different numeric ID.
 
-**Serialization format**: A serialization format defines how data is converted into bytes that are transmitted and stored. Redpanda supports Avro and Protobuf serialization formats. Serialization, by producers, converts a business object into a byte array to store or transmit it. Deserialization, by consumers, converts the byte array back into a business object. A schema governs the shape of the data during the serialization/deserialization process. 
+**Serialization format**: A serialization format defines how data is converted into bytes that are transmitted and stored. Serialization, by producers, converts an event into bytes. Redpanda then stores these bytes in topics. Deserialization, by consumers, converts the bytes of arrays back into the desired data format. Redpanda's Schema Registry supports Avro and Protobuf serialization formats.
 
-== Create or edit a schema
+== Redpanda design overview
 
-. To register a schema, select the strategy type for how to derive the subject name. 
-+
-- **Topic** (default): The subject name is derived from the Redpanda topic name. See <<Topic strategy use case>>.
-- **Record**: The subject name is derived from the Kafka record name. See <<Record strategy use case>>.
-- **TopicRecord**: The subject name is derived from both topic name and record name, allowing for finer-grained schema organization. See <<TopicRecord strategy use case>>.
-- **Custom**: The subject name is user-defined. 
+Every broker allows mutating REST calls, so there is no need to configure leadership or failover strategies. Schemas are stored in a compacted topic, and the registry uses optimistic concurrency control at the topic level to detect and avoid collisions.
 
-. Select the format (Avro or Protobuf) with the schema definition. 
-
-. To build more complex schema definitions, add a reference to other schemas. For example, the two `import` statements are references to the `PhoneNumber` and `Address` schemas:
-+
-[,json]
-----
-{
-syntax = "proto3"; 
-import "PhoneNumber.proto";
-import "Address.proto"; 
-message Person { 
-    string name = 1;
-    string email = 2;
-    PhoneNumber phone  = 3; 
-    repeated Address address  = 4; 
-}
-----
-
-. After registering a schema, you can add a new version to it, delete its subject, or change its compatibility.
-
-=== Topic strategy use case
-
-The Topic strategy is suitable when you want to group schemas by the topics to which they are associated. Suppose you're tracking product order information in a topic named Transactions. When a producer sends records to the OrderInfo topic, you want the record names to look something like: 
-
-- Transactions - Record1 
-- Transactions - Record2 
-
-Where `Record1` and `Record2` are unique identifiers. This is usually defined in your producer settings. Create your schema with the Topic strategy, and the subject name is always Transactions, with all customer transactions under the same topic. 
-
-=== Record strategy use case
-
-The Record strategy is most useful when you have multiple schemas within a topic and need more granular categorization that's influenced by the record name. Suppose there's an Events topic with event types A and B. You may want each of those event types to have their own subject, their own schemas, and their own fully-qualified record names (for example, com.example.EventTypeA). If each event type has its own schema with the Record strategy, then when producers send these event types to the Events topic, their subjects are those record names: 
-
-- com.example.EventTypeA
-- com.example.EventTypeB
-
-The record names in the Events topic looks like this: 
-
-- Events-com.example.EventTypeA-Record1
-- Events-com.example.EventTypeB-Record1
-- Events-com.example.EventTypeA-Record2
-- Events-com.example.EventTypeB-Record2
-
-=== TopicRecord strategy use case
-
-The TopicRecord strategy is suitable when you want to organize schemas based on both topics and logical record types. Suppose there's a microservices architecture where different services produce to the same topic: SharedEvents. Each microservice has a schema of its own for the shared events, but each schema uses the TopicRecord strategy. This results in the following: 
-
-Subject names: 
-
-- SharedEvents-com.example.MicroserviceAEvent
-- SharedEvents-com.example.MicroserviceBEvent
-
-Record names: 
-
-- SharedEvents-com.example.MicroserviceAEvent-Record1
-- SharedEvents-com.example.MicroserviceBEvent-Record1
-- SharedEvents-com.example.MicroserviceAEvent-Record2
-- SharedEvents-com.example.MicroserviceBEvent-Record2
-
-This allows for multiple schemas to govern the same shared events for different microservices, allowing granular organization. 
-
-== Edit compatibility 
-
-include::partial$schema-compatibility.adoc[]
-
-== Delete a schema
-
-Schemas cannot be permanently deleted if any other schemas reference it. They remain readable with a soft delete until you remove all references to it. A soft-deleted schema can be recovered, but a permanently-deleted schema cannot be recovered. Redpanda does not recommend permanently deleting schemas in a production environment.
+The Schema Registry publishes record metadata to an internal topic, `_schemas`, as its backend store. By default, `_schemas` is protected from deletion and configuration changes by Kafka clients (see the xref:reference:cluster-properties.adoc#kafka_nodelete_topics[kafka_nodelete_topics] cluster property).
 
 == End-to-end schema example
 
@@ -171,7 +80,13 @@ message Product {
 
 You would want the compatibility setting to accommodate adding new fields without breakage. Adding a new field to a schema is inherently backward-compatible. 
 
-== Next steps
+== Related topics
 
-* xref:./protobuf.adoc[]
+* xref:api:ROOT:pandaproxy-schema-registry.adoc[Schema Registry API]
+* xref:reference:node-configuration-sample.adoc[] (search for `schema_registry`)
+* xref:manage:monitoring.adoc#service-level-queries[Monitor Schema Registry service-level metrics]
+* xref:deploy:deployment-option/self-hosted/manual/node-property-configuration.adoc[Configure broker properties for Schema Registry]
+* xref:manage:console/protobuf.adoc#schema-registry[Configure Schema Registry for Protobuf deserialization]
+* xref:reference:console/record-deserialization.adoc[Redpanda Console record deserialization]
+* xref:deploy:deployment-option/self-hosted/manual/production/production-deployment.adoc#prepare-infrastructure[Provision ports for deployment]
 
