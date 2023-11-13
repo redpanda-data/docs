@@ -2,10 +2,6 @@ name: Generate CRD Reference Docs
 
 on:
   workflow_dispatch: # Allows manual trigger of the workflow
-    inputs:
-      branch:
-        description: 'Redpanda maintenance branch to generate CRD Docs from'
-        required: true
   repository_dispatch: # Allows other repositories to trigger this workflow
     types: [generate-crd-docs]
 
@@ -13,71 +9,20 @@ jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      # Set the branch name from either workflow_dispatch or repository_dispatch event.
-      - name: Set branch variable
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "BRANCH=${{ github.event.inputs.branch }}" >> $GITHUB_ENV
-          elif [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
-            echo "BRANCH=${{ github.event.client_payload.branch }}" >> $GITHUB_ENV
-          fi
-
-      # Ensure the provided branch exists in the target repository.
-      - name: Verify branch exists
-        run: |
-          response=$(curl -fs -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${{ secrets.ACTIONS_BOT_TOKEN }}" "https://api.github.com/repos/redpanda-data/redpanda/branches/${{ env.BRANCH }}")
-          if [ "$response" -ne 200 ]; then
-            echo "Branch '${{ env.BRANCH }}' does not exist." >&2
-            exit 1
-          fi
-
       # Checkout the specified branch from redpanda repository.
       - name: Checkout redpanda repository
         uses: actions/checkout@v3
         with:
-          repository: redpanda-data/redpanda
-          ref: ${{ env.BRANCH }}
+          repository: redpanda-data/redpanda-operator
+          ref: main
           path: redpanda
           token: ${{ secrets.ACTIONS_BOT_TOKEN }}
-
-      # Get the latest release tag from the repository.
-      - name: Get latest release tag
-        id: get_latest_release
-        run: |
-          response=$(curl -fs -H "Authorization: Bearer ${{ secrets.ACTIONS_BOT_TOKEN }}" "https://api.github.com/repos/redpanda-data/redpanda/releases/latest")
-          latest_release_tag=$(echo $response | jq -r .tag_name)
-          if [ "$latest_release_tag" == "null" ]; then
-            echo "No tag_name in the release info." >&2
-            exit 1
-          fi
-          echo "tag=$latest_release_tag" >> $GITHUB_ENV
-
-      # Convert tag into a major.minor.x format.
-      - name: Format latest tag for latest maintenance branch
-        id: format_tag
-        run: |
-          tag=${{ env.tag }}
-          formatted_tag="$(echo "$tag" | sed 's/\([0-9]*\.[0-9]*\)\.[0-9]*/\1.x/')"
-          echo "formatted_tag=$formatted_tag" >> $GITHUB_ENV
-
-      # Set or reformat branch name based on its comparison with formatted tag.
-      - name: Set FORMATTED_BRANCH
-        run: |
-          if [ "${{ env.formatted_tag }}" == "${{ env.BRANCH }}" ]; then
-            echo "FORMATTED_BRANCH=main" >> $GITHUB_ENV
-          else
-            branch="${{ env.BRANCH }}"
-            echo "Before transformation: $branch"
-            formatted_branch="$(echo "$branch" | sed -E 's/v([0-9]+)\.([0-9]+)\..*/v\/\1.\2/')"
-            echo "After transformation: $formatted_branch"
-            echo "FORMATTED_BRANCH=$formatted_branch" >> $GITHUB_ENV
-          fi
 
       # Checkout the redpanda-docs repository based on the FORMATTED_BRANCH.
       - name: Checkout this repository
         uses: actions/checkout@v3
         with:
-          ref: ${{env.FORMATTED_BRANCH}}
+          ref: main
           repository: redpanda-data/docs
           path: redpanda-docs
           token: ${{ secrets.ACTIONS_BOT_TOKEN }}
@@ -119,7 +64,7 @@ jobs:
           git config --global user.email "github-actions@github.com"
           git config --global user.name "GitHub Actions"
           git add .
-          git commit -m "auto-docs: Update CRD doc for ${{ env.BRANCH }}"
-          git push origin ${{env.FORMATTED_BRANCH}}
+          git commit -m "auto-docs: Update CRD reference doc"
+          git push origin main
         env:
           ACCESS_TOKEN: ${{ secrets.ACTIONS_BOT_TOKEN }}
