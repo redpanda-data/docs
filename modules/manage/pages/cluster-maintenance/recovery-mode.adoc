@@ -3,20 +3,21 @@
 
 Recovery mode allows you to start Redpanda and form a stable cluster when a cluster fails due to a system crash, OOM errors, or other issues that make a normal startup infeasible. 
 
-In recovery mode, cluster configuration changes and other administrative actions are permitted so you can repair and recover the failed cluster. Communication between producers and consumers, as well as topic reads and writes, are disabled.
+In recovery mode, cluster configuration changes and other manual administrative actions are permitted so you can repair and recover the failed cluster. Communication between producers and consumers, as well as topic reads and writes, are disabled.
 
-== Prerequisites
+== About recovery mode
+
+Recovery mode starts a cluster with limited functionality and deactivates normal traffic and data operations for a cluster. This provides a more stable environment for troubleshooting issues and restoring the cluster to a usable state. 
+
+Recovery mode helps to prevent triggering a storm of partition leader elections and replication (e.g. heavy learner replica recovery load after a long broker downtime) that typically occurs on startup (especially after some downtime). 
+
+Normal traffic and especially malicious traffic can disrupt availability for all users, including admin users. Recovery mode helps avoid placing the cluster under a heavy load of Kafka API and HTTP Proxy connections as you are working to resuscitate the cluster.
+
+== Requirements
 
 Recovery mode can only be entered during initial cluster formation as brokers start up and not while they are already running.
 
 == Use recovery mode
-
-////
-
-1. Entering/exiting Recovery mode
-2. Using the enable/disable partitions API or RPK commands (API detailed here, the RPK in the PRD).
-
-////
 
 To use recovery mode, first configure the node property to enable recovery mode when a broker starts. Once enabled, you can also disable partitions, if the cluster failure is localized to just a few partitions.
 
@@ -58,7 +59,9 @@ You can use the Admin API when the cluster is in recovery mode. The HTTP Proxy a
 
 === Disable partitions
 
-If a specific partition caused the cluster to fail or is interfering with cluster recovery, you can manage the partition using the Admin API.
+You may find that problems preventing normal cluster startup are often isolated to certain partitions or topics. In these situations, you can manage the partition using the Admin API. You can disable partitions at the topic level, or individual partition level. 
+
+After you disable these partitions and exit recovery mode, starting Redpanda again in non-recovery mode leaves these partitions in a deactivated state. Disabled partitions and topics return a "Replica Not Available" message when making Kafka API requests.
 
 The examples below assume that the Admin API port is `8081`.
 
@@ -127,34 +130,41 @@ rpk cluster partitions enable --topic <topic>
 --
 ====
 
-== About
+==== List all disabled partitions
 
-////
+[tabs]
+====
+Curl::
++
+--
+curl http://localhost:8081/cluster/partitions?disabled=true
+--
+rpk::
++
+--
+rpk cluster partitions list --disabled
+--
+====
 
-recovery Mode permits cluster config changes and other administrative actions (e.g. deactivating partitions, deleting topics, user/acl changes, deleting consumer groups, deleting stuck transactions, deleting wasm transforms, etc) to repair a nonfunctional cluster. 
+==== List all disabled partitions of a specific topic
 
-////
-
-Some, but not all, unrecoverable situations could be remedied through manual administrative actions taken while the cluster is running without traffic and without data being available to clients, in particular when the data and/or traffic itself are what prevent a successful start.
-
-recovery mode intends to avoid triggering a storm of partition leader elections and replication (e.g. heavy learner replica recovery load after a long broker downtime) that typically occurs on startup (especially after downtime). 
-
-Recovery mode also intends to avoid the load of Kafka API/HTTP Proxy connections, because normal traffic and especially abusive/rogue traffic can prevent availability for all users, even the admin trying to resuscitate the cluster.
-
-
-
-
-
-=== Disable partition
-
-
-Data partitions are not accessible in recovery mode, because no initialization, leader election or replication should occur on any data partition. and as such no ‘data plane’ actions can be taken in this mode.
-The data balancer/leader balancer, and any other subsystems relying on data partitions should be completely disabled when in recovery mode
-As the problems preventing startup are often isolated to certain partitions/topics, recovery mode should allow partition ‘deactivation’ at a single partition or at the topic level.  After deactivation, exiting recovery mode and starting redpanda without recovery mode should leave these partitions in a deactivated state (not ‘created’ in the running cluster), but activate all other partitions as normal.  Deactivated partitions/topics should appear as Replica Not Available”’ with respect to Kafka API requests. The data balancer should ignore deactivated partitions
+[tabs]
+====
+Curl::
++
+--
+curl http://localhost:8081/cluster/partitions/kafka/<topic>?disabled=true
+--
+rpk::
++
+--
+rpk cluster partitions list --topic <topic> --disabled
+--
+====
 
 == Troubleshooting
 
-A user should be able to list currently deactivated partitions/topics via RPK using ‘rpk cluster partitions’
+
 
 
 
