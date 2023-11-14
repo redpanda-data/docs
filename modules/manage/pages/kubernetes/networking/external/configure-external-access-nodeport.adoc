@@ -1,10 +1,9 @@
 = Configure External Access through a NodePort Service
-:description: Expose your Redpanda cluster to clients outside of your Kubernetes cluster by using a NodePort Service.
+:description: Use a NodePort Service to expose your Redpanda cluster to clients outside of your Kubernetes cluster.
 :tags: ["Kubernetes", "Helm configuration"]
+:page-aliases: manage:kubernetes/networking/configure-external-access-nodeport.adoc
 
-Setting up external access to your Redpanda cluster allows your applications running outside the Kubernetes cluster to communicate with Redpanda and produce and consume events. By default, the fully qualified domain names (FQDNs) that brokers advertise are their internal addresses within the Kubernetes cluster, which are not reachable from outside the cluster. To make the cluster accessible from outside, each broker must advertise a FQDN that can be reached from outside the cluster.
-
-By default, the Helm chart deploys a NodePort Service that routes external traffic to the listener ports on the Redpanda brokers. To set up external access using this NodePort Service, you must configure the brokers to advertise addresses that resolve to the IP address of the worker node.
+By default, the Helm chart deploys a NodePort Service that routes traffic to the external listener ports on the Redpanda brokers. To set up external access using this NodePort Service, you must configure the brokers to advertise addresses that resolve to the IP address of the worker node.
 
 image::shared:nodeport.png[A client connects to a Pod through the NodePort Service]
 
@@ -13,7 +12,7 @@ image::shared:nodeport.png[A client connects to a Pod through the NodePort Servi
 * One worker node for each Redpanda broker that you want to deploy.
 * Install xref:get-started:rpk-install.adoc[rpk] on your local machine so that you can test connections to your Redpanda cluster from outside Kubernetes.
 * Review xref:deploy:deployment-option/self-hosted/kubernetes/kubernetes-requirements-index.adoc[].
-* Understand xref:./networking-and-connectivity.adoc[Kubernetes networking for Redpanda].
+* Understand xref:manage:kubernetes/networking/networking-and-connectivity.adoc[Kubernetes networking for Redpanda].
 * Ensure that your Kubernetes cluster is accessible through your desired node port range. For example, with AWS EKS you must edit your inbound firewall rules. And with Azure AKS, you must https://learn.microsoft.com/en-us/azure/aks/use-node-public-ips[enable public IPs] on nodes in your node pool.
 * If you want brokers to advertise a custom domain, you must have control over the DNS settings for that domain.
 +
@@ -119,7 +118,7 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 
 . <<Create DNS records>> for each of your broker's FQDNs, relative to the zone.
 
-===  custom hostnames
+=== Custom hostnames
 
 You can give each Redpanda broker a custom hostname to advertise instead of the default hostnames. Custom hostnames can either be suffixed with the Pod ordinal or they can be fully custom.
 
@@ -323,8 +322,6 @@ WARNING: IP addresses can change. If the IP addresses of your worker nodes chang
 rpk cluster info -X brokers=<hostname-0>.<custom-domain>:31092
 ```
 
-If your cluster has TLS enabled, provide any necessary flags. See xref:manage:kubernetes/security/kubernetes-tls.adoc[Configure TLS for Redpanda in Kubernetes].
-
 ==== ExternalDNS
 
 ExternalDNS is a tool for Kubernetes that manages DNS records. Whenever you add, change, or remove Kubernetes Services or Ingresses, ExternalDNS automatically makes the same updates to the DNS records by communicating with DNS providers through their public APIs. This communication keeps your DNS records up to date with your Kubernetes Services.
@@ -337,25 +334,73 @@ Set the `--provider` flag to your DNS provider.
 +
 TIP: The `txtOwnerId` and `interval` flags are recommended. The `txtOwnerId` flag prevents DNS record conflicts between different instances of ExternalDNS. The `interval` flag controls the sync period with the DNS provider.
 
-. Identify the headless ClusterIP Service in your Redpanda deployment:
+. Annotate the headless ClusterIP Service to use ExternalDNS:
 +
-```bash
-kubectl get service --namespace <namespace>
-```
+[tabs]
+======
+Helm + Operator::
 +
-The headless ClusterIP Service has its Cluster-IP set to None.
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    service:
+      internal:
+        annotations:
+          "external-dns.alpha.kubernetes.io/hostname": <custom-domain>
+          "external-dns.alpha.kubernetes.io/endpoints-type": <type>
+----
 
-. Annotate the headless ClusterIP Service:
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`external-dns.yaml`
+[,yaml]
+----
+service:
+  internal:
+    annotations:
+      "external-dns.alpha.kubernetes.io/hostname": <custom-domain>
+      "external-dns.alpha.kubernetes.io/endpoints-type": <type>
+----
 +
 ```bash
-kubectl annotate service <service-name> --namespace <namespace> \
-external-dns.alpha.kubernetes.io/hostname=<custom-domain> \
-external-dns.alpha.kubernetes.io/endpoints-type=<HostIP or NodeExternalIP>
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values external-dns.yaml --reuse-values --wait
 ```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set "service.internal.annotations.external-dns\.alpha\.kubernetes\.io/hostname=<custom-domain>" \
+  --set "service.internal.annotations.external-dns\.alpha\.kubernetes\.io/endpoints-type=<type>" \
+  --wait
+```
+
+====
+--
+======
 +
 For guidance, see https://github.com/kubernetes-sigs/external-dns/blob/master/docs/tutorials/hostport.md#headless-service[Setting up ExternalDNS for Headless Services^] in the ExternalDNS documentation.
 
-ExternalDNS will now automatically create DNS records for your Redpanda brokers, update the records if the IP addresses change, and delete them if you delete the Service.
+ExternalDNS will now automatically create DNS records for your Redpanda brokers, update the records if the IP addresses change, and delete them if you delete the ClusterIP Service.
 
 == Advertise IP addresses
 
@@ -524,9 +569,8 @@ rpk cluster info -X brokers=<worker-node-ip>:31092
 
 == Next steps
 
-- xref:manage:kubernetes/security/index.adoc[Configure security] for your listeners.
-
-- xref:./configure-listeners[Configure listeners].
+- xref:./configure-listeners[Configure listeners]
+- xref:manage:kubernetes/networking/connect-to-redpanda.adoc[]
 
 include::shared:partial$suggested-reading.adoc[]
 
