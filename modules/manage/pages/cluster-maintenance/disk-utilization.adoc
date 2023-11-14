@@ -18,17 +18,17 @@ When a Redpanda node runs out of disk space, it terminates. This causes leader r
 
 == Configure message retention
 
-By default, all topics on self-hosted Redpanda clusters keep the last 24 hours of data on local disk. Redpanda Cloud keeps the last 12 hours of data. However, if data is written fast enough to consume all disk space within the local retention time period, it's possible to exhaust local disk space, even when using Tiered Storage. You can adjust the default local storage size or time period, if required.
+By default, all topics on self-hosted Redpanda clusters retain 24 hours of data on local disk while Redpanda Cloud retains 12 hours of data. If data is written fast enough to consume all disk space within the local retention time period, it's possible to exhaust local disk space, even when using Tiered Storage. You can adjust the default local storage size or time period, if required.
 
-Retention properties control how long messages are kept on disk before they're deleted or compacted. Setting message retention properties is the best way to prevent old messages from accumulating on disk to the point that the disk becomes full. You can configure retention properties to delete messages based on the following conditions:
+Retention properties control the minimum length of time messages are kept on disk before they're deleted or compacted. Setting message retention properties is the best way to prevent old messages from accumulating on disk to the point that the disk becomes full. You can configure retention properties to delete messages based on the following conditions:
 
 * Message age is exceeded.
 * Aggregate message size in the topic is exceeded.
 * Either message age or aggregate message size in the topic is exceeded.
 
-Set retention properties at the topic level or the cluster level. If a value isn't specified for the topic, then the topic uses the value for the cluster. Note that cluster-level property names use snake-case, while topic-level properties use dots.
+You may set retention properties at the topic level or the cluster level. If a value isn't specified for the topic, then the topic uses the value for the cluster. Note that cluster-level property names use snake-case, while topic-level properties use dots.
 
-NOTE: Retention policy applies on each partition in a topic individually. Within the partion, only closed segments are subject to deletion. This means, for example, that even if the retention.ms is set to 5 minutes, if new segments are only created every 30 minutes then messages will remain for up to 30 minutes before being subject to the retention policy.
+NOTE: Retention policy applies on each partition in a topic individually. Within a partition, only closed segments are subject to deletion or compaction. When a time-based policy is set, all messages within the segment must exceed the set limit. For example, assume the retention.ms for a topic is 300,000 ms (5 minutes). If the segment.ms is 1,800,000ms (30 minutes)  then messages will remain for a minimum of 30 minutes until the segment containing them expires.
 
 |===
 | Retention property | Cluster level | Topic level +
@@ -42,7 +42,7 @@ No default
 
 | Size-based
 | `retention_bytes`  +
-Default - `null`
+No default
 | `retention.bytes`  +
 No default
 
@@ -58,6 +58,12 @@ Default - `null`
 | `retention.local.target.bytes`  +
 No default
 
+| Segment lifetime
+| `log_segment_ms`  +
+No default
+| `segment.ms`  +
+No default
+
 | Segment size
 | `log_segment_size`  +
 Default - `1073741824`
@@ -65,7 +71,7 @@ Default - `1073741824`
 No default
 |===
 
-Data expires from object storage following `retention.ms` or `retention.bytes`. For example, if `retention.bytes` is set to 10 GiB, then every partition in the topic has a limit of 10 GiB storage in the cloud. When `retention.bytes` is exceeded by data in object storage, the data in object storage is trimmed. With Tiered Storage enabled, data expires from local storage following `retention.local.target.ms` or `retention.local.target.bytes`.
+Data expires from object storage following `retention.ms` or `retention.bytes`. For example, if `retention.bytes` is set to 10 GiB, then every partition in the topic has a limit of 10 GiB storage. When `retention.bytes` is exceeded by data in object storage, the data in object storage is trimmed. With Tiered Storage enabled, data expires from local storage following `retention.local.target.ms` or `retention.local.target.bytes`.
 
 NOTE: Both size-based and time-based retention policies are applied simultaneously, so it's possible for your size-based property to override your time-based property, or vice versa. For example, if your size-based property requires removing one segment, and your time-based property requires removing three segments, then three segments are removed. Size-based properties reclaim disk space as close as possible to the maximum size, without exceeding the limit.
 
@@ -80,7 +86,7 @@ See also:
 
 A message is deleted if its age exceeds the value specified in `delete_retention_ms` (the cluster-level property) or `retention.ms` (the topic-level property). If `retention.ms` is not set at the topic level, the topic inherits the `delete_retention_ms` setting.
 
-NOTE: Time-based retention is calculated from the batch timestamp in a segment. Each segment index stores the timestamp. The timestamp policy can be either `CreateTime` (client timestamp set by producer) or `AppendTime` (server timestamp set by Redpanda). Segments are closed when partition leadership changes or when the segment size limit is reached.
+NOTE: Time-based retention is calculated from the batch timestamp in a segment. Each segment index stores the timestamp. The timestamp policy can be either `CreateTime` (client timestamp set by producer) or `AppendTime` (server timestamp set by Redpanda). Segments are closed when partition leadership changes, when the segment size limit is reached, or when the segment lifetime is exceeded.
 
 To set retention time for a single topic, use `retention.ms`, which overrides `delete_retention_ms`.
 
