@@ -113,18 +113,6 @@ listeners:
 
 For details about SASL authentication, see xref:manage:kubernetes/security/authentication/sasl-kubernetes.adoc[].
 
-If the internal listeners have TLS or mTLS enabled, you must configure your clients with valid TLS files. To find out if the Redpanda cluster has TLS or mTLS enabled, check the Helm values. In this example, the Kafka API has TLS and mTLS enabled:
-
-[source,yaml,lines=5+7,.no-copy]
-----
-listeners:
-  kafka:
-    port: 9093
-    tls:
-      cert: default
-      requireClientAuth: true
-----
-
 TLS files are stored in Secret resources that you can mount onto any Pods that run clients. TLS files may include:
 
 - Certificate files (`*.crt`): These files contain the public key and the identity (domain name) and are used for encryption. They can be self-signed or signed by a certificate authority (CA).
@@ -148,7 +136,6 @@ For example:
 [.no-copy]
 ----
 SECRET                   	MOUNT PATH
-redpanda-client          	/etc/tls/certs/redpanda-client
 redpanda-default-cert    	/etc/tls/certs/default
 redpanda-external-cert   	/etc/tls/certs/external
 ----
@@ -167,7 +154,7 @@ spec:
   volumes:
   - name: tls-certs
     secret:
-      secretName: redpanda-client
+      secretName: redpanda-default-client
   containers:
   - name: client-container
     image: example/client-image
@@ -222,16 +209,6 @@ kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpa
 
 NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
 
-If mTLS is enabled, pass the path to the client's key and certificate:
-
-[source,bash]
-----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8082/topics \
-  --cacert /etc/tls/certs/default/ca.crt \
-  --cert /etc/tls/certs/redpanda-client/tls.crt \
-  --key /etc/tls/certs/redpanda-client/tls.key
-----
-
 For all available endpoints, see xref:api:ROOT:pandaproxy-rest.adoc[].
 
 === Connect to internal Schema Registry
@@ -275,16 +252,6 @@ kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpa
 
 NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
 
-If mTLS is enabled, pass the path to the client's key and certificate:
-
-[source,bash]
-----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8081/subjects \
-  --cacert /etc/tls/certs/default/ca.crt \
-  --cert /path/to/client.crt \
-  --key /path/to/client.key
-----
-
 For all available endpoints, see xref:api:ROOT:pandaproxy-schema-registry.adoc[].
 
 === Connect to the internal Admin API
@@ -321,16 +288,6 @@ kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpa
 
 NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
 
-If mTLS is enabled, pass the path to the client's key and certificate:
-
-[source,bash]
-----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:9644/v1/node_config \
-  --cacert /etc/tls/certs/default/ca.crt \
-  --cert /path/to/client.crt \
-  --key /path/to/client.key
-----
-
 For all available endpoints, see xref:api:ROOT:admin-api.adoc[].
 
 == Connect to an external cluster
@@ -365,15 +322,13 @@ kubectl --namespace <namespace> get secret <secret-name> -o go-template="{{ rang
 export RPK_USER RPK_PASS RPK_SASL_MECHANISM
 ----
 
-. If you have TLS or mTLS enabled, you must save the TLS files to your local filesystem external to the Kubernetes cluster.
+. If you have TLS enabled, you must save the TLS files to your local filesystem external to the Kubernetes cluster.
 +
 When you first deploy Redpanda, the Helm chart prints some notes with the commands necessary to save the TLS files locally. For example:
 +
 [,bash]
 ----
 kubectl get secret --namespace <namespace> <secret-name> -o go-template='{{ index .data "ca.crt" | base64decode }}' > ca.crt
-kubectl get secret --namespace <namespace> <secret-name> -o go-template='{{ index .data "tls.crt" | base64decode }}' > tls.crt
-kubectl get secret --namespace <namespace> <secret-name> -o go-template='{{ index .data "tls.key" | base64decode }}' > tls.key
 ----
 
 For more details about `rpk` profiles, see xref:get-started:config-rpk-profile.adoc[].
@@ -428,23 +383,6 @@ listeners:
 
 For details about SASL authentication, see xref:manage:kubernetes/security/authentication/sasl-kubernetes.adoc[].
 
-If the external listeners have TLS or mTLS enabled, you must configure your clients with valid TLS files. To find out if the Redpanda cluster has TLS enabled, check the Helm values. In this example, the Kafka API has TLS enabled:
-
-[source,yaml,lines=9-11,.no-copy]
-----
-listeners:
-  kafka:
-    external:
-      default:
-        # enabled: true
-        port: 9094
-        advertisedPorts:
-        - 31092
-        tls:
-          # enabled: true
-          cert: external
-----
-
 TLS files are stored in Secrets that you can mount onto the Pods that are running the clients. TLS files may include:
 
 - Certificate files (`*.crt`): These files contain the public key and the identity (domain name) and are used for encryption. They can be self-signed or signed by a certificate authority (CA).
@@ -466,7 +404,6 @@ join -t $'\t' \
 [.no-copy]
 ----
 SECRET                   	MOUNT PATH
-redpanda-client          	/etc/tls/certs/redpanda-client
 redpanda-default-cert    	/etc/tls/certs/default
 redpanda-external-cert   	/etc/tls/certs/external
 ----
@@ -475,9 +412,7 @@ Then, you can save the TLS files to your local file system. For example:
 
 [source,bash]
 ----
-kubectl get secret --namespace <namespace> redpanda-client -o go-template='{{ index .data "ca.crt" | base64decode }}' > ca.crt
-kubectl get secret --namespace <namespace> redpanda-client -o go-template='{{ index .data "tls.crt" | base64decode }}' > tls.crt
-kubectl get secret --namespace <namespace> redpanda-client -o go-template='{{ index .data "tls.key" | base64decode }}' > tls.key
+kubectl get secret --namespace <namespace> redpanda-external-cert -o go-template='{{ index .data "ca.crt" | base64decode }}' > ca.crt
 ----
 
 Now, you can configure clients with the path to the TLS files.
@@ -529,16 +464,6 @@ kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpa
 
 NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
 
-If mTLS is enabled, pass the path to the client's key and certificate:
-
-[source,bash]
-----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8083/topics \
-  --cacert /etc/tls/certs/external/ca.crt \
-  --cert /etc/tls/certs/external/tls.crt \
-  --key /etc/tls/certs/external/tls.key
-----
-
 For all available endpoints, see xref:api:ROOT:pandaproxy-rest.adoc[].
 
 === Connect to external Schema Registry
@@ -586,16 +511,6 @@ kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpa
 
 NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
 
-If mTLS is enabled, pass the path to the client's key and certificate:
-
-[source,bash]
-----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8084/subjects \
-  --cacert /etc/tls/certs/external/ca.crt \
-  --cert /etc/tls/certs/external/tls.crt \
-  --key /etc/tls/certs/external/tls.key
-----
-
 For all available endpoints, see xref:api:ROOT:pandaproxy-schema-registry.adoc[].
 
 === Connect to external Admin API
@@ -635,16 +550,6 @@ kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpa
 ----
 
 NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
-
-If mTLS is enabled, pass the path to the client's key and certificate:
-
-[source,bash]
-----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:9645/v1/node_config \
-  --cacert /etc/tls/certs/external/ca.crt \
-  --cert /etc/tls/certs/external/tls.crt \
-  --key /etc/tls/certs/external/tls.key
-----
 
 For all available endpoints, see xref:api:ROOT:admin-api.adoc[].
 
