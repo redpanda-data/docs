@@ -1,20 +1,20 @@
 = Configure Authentication for Redpanda in Kubernetes
-:description: Redpanda supports multiple forms of authentication including SASL/SCRAM, mTLS, and basic authentication.
+:description: Learn how to configure authentication for Redpanda in Kubernetes.
 :page-context-links: [{"name": "Linux", "to": "manage:security/authentication.adoc" },{"name": "Kubernetes", "to": "manage:kubernetes/security/sasl-kubernetes.adoc" } ]
 :tags: ["Kubernetes", "Helm configuration"]
 :page-aliases: security:sasl-kubernetes.adoc, manage:kubernetes/security/sasl-kubernetes.adoc
 
-Redpanda supports multiple forms of authentication including SASL/SCRAM, mTLS, and basic authentication.
+Authentication verifies the identity of users and applications that connect to Redpanda clusters.
 
-All listeners are configured without authentication by default. This topic presents the supported authentication methods and describes how to configure authentication for Redpanda in Kubernetes.
+In the Redpanda Helm chart, all listeners are configured without authentication by default. This topic presents the supported authentication methods and describes how to configure authentication for Redpanda in Kubernetes.
 
-The Redpanda Helm chart supports three authentication methods:
+The Redpanda Helm chart supports these authentication methods:
 
 - SASL (Simple Authentication and Security Layer): Provides a flexible and adaptable framework for implementing various authentication mechanisms, such as username and password validation through SCRAM (Salted Challenge Response Authentication Mechanism).
 - mTLS (Mutual Transport Layer Security): Offers a certificate-based authentication approach, using X.509 certificates for mutual validation between clients and Redpanda brokers.
 - Basic authentication: Provides a method for an HTTP user agent, such as a web browser, to provide a username and password when making a request.
 
-Each of the APIs in Redpanda supports authentication methods:
+The APIs in Redpanda support these authentication methods:
 
 [cols="1a,2a"]
 |===
@@ -35,6 +35,8 @@ Each of the APIs in Redpanda supports authentication methods:
 | Basic authentication
 |===
 
+Only the Kafka API supports SASL/SCRAM, which adds an extra layer of security. Unlike basic authentication, SASL/SCRAM does not require sending passwords over the network, even in an encrypted form. It uses a challenge-response mechanism, ensuring that the password is not directly accessible to the server. It works with hashed passwords, providing additional security against dictionary attacks.
+
 == Prerequisites
 
 You must have the following:
@@ -45,23 +47,23 @@ You must have the following:
 
 == Enable authentication
 
-You can enable SASL authentication to give clients a username and password and restrict their access to the Kafka API through access control lists (ACLs). Redpanda supports the following SASL/SCRAM authentication mechanisms for the Kafka API:
+When authentication is enabled in the Redpanda Helm chart, clients are required to provide valid credentials to access internal and external listeners by default (except the Admin API). Enabling authentication for all listeners ensures that only authorized users can interact with your Redpanda cluster.
 
-- `SCRAM-SHA-256
+As the cluster administrator, you must create credentials for clients using a superuser account. Superusers are special users with xref:manage:security/authorization.adoc#operations[all permissions] on the cluster. They can grant permissions to other users of the Kafka API through access control lists (ACLs).
+
+With authentication enabled, the Kafka API requires SASL/SCRAM authentication and the HTTP APIs require basic authentication. Both superusers and regular users can authenticate to these APIs using their respective credentials. Redpanda supports the following SASL/SCRAM authentication mechanisms for the Kafka API:
+
+- `SCRAM-SHA-256`
 - `SCRAM-SHA-512`
-
-When authentication is enabled, all HTTP APIs are also configured with basic authentication. You can use superusers or regular users to authenticate to the HTTP APIs.
 
 For secure authentication, use xref:manage:kubernetes/security/tls/index.adoc[TLS encryption]. TLS is enabled in the Helm chart by default.
 
 == Create superusers
 
-To enable SASL authentication and create users with ACLs, you must define at least one superuser at startup. Superusers are special users that have xref:manage:security/authorization.adoc#operations[ALL permissions] on the cluster and can grant permissions to new users.
-
-NOTE: Without a superuser, you can create other users, but you can't grant them permissions to the cluster.
+Before you can create users with ACLs, you must define at least one superuser at startup. Without a superuser, you can create other users, but you can't grant them permissions to the cluster.
 
 To create one or more superusers, you must define a username and password.
-You can also set the authentication mechanism for each superuser.
+You can also set the SASL/SCRAM authentication mechanism for each superuser.
 
 To define superusers and their credentials you can:
 
@@ -89,7 +91,7 @@ Replace the following placeholders with your own values for the superuser:
 - `<superuser-password>`: The superuser's password.
 - `<superuser-authentication-mechanism>`: The authentication mechanism. Valid values are `SCRAM-SHA-256` or `SCRAM-SHA-512`.
 +
-Or, leave this placeholder empty to set it to the default authentication mechanism. The default is defined in the Helm values: `auth.sasl.mechanism`. This default is applied to all superusers that don't include an explicit authentication mechanism.
+Or, leave this placeholder empty to set it to the default authentication mechanism. The default is `SCRAM-SHA-512`. This default is applied to all superusers that don't include an explicit authentication mechanism.
 
 . Use the file to create a Secret resource in the same namespace as your Redpanda cluster.
 +
@@ -166,21 +168,6 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 - `auth.sasl.secretRef`: The name of the Secret that contains the superuser credentials. The Secret must be in the same namespace as the Redpanda cluster.
 - `auth.sasl.users`: Make sure that this list is empty. Otherwise, the chart will try to create a new Secret with the same name as the one set in `auth.sasl.secretRef` and fail because it already exists.
 
-==== Edit superusers
-
-To add new superusers to the cluster or change existing users, edit the `superusers.txt` file and reapply the Secret resource:
-
-[,bash]
-----
-kubectl create secret generic redpanda-superusers \
-  --namespace <namespace> \
-  --from-file=superusers.txt \
-  --save-config \
-  --dry-run=client -o yaml | kubectl apply -f -
-----
-
-The xref:reference:redpanda-helm-spec.adoc#statefulset-sidecars-configwatcher-enabled[`config-watcher` sidecar] in the Pod polls the Secret resource for changes and triggers a rolling upgrade to add the new superusers to the Redpanda cluster.
-
 === Use a YAML list
 
 You can use a YAML list item to store superuser credentials in configuration settings.
@@ -190,6 +177,8 @@ Replace the following placeholders with your own values for the superuser:
 - `<superuser-name>`: The name of the superuser.
 - `<superuser-password>`: The superuser's password.
 - `<superuser-authentication-mechanism>`: The authentication mechanism. Valid values are `SCRAM-SHA-256` or `SCRAM-SHA-512`.
++
+If you leave this placeholder empty, the Helm chart uses the default authentication mechanism. The default is `SCRAM-SHA-512`. This default is applied to all superusers that don't include an explicit authentication mechanism.
 
 [tabs]
 ======
@@ -266,9 +255,101 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 - `auth.sasl.secretRef`: The name of the Secret that the Redpanda Helm chart will create and use to store the user credentials listed in `auth.sasl.users`. This Secret must not already exist in the cluster.
 - `auth.sasl.users`: A list of superusers.
 
+=== Edit superusers
+
+You can add new superusers to the cluster or update existing users. For example, if you wanted to rotate credentials for superusers, you could update the username or password of an existing superuser.
+
+NOTE: You cannot delete superusers by changing the Helm values or updating the Secret.
+
+- If you created superusers using a Secret, you can edit the `superusers.txt` file and reapply the Secret resource:
++
+[,bash]
+----
+kubectl create secret generic redpanda-superusers \
+  --namespace <namespace> \
+  --from-file=superusers.txt \
+  --save-config \
+  --dry-run=client -o yaml | kubectl apply -f -
+----
++
+The xref:reference:redpanda-helm-spec.adoc#statefulset-sidecars-configwatcher-enabled[`config-watcher` sidecar] in the Pod polls the Secret resource for changes and triggers a rolling upgrade to add the new superusers to the Redpanda cluster.
+
+- If you created superusers using a YAML list, you can update the list:
++
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml,lines=10-15]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    auth:
+      sasl:
+        enabled: true
+        secretRef: redpanda-superusers
+        users:
+          - name: <superuser-name>
+            password: <new-superuser-password>
+            mechanism: <superuser-authentication-mechanism>
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`enable-sasl.yaml`
+[,yaml,lines=3-8]
+----
+auth:
+  sasl:
+    enabled: true
+    secretRef: redpanda-superusers
+    users:
+      - name: <superuser-name>
+        password: <new-superuser-password>
+        mechanism: <superuser-authentication-mechanism>
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values sasl-enable.yaml --reuse-values
+```
+
+--set::
++
+[,bash,lines=2-6]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set auth.sasl.enabled=true \
+  --set auth.sasl.secretRef=redpanda-superusers \
+  --set "auth.sasl.users[0].name=<superuser-name>" \
+  --set "auth.sasl.users[0].password=<new-superuser-password>" \
+  --set "auth.sasl.users[0].mechanism=<superuser-authentication-mechanism>"
+----
+
+====
+--
+======
+
 == Create new users
 
-When you have SASL enabled for your Redpanda cluster, you can create new users. By default, these users don't have any permissions in the cluster.
+When you have authentication enabled for your Redpanda cluster, you can create new users. By default, these users don't have any permissions in the cluster.
 
 TIP: As a security best practice, superusers should not run commands on the cluster. Instead, run commands as new users with specific permissions.
 
@@ -332,7 +413,7 @@ listeners:
 
 This section provides examples of connecting to Redpanda internally when authentication is enabled. For more details on connecting to Redpanda, see xref:manage:kubernetes/networking/connect-to-redpanda.adoc[].
 
-=== Use `rpk`
+=== Connect to the Kafka API
 
 Create a topic as the `myuser` user by running xref:reference:rpk/rpk-topic/rpk-topic-create.adoc[`rpk topic create`]:
 
@@ -392,6 +473,7 @@ For all available endpoints, see xref:api:ROOT:pandaproxy-rest.adoc[].
 
 By default, the Redpanda Helm chart configures an internal and external listener for the Schema Registry API.
 
+To access the internal listener:
 
 [source,bash]
 ----
