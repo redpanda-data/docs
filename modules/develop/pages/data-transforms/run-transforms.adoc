@@ -3,13 +3,13 @@
 :page-aliases: reference:rpk/rpk-wasm/rpk-wasm.adoc, reference:rpk/rpk-wasm.adoc, reference:rpk/rpk-wasm/rpk-wasm-deploy.adoc, reference:rpk/rpk-wasm/rpk-wasm-generate.adoc, reference:rpk/rpk-wasm/rpk-wasm-remove.adoc, data-management:data-transform.adoc, labs:data-transform/index.adoc
 :latest-data-transforms-version: 0.0.0-20230830git604fcce
 
-Data transforms let you run common data streaming tasks, like filtering, scrubbing, and transcoding, within Redpanda. For example, you may have consumers that require you to remove credit card numbers or convert JSON to Avro. Data transforms can also interact with the Redpanda Schema Registry to work with encoded data types. 
+Data transforms let you run common data streaming tasks, like filtering, scrubbing, and transcoding, within Redpanda. For example, you may have consumers that require you to redact credit card numbers or convert JSON to Avro. Data transforms can also interact with the Redpanda Schema Registry to work with encoded data types. 
 
 Data transforms use a WebAssembly (Wasm) engine inside a Redpanda broker. A Wasm function acts on a single record in an input topic. You can develop and manage data transforms with xref:reference:rpk/rpk-transform/rpk-transform.adoc[`rpk transform`] commands.
 
 See also: xref:./how-transforms-work.adoc[] and <<Limitations>>
 
-IMPORTANT: This Beta feature is not supported for production deployments. Beta transforms may not work the same after the GA release. 
+IMPORTANT: This Beta feature is not supported for production deployments. Runtime behavior may change in the GA release, and Beta data transforms may not be upgradeable without changes.
 
 == Enable data transforms
 
@@ -18,7 +18,18 @@ IMPORTANT: This Beta feature is not supported for production deployments. Beta t
 ```bash
 rpk cluster config set data_transforms_enabled true
 ```
-. Restart the broker with `rpk redpanda stop`, then `rpk redpanda start`. This property requires the cluster to be restarted in order to be applied.
+. Restart all brokers with `rpk redpanda stop`, then `rpk redpanda start`. This flag requires the cluster to be restarted in order to be applied.
+
+== Configure memory for data transforms
+
+Redpanda reserves memory for each transform function within the broker. Set the following properties based on the number of functions you have and the amount of memory you anticipate needing. Reserve enough memory for your input record and output record to be in memory at the same time. 
+
+- `wasm_per_core_memory_reservation`: Total amount of memory to reserve per shard for all Wasm VMs. Default = 20 MiB. Requires restart.
+- `wasm_per_function_memory_limit`: Amount of memory to reserve per instance of a Wasm VM. Default = 2 MiB. Requires restart.
+
+The maximum number of functions that can be deployed to a cluster is equal to `wasm_per_core_memory_reservation` / `wasm_per_function_memory_limit`. CPU time is dynamically allocated to the Wasm runtime and ensures that the code does not run forever and cannot block the broker from handling traffic or doing other work, such as Tiered Storage uploads. For TinyGo, the overhead is 64 KB. For standard Golang, the overhead is 16 MB.
+
+See also: xref:./how-transforms-work.adoc[]
 
 == Create a data transforms project
 
@@ -183,7 +194,7 @@ func filterValidJson(e redpanda.WriteEvent) ([]redpanda.Record, error) {
 rpk transform build
 ```
 
-. Deploy the Wasm module to your cluster. For example:
+. Deploy the Wasm module to your cluster. For example, for the output topic messages to be identical:
 +
 ```bash
 rpk transform deploy --input-topic=demo-1 --output-topic=demo-2

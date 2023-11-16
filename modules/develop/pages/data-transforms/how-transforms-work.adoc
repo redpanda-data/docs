@@ -7,38 +7,33 @@ image::shared:wasm1.png[Data transforms in a broker]
 
 To learn how to build and deploy data transforms, see xref:./run-transforms.adoc[].
 
-== WebAssemby in Redpanda
+== Data transforms with WebAssembly
 
-Data transforms use a WebAssembly (Wasm) engine inside a Redpanda broker, allowing Redpanda to control the entire transform lifecycle. For example, Redpanda can stop and start transforms when partitions are moved or to free up system resources for other tasks. 
+Data transforms use WebAssembly (Wasm) engines inside a Redpanda broker, allowing Redpanda to control the entire transform lifecycle. For example, Redpanda can stop and start transforms when partitions are moved or to free up system resources for other tasks. 
+
+Wasm is executed within a runtime in the broker. Data transforms take an input topic and map it to an output topic, running a virtual machine (VM) on the same shard as every partition leader for a topic. Redpanda uses just-in-time (JIT) compilation, which compiles the function in memory, writes it to executable space, then runs the directly translated machine code. 
+
+When you deploy a data transform, Redpanda pushes the generated `.wasm` files and metadata to the cluster, which then stores and replicates the bytecode and metadata using internal broker topics. Each shard of Redpanda runs its own copy of the transform function. There is at most one runtime for a transform for any shard, and memory for each function is reserved within the broker with the `wasm_per_core_memory_reservation` and `wasm_per_function_memory_limit` properties.
+
+== Flow of data transforms
+
+When a shard becomes the leader of a given partition on the input topic, Redpanda does the following:
+
+. Spins up a Wasm VM using the JIT-compiled WebAssembly module.
+. Pushes records from the input partition into the Wasm VM.
+. Writes the output. The output partition may exist on the same broker or on another broker in the cluster.
 
 Within Repdanda, there's a single Raft controller that manages cluster information, including data transforms. On every shard (core), Redpanda knows what data transforms exist in the cluster, as well as metadata about the transform, such as input and output topics and environment variables. 
 
-Wasm is executed within a runtime in the broker. Data transforms take an input topic and map it to an output topic, running a virtual machine (VM) on the same shard as every partition leader for a topic. Redpanda uses just-in-time (JIT) compilation, which compiles the function in memory, writes it to executable space, then runs the directly translated machine code. When a shard becomes the leader of a given partition on the input topic, Redpanda does the following:
-
-. Spins up a Wasm VM using the JIT-compiled WebAssembly module
-. Pushes records from the input partition into the Wasm VM
-. Writes the output, which may go to the same shard on the same machine, or to a different shard on the same machine, or to a different machine
-
 image::shared:wasm_architecture.png[Wasm architecture in Redpanda]
 
-The transform function processes every record produced to an input topic and returns zero or more records that are then produced to an output topic. Data transforms are applied to all partitions on an input topic. A record is processed after it has been successfully written to disk on the input topic. Because the transform happens in the background after the write finishes, the transform doesn't affect the original produced record and doesn't block writes to the input topic. 
+Each transform function reads from a specified input topic and writes to a specified output topic. The transform processes every record produced to an input topic and returns zero or more records that are then produced to the specified output topic. Data transforms are applied to all partitions on an input topic. A record is processed after it has been successfully written to disk on the input topic. Because the transform happens in the background after the write finishes, the transform doesn't affect the original produced record, doesn't block produce and consume requests, and doesn't block writes to the input topic. 
 
-image::shared:wasm_flow.png[Flow of record transform]
+A new data transform reads the input topic from the latest offset. That is, it only reads new data produced to the input topic: it does not read messages produced to the input topic before the transform was deployed. If a partition leader moves from one broker to another, then the data transform instance assigned to that partition must move with it.
 
-A new data transform processes the input topic from the latest offset. When a partition loses leadership, the broker issues an internal notification, and Redpanda shuts down the transform on that core. When another broker gains leadership of the partition, it also issues a notification, and the transform subsystem starts a processor and resumes from the last committed offset. This is why transforms have at-least-once semantics. 
+When a partition replica loses leadership, the broker hosting that partition replica stops the transform instance running on the same shard. The broker that is now hosting the partitions new leader starts the transform on the same shard as that leader, and the transform resumes from the last committed offset.
 
-== Configure Wasm properties
-
-When you deploy a data transform, Redpanda pushes the generated `.wasm` files and metadata to the cluster, which then stores and replicates the bytecode and metadata using internal broker topics. Each shard of Redpanda runs its own copy of the transform function. There is at most one runtime for a transform for any shard, and memory for each function is reserved within the broker. This is achieved with the following cluster configuration properties: 
-
-- `wasm_per_core_memory_reservation`: Total amount of memory to reserve per shard for all Wasm VMs. Default = 20 MiB.
-- `wasm_per_function_memory_limit`: Amount of memory to reserve per instance of a Wasm VM. Default = 2 MiB.
-
-The maximum number of functions that can be deployed to a cluster is equal to `wasm_per_core_memory_reservation` / `wasm_per_function_memory_limit`. CPU time is dynamically allocated to the Wasm runtime and ensures that the code does not run forever and cannot block the broker from handling traffic or doing other work, such as Tiered Storage uploads.
-
-Set the properties based on how many functions you have and how much memory you anticipate needing. You want enough memory for your input record and output record to be in memory at the same time. For TinyGo, the overhead is 64KB. For standard Golang, the overhead is 16MB.
-
-NOTE: These properties require the cluster to be restarted in order to be applied.
+If the previous transform instance failed to commit its latest offsets before moving with the partition leader (for example, the broker crashed), then it's likely that the new transform instance will reprocess some events. This is why transforms have at-least-once semantics.
 
 == Related topics
 
