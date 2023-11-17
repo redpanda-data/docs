@@ -1,45 +1,26 @@
-= Schema Registry
-:description: Redpanda's Schema Registry provides the interface to store and manage event schemas.
-:page-aliases: data-management:schema-registry.adoc
+= Use the Schema Registry API
+:description: Perform common Schema Registry management operations with the API.
 
-Redpanda's Schema Registry provides the interface to store and manage event schemas. Producers and consumers register and retrieve the schemas they use from the registry. Schemas are versioned, and the registry supports configurable compatibility modes between schema versions. When a producer or a consumer makes a request to register a schema change, the registry checks for schema compatibility and returns an error for an incompatible change.
+Schemas provide human-readable documentation for an API. They verify that data conforms to an API, support the generation of serializers for data, and manage the compatibility of evolving APIs, allowing new versions of services to be rolled out independently.
 
-The Schema Registry has API endpoints that allow you to perform the following tasks:
+[NOTE]
+====
+The Schema Registry is built into Redpanda, and you can use it with the API or the Redpanda Console UI. This section describes operations available in the xref:api:ROOT:pandaproxy-schema-registry.adoc[Schema Registry API]. See also:
 
-* Query supported serialization formats.
-* Register schemas for a subject.
+* xref:manage:schema-reg/schema-reg-ui.adoc[] 
+* xref:manage:schema-reg/schema-reg-overview.adoc[]
+====
+
+The Redpanda Schema Registry has API endpoints that allow you to perform the following tasks:
+
+* Register schemas for a subject. A _subject_ is a logical grouping or category for schemas. When data formats are updated, a new version of the schema can be registered under the same subject, allowing for backward and forward compatibility.
 * Retrieve schemas of specific versions.
 * Retrieve a list of subjects.
 * Retrieve a list of schema versions for a subject.
 * Configure schema compatibility checking.
+* Query supported serialization formats.
 * Delete schemas from the registry.
 
-== Schema
-
-A schema is an external mechanism to describe the structure of data and its encoding. Using schemas provides multiple benefits:
-
-* Enables a loosely coupled, data-centric architecture that minimizes dependencies in code, between teams, and between producers and consumers.
-* Provides human-readable documentation for an API.
-* Verifies that data conforms to an API.
-* Supports the generation of serializers for data.
-* Manages the compatibility of evolving APIs, allowing new versions of services to be rolled out independently.
-
-=== Serialization format
-
-A data serialization format defines how data is converted to the bits that are stored and transmitted. Redpanda's Schema Registry supports the following data serialization formats for its schemas:
-
-* Avro
-* Protobuf
-
-== Redpanda design overview
-
-Redpanda built the Schema Registry directly into the Redpanda binary. It runs out-of-the-box with Redpanda's default configuration, and it requires no new binaries to install and no new services to deploy or maintain.
-
-Every broker allows mutating REST calls, so there is no need to configure leadership or failover strategies. Schemas are stored in a compacted topic, and the registry uses optimistic concurrency control at the topic level to detect and avoid collisions.
-
-The Schema Registry publishes record metadata to an internal topic, `_schemas`, as its backend store. By default, `_schemas` is protected from deletion and configuration changes by Kafka clients (see the xref:reference:cluster-properties.adoc#kafka_nodelete_topics[kafka_nodelete_topics] cluster property).
-
-== Use Schema Registry
 
 The following examples cover the basic functionality of the Redpanda Schema Registry based on an example Avro schema called `sensor_sample`. This schema contains fields that represent a measurement from a sensor for the value of the `sensor` topic, as defined below.
 
@@ -67,13 +48,17 @@ The following examples cover the basic functionality of the Redpanda Schema Regi
 }
 ----
 
-=== Prerequisites
+== Prerequisites
 
 To run the sample commands and code in each example, follow these steps to set up Redpanda and other tools:
 
+. You need a running Redpanda cluster. If you don't have one, see the xref:get-started:quick-start.adoc[].
++
+These examples assume that the Schema Registry is available locally at `http://localhost:8081`. If the Schema Registry is hosted on a different address or port in your cluster, change the URLs in the examples.
 . Download the https://stedolan.github.io/jq/download/[jq utility^].
-. Install https://curl.se/[curl^] or https://www.python.org/[Python^].
-** If using Python, install the https://requests.readthedocs.io/en/latest/user/install/#install[Requests module^], then create an interactive Python session:
+. Install https://curl.se/[curl^] or https://www.python.org/[Python^]. 
++
+If using Python, install the https://requests.readthedocs.io/en/latest/user/install/#install[Requests module^], then create an interactive Python session:
 +
 [,python]
 ----
@@ -84,38 +69,10 @@ def pretty(text):
 
 base_uri = "http://localhost:8081"
 ----
-. xref:get-started:quick-start.adoc[Install Redpanda with Docker].
-. Start Redpanda with Docker:
 +
-[,bash]
-----
-docker network create redpanda-sr
-docker volume create redpanda-sr
-docker run \
---pull=always \
---name=redpanda-sr \
---net=redpanda-sr \
--v "redpanda-sr:/var/lib/redpanda/data" \
--p 8081:8081 \
--p 8082:8082 \
--p 9092:9092 \
---detach \
-docker.redpanda.com/redpandadata/redpanda start \
---overprovisioned \
---smp 1 \
---memory 1G \
---reserve-memory 0M \
---node-id 0 \
---check=false \
---pandaproxy-addr 0.0.0.0:8082 \
---advertise-pandaproxy-addr 127.0.0.1:8082 \
---kafka-addr 0.0.0.0:9092 \
---advertise-kafka-addr redpanda-sr:9092
-----
+You can also use xref:get-started:intro-to-rpk.adoc[`rpk`] to interact with the Schema Registry. The `rpk registry` set of commands call the different API endpoints as shown in the curl and Python examples. 
 
-After Redpanda is running, endpoints are documented at `+http://localhost:8081/v1+`.
-
-=== Query supported schema formats
+== Query supported schema formats
 
 To get the supported data serialization formats in the Schema Registry, make a GET request to the `/schemas/types` endpoint:
 
@@ -150,7 +107,7 @@ If the request is successful, it returns the supported serialization formats:
 ]
 ----
 
-=== Register a schema
+== Register a schema
 
 A schema is registered in the registry with a _subject_, which is a name that is associated with the schema as it evolves. Subjects are typically in the form `<topic-name>-key` or `<topic-name>-value`.
 
@@ -213,7 +170,7 @@ rpk::
 --
 
 ```bash
-rpk registry schema create sensor-value 
+rpk registry schema create sensor-value ~/code/tmp/sensor_sample.avro
 ```
 --
 ====
@@ -229,7 +186,7 @@ If the request is successful, it returns a version `id` unique for the schema in
 
 When you register an evolved schema for an existing subject, the version `id` is incremented by 1.
 
-=== Retrieve a schema
+== Retrieve a schema
 
 To retrieve a registered schema from the registry, make a GET request to the `/schemas/ids/<id>` endpoint:
 
@@ -276,7 +233,7 @@ If the request is successful, it returns the schema:
 }
 ----
 
-=== List registry subjects
+== List registry subjects
 
 To list all registry subjects, make a GET request to the `/subjects` endpoint:
 
@@ -308,7 +265,7 @@ rpk::
 --
 
 ```bash
-rpk registry subject list
+rpk registry subject list --format json
 ```
 
 --
@@ -322,7 +279,7 @@ If the request is successful, it returns the subject:
 ]
 ```
 
-=== Retrieve schema versions of a subject
+== Retrieve schema versions of a subject
 
 To query the schema versions of a subject, make a GET request to the `/subjects/<subject-name>/versions` endpoint.
 
@@ -361,7 +318,7 @@ If the request is successful, it returns the version ID:
 ]
 ```
 
-=== Retrieve a schema of a subject
+== Retrieve a schema of a subject
 
 To retrieve a schema associated with a subject, make a GET request to the `/subjects/<subject-name>/versions/<version-id>` endpoint:
 
@@ -388,6 +345,13 @@ pretty(res)
 ```
 
 --
+rpk::
++
+--
+```bash
+rpk registry schema get sensor-value --schema-version 1
+```
+--
 ====
 
 If the request is successful, it returns the subject and its associated schema:
@@ -400,6 +364,17 @@ If the request is successful, it returns the subject and its associated schema:
   "schema": "{\"type\":\"record\",\"name\":\"sensor_sample\",\"fields\":[{\"name\":\"timestamp\",\"type\":\"long\",\"logicalType\":\"timestamp-millis\"},{\"name\":\"identifier\",\"type\":\"string\",\"logicalType\":\"uuid\"},{\"name\":\"value\",\"type\":\"long\"}]}"
 }
 ```
+
+[NOTE]
+====
+`rpk` returns only the subject and not the schema.
+
+```sh
+SUBJECT        VERSION  ID    TYPE
+sensor-value   1        1     AVRO
+```
+====
+
 
 To get the latest version, use `latest` as the version ID:
 
@@ -425,6 +400,13 @@ res = requests.get(f'{base_uri}/subjects/sensor-value/versions/latest').json()
 pretty(res)
 ```
 
+--
+rpk::
++
+--
+```bash
+rpk registry schema get sensor-value --schema-version latest
+```
 --
 ====
 
@@ -480,19 +462,11 @@ If the request is successful, it returns the schema:
 }
 ```
 
-=== Configure schema compatibility
+== Configure schema compatibility
 
 As applications change and their schemas evolve, you may find that producer schemas and consumer schemas are no longer compatible. You decide how you want a consumer to handle data from a producer that uses an older or newer schema.
 
-You can configure different types of schema compatibility, which are applied to a subject when a new schema is registered. The Schema Registry supports the following compatibility types:
-
-- `BACKWARD` (*default*) - Consumers using the new schema (for example, version 10) can read data from producers using the previous schema (for example, version 9).
-- `BACKWARD_TRANSITIVE` - Consumers using the new schema (for example, version 10) can read data from producers using all previous schemas (for example, versions 1-9).
-- `FORWARD` - Consumers using the previous schema (for example, version 9) can read data from producers using the new schema (for example, version 10).
-- `FORWARD_TRANSITIVE` - Consumers using any previous schema (for example, versions 1-9) can read data from producers using the new schema (for example, version 10).
-- `FULL` - A new schema and the previous schema (for example, versions 10 and 9) are both backward and forward compatible with each other.
-- `FULL_TRANSITIVE` - Each schema is both backward and forward compatible with all registered schemas.
-- `NONE` - No schema compatibility checks are done.
+include::partial$schema-compatibility.adoc[]
 
 To set the compatibility type for a subject, make a PUT request to `/config/<subject-name>` with the specific compatibility type:
 
@@ -532,7 +506,7 @@ rpk::
 --
 
 ```bash
-rpk registry compatibility-level set sensor-value --level "BACKWARD"
+rpk registry compatibility-level set sensor-value --level BACKWARD
 ```
 
 --
@@ -578,15 +552,6 @@ res = requests.post(
     }),
     headers={'Content-Type': 'application/vnd.schemaregistry.v1+json'}).json()
 pretty(res)
-```
-
---
-rpk::
-+
---
-
-```bash
-rpk registry compatibility-level set sensor-value
 ```
 
 --
@@ -646,16 +611,80 @@ A successful registration returns the schema's `id`:
 }
 ```
 
-=== Delete a schema
+== Reference a schema
+
+To build more complex schema definitions, you can add a reference to other schemas. The following example adds schema references and shows that the schema cannot be deleted when it includes references.
+
+```bash
+curl -X POST -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/simple/versions -d '{"schema": "syntax = \"proto3\";\nmessage Simple {\n  string id = 1;\n}","schemaType": "PROTOBUF"}'
+```
+```json
+{"id":2}
+```
+
+```bash
+curl -X POST -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/import/versions -d '{"schema": "syntax = \"proto3\";\nimport \"simple\";\nmessage Test3 {\n  Simple id = 1;\n}","schemaType": "PROTOBUF", "references": [{"name": "simple", "subject": "simple", "version":1}]}'
+```
+```json
+{"id":3}
+```
+
+[tabs]
+====
+Curl::
++
+--
+```bash
+curl -X DELETE -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/simple/versions/1
+```
+--
+rpk::
++
+--
+```bash
+rpk registry schema delete simple --schema-version 1
+```
+--
+====
+
+```json
+{"error_code":42206,"message":"One or more references exist to the schema {magic=1,keytype=SCHEMA,subject=simple,version=1}"}
+```
+
+[tabs]
+====
+Curl::
++
+--
+```bash
+curl -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/simple/versions/1/referencedby
+```
+--
+rpk::
++
+--
+```bash
+rpk registry schema references simple --schema-version 1
+```
+--
+====
+
+```json
+[3]
+```
+
+== Delete a schema
 
 The Schema Registry API provides DELETE endpoints for deleting a single schema or all schemas of a subject: 
 
 - `/subjects/<subject>/versions/<version>`
 - `/subjects/<subject>`
 
+Schemas cannot be deleted if any other schemas reference it. 
+
 A schema can be soft deleted (impermanently) or hard deleted (permanently), based on the boolean query parameter `permanent`. A soft deleted schema can be retrieved and re-registered. A hard deleted schema cannot be recovered.
 
-==== Soft delete a schema
+=== Soft delete a schema
 
 To soft delete a schema, make a DELETE request with the subject and version ID (where `permanent=false` is the default parameter value):
 
@@ -757,7 +786,7 @@ If the request is successful, it returns all subjects, including deleted ones:
 To undo a soft deletion, first follow the steps to <<retrieve-a-schema-of-a-subject,retrieve the schema>>, then <<register-a-schema,register the schema>>.
 
 
-==== Hard delete a schema
+=== Hard delete a schema
 
 [CAUTION]
 ====
@@ -826,24 +855,11 @@ A request for a hard-deleted schema returns an error. For example:
 }
 ```
 
-=== Cleanup
+== Suggested reading
 
-When you're finished, stop and remove the containers in Docker running Redpanda:
-
-[,bash]
-----
-docker stop redpanda-sr
-docker rm redpanda-sr
-docker volume remove redpanda-sr
-docker network remove redpanda-sr
-----
-
-== Related topics
-
+* xref:manage:schema-reg/schema-reg-overview.adoc[]
 * xref:api:ROOT:pandaproxy-schema-registry.adoc[Schema Registry API]
 * xref:reference:node-configuration-sample.adoc[] (search for `schema_registry`)
 * xref:manage:monitoring.adoc#service-level-queries[Monitor Schema Registry service-level metrics]
 * xref:deploy:deployment-option/self-hosted/manual/node-property-configuration.adoc[Configure broker properties for Schema Registry]
 * xref:manage:console/protobuf.adoc#schema-registry[Configure Schema Registry for Protobuf deserialization]
-* xref:reference:console/record-deserialization.adoc[Redpanda Console record deserialization]
-* xref:deploy:deployment-option/self-hosted/manual/production/production-deployment.adoc#prepare-infrastructure[Provision ports for deployment]

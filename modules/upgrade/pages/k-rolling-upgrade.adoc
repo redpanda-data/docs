@@ -3,56 +3,40 @@
 :page-context-links: [{"name": "Linux", "to": "upgrade:rolling-upgrade.adoc" },{"name": "Kubernetes", "to": "upgrade:k-rolling-upgrade.adoc" } ]
 :page-aliases: manage:kubernetes/rolling-upgrade.adoc
 
-To benefit from Redpanda's new features and enhancements, use rolling upgrades to upgrade to the latest version. New features are available after all brokers (Pods) in the cluster are upgraded and restarted.
+To benefit from Redpanda's new features and enhancements, upgrade to the latest version. New features are available after all brokers in the cluster are upgraded and restarted.
 
-Redpanda platform version numbers follow the convention AB.C.D, where AB is the two digit year, C is the feature release, and D is the patch release. For example, version 22.3.1 indicates the first patch release on the third feature release of the year 2022. Patch releases include bug fixes and minor improvements, with no change to user-facing behavior. New and enhanced features are documented with each feature release.
+Redpanda platform version numbers follow the convention AB.C.D, where AB is the two digit year, C is the feature release, and D is the patch release. For example, version 22.3.1 indicates the first patch release on the third feature release of the year 2022. Patch releases include bug fixes and minor improvements, with no change to user-facing behavior. New and enhanced features are documented with each feature release. You can find a list of all releases on https://github.com/redpanda-data/redpanda/releases[GitHub^].
 
-include::partial$rolling-upgrades/important-upgrade-note.adoc[]
+include::partial$rolling-upgrades/upgrade-limitations.adoc[]
 
 == Prerequisites
 
-* A running Redpanda cluster.
+* xref:deploy:deployment-option/self-hosted/kubernetes/index.adoc[A Redpanda cluster running in Kubernetes].
 * https://stedolan.github.io/jq/download/[jq^] for listing available versions.
 * An understanding of the <<impact-of-broker-restarts,impact of broker restarts>> on clients, node CPU, and any alerting systems you use.
-* Review incompatible changes in new versions:
+* <<Review incompatible changes>> in new versions.
 
-=== Review incompatible changes 
+include::partial$rolling-upgrades/restart-impact.adoc[leveloffset=+1]
+
+== Review incompatible changes
 
 Patch releases in https://github.com/redpanda-data/redpanda/discussions/9522[22.3.14^] and https://github.com/redpanda-data/redpanda/discussions/9523[23.1.2^] changed the behavior when remote read is disabled and the requested Raft term falls below the local log's beginning. In earlier versions, Redpanda returned an offset -1. With the patch, when you request a value older than the lowest offset, Redpanda returns the lowest offset, not -1.
 
 == Find a new version
 
-Before you perform a rolling upgrade, you must find out which Redpanda version you are currently running, whether you can upgrade straight to the new version, and what's changed since your original version.
+Before you perform a rolling upgrade, you must find out:
 
-. Find your current version:
-+
-[tabs]
-====
-TLS Enabled::
-+
---
+- Which Redpanda version you are currently running.
+- Whether you can upgrade directly to the new version.
+- What's changed since your original version.
 
+
+. Find your current version of Redpanda:
++
 ```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk redpanda admin brokers list \
-    -X admin.tls.enabled=true \
-    -X admin.tls.ca=<path-to-admin-api-ca-certificate> \
-    -X admin.hosts=<broker-url>:<admin-api-port>
+kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
+  rpk redpanda admin brokers list
 ```
-
---
-TLS Disabled::
-+
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk redpanda admin brokers list \
-    -X admin.hosts=<broker-url>:<admin-api-port> \
-```
-
---
-====
 +
 For all available flags, see the xref:reference:rpk/rpk-redpanda/rpk-redpanda-admin-brokers-list.adoc[`rpk redpanda admin brokers list` command reference].
 +
@@ -69,7 +53,7 @@ NODE-ID  BROKER-VERSION
 ```
 ====
 
-. Find the Redpanda version that's used in the latest Redpanda Helm chart:
+. Find the Redpanda version that's used in the latest version of the Redpanda Helm chart:
 +
 [,bash]
 ----
@@ -95,111 +79,49 @@ curl -s 's://hub.docker.com/v2/repositories/redpandadata/redpanda/tags/?ordering
 
 . Check the https://github.com/redpanda-data/redpanda/releases[release notes^] to find information about what has changed between Redpanda versions.
 
-include::partial$rolling-upgrades/restart-impact.adoc[leveloffset=+1]
-
 == Perform a rolling upgrade
 
-A rolling upgrade involves putting a broker into maintenance mode, upgrading the broker,
-taking the broker out of maintenance mode, and then repeating the process on the next broker in the cluster.
-Placing brokers into maintenance mode ensures a smooth upgrade of your cluster while reducing the risk of interruption or degradation in service.
+A rolling upgrade involves running the following procedure on each broker, one at a time:
 
-When a broker is placed into maintenance mode, it reassigns its partition leadership to other brokers for all topics that have a replication factor greater than one.
-Reassigning partition leadership involves _draining_ leadership from the broker and _transferring_ that leadership to another broker.
+. Upgrade the version of Redpanda on the broker that's running in the Pod with the highest ordinal.
+. Place the broker into maintenance mode.
+. Wait for maintenance mode to finish.
+. Terminate the Pod so that it is recreated with the new version of Redpanda.
+. Take the broker out of maintenance mode.
 
-. Check for topics that have a replication factor greater than one.
-+
-If you have topics with `replication.factor=1`, and if you have sufficient disk space, Redpanda Data recommends temporarily increasing the replication factor. This can help limit outages for these topics during the rolling upgrade. Do this before the upgrade to make sure there's time for the data to replicate to other brokers. For more information, see xref:manage:data-migration.adoc#change-topic-replication-factor[Change topic replication factor].
+Placing brokers into maintenance mode ensures a smooth upgrade of your cluster while reducing the risk of interruption or degradation in service. When a broker is placed into maintenance mode, it reassigns its partition leadership to other brokers for all topics that have a replication factor greater than one (three is the default replication factor for topics). Reassigning partition leadership involves _draining_ leadership from the broker and _transferring_ that leadership to another broker.
 
-. <<Deploy an upgraded StatefulSet>> with your desired Redpanda version.
-. <<Upgrade and restart the brokers>> separately, one after the other.
-
-[WARNING]
+[NOTE]
 ====
-Redpanda Data does not recommend using the `kubectl rollout restart` command to perform rolling upgrades.
-Although the chart's `preStop` lifecycle hook puts the broker into maintenance mode before a Pod is deleted,
-the `terminationGracePeriod` may not be long enough to allow maintenance mode to finish.
-If maintenance mode does not finish before the Pod is deleted, you may lose data.
-After the `terminationGracePeriod`, the container is forcefully stopped using a `SIGKILL` command.
+The Redpanda Helm chart and the Redpanda Operator automate this procedure.
 
-If you want to use `kubectl rollout restart`, it can be a challenge to determine the necessary value for the `terminationGracePeriod`. In common cases, 30 seconds should be sufficient.
-For large clusters, 90 seconds should be sufficient. You can test different values in a development environment. To configure the `terminationGracePeriod`,
+The Helm chart's `preStop` lifecycle hook puts each broker into maintenance mode before the Pod that it's running on is terminated. If maintenance mode does not complete before the `terminationGracePeriod` the container is forcefully terminated using a `SIGKILL` command.
+
+The default `terminationGracePeriod` is 90 seconds, which should be long enough for large clusters.
+You can test different values in a development environment.
+To configure the `terminationGracePeriod`,
 use the xref:reference:redpanda-helm-spec.adoc#statefulsetterminationgraceperiodseconds[`statefulset.terminationGracePeriodSeconds`] setting.
 ====
 
-=== Deploy an upgraded StatefulSet
+To upgrade:
 
-To deploy an upgraded StatefulSet, you need to delete the existing StatefulSet, then upgrade the Redpanda Helm chart deployment with your desired Redpanda version.
+. Check for topics that have a replication factor greater than one.
++
+If you have topics with a replication factor of 1, and if you have sufficient disk space, temporarily xref:manage:data-migration.adoc#change-topic-replication-factor[increase the replication factor] to limit outages for these topics during the rolling upgrade.
++
+Increase the replication factor before you upgrade to ensure that Redpanda has time to replicate data to other brokers.
 
-. Delete the existing StatefulSet, but leave the Pods running:
+. Ensure that the cluster is healthy:
 +
 ```bash
-kubectl delete statefulset redpanda --cascade=orphan --namespace <namespace>
-```
-
-. Upgrade the Redpanda version by overriding the `image.tag` setting. Replace `<new-version>` with a valid version tag.
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda \
-  --namespace redpanda \
-  --create-namespace \
-  --set image.tag=<new-version> --set statefulset.updateStrategy.type=OnDelete
+kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
+  rpk cluster health
 ```
 +
-[NOTE]
-====
-Make sure to include all your configuration overrides in the `helm upgrade` command.
-Otherwise, the upgrade may fail.
-For example, if you already enabled SASL, include the same SASL overrides.
-
-Do not use the `--reuse-values` flag, otherwise Helm won't include any new values from the upgraded chart.
-====
-
-The `statefulset.updateStrategy.type=OnDelete` setting stops the StatefulSet from upgrading all the Pods automatically.
-Changing the `upgradeStrategy` to `OnDelete` allows you to keep the existing Pods running and upgrade each broker separately.
-For more details, see the https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#update-strategies[Kubernetes documentation^].
-
-TIP: To use the Redpanda version in the latest version of the Redpanda Helm chart, set `image.tag` to `""` (empty string).
-
-=== Upgrade and restart the brokers
-
-To upgrade the Redpanda brokers, you must do the following to each broker, one at a time:
-
-. Place the broker into maintenance mode.
-. Wait for maintenance mode to finish.
-. Delete the Pod that the broker was running in.
-
-TIP: Before placing a broker into maintenance mode, you may want to temporarily disable or ignore alerts related to under-replicated partitions.
-When a broker is taken offline during a restart, replicas can become under-replicated.
-
-. Check that all brokers are healthy:
-+
-[tabs]
-====
-TLS Enabled::
-+
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk cluster health \
-    -X admin.tls.enabled=true \
-    -X admin.tls.ca=<path-to-admin-api-ca-certificate> \
-    -X admin.hosts=<broker-url>:<admin-api-port>
-```
-
---
-TLS Disabled::
-+
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk cluster health \
-    -X admin.hosts=<broker-url>:<admin-api-port>
-```
-
---
-====
+The draining process won't start until the cluster is healthy.
+The amount of time it takes to drain a broker and reassign partition leadership depends on the number of partitions and how healthy the cluster is.
+For healthy clusters, draining leadership should take less than a minute.
+If the cluster is unhealthy, such as when a follower is not in sync with the leader, then draining the broker can take even longer.
 +
 .Example output:
 [%collapsible]
@@ -220,249 +142,116 @@ Under-replicated partitions: [] <3>
 <3> If the cluster is unhealthy, these fields will contain data.
 ====
 
-. Find the Pod that is running the broker with the ID that you want to upgrade:
+. If you're using the Redpanda Helm chart without the Redpanda Operator, list all your existing overrides of the Helm values:
 +
 [,bash]
 ----
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk cluster info \
-    -X brokers=<broker-url>:<kafka-api-port> \
-    --tls-enabled \
-    --tls-truststore <path-to-kafka-api-ca-certificate>
+helm get values redpanda --namespace <namespace>
 ----
 +
-.Example output:
+You'll need to apply these overrides in the next step.
+
+. Upgrade the Redpanda version by overriding the `image.tag` setting. Replace `<new-version>` with a valid version tag.
++
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml,lines=9-15]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    image:
+      tag: <new-version>
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`redpanda-version.yaml`
+[,yaml]
+----
+image:
+  tag: <new-version>
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+--values redpanda-version.yaml --reuse-values
+```
+
+--set::
++
+[,bash,lines=2-5]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set image.tag=<new-version>
+----
+
+====
+--
+======
++
+CAUTION: Make sure to include all existing overrides, otherwise the upgrade may fail.
+For example, if you already enabled SASL, include the same SASL overrides.
+Do not use the `--reuse-values` flag, otherwise Helm won't include any new values from the upgraded chart.
+
+. Wait for the Pods to be terminated and recreated with the new version of Redpanda.
++
+[,bash]
+----
+kubectl get pod --namespace <namespace> --watch
+----
++
+Each Pod in the StatefulSet is terminated one at a time, starting from the one with the highest ordinal.
++
+.Example output
 [%collapsible]
 ====
 [.no-copy]
 ----
-BROKERS
-=======
-ID    HOST                                         PORT
-0     redpanda-0.redpanda.test.svc.cluster.local.  9093
-1*    redpanda-1.redpanda.test.svc.cluster.local.  9093
-2     redpanda-2.redpanda.test.svc.cluster.local.  9093
+NAME                                    READY   STATUS
+redpanda-controller-operator            2/2     Running
+redpanda-0                              2/2     Running
+redpanda-1                              2/2     Running
+redpanda-2                              0/2     Init:0/3
+redpanda-configuration-88npt            0/1     Completed
+redpanda-console-7cf85cf87f-rmtnj       1/1     Running
+redpanda-post-upgrade-ljqpr             0/1     Completed
 ----
 ====
-+
-Here, `redpanda-0` is running a broker with the ID `0`. In this example, the ordinal of the StatefulSet replica (`0` in `redpanda-0`) is the same as the broker's ID. However, this is not always the case.
 
-. Select a broker that has not been upgraded yet and place it into maintenance mode.
-+
-In this example, the command is executed on a Pod called `redpanda-0`.
-+
-TIP: You can execute the command on any Pod. It doesn't have to be the one with the ID that you want to place into maintenance mode.
-+
-[tabs]
-====
-TLS Enabled::
-+
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk cluster maintenance enable 0 --wait \
-    -X admin.tls.enabled=true \
-    -X admin.tls.ca=<path-to-admin-api-ca-certificate> \
-    -X admin.hosts=<broker-url>:<admin-api-port>
-```
-
---
-TLS Disabled::
-+
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk cluster maintenance enable 0 --wait \
-    -X admin.hosts=<broker-url>:<admin-api-port> \
-```
-
---
-====
-+
-The `--wait` flag ensures that the cluster is healthy before putting the broker into maintenance mode.
-+
-The draining process won't start until the cluster is healthy.
-The amount of time it takes to drain a broker and reassign partition leadership depends on the number of partitions and how healthy the cluster is.
-For healthy clusters, draining leadership should take less than a minute.
-If the cluster is unhealthy, such as when a follower is not in sync with the leader, then draining the broker can take even longer.
-+
-Example output:
-+
-[.no-copy]
-----
-NODE-ID  DRAINING  FINISHED  ERRORS  PARTITIONS  ELIGIBLE  TRANSFERRING  FAILED
-0        true      true      false   1           0         1             0
-...
-----
-
-. Wait until the cluster is healthy before continuing:
-+
-[tabs]
-====
-TLS Enabled::
-+
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk cluster health \
-    -X admin.tls.enabled=true \
-    -X admin.tls.ca=<path-to-admin-api-ca-certificate> \
-    -X admin.hosts=<broker-url>:<admin-api-port> \
-    --watch --exit-when-healthy
-```
-+
-The combination of the `--watch` and `--exit-when-healthy` flags tell rpk to monitor the cluster health and exit only when the cluster is back in a healthy state.
-
---
-TLS Disabled::
-+
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk cluster health \
-    -X admin.hosts=<broker-url>:<admin-api-port> \
-    --watch --exit-when-healthy
-```
-+
-The combination of the `--watch` and `--exit-when-healthy` flags tell rpk to monitor the cluster health and exit only when the cluster is back in a healthy state.
-
---
-====
-
-. Check the following xref:manage:kubernetes/monitoring/index.adoc[metrics]:
-+
-[cols="1m,1a,1a"]
-|===
-| Metric Name | Description |Recommendations
-
-| xref:reference:public-metrics-reference.adoc#redpanda_kafka_under_replicated_replicas[redpanda_kafka_under_replicated_replicas]
-| Measures the number of under-replicated Kafka replicas. Non-zero: Replication lagging. Zero: All replicas replicated.
-| Pause upgrades if non-zero.
-
-| xref:reference:public-metrics-reference.adoc#redpanda_cluster_unavailable_partitions[redpanda_cluster_unavailable_partitions]
-| Represents the number of partitions that are currently unavailable. Value of zero indicates all partitions are available. Non-zero indicates the respective count of unavailable partitions.
-| Ensure metric shows zero unavailable partitions before restart.
-
-| xref:reference:public-metrics-reference.adoc#redpanda_kafka_request_bytes_total[redpanda_kafka_request_bytes_total]
-| Total bytes processed for Kafka requests.
-| Ensure produce and consume rate for each broker recovers to its pre-upgrade value before restart.
-
-| xref:reference:public-metrics-reference.adoc#redpanda_kafka_request_latency_seconds[redpanda_kafka_request_latency_seconds]
-| Latency for processing Kafka requests. Indicates the delay between a Kafka request being initiated and completed.
-| Ensure the p99 histogram value recovers to its pre-upgrade level before restart.
-
-| xref:reference:public-metrics-reference.adoc#redpanda_rpc_request_latency_seconds[redpanda_rpc_request_latency_seconds]
-| Latency for processing RPC requests. Shows the delay between an RPC request initiation and completion.
-| Ensure the p99 histogram value returns to its pre-upgrade level before restart.
-
-| xref:reference:public-metrics-reference.adoc#redpanda_cpu_busy_seconds_total[redpanda_cpu_busy_seconds_total]
-| CPU utilization for a given second. The value is a decimal between 0.0 and 1.0. A value of 1.0 means that the CPU was busy for the entire second, operating at 100% capacity. A value of 0.5 implies the CPU was busy for half the time (or 500 milliseconds) in the given second. A value of 0.0 indicates that the CPU was idle and not busy during the entire second.
-|If you're seeing high values consistently, investigate the reasons. It could be due to high traffic or other system bottlenecks.
-
-|===
-+
-[NOTE]
-====
-If the cluster has any issues, take the broker out of maintenance mode by running the following command before proceeding with other operations,
-such as decommissioning or retrying the rolling upgrade:
-
-```bash
-rpk cluster maintenance disable <node-id>
-```
-====
-
-. Delete the Pod in which the broker in maintenance mode was running:
+. When all of the Pods are ready and have a `Running` status, verify that the brokers are now running the upgraded version of Redpanda:
 +
 ```bash
-kubectl delete pod redpanda-0 --namespace <namespace>
+kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
+  rpk redpanda admin brokers list
 ```
-
-. When the Pod restarts, make sure that it's now running the upgraded version of Redpanda:
-+
-[tabs]
-====
-TLS Enabled::
-+
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk redpanda admin brokers list \
-    -X admin.tls.enabled=true \
-    -X admin.tls.ca=<path-to-admin-api-ca-certificate> \
-    -X admin.hosts=<broker-url>:<admin-api-port>
-```
-
---
-TLS Disabled::
-+
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk redpanda admin brokers list \
-    -X admin.hosts=<broker-url>:<admin-api-port> \
-```
-
---
-====
-
-. Repeat this process for all the other brokers in the cluster.
-
-=== Verify that the upgrade was successful
-
-When you've upgraded all brokers, verify that the cluster is healthy. If the cluster is unhealthy, the upgrade may still be in progress. Try waiting a few moments, then run the command again.
-
-[tabs]
-====
-TLS Enabled::
-+
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk cluster health \
-    -X admin.tls.enabled=true \
-    -X admin.tls.ca=<path-to-admin-api-ca-certificate> \
-    -X admin.hosts=<broker-url>:<admin-api-port>
-```
-
---
-TLS Disabled::
-+
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk cluster health \
-    -X admin.hosts=<broker-url>:<admin-api-port> \
-```
-
---
-====
-
-.Expected output:
-[%collapsible]
-====
-[.no-copy]
-```
-CLUSTER HEALTH OVERVIEW
-=======================
-Healthy:               true
-Controller ID:         1
-All nodes:             [2,1,0]
-Nodes down:            []
-Leaderless partitions: []
-```
-====
 
 == Rollbacks
 
 If something does not go as planned during a rolling upgrade, you can roll back to the original version as long as you have not upgraded every broker.
+
+NOTE: The Redpanda Operator rolls back automatically after three failed attempts to upgrade the cluster.
+
+If you are using the Redpanda Helm chart without the Redpanda Operator, you can roll back manually.
+
 The StatefulSet uses the `RollingUpdate` strategy by default in xref:reference:redpanda-helm-spec.adoc#statefulsetupdatestrategytype[`statefulset.updateStrategy.type`],
 which means all Pods in the StatefulSet are restarted in reverse-ordinal order. For details, see the https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#update-strategies[Kubernetes documentation^].
 
@@ -489,37 +278,13 @@ helm rollback redpanda <previous-revision> --namespace <namespace>
 
 . Verify that the cluster is healthy. If the cluster is unhealthy, the upgrade may still be in progress. The command exits when the cluster is healthy.
 +
-[tabs]
-====
-TLS Enabled::
-+
---
-
 ```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
+kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
   rpk cluster health \
-    -X admin.tls.enabled=true \
-    -X admin.tls.ca=<path-to-admin-api-ca-certificate> \
-    -X admin.hosts=<broker-url>:<admin-api-port> \
-    --watch --exit-when-healthy
+  --watch --exit-when-healthy
 ```
-
---
-TLS Disabled::
 +
---
-
-```bash
-kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
-  rpk cluster health \
-    -X admin.hosts=<broker-url>:<admin-api-port> \
-    --watch --exit-when-healthy
-```
-
---
-====
-+
-.Expected output:
+.Example output:
 [%collapsible]
 ====
 [.no-copy]
