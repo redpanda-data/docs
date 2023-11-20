@@ -1,13 +1,79 @@
 = Configure Listeners in Kubernetes
-:description: Customize the advertised ports for each listener on all Redpanda brokers, or disable listeners altogether.
-:page-context-links: [{"name": "Linux", "to": "manage:security/listener-configuration.adoc" },{"name": "Kubernetes", "to": "manage:kubernetes/networking/configure-listeners.adoc" } ]
-:tags: ["Kubernetes", "Helm configuration"]
+:description: Configure your Redpanda deployment in Kubernetes to meet specific network requirements by customizing advertised ports and TLS certificates for each listener. Learn to enable or disable access to these listeners as needed.
+:page-context-links: [{"name": "Linux", "to": "manage:security/listener-configuration.adoc"}, {"name": "Kubernetes", "to": "manage:kubernetes/networking/configure-listeners.adoc"}]
+:tags: [Kubernetes, Helm Configuration]
 
-You can customize the advertised ports for each listener on all Redpanda brokers, or disable listeners altogether.
+You can fine-tune client interactions with Redpanda by customizing internal and external listener configurations.
 
-== Customize the advertised ports
+== Anatomy of a listener
 
-To customize the advertised ports for each listener, replace `<port>` with the port that you want to use.
+Listeners are gateways for client communications in Redpanda. Redpanda uses TCP sockets for client connections, where each TCP socket consists of:
+
+- *IP address or DNS name*: The unique network identifier of the Redpanda server. This can be a local address or a public address for cloud-based services.
+
+- *Port*: A specific entry point for network traffic. Redpanda listens on designated ports for client connections.
+
+Clients must specify both the IP address or DNS name and port for a successful connection, such as `203.0.113.5:9093`.
+
+The Redpanda Helm chart defines two listeners by default:
+
+[cols="1,2"]
+|===
+| Listener | Description
+
+| `default`
+| Internal connections. These endpoints use internal addresses assigned to brokers by Kubernetes through the headless ClusterIP Service.
+| `external`
+| External connections. These endpoints are accessible through addresses configured in the `external.domain` and/or `external.addresses` settings in the Helm values.
+|===
+
+For example, these are the default settings for the internal Kafka API listener:
+
+[source,yaml]
+----
+listeners:
+  kafka:
+    port: 9093
+    authenticationMethod:
+    tls:
+      enabled: true
+      cert: default
+----
+
+- `listeners.kafka.port`: The container port for internal client connections.
+- `listeners.kafka.authenticationMethod`: The authentication method to use when the top-level `auth.sasl.enabled` setting is `true`. Default is `sasl`.
+- `listeners.kafka.tls.enabled`: Whether TLS is enabled for this listener when the top-level `tls.enabled` setting is `true` for all listeners.
+- `listeners.kafka.tls.cert`: The TLS certificates that this listener should use to secure client connections. TLS certificates are defined in `tls.certs`.
+
+These are the settings for the external Kafka API listener:
+
+[source,yaml]
+----
+listeners:
+  kafka:
+    external:
+      default:
+        enabled: true
+        port: 9094
+        # -- If undefined, `listeners.kafka.external.default.port` is used.
+        advertisedPorts:
+        - 31092
+        tls:
+          enabled: true
+          cert: external
+        # default is "sasl"
+        authenticationMethod:
+----
+
+- `listeners.kafka.external.default.port`: The container port for external client connections.
+- `listeners.kafka.external.default.advertisedPorts`: The node port that is routed to `listeners.kafka.external.default.port`. This port is opened in Kubernetes Services when `external.service.enabled` is `true`.
+- `listeners.kafka.external.default.authenticationMethod`: The authentication method to use when the top-level `auth.sasl.enabled` setting is `true`. Default is `sasl`.
+- `listeners.kafka.external.default.tls.enabled`: Whether TLS is enabled for this listener when the top-level `tls.enabled` setting is `true` for all listeners.
+- `listeners.kafka.external.default.tls.cert`: The TLS certificates that this listener should use to secure client connections. TLS certificates are defined in `tls.certs`.
+
+== Customize the external node ports
+
+Each listener has separate ports for internal and external connections. To customize the external node ports for each listener, replace `<port>` with the port that you want to use.
 
 [NOTE]
 ====
@@ -18,107 +84,10 @@ Redpanda doesn't validate the configured port numbers. Make sure to verify the f
 - Your configured port numbers are not in use by any other service.
 ====
 
-=== Customize Admin API ports
+For the default ports, see the xref:reference:redpanda-helm-spec.adoc#listeners[Redpanda Helm Chart Specification]
 
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    listeners:
-      admin:
-        external:
-          default:
-            advertisedPorts:
-            - <port>
-----
+For example, to customize the node ports for the external Kafka API listener:
 
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
-.`custom-admin-port.yaml`
-[,yaml]
-----
-listeners:
-  admin:
-    external:
-      default:
-        advertisedPorts:
-        - <port>
-----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values custom-admin-port.yaml --reuse-values
-```
-
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set "listeners.admin.external.default.advertisedPorts={<port>}"
-```
-
-====
---
-======
-
-=== Customize Kafka API ports
-
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    listeners:
-      kafka:
-        external:
-          default:
-            advertisedPorts:
-            - <port>
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
 .`custom-kafka-port.yaml`
 [,yaml]
 ----
@@ -129,309 +98,75 @@ listeners:
         advertisedPorts:
         - <port>
 ----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values custom-kafka-port.yaml --reuse-values
-```
 
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set "listeners.kafka.external.default.advertisedPorts={<port>}"
-```
+[[tls]]
+== Configure TLS certificates
 
-====
---
-======
+A Redpanda cluster provides granular control over the TLS certificates used by different listeners. This level of flexibility enables you to ensure the required level of security for each listener. For example, you can use a self-signed certificate for the internal RPC listener, while using a public certificate authority (CA) certificate for other listeners such as the Kafka API.
 
-=== Customize the HTTP Proxy ports
+- *Internal listeners*: By default, all internal listeners use the self-signed certificate defined globally in the `tls.certs.default` configuration. To customize the certificates for each internal listener, you can edit the `listeners.<listener-name>.tls.cert` setting.
 
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
+- *External listeners*: By default, all external listeners use the self-signed certificate defined globally in the `tls.certs.external` configuration. To customize the certificates for each internal listener, you can edit the `listeners.<listener-name>.external.default.tls.cert` setting.
+
+Here's an example that configures two certificates:
+
+- `public-ca-cert`: This certificate is configured with an xref:manage:kubernetes/security/tls/use-cert-manager.adoc[Issuer managed by cert-manager].
+- `private-ca-cert`. This certificate is configured with an xref:manage:kubernetes/security/tls/use-secrets.adoc[Opaque Secret] containing the `tls.crt`, `tls.key`, and `ca.crt` files.
+
+The external Admin API listener is configured with the `public-ca-cert` certificate. The internal Kafka API listener is configured with the `private-ca-cert` certificate, and the other listeners are configured with the default self-signed certificate.
+
+.`multiple-certs-tls.yaml`
 [,yaml]
 ----
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    listeners:
-      http:
-        external:
-          default:
-            advertisedPorts:
-            - <port>
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
-.`custom-pandaproxy-port.yaml`
-[,yaml]
-----
+tls:
+  enabled: true
+  certs:
+    public-ca-cert:
+      issuerRef:
+        name: <issuer-name>
+        kind: Issuer
+      caEnabled: false
+    private-ca-cert:
+      secretRef:
+        name: <secret-name>
+      caEnabled: true
+    default:
+      caEnabled: true
 listeners:
+  admin:
+    external:
+      default:
+        tls:
+          cert: public-ca-cert
+  kafka:
+    tls:
+      cert: private-ca-cert
   http:
-    external:
-      default:
-        advertisedPorts:
-        - <port>
-----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values custom-pandaproxy-port.yaml --reuse-values
-```
-
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set "listeners.http.external.default.advertisedPorts={<port>}"
-```
-
-====
---
-======
-
-=== Customize Schema Registry ports
-
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    listeners:
-      schemaRegistry:
-        external:
-          default:
-            advertisedPorts:
-            - <port>
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
-.`custom-schema-registry-port.yaml`
-[,yaml]
-----
-listeners:
+    tls:
+      cert: default
+  rpc:
+    tls:
+      cert: default
   schemaRegistry:
-    external:
-      default:
-        advertisedPorts:
-        - <port>
+    tls:
+      cert: default
 ----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values custom-schema-registry-port.yaml --reuse-values
-```
-
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set "listeners.schemaRegistry.external.default.advertisedPorts={<port>}"
-```
-
-====
---
-======
 
 == Disable external access
 
 You can disable external access for all listeners or for individual listeners.
 
-=== Disable all listeners
+To disable external access for all listeners:
 
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    external:
-      enabled: false
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
 .`disable-external-access.yaml`
 [,yaml]
 ----
 external:
   enabled: false
 ----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values disable-external-access.yaml --reuse-values
-```
 
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set external.enabled=false
-```
+To disable external access for a specific listener, set `listeners.<listener-name>.external.default` to `false`. For example, to disable external access to the Kafka API listener:
 
-====
---
-======
-
-=== Disable the Admin API
-
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    listeners:
-      admin:
-        external:
-          default:
-            enabled: false
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
-.`disable-external-admin-api.yaml`
-[,yaml]
-----
-listeners:
-  admin:
-    external:
-      default:
-        enabled: false
-----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values disable-external-admin-api.yaml --reuse-values
-```
-
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set listeners.admin.external.default.enabled=false
-```
-
-====
---
-======
-
-=== Disable the Kafka API
-
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    listeners:
-      kafka:
-        external:
-          default:
-            enabled: false
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
 .`disable-external-kafka-api.yaml`
 [,yaml]
 ----
@@ -441,152 +176,12 @@ listeners:
       default:
         enabled: false
 ----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values disable-external-kafka-api.yaml --reuse-values
-```
-
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set listeners.kafka.external.default.enabled=false
-```
-
-====
---
-======
-
-=== Disable the HTTP Proxy
-
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    listeners:
-      http:
-        external:
-          default:
-            enabled: false
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
-.`disable-external-pandaproxy.yaml`
-[,yaml]
-----
-listeners:
-  http:
-    external:
-      default:
-        enabled: false
-----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values disable-external-pandaproxy.yaml --reuse-values
-```
-
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set listeners.http.external.default.enabled=false
-```
-
-====
---
-======
-
-=== Disable Schema Registry
-
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    listeners:
-      schemaRegistry:
-        external:
-          default:
-            enabled: false
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
-.`disable-external-schema-registry.yaml`
-[,yaml]
-----
-listeners:
-  schemaRegistry:
-    external:
-      default:
-        enabled: false
-----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values disable-external-schema-registry.yaml --reuse-values
-```
-
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set listeners.schemaRegistry.external.default.enabled=false
-```
-
-====
---
-======
 
 == Next steps
 
-xref:manage:kubernetes/security/index.adoc[Configure security] for your listeners.
+xref:manage:kubernetes/networking/connect-to-redpanda.adoc[]
 
 include::shared:partial$suggested-reading.adoc[]
 
-- xref:reference:redpanda-helm-spec.adoc#external[Redpanda Helm Specification]
+- xref:reference:redpanda-helm-spec.adoc#listeners[Redpanda Helm Specification]
 - xref:reference:crd.adoc[Redpanda CRD Reference]
