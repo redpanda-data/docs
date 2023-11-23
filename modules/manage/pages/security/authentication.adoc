@@ -260,34 +260,166 @@ rpk cluster config set sasl_mechanisms '["SCRAM","GSSAPI"]'
 rpk cluster config set kafka_enable_authorization true
 ----
 
-NOTE: If you're configuring authentication for the first time, you may need to configure xref:./authorization.adoc#acls[ACLs] before users can access Redpanda resources.
+NOTE: If you're configuring authentication for the first time, you may need to 
+configure xref:./authorization.adoc#acls[ACLs] before users can access Redpanda resources.
 
 === Enable OIDC
 
-NOTE: OpenID Connect (OIDC) authentication requires an xref:get-started:licenses.adoc[Enterprise license]. To upgrade, contact https://redpanda.com/try-redpanda?section=enterprise-trial[Redpanda sales^].
+NOTE: OpenID Connect (OIDC) authentication requires an xref:get-started:licenses.adoc[Enterprise license]. 
+To upgrade, contact https://redpanda.com/try-redpanda?section=enterprise-trial[Redpanda sales^].
 
-You can enable https://openid.net/developers/how-connect-works/[OIDC^] so that Redpanda and Redpanda Console can delegate the authentication process to an external identity provider (IdP) such as Okta, Azure AD, or on-premise Active Directory Federation Service (AD FS). 
+You can enable https://openid.net/developers/how-connect-works/[OIDC^] so that Redpanda and 
+Redpanda Console can delegate the authentication process to an external identity provider 
+(IdP) such as Okta, Azure AD, or on-premise Active Directory Federation Service (AD FS). 
+When you enable OIDC, it means that Redpanda does not need to manage user credentials directly, 
+but can instead rely on the trusted authentication capabilities of established IdPs.
 
-NOTE: OIDC is not supported by `rpk` or Redpanda Cloud. While `rpk` does not support OIDC, it supports configuration of OIDC as a SASL mechanisms.
+Redpanda's implementation of OIDC provides SASL/OAUTHBEARER support for the Kafka API, and enables 
+standard OIDC authentication across all other HTTP APIs such as Schema Registry, Panda Proxy, and the Admin API.
 
-==== Enable OIDC on the Kafka API
-
-To enable OIDC on the Kafka API:
-
-[,bash]
-----
-rpk cluster config set sasl_mechanisms '["SCRAM","GSSAPI","OAUTHBEARER"]' --api-urls 127.0.0.1:19644 
-Successfully updated configuration. New configuration version is 16.
-----
-
-
-
+NOTE: OIDC is not supported by `rpk` or Redpanda Cloud. While `rpk` does not support OIDC, it does support configuration of OIDC as a SASL mechanism.
 
 ==== Prerequisites
 
 * If you are enabling OIDC in an enterprise setting, partner with your security organization to register the client ID and client secret with for your IdP. 
-* If you wish to use OIDC with clients, then you will must register the client credentials.
+* To use OIDC with clients, you must register the client credentials.
+* You must have already configured xref:./authorization.adoc#acls[authorization (ACLs)].
 
+==== Enable SASL and specify the SASL mechanism
+
+Enable SASL if not already enabled. Available methods are:
+
+* Set `enable_sasl` to `true`.
+This enables SASL on the API and also enables authorization for Redpanda on the Kafka API.
+This setting sets all of your listeners to SASL and enables authorization. Use this method if you haven't already enabled authorization or authentication, and you don’t want to restart your cluster. 
+
+* Set `kafka_enable_authorization` to `true`.
+If you use this method (`rpk cluster config set kafka_enable_authorization true`), then you must also set an authentication method on the Kafka listener. This enablement method requires you to restart the cluster.
+
+To enable OIDC for the Kafka API, specify the `OAUTHBEARER` SASL mechanism:
+
+[,bash]
+----
+rpk cluster config set sasl_mechanisms '["SCRAM","OAUTHBEARER"]' --api-urls 127.0.0.1:19644 
+Successfully updated configuration. New configuration version is 16.
+----
+
+==== OIDC credentials flow and access token validation
+
+Before configuring OIDC, you should understand the credentials flow, and in particular, 
+the validation claims included in the access token, as you will need to provide them in 
+the OIDC configuration.
+
+Redpanda’s implementation of OIDC adheres to the Client Credentials Flow defined in 
+https://datatracker.ietf.org/doc/html/rfc6749#section-4.4[OAuth 2.0 RFC 6749, section 4.4^] 
+in which a client obtains an access token from the authorization server, and provides this 
+access token to Redpanda, either using SASL/OAUTHBEARER for the Kafka API, or an HTTP 
+Authorization (Bearer) header.
+
+The access token is a _Bearer Token_. A Bearer Token is used for authentication and 
+authorization in web applications and APIs, and holds user credentials, usually in the form 
+of random strings of characters. Bearer Tokens are generated based on protocols and specifications 
+such as JWT (JSON Web Token), which has a header, payload, and signature. The signature must be 
+verified according to the JWK. Claims inside the token and the token signature must both be 
+validated. After validation, a configurable claim from the token payload is extracted as 
+the principal and attached to the connection, as with any other authentication method.
+
+Following is an example JWT header and payload:
+
+[,js]
+----
+{"alg":"RS256","typ":"JWT","kid":"tMQzailSAdaW4nojXxES9"}
+
+{"iss":"https://dev-ltxchcls4igzho78.us.auth0.com/","sub":"3JJeI4tmMC6v8mCVCSDnAGVf2vrnJ0BT@clients","aud":"localhost","iat":1694430088,"exp":1694516488,"azp":"3JJeI4tmMC6v8mCVCSDnAGVf2vrnJ0BT","scope":"email2","gty":"client-credentials"}
+----  
+
+Following are additional validation claims (JWT properties) that are included in the access token:
+
+* `alg`: The signature algorithm. The extension point in the JWT header is the signature algorithm used to sign the token, and cannot contain the value `none`.
+* `aud`:  Audience. Must match the configuration specified in `oidc_token_audience`. Cannot contain the value `none`.
+* `kid`: Key identifier. Must match _any_ of the public JWK listed in the `jwks_uri` endpoint.
+* `exp`: Expiration. The timestamp listed is greater than current time. Must validate within acceptable bounds of the value specified in `oidc_clock_skew_tolerance`. A clock skew tolerance period may be configured by an Admin to account for clock drift between Redpanda and the OIDC Identity Provider (IdP).
+* `iss`: Issuer. Must exactly match the `issuer` property of the JSON returned from the URL specified in `oidc_discovery_url`.
+* `scope`: Scope. Must include the value `openid`.
+* `sub`: Subject. Must match exactly the Principal ID found through the principal mapping.
+
+SASL and non-SASL interfaces users must provide an access token that can be used to access user information at the `/userinfo` 
+endpoint. This endpoint will return a JSON document that contains a set of fields defined in the IdP. Following is an example:
+
+[,js]
+----
+{
+    "sub": "00u8rxkb1f3JoyjC95d7",
+    "name": "Jane Doe",
+    "locale": "en_US",
+    "email": "jdoe@redpanda.com",
+    "preferred_username": "jdoe@redpanda.com",
+    "given_name": "Jane",
+    "family_name": "Doe",
+    "zoneinfo": "America/Los_Angeles",
+    "email_verified": true
+}
+----
+
+==== Enable OIDC authentication
+
+After specifying SASL/OAUTHBEARER for the Kafka API, you must enable OIDC authentication across all other 
+HTTP APIs, such as Schema Registry, Panda Proxy, and the Admin API. This centralizes credentials and provides a password-free, 
+SSO experience across all of Redpanda.
+
+. Specify the discovery URL of your identity provider (IdP). This sets the OIDC-specific configuration 
+for all clusters in the `.bootstrap.yaml` (located in the same directory as the `redpanda.yaml`). The OIDC 
+discovery URL is read upon the first startup after configuration, and ignored on all subsequent startups. 
+Use `rpk cluster config set` for any subsequent modifications of the discovery URL. The following IdP
+URL uses the default value:
++
+[,bash]
+----
+rpk cluster config set oidc_discovery_url 'https://auth.prd.cloud.redpanda.com/.well-known/openid-configuration'
+----
+
+. Specify the HTTP authentication mechanisms. To enable OIDC for an HTTP listener with basic authentication, include OIDC in the list:
++
+[,bash]
+----
+rpk cluster config set http_authentication '["BASIC","OIDC"]'
+----
+
+. Specify the intended recipient of the token:
++
+[,bash]
+----
+rpk cluster config set oidc_token_audience 'redpanda'
+----
+
+. Specify the principal mapping, which is a JSON path that extracts a principal from any claim in the access token payload:
++
+[,bash]
+----
+rpk cluster config set oidc_principal_mapping '$.sub'
+rpk cluster config set oidc_principal_mapping '$.email'
+----
+
+. Specify the amount of time (in seconds) to allow for when validating the expiration claim in the token:
++
+[,bash]
+----
+rpk cluster config set oidc_clock_skew_tolerance 30
+----
+
+. Enable OIDC to disconnect clients when their token expires:
++
+[,bash]
+----
+rpk cluster config set oidc_token_expire_disconnect true
+----
+
+. Specify the amount of time keys from the `jwks_uri` are cached:
++
+[,bash]
+----
+rpk cluster config set oidc_keys_refresh_interval 3600
+----
 
 === Configure Schema Registry and HTTP Proxy to connect to Redpanda with SASL
 
