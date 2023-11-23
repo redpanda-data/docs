@@ -5,6 +5,8 @@ const REDPANDA_HELM_CHART_REFERENCE = 'https://artifacthub.io/packages/helm/redp
 // Earliest supported version of Redpanda
 const MIN_RP_VERSION = process.argv[2] || '22.3';
 
+main();
+
 async function main() {
   try {
     await generateTable();
@@ -14,7 +16,38 @@ async function main() {
   }
 }
 
-main();
+async function generateTable() {
+  const allChartVersions = await fetchAllChartVersions();
+  let appVersionsMap = new Map();
+  // Populate appVersionsMap
+  for (const chartVersion of allChartVersions) {
+    const chartDetails = await fetchChartDetails(chartVersion);
+    if (chartDetails) {
+      const majorMinor = convertToMajorMinorVersion(chartDetails.appVersion);
+      appVersionsMap.set(majorMinor, chartDetails.appVersion);
+    }
+  }
+  let table = '|===\n| Redpanda Helm Chart |Supported Redpanda Versions|Minimum Kubernetes Version|Minimum Helm Version\n\n';
+
+  for (const chartVersion of allChartVersions) {
+    const chartDetails = await fetchChartDetails(chartVersion);
+    if (chartDetails) {
+      // Update the map with the current app version
+      const majorMinor = convertToMajorMinorVersion(chartDetails.appVersion);
+
+      // Get the three relevant versions
+      const supportedVersions = getThreeSupportedVersions(majorMinor, appVersionsMap);
+
+      table += `| link:${REDPANDA_HELM_CHART_REFERENCE}/${chartDetails.chartVersion}[${chartDetails.chartVersion}]\n`;
+      table += `| ${supportedVersions.join(', ')}\n`;
+      table += `| ${chartDetails.kubernetesVersion}\n`;
+      table += `| ${chartDetails.helmVersion}\n\n`;
+    }
+  }
+
+  table += '|===\n';
+  console.log(table);
+}
 
 async function fetchChartDetails(chartVersion) {
   try {
@@ -68,7 +101,7 @@ function versionIsGreaterOrEqual(version, minVersion) {
   return versionParts.length >= minVersionParts.length;
 }
 
-function majorMinorVersion(version) {
+function convertToMajorMinorVersion(version) {
   return version.split('.').slice(0, 2).join('.') + '.x';
 }
 
@@ -81,42 +114,6 @@ function compareVersions(v1, v2) {
     if (parts1[i] < parts2[i]) return -1;
   }
   return 0;
-}
-
-async function generateTable() {
-  const allChartVersions = await fetchAllChartVersions();
-  let appVersionsMap = new Map();
-  // Populate appVersionsMap
-  for (const chartVersion of allChartVersions) {
-    const chartDetails = await fetchChartDetails(chartVersion);
-    if (chartDetails) {
-      const majorMinor = majorMinorVersion(chartDetails.appVersion);
-      appVersionsMap.set(majorMinor, chartDetails.appVersion);
-    }
-  }
-  let table = '|===\n| Redpanda Helm Chart |Supported Redpanda Versions|Minimum Kubernetes Version|Minimum Helm Version\n\n';
-
-  for (const chartVersion of allChartVersions) {
-    const chartDetails = await fetchChartDetails(chartVersion);
-    if (chartDetails) {
-      // Update the map with the current app version
-      const majorMinor = majorMinorVersion(chartDetails.appVersion);
-      if (!appVersionsMap.has(majorMinor)) {
-        appVersionsMap.set(majorMinor, chartDetails.appVersion);
-      }
-
-      // Get the three relevant versions
-      const supportedVersions = getThreeSupportedVersions(majorMinor, appVersionsMap);
-
-      table += `| link:${REDPANDA_HELM_CHART_REFERENCE}/${chartDetails.chartVersion}[${chartDetails.chartVersion}]\n`;
-      table += `| ${supportedVersions.join(', ')}\n`;
-      table += `| ${chartDetails.kubernetesVersion}\n`;
-      table += `| ${chartDetails.helmVersion}\n\n`;
-    }
-  }
-
-  table += '|===\n';
-  console.log(table);
 }
 
 function getThreeSupportedVersions(currentVersion, appVersionsMap) {
