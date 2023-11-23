@@ -25,11 +25,8 @@ async function fetchChartDetails(chartVersion) {
       return null;
     }
 
-    const readme = response.data.readme || '';
-    let helmVersionMatch = readme.match(/Helm version ([0-9.]+)/);
-
-    // Check the links array for the Helm version if not found in the readme
-    if (!helmVersionMatch && response.data.links) {
+    // Check the links array for the Helm version
+    if (response.data.links) {
       const helmLink = response.data.links.find(link => link.name && link.name.startsWith('Helm (>='));
       if (helmLink) {
         helmVersionMatch = helmLink.name.match(/Helm \(>= ([0-9.]+)\)/);
