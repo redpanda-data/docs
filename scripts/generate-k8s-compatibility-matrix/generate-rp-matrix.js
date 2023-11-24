@@ -4,6 +4,7 @@ const REDPANDA_DATA_API_URL = 'https://artifacthub.io/api/v1/packages/helm/redpa
 const REDPANDA_HELM_CHART_REFERENCE = 'https://artifacthub.io/packages/helm/redpanda-data/redpanda';
 // Earliest supported version of Redpanda
 const MIN_RP_VERSION = process.argv[2] || '22.3';
+const MATRIX_TO_GENERATE = process.argv[3] || 'redpanda';
 
 main();
 
@@ -19,7 +20,6 @@ async function main() {
 async function generateTable() {
   const allChartVersions = await fetchAllChartVersions();
   let appVersionsMap = new Map();
-  // Populate appVersionsMap
   for (const chartVersion of allChartVersions) {
     const chartDetails = await fetchChartDetails(chartVersion);
     if (chartDetails) {
@@ -31,7 +31,7 @@ async function generateTable() {
 
   for (const chartVersion of allChartVersions) {
     const chartDetails = await fetchChartDetails(chartVersion);
-    if (chartDetails) {
+    if (chartDetails && MATRIX_TO_GENERATE === 'redpanda') {
       // Update the map with the current app version
       const majorMinor = convertToMajorMinorVersion(chartDetails.appVersion);
 
@@ -42,6 +42,11 @@ async function generateTable() {
       table += `| ${supportedVersions.join(', ')}\n`;
       table += `| ${chartDetails.kubernetesVersion}\n`;
       table += `| ${chartDetails.helmVersion}\n\n`;
+    } else if (chartDetails && chartDetails.consoleChartVersions && MATRIX_TO_GENERATE === 'console') {
+
+      table += `| link:${REDPANDA_HELM_CHART_REFERENCE}/${chartDetails.chartVersion}[${chartDetails.chartVersion}]\n`;
+      table += `| ${chartDetails.consoleChartVersions}\n\n`;
+
     }
   }
 
@@ -58,6 +63,18 @@ async function fetchChartDetails(chartVersion) {
       return null;
     }
 
+    let helmVersionMatch;
+    let kubeVersionMatch
+    let consoleChartVersions;
+
+    const deps = response.data.data.dependencies;
+    if (deps) {
+      for (i = 0; i < deps.length; i++) {
+        if (deps[i].name !== 'console') continue
+        consoleChartVersions = deps[i].version
+      }
+    }
+
     // Check the links array for the Helm version
     if (response.data.links) {
       const helmLink = response.data.links.find(link => link.name && link.name.startsWith('Helm (>='));
@@ -66,11 +83,19 @@ async function fetchChartDetails(chartVersion) {
       }
     }
 
-    const kubernetesVersion = '{supported-kubernetes-version}'
+    // Get the Kubernetes version
+    if (response.data.data.kubeVersion) {
+      const kubeVersionRegex = /^\^?([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-[0-9]+)?)$/;
+      kubeVersionMatch = response.data.data.kubeVersion.match(kubeVersionRegex);
+    }
+
     return {
       chartVersion,
+      consoleChartVersions,
       appVersion,
-      kubernetesVersion: kubernetesVersion,
+      kubernetesVersion: kubeVersionMatch ?
+      kubeVersionMatch[1] :
+      '{supported-kubernetes-version}',
       helmVersion: helmVersionMatch ? helmVersionMatch[1] : '{supported-helm-version}'
     };
   } catch (error) {
