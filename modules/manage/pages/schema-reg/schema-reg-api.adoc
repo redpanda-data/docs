@@ -58,6 +58,8 @@ These examples assume that the Schema Registry is available locally at `http://l
 . Download the https://stedolan.github.io/jq/download/[jq utility^].
 . Install https://curl.se/[curl^] or https://www.python.org/[Python^]. 
 +
+You can also use xref:get-started:intro-to-rpk.adoc[`rpk`] to interact with the Schema Registry. The xref:reference:rpk/rpk-registry/rpk-registry.adoc[`rpk registry`] set of commands call the different API endpoints as shown in the curl and Python examples. 
++
 If using Python, install the https://requests.readthedocs.io/en/latest/user/install/#install[Requests module^], then create an interactive Python session:
 +
 [,python]
@@ -69,8 +71,6 @@ def pretty(text):
 
 base_uri = "http://localhost:8081"
 ----
-+
-You can also use xref:get-started:intro-to-rpk.adoc[`rpk`] to interact with the Schema Registry. The xref:reference:rpk/rpk-registry/rpk-registry.adoc[`rpk registry`] set of commands call the different API endpoints as shown in the curl and Python examples. 
 
 == Query supported schema formats
 
@@ -177,12 +177,25 @@ pretty(res)
 
 If the request is successful, it returns a version `id` unique for the schema in the Redpanda cluster:
 
+[tabs]
+====
+rpk::
++
+--
+```sh
+SUBJECT        VERSION  ID    TYPE
+sensor-value   1        1     AVRO
+```
+--
+Curl::
++
 [,json]
 ----
 {
   "id": 1
 }
 ----
+====
 
 When you register an evolved schema for an existing subject, the version `id` is incremented by 1.
 
@@ -224,14 +237,28 @@ pretty(res)
 --
 ====
 
-If the request is successful, it returns the schema:
+If successful, the rpk output returns the subject and version, and the HTTP response returns the schema:
 
-[,json]
-----
+[tabs]
+====
+rpk::
++
+--
+```sh
+SUBJECT        VERSION  ID    TYPE
+sensor-value   1        1     AVRO
+```
+--
+Curl::
++
+--
+```json
 {
   "schema": "{\"type\":\"record\",\"name\":\"sensor_sample\",\"fields\":[{\"name\":\"timestamp\",\"type\":\"long\",\"logicalType\":\"timestamp-millis\"},{\"name\":\"identifier\",\"type\":\"string\",\"logicalType\":\"uuid\"},{\"name\":\"value\",\"type\":\"long\"}]}"
 }
-----
+```
+--
+====
 
 == List registry subjects
 
@@ -354,8 +381,21 @@ pretty(res)
 --
 ====
 
-If the request is successful, it returns the subject and its associated schema:
+If the request is successful, it returns the subject, and for HTTP requests, its associated schema:
 
+[tabs]
+====
+rpk::
++
+--
+```sh
+SUBJECT        VERSION  ID    TYPE
+sensor-value   1        1     AVRO
+```
+--
+Curl::
++
+--
 ```json
 {
   "subject": "sensor-value",
@@ -364,17 +404,8 @@ If the request is successful, it returns the subject and its associated schema:
   "schema": "{\"type\":\"record\",\"name\":\"sensor_sample\",\"fields\":[{\"name\":\"timestamp\",\"type\":\"long\",\"logicalType\":\"timestamp-millis\"},{\"name\":\"identifier\",\"type\":\"string\",\"logicalType\":\"uuid\"},{\"name\":\"value\",\"type\":\"long\"}]}"
 }
 ```
-
-[NOTE]
+--
 ====
-`rpk` returns only the subject and not the schema.
-
-```sh
-SUBJECT        VERSION  ID    TYPE
-sensor-value   1        1     AVRO
-```
-====
-
 
 To get the latest version, use `latest` as the version ID:
 
@@ -514,11 +545,26 @@ pretty(res)
 
 If the request is successful, it returns the new compatibility type:
 
+[tabs]
+====
+rpk::
++
+--
+```sh
+SUBJECT        LEVEL     ERROR
+sensor-value   BACKWARD 
+```
+--
+Curl::
++
+--
 ```json
 {
   "compatibility": "BACKWARD"
 }
 ```
+--
+====
 
 If you POST an incompatible schema change, the request returns an error. For example, if you try to register a new schema with the `value` field's type changed from `long` to `int`, and compatibility is set to `BACKWARD`,  the request returns an error due to incompatibility:
 
@@ -613,14 +659,46 @@ A successful registration returns the schema's `id`:
 
 == Reference a schema
 
-To build more complex schema definitions, you can add a reference to other schemas. The following example adds schema references and shows that the schema cannot be deleted when it includes references.
+To build more complex schema definitions, you can add a reference to other schemas. The following example registers a Protobuf schema in subject `test-simple` with a message name `Simple`.
 
+[tabs]
+====
+rpk::
++
+--
 ```bash
-curl -X POST -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/simple/versions -d '{"schema": "syntax = \"proto3\";\nmessage Simple {\n  string id = 1;\n}","schemaType": "PROTOBUF"}'
+rpk registry schema create test-simple --schema simple.proto
 ```
+--
+Curl::
++
+--
+```bash
+curl -X POST -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/test-simple/versions -d '{"schema": "syntax = \"proto3\";\nmessage Simple {\n  string id = 1;\n}","schemaType": "PROTOBUF"}'
+```
+--
+====
+
+[tabs]
+====
+rpk::
++
+--
+```sh
+SUBJECT        VERSION  ID    TYPE
+test-simple    1        2     PROTOBUF
+```
+--
+Curl::
++
+--
 ```json
 {"id":2}
 ```
+--
+====
+
+This schema is then referenced in a new schema in a different subject named `import`. 
 
 [tabs]
 ====
@@ -628,21 +706,39 @@ rpk::
 +
 --
 ```bash
-rpk registry schema create import --schema import_schema.proto --references simple:simple:1
+# --references flag takes the format {name}:{subject}:{schema version}
+rpk registry schema create import --schema import_schema.proto --references simple:test-simple:2
 ```
 --
 Curl::
 +
 --
 ```bash
-curl -X POST -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/import/versions -d '{"schema": "syntax = \"proto3\";\nimport \"simple\";\nmessage Test3 {\n  Simple id = 1;\n}","schemaType": "PROTOBUF", "references": [{"name": "simple", "subject": "simple", "version":1}]}'
+curl -X POST -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/import/versions -d '{"schema": "syntax = \"proto3\";\nimport \"simple\";\nmessage Test3 {\n  Simple id = 1;\n}","schemaType": "PROTOBUF", "references": [{"name": "simple", "subject": "test-simple", "version":1}]}'
 ```
 --
 ====
 
+[tabs]
+====
+rpk::
++
+--
+```sh
+SUBJECT        VERSION  ID    TYPE
+import         1        3     PROTOBUF
+```
+--
+Curl::
++
+--
 ```json
 {"id":3}
 ```
+--
+====
+
+You cannot delete a schema when it is used as a reference.
 
 [tabs]
 ====
@@ -650,21 +746,37 @@ rpk::
 +
 --
 ```bash
-rpk registry schema delete simple --schema-version 1
+rpk registry schema delete test-simple --schema-version 1
 ```
 --
 Curl::
 +
 --
 ```bash
-curl -X DELETE -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/simple/versions/1
+curl -X DELETE -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/test-simple/versions/1
 ```
 --
 ====
 
+[tabs]
+====
+rpk::
++
+--
+```sh
+One or more references exist to the schema {magic=1,keytype=SCHEMA,subject=test-simple,version=1}
+```
+--
+Curl::
++
+--
 ```json
-{"error_code":42206,"message":"One or more references exist to the schema {magic=1,keytype=SCHEMA,subject=simple,version=1}"}
+{"error_code":42206,"message":"One or more references exist to the schema {magic=1,keytype=SCHEMA,subject=test-simple,version=1}"}
 ```
+--
+====
+
+Call the `/subjects/test-simple/versions/1/referencedby` endpoint to see the schema IDs that reference version 1 for subject `test-simple`.
 
 [tabs]
 ====
@@ -672,21 +784,36 @@ rpk::
 +
 --
 ```bash
-rpk registry schema references simple --schema-version 1
+rpk registry schema references test-simple --schema-version 1
 ```
 --
 Curl::
 +
 --
 ```bash
-curl -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/simple/versions/1/referencedby
+curl -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:8081/subjects/test-simple/versions/1/referencedby
 ```
 --
 ====
 
+[tabs]
+====
+rpk::
++
+--
+```bash
+SUBJECT  VERSION  ID    TYPE
+import   1        3     PROTOBUF
+```
+--
+Curl::
++
+--
 ```json
 [3]
 ```
+--
+====
 
 == Delete a schema
 
@@ -740,18 +867,48 @@ pretty(res)
 
 If the request is successful, it returns the ID of the soft deleted schema:
 
+[tabs]
+====
+rpk::
++
+--
+
+```sh
+Successfully deleted schema. Subject: "sensor-value", version: "1"
+```
+
+--
+Curl::
++
+--
 ```bash
 1
 ```
+--
+====
 
 Doing a soft delete for an already deleted schema returns an error. For example:
 
+[tabs]
+====
+rpk::
++
+--
+```sh
+Subject 'sensor-value' Version 1 was soft deleted.Set permanent=true to delete permanently
+```
+--
+Curl::
++
+--
 ```json
 {
   "error_code": 40406,
   "message": "Subject 'sensor-value' Version 1 was soft deleted.Set permanent=true to delete permanently"
 }
 ```
+--
+====
 
 To list subjects of soft-deleted schemas, make a GET request with the `deleted` parameter set to `true`, `/subjects?deleted=true`:
 
@@ -762,7 +919,7 @@ rpk::
 --
 
 ```bash
-rpk registry subject list --deleted true
+rpk registry subject list --deleted
 ```
 
 --
@@ -810,7 +967,7 @@ Redpanda doesn't recommend hard (permanently) deleting schemas in a production s
 The DELETE APIs are primarily used during the development phase, when schemas are being iterated and revised.
 ====
 
-To hard delete a schema, make two DELETE requests with the second request setting the `permanent` parameter to `true`, `/subjects/<subject>/versions/<version>?permanent=true`:
+To hard delete a schema, use the `--permanent` flag with the `rpk registry schema delete` command, or for curl or Python, make two DELETE requests with the second request setting the `permanent` parameter to `true` (`/subjects/<subject>/versions/<version>?permanent=true`):
 
 [tabs]
 ====
@@ -855,20 +1012,49 @@ pretty(res)
 ====
 
 If the requests are successful, each request returns the version ID of the deleted schema:
+[tabs]
+====
+rpk::
++
+--
+```sh
+Successfully deleted schema. Subject: "sensor-value", version: "1"
+```
+--
+Curl::
++
+--
 
 ```json
 1
 1
 ```
+--
+====
 
 A request for a hard-deleted schema returns an error. For example:
 
+[tabs]
+====
+rpk::
++
+--
+```sh
+Subject 'sensor-value' not found.
+```
+
+--
+Curl::
++
+--
 ```json
 {
   "error_code": 40401,
   "message": "Subject 'sensor-value' not found."
 }
 ```
+--
+====
 
 == Suggested reading
 
