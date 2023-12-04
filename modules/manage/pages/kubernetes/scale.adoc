@@ -1,25 +1,48 @@
 = Scale Redpanda in Kubernetes
-:description: Scaling a Redpanda cluster involves increasing its resources and/or the number of nodes to handle more data, traffic, and users.
+:description: Learn how to scale a Redpanda cluster vertically to increase its resources and horizontally to add or remove brokers from a cluster.
 
-Scaling a Redpanda cluster involves increasing its resources and/or the number of nodes to handle more data, traffic, and users. You can scale a Redpanda cluster both vertically and horizontally, depending on your requirements.
+You can scale a cluster both vertically, by increasing or decreasing the resources available to existing brokers, and horizontally, by increasing or decreasing the number of brokers in the cluster.
 
-== Vertical Scaling
+== Vertical scaling
 
-Vertical (also known as scaling up/down) scaling means increasing the resources, such as CPU cores, memory, and storage, of existing brokers in the cluster.
+Vertical scaling involves increasing the amount of resources available to Redpanda brokers (scaling up) or decreasing the amount of resources (scaling down). Resources include the amount of hardware available to Redpanda brokers, such as CPU cores, memory, and storage.
 
-To scale vertically, see xref:./manage-resources.adoc[Manage Pod Resources in Kubernetes].
+To scale a Redpanda cluster vertically, see xref:./manage-resources.adoc[Manage Pod Resources in Kubernetes].
 
 IMPORTANT: You cannot decrease the number of CPU cores in a running cluster.
 
-== Horizontal Scaling
+If your existing worker nodes have either too many resources or not enough resources, you may need to move Redpanda brokers to new worker nodes that meet your resource requirements. This process involves:
 
-Horizontal scaling (also known as scaling out/in) means adding more brokers to the cluster, thereby distributing the load and data across different worker nodes.
+- Making sure the new worker nodes are available.
+- Deleting each worker node one-by-one.
+- Deleting the Pod's PersistentVolumeClaim (PVC).
+- Ensuring that the PersistentVolume's (PV) reclaim policy is set to `Retain` to make sure that you can roll back to the original worker node without losing data.
 
-. If you're scaling out:
-- Ensure that you have one additional worker node for each Redpanda broker that you want to add.
-- If you use local PersistentVolumes (PV), ensure that your additional worker nodes have a PV available.
+The <<node-pvc, Nodewatcher controller>> can automate this process.
 
-. Update the number of replicas in the Helm chart:
+== Horizontal scaling
+
+Horizontal scaling involves modifying the number of brokers in your cluster, either by adding new ones (scaling out) or removing existing ones (scaling in). In situations where the workload is variable, horizontal scaling allows for flexibility. You can scale out when demand is high and scale in when demand is low, optimizing resource usage and cost.
+
+=== Scale out
+
+Scaling out is the process of adding more brokers to your Redpanda cluster. You may want to add more brokers for increased throughput, high availability, and fault tolerance. Adding more brokers allows for better distribution of data across the cluster. This can be particularly important when dealing with large data sets.
+
+To add Redpanda brokers to your cluster:
+
+. Ensure that you have one additional worker node for each Redpanda broker that you want to add. Each Redpanda broker requires its own dedicated worker node so that it has access to all resources. For more details, see xref:deploy:deployment-option/self-hosted/kubernetes/kubernetes-cluster-requirements.adoc[].
+
+. If you use local PersistentVolumes (PV), ensure that your additional worker nodes have local disks available that meet the requirements of the configured StorageClass. See xref:manage:kubernetes/storage/configure-persistent-storage.adoc[].
+
+. If you have external access enabled, make sure that your new node has the necessary node ports open to external clients. See xref:manage:kubernetes/networking/index.adoc[].
+
+. Verify that your cluster is in a healthy state:
++
+```bash
+kubectl exec redpanda-0 --namespace <namespace> -- rpk cluster health
+```
+
+. Increase the number of replicas in the Helm values:
 +
 [tabs]
 ======
@@ -75,8 +98,182 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 --
 ======
 
-. Verify that your Redpanda cluster has the desired number of replicas:
+. Wait until the StatefulSet is rolled out:
 +
 ```bash
-kubectl get statefulsets --namespace <namespace>
+kubectl --namespace <namespace> rollout status statefulset redpanda --watch
 ```
+
+. Verify that your cluster is in a healthy state:
++
+```bash
+kubectl exec redpanda-0 --namespace <namespace> -- rpk cluster health
+```
+
+=== Scale in
+
+Scaling in is the process of removing brokers from your Redpanda cluster. You may want to remove brokers for cost reduction and resource optimization.
+
+To scale in a Redpanda cluster, you must decommission the brokers that you want to remove before updating the `statefulset.replica` setting in the Helm values. See xref:manage:kubernetes/decommission-brokers.adoc[].
+
+[[node-pvc]]
+== Install the Nodewatcher controller
+
+The Nodewatcher controller manages the lifecycle of PersistentVolumes (PVs) and PersistentVolumeClaims (PVCs) for Redpanda clusters. When the controller detects that a Node resource is not available, it sets the reclaim policy of the PV to `Retain`, ensuring no data loss. Concurrently, it orchestrates the deletion of the PVC, which allows the Redpanda broker that was previously running on the deleted worker node to be rescheduled onto new, operational nodes.
+
+. Install the Nodewatcher controller:
++
+[tabs]
+======
+Helm + Operator::
++
+--
+
+You can install the Nodewatcher controller as part of the Redpanda Operator or as a sidecar on each Pod that runs a Redpanda broker. When you install the controller as part of the Redpanda Operator, the controller monitors all Redpanda clusters running in the same namespace as the Redpanda Operator. If you want the controller to manage only a single Redpanda cluster, install it as a sidecar on each Pod that runs a Redpanda broker, using the Redpanda resource.
+
+To install the Nodewatcher controller as part of the Redpanda Operator:
+
+.. Deploy the Redpanda Operator with the Nodewatcher controller:
++
+[,bash,lines=7+8]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <namespace> \
+  --set image.repository=docker.redpanda.com/redpandadata/redpanda-operator \
+  --create-namespace \
+  --set additionalCmdFlags={--additional-controllers="nodeWatcher"} \
+  --set rbac.createAdditionalControllerCRs=true
+----
++
+- `--additional-controllers="nodeWatcher"`: Enables the Nodewatcher controller.
+- `rbac.createAdditionalControllerCRs=true`: Creates the required RBAC rules for the Redpanda Operator to monitor the Node resources and update PVCs and PVs.
+
+.. Deploy a Redpanda resource:
++
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec: {}
+----
++
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+To install the Decommission controller as a sidecar:
+
+.`redpanda-cluster.yaml`
+[,yaml,lines=11+13+15]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    statefulset:
+      sideCars:
+        controllers:
+          enabled: true
+        run:
+          - "nodeWatcher"
+    rbac:
+      enabled: true
+----
+
+- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
+- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
+- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`decommission-controller.yaml`
+[,yaml,lines=4+6+8]
+----
+statefulset:
+  sideCars:
+    controllers:
+      enabled: true
+      run:
+        - "nodeWatcher"
+rbac:
+  enabled: true
+----
++
+- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
+- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
+- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
+
+--set::
++
+[,bash,lines=4-6]
+----
+helm upgrade --install redpanda redpanda/redpanda \
+  --namespace <namespace> \
+  --create-namespace \
+  --set statefulset.sideCars.controllers.enabled=true \
+  --set statefulset.sideCars.controllers.run={"nodeWatcher"} \
+  --set rbac.enabled=true
+----
++
+- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
+- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
+- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
+
+====
+--
+======
+
+. Test the Nodewatcher controller by deleting a Node resource:
++
+[,bash]
+----
+kubectl delete node <node-name>
+----
+
+. Monitor the logs of the Nodewatcher controller:
++
+--
+- If you're running the Decommission controller as part of the Redpanda Operator:
++
+[,bash]
+----
+kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
+----
+
+- If you're running the Decommission controller as a sidecar:
++
+[,bash]
+----
+kubectl logs <pod-name> --namespace <namespace> -c redpanda-controllers
+----
+--
++
+You should see that the controller successfully deleted the PVC of the Pod that was running on the deleted Node resource.
++
+[,bash]
+----
+kubectl get persistentvolumeclaim --namespace <namespace>
+----
+
+. Verify that the reclaim policy of the PV is set to `Retain` to allow you to recover the node, if necessary:
++
+[,bash]
+----
+kubectl get persistentvolume --namespace <namespace>
+----
+
