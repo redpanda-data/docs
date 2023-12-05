@@ -35,16 +35,16 @@ async function generateTable() {
 
   if (MATRIX_TO_GENERATE === 'redpanda') table = '|===\n| Redpanda Helm Chart |Supported Redpanda Versions|Minimum Kubernetes Version|Minimum Helm Version\n\n';
   if (MATRIX_TO_GENERATE === 'console')  table = '|===\n| Redpanda Helm Chart |Default Redpanda Console Chart|Redpanda Console Version\n\n';
-  if (MATRIX_TO_GENERATE === 'operator')  table = '|===\n| Redpanda Operator Helm Chart | Redpanda Operator|CRD|Support Redpanda Helm chart\n\n';
+  if (MATRIX_TO_GENERATE === 'operator')  table = '|===\n| Redpanda Operator Helm Chart | Redpanda Operator|CRD|Supported Redpanda Helm chart\n\n';
 
   const processedChartVersions = new Set();
 
-  let appVersionsMap = new Map();
+  let supportedRedpandaVersions = new Map();
   for (const chartVersion of allRedpandaChartVersions) {
     const chartDetails = await fetchRedpandaChartDetails(chartVersion);
     if (chartDetails) {
       const appMajorMinor = convertToMajorMinorVersion(chartDetails.appVersion);
-      appVersionsMap.set(appMajorMinor, chartDetails.appVersion);
+      supportedRedpandaVersions.set(appMajorMinor, chartDetails.appVersion);
     }
   }
 
@@ -58,7 +58,7 @@ async function generateTable() {
         // Redpanda always has three supported versions available.
         // Calculate which versions are supported by the Redpanda Helm chart,
         // based on the current app version (n - 2).
-        const supportedVersions = getThreeSupportedVersions(appMajorMinor, appVersionsMap);
+        const supportedVersions = getThreeSupportedVersions(appMajorMinor, supportedRedpandaVersions);
 
         table += `| link:https://artifacthub.io/packages/helm/redpanda-data/redpanda/${chartDetails.chartVersion}[${chartMajorMinor}]\n`;
         table += `| ${supportedVersions.join(', ')}\n`;
@@ -278,13 +278,13 @@ function compareVersions(v1, v2) {
   return 0;
 }
 
-function getThreeSupportedVersions(currentVersion, appVersionsMap) {
-  const sortedVersions = Array.from(appVersionsMap.keys()).sort((a, b) => -compareVersions(a, b));
+function getThreeSupportedVersions(currentVersion, supportedRedpandaVersions) {
+  const sortedVersions = Array.from(supportedRedpandaVersions.keys()).sort((a, b) => -compareVersions(a, b));
   const currentIndex = sortedVersions.indexOf(currentVersion);
   const supportedVersions = [];
 
   for (let i = currentIndex; i < sortedVersions.length && supportedVersions.length < 3; i++) {
-    if (appVersionsMap.has(sortedVersions[i])) {
+    if (supportedRedpandaVersions.has(sortedVersions[i])) {
       supportedVersions.push(`link:https://github.com/redpanda-data/redpanda/releases/[${sortedVersions[i]}]`);
     }
   }
