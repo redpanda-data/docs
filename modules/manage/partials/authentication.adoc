@@ -433,12 +433,12 @@ NOTE: You must <<create-superusers, Create at least one superuser>> before enabl
 +
 Use this method if you haven't already enabled authentication and you want to apply SASL authentication to all Kafka listeners. This approach does not require you to restart the cluster.
 +
+NOTE: This command implicitly enables authorization. If you want to disable authorization, you can use the `kafka_enable_authorization` cluster configuration property.
++
 [source,bash]
 ----
 rpk cluster config set enable_sasl true
 ----
-+
-NOTE: This command implicitly enables authorization. If you want to disable authorization, you can use the `kafka_enable_authorization` cluster configuration property.
 
 - Explicitly enable authorization and define authentication method per listener:
 +
@@ -479,9 +479,9 @@ To enable SASL authentication for the Kafka API, set the `authentication_method`
 
 ifdef::env-kubernetes[The Redpanda Helm chart sets the `authentication_method` property to `sasl` for all Kafka listeners by default when you <<enable-authentication, enable authentication>>.]
 
-ifndef::env-kubernetes[If you <<enable-authentication, enabled authentication with `enable_sasl=true`>>, Redpanda implicitly sets `authentication_method` to `sasl` for the Kafka listeners.]
+ifndef::env-kubernetes[If you <<enable-sasl-authentication, enabled authentication with `enable_sasl=true`>>, Redpanda implicitly sets `authentication_method` to `sasl` for the Kafka listeners.]
 
-ifndef::env-kubernetes[If you <<enable-authentication, enabled authentication with `kafka_enable_authorization=true`>>, you must enable SASL for the Kafka API.]
+ifndef::env-kubernetes[If you <<enable-sasl-authentication, enabled authentication with `kafka_enable_authorization=true`>>, you must enable SASL for the Kafka API.]
 
 ifndef::env-kubernetes[]
 In `redpanda.yaml`, enter:
@@ -543,7 +543,7 @@ rpk cluster config get sasl_mechanisms
 
 You should see `SCRAM` in the output.
 
-If SASL/SCRAM is not enabled, enable it:
+If SASL/SCRAM is not enabled, enable it by appending `SCRAM` to the list of SASL mechanisms:
 
 [,bash]
 ----
@@ -570,7 +570,7 @@ rpk acl user create myuser \
 +
 TIP: Enclose passwords in single quotes to avoid conflicts with special characters. Enclosing characters in single quotes preserves the literal value of each character.
 
-. Use the xref:reference:rpk/rpk-acl/rpk-acl-create.adoc[`rpk acl create`] command to grant `create` and `describe` permissions to `myuser` in the cluster:
+. Use the xref:reference:rpk/rpk-acl/rpk-acl-create.adoc[`rpk acl create`] command to grant xref:manage:security/authorization.adoc[`create` and `describe` permissions] to `myuser` in the cluster:
 +
 ```bash
 rpk acl create --allow-principal User:myuser \
@@ -608,18 +608,6 @@ rpk topic create myfirsttopic \
   -X pass='changethispassword' \
   -X sasl.mechanism=SCRAM-SHA-256
 ```
-
-[TIP]
-====
-You can also use environment variables to set the user credentials instead of flags:
-
-[,bash]
-----
-export RPK_USER=myuser
-export RPK_PASS=changethispassword
-export RPK_SASL_MECHANISM=SCRAM-SHA-256
-----
-====
 
 To describe the topic, run xref:reference:rpk/rpk-topic/rpk-topic-describe.adoc[`rpk topic describe`]:
 
@@ -721,7 +709,7 @@ Before configuring OIDC, you should understand the credentials flow, and in part
 the validation claims included in the access token, as you will need to provide them in
 the OIDC configuration.
 
-Redpanda's implementation of OIDC adheres to the Client Credentials Flow defined in
+Redpanda's implementation of OIDC adheres to the client credentials flow defined in
 https://datatracker.ietf.org/doc/html/rfc6749#section-4.4[OAuth 2.0 RFC 6749, section 4.4^]
 in which a client obtains an access token from the authorization server, and provides this
 access token to Redpanda, either using SASL/OAUTHBEARER for the Kafka API, or an HTTP
@@ -770,7 +758,7 @@ Following are additional validation claims (JWT properties) that are included in
 * `exp`: Expiration. The timestamp listed is greater than current time. Must validate within acceptable bounds of the value specified in `oidc_clock_skew_tolerance`. A clock skew tolerance period may be configured by an Admin to account for clock drift between Redpanda and the OIDC Identity Provider (IdP).
 * `iss`: Issuer. Must exactly match the `issuer` property of the JSON returned from the URL specified in `oidc_discovery_url`.
 * `scope`: Scope. Must include the value `openid`.
-* `sub`: Subject. Must match exactly the Principal ID found through the principal mapping.
+* `sub`: Subject. This default claim identifies the principal subject. In Redpanda, it can be mapped to a recognized Redpanda principal for secure authentication and authorization.
 
 ===== Enable OIDC
 
@@ -785,8 +773,6 @@ In an enterprise environment, OIDC integration typically requires coordination w
 . <<enable-authentication, Enable SASL authentication>> if it's not already enabled.
 
 . Configure xref:manage:security/authorization.adoc#acls[ACLs] for your users so they can access Redpanda resources.
-+
-NOTE: If you enabled OIDC authentication for the Admin API, you must also <<create-superusers,create a SCRAM superuser>> so that you can use `rpk` to create ACLs. `rpk` supports only basic authentication for the Admin API. See <<Authentication for the HTTP APIs>>.
 
 ifdef::env-kubernetes[]
 . Configure OIDC:
@@ -816,7 +802,7 @@ spec:
           - "SCRAM"
           - "OAUTHBEARER"
         oidc_discovery_url: "<discovery-url>"
-        oidc_token_audience: "<token-recipient>"
+        oidc_token_audience: "<token-audience>"
         oidc_principal_mapping: "<json-path>"
         oidc_clock_skew_tolerance: <tolerance>
         oidc_token_expire_disconnect: <true-or-false>
@@ -848,7 +834,7 @@ config:
       - "SCRAM"
       - "OAUTHBEARER"
     oidc_discovery_url: "<discovery-url>"
-    oidc_token_audience: "<token-recipient>"
+    oidc_token_audience: "<token-audience>"
     oidc_principal_mapping: "<json-path>"
     oidc_clock_skew_tolerance: <tolerance>
     oidc_token_expire_disconnect: <true-or-false>
@@ -870,7 +856,7 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
   --set "config.cluster.sasl_mechanisms[0]=SCRAM" \
   --set "config.cluster.sasl_mechanisms[1]=OAUTHBEARER" \
   --set config.cluster.oidc_discovery_url="<discovery-url>" \
-  --set config.cluster.oidc_token_audience="<token-recipient>" \
+  --set config.cluster.oidc_token_audience="<token-audience>" \
   --set config.cluster.oidc_principal_mapping="<json-path>" \
   --set config.cluster.oidc_clock_skew_tolerance=<tolerance> \
   --set config.cluster.oidc_token_expire_disconnect=<true-or-false> \
@@ -883,7 +869,7 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 
 - `config.cluster.sasl_mechanisms`: Enable SCRAM and OIDC SASL mechanisms.
 - `config.cluster.oidc_discovery_url`: The discovery URL of your identity provider (IdP). The default is `https://auth.prd.cloud.redpanda.com/.well-known/openid-configuration`.
-- `config.cluster.oidc_token_audience`: The intended recipient of the token. The default is `redpanda`.
+- `config.cluster.oidc_token_audience`: The intended audience of the token. The default is `redpanda`.
 - `config.cluster.oidc_principal_mapping`: The principal mapping, which is a JSON path that extracts a principal from any claim in the access token payload. The default is `$.sub`.
 - `config.cluster.oidc_clock_skew_tolerance`: The amount of time (in seconds) to allow for when validating the expiration claim in the token.
 - `config.cluster.oidc_token_expire_disconnect`: Whether to enable OIDC to disconnect clients when their token expires.
@@ -912,19 +898,48 @@ URL uses the default value:
 rpk cluster config set oidc_discovery_url 'https://auth.prd.cloud.redpanda.com/.well-known/openid-configuration'
 ----
 
-. Specify the intended recipient of the token:
+. Specify the intended audience of the token:
 +
 [,bash]
 ----
 rpk cluster config set oidc_token_audience 'redpanda'
 ----
 
-. Specify the principal mapping, which is a JSON path that extracts a principal from any claim in the access token payload:
+. Specify the principal mapping, which is a JSON path that extracts a principal from any claim in the bearer token payload. The mapping rules are as follows:
++
+--
+* `rule = "$" segments [ mapping ]`
+* `segments = "." fieldname { "." fieldname }`
+* `mapping = "/" regex_pattern "/" replacement_pattern "/" [ case_modifier ]`
+* `replacement_pattern = replacement_element { replacement_element }`
+* `replacement_match = "$" digit`
+* `replacement_element = replacement_match | arbitrary_text`
+* `case_modifier = "L" | "U"`
+--
++
+For example, consider a JWT with the following claims:
++
+[source,json]
+----
+{
+  "sub": "user",
+  "user_info": {
+    "name": "User",
+    "email": "user@example.com"
+  }
+}
+----
++
+* Default rule (`$.sub`): Extracts the `sub` claim, resulting in the principal `user`.
+* Extract principal from the email field (`$.user_info.email/([^@]+)@.*/$1/L`): This rule captures the username part of the email before the `@` symbol and converts it to lowercase. The resulting principal is `user`.
+* Extract principal with domain validation (`$.user_info.email/([^@]+)@example.com/$1/L`): This rule is similar to the previous one but only applies if the email domain matches `example.com`. The resulting principal is `user` if the domain matches, otherwise, the mapping fails.
++
+To apply a principal mapping rule in Redpanda, use the following command:
 +
 [,bash]
 ----
 rpk cluster config set oidc_principal_mapping '$.sub'
-rpk cluster config set oidc_principal_mapping '$.email'
+rpk cluster config set oidc_principal_mapping '$.user_info.email/([^@]+)@.*/$1/L'
 ----
 
 . Specify the amount of time (in seconds) to allow for when validating the expiration claim in the token:
@@ -1274,9 +1289,9 @@ rpk cluster config set admin_api_require_auth true
 rpk cluster config set http_authentication '["BASIC"]'
 ----
 
-To enable basic authentication for the HTTP Proxy or Schema Registry, set `authentication_method` to `http_basic`. For example, in `redpanda.yaml`, enter:
+To enable basic authentication for specific listeners, set `authentication_method` to `http_basic`. For example, in `redpanda.yaml`, enter:
 
-[,yaml]
+[,yaml,lines=5+10]
 ----
 pandaproxy:
   pandaproxy_api:
@@ -1374,8 +1389,10 @@ For all available endpoints, see xref:api:ROOT:pandaproxy-schema-registry.adoc[]
 [[oidc-http]]
 === OIDC
 
-If you've configured the <<oidc, SASL/OAUTHBEARER>> mechanism for the Kafka API, you can configure the HTTP APIs to authenticate users with the OIDC bearer token. By using OIDC for all HTTP APIs, you centralize credentials and provide a password-free,
-SSO experience across all of Redpanda.
+You can configure the HTTP APIs to authenticate users with the OIDC bearer token. By using OIDC, you can centralize credentials and provide a password-free,
+SSO experience.
+
+NOTE: If you enable OIDC authentication for the Admin API, you must also <<create-superusers,create a SCRAM superuser>> so that you can use `rpk` to create ACLs. `rpk` supports only basic authentication for the Admin API. See <<Authentication for the HTTP APIs>>.
 
 To enable OIDC for the HTTP API listeners as well as basic authentication, include OIDC in the `http_authentication` cluster property list:
 
@@ -1461,6 +1478,22 @@ ifndef::env-kubernetes[]
 [,bash]
 ----
 rpk cluster config set http_authentication '["BASIC","OIDC"]'
+----
+
+To enable OIDC for specific listeners, set `authentication_method` to `oidc`. For example, in `redpanda.yaml`, enter:
+
+[,yaml,lines=5+10]
+----
+pandaproxy:
+  pandaproxy_api:
+  - address: "localhost"
+    port: 8082
+    authentication_method: oidc
+schema_registry:
+  schema_registry_api:
+    address: "localhost"
+    port: 8081
+    authentication_method: oidc
 ----
 endif::[]
 
