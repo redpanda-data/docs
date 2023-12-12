@@ -6,16 +6,27 @@
 A rolling restart involves restarting one broker at a time while the remaining brokers in your cluster continue running. Rolling restarts help to minimize downtime during a full cluster restart.
 You should perform a rolling restart during operations such as configuration updates that require a restart, version upgrades, or cluster maintenance.
 
-When you run Redpanda in Kubernetes, your Redpanda cluster is managed as a StatefulSet where each broker runs inside its own Pod. As a result, you can perform a rolling restart using the Kubernetes API.
+== Prerequisites
+
+You must have the following:
+
+* xref:deploy:deployment-option/self-hosted/kubernetes/index.adoc[A Redpanda cluster running in Kubernetes].
+* The default xref:reference:redpanda-helm-spec.adoc#statefulset-updatestrategy-type[RollingUpdate strategy] configured in the Helm values.
+
+== What happens during a rolling restart
+
+When you run Redpanda in Kubernetes, your Redpanda cluster is managed as a StatefulSet where each broker runs inside its own Pod. As a result, you can perform a rolling restart using the Kubernetes API to terminate one Pod at a time, starting from the one with the highest ordinal.
 
 During a rolling restart the xref:deploy:deployment-option/self-hosted/kubernetes/kubernetes-production-deployment.adoc[Redpanda Helm chart] automates the following procedure on each broker, using `preStop` and `postStart` lifecycle hooks:
 
-. `preStop` hook: This hook is executed immediately before a container is terminated.
+. The `preStop` hook is executed immediately before a container is terminated.
 The `preStop` hook is responsible for the following:
-- Place the broker into maintenance mode.
+.. Place the broker into maintenance mode.
 +
 Placing brokers into maintenance mode reduces the risk of interruption or degradation in service. When a broker is placed into maintenance mode, it reassigns its partition leadership to other brokers for all topics that have a replication factor greater than one (three is the default replication factor for topics). Reassigning partition leadership involves _draining_ leadership from the broker and _transferring_ that leadership to another broker.
-- Terminate the Pod: After the `preStop` hook has completed its tasks, Kubernetes sends a SIGTERM signal to the container, signaling it to shut down.
+.. Terminate the Pod.
++
+After the `preStop` hook has completed its tasks, Kubernetes sends a SIGTERM signal to the container, signaling it to shut down.
 +
 Maintenance mode may not have finished when the SIGTERM is sent. As a result, Kubernetes waits for the duration of the `terminationGracePeriodSeconds` for Redpanda to shut down gracefully. If it doesn't, a SIGKILL is sent to the container to forcefully terminate Redpanda.
 The Pod is then terminated and restarted due to the default rolling update policy of the StatefulSet.
@@ -27,15 +38,8 @@ You can test different values in a development environment.
 To configure the `terminationGracePeriod`,
 use the xref:reference:redpanda-helm-spec.adoc#statefulsetterminationgraceperiodseconds[`statefulset.terminationGracePeriodSeconds`] setting.
 ====
-. `postStart` hook: This hook is executed immediately after a container is created.
+. The `postStart` hook is executed immediately after a container is created.
 The `postStart` hook takes the broker out of maintenance mode. This action re-integrates the broker into the cluster, allowing it to start handling requests and participate in the cluster's operations again.
-
-== Prerequisites
-
-You must have the following:
-
-* xref:deploy:deployment-option/self-hosted/kubernetes/index.adoc[A Redpanda cluster running in Kubernetes].
-* The default xref:reference:redpanda-helm-spec.adoc#statefulset-updatestrategy-type[RollingUpdate strategy] configured in the Helm values.
 
 include::upgrade:partial$rolling-upgrades/restart-impact.adoc[leveloffset=+1]
 
