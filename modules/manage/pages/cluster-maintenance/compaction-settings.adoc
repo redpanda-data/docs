@@ -1,0 +1,47 @@
+= Compaction Settings
+:description: Redpanda's approach to compaction and options for configuring it.
+
+Configure compaction for your cluster to optimize storage utilization.
+
+== Redpanda compaction overview
+
+Compaction is an optional mechanism intended to reduce the storage needs of Redpanda topics. You can enable compaction through configuration of a cluster or topic's cleanup policy. When compaction is enabled as part of the cleanup policy, a background process executes on a pre-set interval to perform compaction operations. When triggered for a partition, the process purges older versions of messages for a given key and only retains the most recent message in that partition. This is done by analyzing closed segments in the partition, copying the most recent messages for each key into a new segment, then deleting the source segments.
+
+image::shared:compaction-example.png[Example of topic compaction]
+
+This diagram provides an illustration of a compacted topic. Imagine a remote sensor network that uses image recognition to track appearances of red pandas in a geographic area. The sensor network employs special devices that send messages to a topic when they detect one. You might enable compaction to reduce topic storage while still maintaining a record in the topic of the last time each device saw a red panda, perhaps to see if they stop frequenting a given area. The left side of the diagram shows all messages sent across the topic. The right side illustrates the results of compaction; older messages for certain keys are deleted from the message log.
+
+IMPORTANT:  When using Tiered Storage, compaction functions at the local storage level. As long as a segment remains in local storage, its messages are eligible for compaction. Once a segment is uploaded to tiered storage and removed from local storage it is not retrieved for further compaction operations. A key may therefore appear in multiple segments between Tiered Storage and local storage.
+
+While compaction reduces storage needs, Redpanda's compaction (just like Kafka's) does not guarantee perfect de-duplication of a topic. It represents a best effort mechanism to reduce storage needs but duplicates of a key may still exist within a topic. Compaction is not a complete topic operation, either, since it operates on subsets of each partition within the topic.
+
+== Configure cleanup policy
+
+Compaction policy may be applied to a cluster or to an individual topic. If both are set, the topic-level policy overrides the cluster-level policy. The cluster-level xref:reference:cluster-properties.adoc#log_cleanup_policy[`log_cleanup_policy`] and the topic-level xref:reference:topic-properties.adoc#cleanuppolicy[`cleanup.policy`] support the following three options:
+
+* `delete`: Messages are deleted from the topic once the specified retention period (time and/or size allocations) is exceeded. This is the default mechanism and is analogous to disabling compaction.
+* `compact`: This triggers only cleanup of messages with multiple versions. A message that represents the only version for a given key is not deleted.
+* `compact,delete`: This combines both policies, deleting messages exceeding the retention period while compacting multiple versions of messages.
+
+== Compaction policy settings
+
+The various cleanup policy settings rely on proper tuning of a cluster's compaction and retention policy options. The applicable settings are:
+
+* xref:reference:cluster-properties.adoc#log_compaction_interval_ms[`log_compaction_interval`]: Defines the compaction frequency in milliseconds. (default: 10,000ms)
+
+* xref:reference:tunable-properties.adoc#compaction_ctrl_backlog_size[`compaction_ctrl_backlog_size`]: Defines the size for the compaction backlog of the backlog controller. (default: 10% of disk capacity)
+
+* xref:reference:tunable-properties.adoc#compaction_ctrl_min_shares[`compaction_ctrl_min_shares`]: Defines the minimum number of I/O and CPU shares the compaction process can use. (default: 10)
+
+* xref:reference:tunable-properties.adoc#compaction_ctrl_max_shares[`compaction_ctrl_max_shares`]: Defines the maximum number of I/O and CPU shares the compaction process can use. (default: 1,000)
+
+* xref:reference:tunable-properties.adoc#storage_compaction_index_memory[`storage_compaction_index_memory`]: Defines the amount of memory in bytes that each shard may use for creating the compaction index. This index optimizes execution during compaction operations. (default: 128 MiB)
+
+* `storage_compaction_key_map_memory`: Defines the amount of memory in bytes that each shard may use when creating the key map for a partition during compaction operations. The compaction process uses this key map to de-dupe keys within the compacted segments. (default: 128 MiB)
+
+* xref:reference:tunable-properties.adoc#compacted_log_segment_size[`compacted_log_segment_size`]: Defines the base size for a compacted log segment in bytes. (default: 268435456 [256 MiB])
+
+* xref:reference:tunable-properties.adoc#max_compacted_log_segment_size[`max_compacted_log_segment_size`]: Defines the maximum size after consolidation for a compacted log segment in bytes. (default: 5368709120 [5 GiB])
+
+
+NOTE: Additional xref:reference:tunable-properties.adoc[tunable properties] are available but should only be used with direction from Redpanda support. These properties include xref:reference:tunable-properties.adoc#compaction_ctrl_p_coeff[`compaction_ctrl_p_coeff`], xref:reference:tunable-properties.adoc#compaction_ctrl_i_coeff[`compaction_ctrl_i_coeff`], xref:reference:tunable-properties.adoc#compaction_ctrl_d_coeff[`compaction_ctrl_d_coeff`], and xref:reference:tunable-properties.adoc#compaction_ctrl_update_interval_ms[`compaction_ctrl_update_interval_ms`].
