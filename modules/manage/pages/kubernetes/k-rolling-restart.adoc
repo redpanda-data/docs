@@ -1,0 +1,112 @@
+= Perform a Rolling Restart of Redpanda in Kubernetes
+:description: Learn how to perform a rolling restart of your Redpanda cluster when it's running in Kubernetes.
+:rolling-restart:
+:page-context-links: [{"name": "Linux", "to": "manage:cluster-maintenance/rolling-restart.adoc" },{"name": "Kubernetes", "to": "manage:kubernetes/k-rolling-restart.adoc" } ]
+
+A rolling restart involves restarting one broker at a time while the remaining brokers in your cluster continue running. Rolling restarts help to minimize downtime during a full cluster restart.
+You should perform a rolling restart during operations such as configuration updates that require a restart, version upgrades, or cluster maintenance.
+
+== Prerequisites
+
+You must have the following:
+
+* xref:deploy:deployment-option/self-hosted/kubernetes/index.adoc[A Redpanda cluster running in Kubernetes].
+* The default xref:reference:redpanda-helm-spec.adoc#statefulset-updatestrategy-type[RollingUpdate strategy] configured in the Helm values.
+
+== What happens during a rolling restart
+
+When you run Redpanda in Kubernetes, your Redpanda cluster is managed as a StatefulSet where each broker runs inside its own Pod. As a result, you can perform a rolling restart using the Kubernetes API to terminate one Pod at a time, starting from the one with the highest ordinal.
+
+During a rolling restart the xref:deploy:deployment-option/self-hosted/kubernetes/kubernetes-production-deployment.adoc[Redpanda Helm chart] automates the following procedure on each broker, using the `preStop` and `postStart` lifecycle hooks:
+
+. The `preStop` hook is executed immediately before a container is terminated.
+The `preStop` hook is responsible for the following:
+.. Place the broker into maintenance mode.
++
+Placing brokers into maintenance mode reduces the risk of interruption or degradation in service. When a broker is placed into maintenance mode, it reassigns its partition leadership to other brokers for all topics that have a replication factor greater than one (three is the default replication factor for topics). Reassigning partition leadership involves _draining_ leadership from the broker and _transferring_ that leadership to another broker.
+.. Terminate the Pod.
++
+After the `preStop` hook completes its tasks, Kubernetes sends a SIGTERM signal to the container, signaling it to shut down.
++
+Maintenance mode may not have finished when the SIGTERM is sent. As a result, Kubernetes waits for the duration of the `terminationGracePeriodSeconds` for Redpanda to shut down gracefully. If it's still executing, a SIGKILL is sent to the container to forcefully terminate Redpanda.
+The Pod is then terminated and restarted due to the default rolling update policy of the StatefulSet.
++
+[NOTE]
+====
+The default `terminationGracePeriod` is 90 seconds, which should be long enough for maintenance mode to finish in large clusters.
+You can test different values in a development environment.
+To configure the `terminationGracePeriod`,
+use the xref:reference:redpanda-helm-spec.adoc#statefulsetterminationgraceperiodseconds[`statefulset.terminationGracePeriodSeconds`] setting.
+====
+. The `postStart` hook is executed immediately after a container is created.
+The `postStart` hook takes the broker out of maintenance mode. This action re-integrates the broker into the cluster, allowing it to start handling requests and participate in the cluster's operations again.
+
+include::upgrade:partial$rolling-upgrades/restart-impact.adoc[leveloffset=+1]
+
+== Perform a rolling restart
+
+. Check for topics that have a replication factor greater than one.
++
+Partitions that live on only one broker will be offline during the restart. If you have topics with a replication factor of 1, and if you have sufficient disk space, temporarily xref:manage:data-migration.adoc#change-topic-replication-factor[increase the replication factor] to limit outages for these topics during the rolling upgrade.
+
+. Ensure that the cluster is healthy:
++
+```bash
+kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
+  rpk cluster health
+```
++
+The draining process won't start until the cluster is healthy.
++
+.Example output:
+[%collapsible]
+====
+[.no-copy]
+----
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:                     true <1>
+Controller ID:               0
+All nodes:                   [0 1 2] <2>
+Nodes down:                  [] <3>
+Leaderless partitions:       [] <3>
+Under-replicated partitions: [] <3>
+----
+<1> The cluster is either healthy (`true`) or unhealthy (`false`).
+<2> The node IDs of all brokers in the cluster.
+<3> These fields contain data only when the cluster is unhealthy.
+====
+
+. Trigger a rolling restart of all Pods in the StatefulSet:
++
+[,bash]
+----
+kubectl rollout restart statefulset redpanda --namespace=<namespace>
+----
+
+. Wait for all Pods to restart:
++
+[,bash]
+----
+kubectl rollout status statefulset redpanda --namespace=<namespace> --watch
+----
+
+== Verify the cluster's health
+
+To verify that the cluster is running properly, run:
+
+```bash
+kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
+  rpk cluster health
+```
+
+To view additional information about your brokers, run:
+
+```bash
+kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
+  rpk redpanda admin brokers list
+```
+
+include::shared:partial$suggested-reading.adoc[]
+
+* xref:manage:monitoring.adoc[]

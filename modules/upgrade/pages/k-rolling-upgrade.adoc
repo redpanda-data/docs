@@ -12,6 +12,7 @@ include::partial$rolling-upgrades/upgrade-limitations.adoc[]
 == Prerequisites
 
 * xref:deploy:deployment-option/self-hosted/kubernetes/index.adoc[A Redpanda cluster running in Kubernetes].
+* The default xref:reference:redpanda-helm-spec.adoc#statefulset-updatestrategy-type[RollingUpdate strategy] configured in the Helm values.
 * Review the xref:k-compatibility.adoc[] topic.
 * https://stedolan.github.io/jq/download/[jq^] for listing available versions.
 
@@ -114,21 +115,11 @@ CAUTION: Make sure to include all existing overrides, otherwise the upgrade may 
 [[upgrade]]
 == Perform a rolling upgrade
 
-A rolling upgrade involves running the following procedure on each broker, one at a time:
-
-. Upgrade the version of Redpanda on the broker that's running in the Pod with the highest ordinal.
-. Place the broker into maintenance mode.
-. Wait for maintenance mode to finish.
-. Terminate the Pod so that it is recreated with the new version of Redpanda.
-. Take the broker out of maintenance mode.
-
-Placing brokers into maintenance mode ensures a smooth upgrade of your cluster while reducing the risk of interruption or degradation in service. When a broker is placed into maintenance mode, it reassigns its partition leadership to other brokers for all topics that have a replication factor greater than one (three is the default replication factor for topics). Reassigning partition leadership involves _draining_ leadership from the broker and _transferring_ that leadership to another broker.
+A rolling upgrade involves updating the version of Redpanda in the Redpanda Helm chart, which triggers a rolling restart.
 
 [NOTE]
 ====
-The Redpanda Helm chart and the Redpanda Operator automate this procedure.
-
-The Helm chart's `preStop` lifecycle hook puts each broker into maintenance mode before the Pod that it's running on is terminated. If maintenance mode does not complete before the `terminationGracePeriod` the container is forcefully terminated using a `SIGKILL` command.
+The Helm chart's `preStop` lifecycle hook puts each broker into maintenance mode before the Pod is terminated. If maintenance mode does not complete before the `terminationGracePeriod` the container is forcefully terminated using a `SIGKILL` command.
 
 The default `terminationGracePeriod` is 90 seconds, which should be long enough for large clusters.
 You can test different values in a development environment.
@@ -152,9 +143,6 @@ kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
 ```
 +
 The draining process won't start until the cluster is healthy.
-The amount of time it takes to drain a broker and reassign partition leadership depends on the number of partitions and how healthy the cluster is.
-For healthy clusters, draining leadership should take less than a minute.
-If the cluster is unhealthy, such as when a follower is not in sync with the leader, then draining the broker can take even longer.
 +
 .Example output:
 [%collapsible]
@@ -172,7 +160,7 @@ Under-replicated partitions: [] <3>
 ----
 <1> The cluster is either healthy (`true`) or unhealthy (`false`).
 <2> The node IDs of all brokers in the cluster.
-<3> If the cluster is unhealthy, these fields will contain data.
+<3> These fields contain data only when the cluster is unhealthy.
 ====
 
 . If you're using the Redpanda Helm chart without the Redpanda Operator, list all your existing overrides of the Helm values:
