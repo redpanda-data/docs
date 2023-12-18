@@ -18,15 +18,17 @@ When a Redpanda node runs out of disk space, it terminates. This causes leader r
 
 == Configure message retention
 
-By default, all topics on self-hosted Redpanda clusters keep the last 24 hours of data on local disk. Redpanda Cloud keeps the last 12 hours of data. However, if data is written fast enough to consume all disk space within the local retention time period, it's possible to exhaust local disk space, even when using Tiered Storage. You can adjust the default local storage size or time period, if required.
+By default, all topics on self-hosted Redpanda clusters retain 24 hours of data on local disk while Redpanda Cloud topics retains 6 hours of data. Redpanda makes use of dynamic xref:#space_management[space management] strategies to save on disk space. If data is written fast enough, however, it's possible to exhaust local disk space even when using Tiered Storage. Proper configuration of message retention properties for your use case will help prevent this from happening.
 
-Retention properties control how long messages are kept on disk before they're deleted or compacted. Setting message retention properties is the best way to prevent old messages from accumulating on disk to the point that the disk becomes full. You can configure retention properties to delete messages based on the following conditions:
+Retention properties control the minimum length of time messages are kept on disk before they're deleted or compacted. Setting message retention properties is the best way to prevent old messages from accumulating on disk to the point that the disk becomes full. You can configure retention properties to delete messages based on the following conditions:
 
 * Message age is exceeded.
 * Aggregate message size in the topic is exceeded.
-* Either message age or aggregate message size in the topic is exceeded.
+* A combination of message age and aggregate size, triggered when either is exceeded.
 
-Set retention properties at the topic level or the cluster level. If a value isn't specified for the topic, then the topic uses the value for the cluster. Note that cluster-level property names use snake-case, while topic-level properties use dots.
+You may set retention properties at the topic level or the cluster level. If a value isn't specified for the topic, then the topic uses the value for the cluster. Note that cluster-level property names use snake-case, while topic-level properties use dots.
+
+NOTE: Although retention policy is set at a cluster or topic level, it applies to each partition in a topic independently. Within a partition, only closed segments are eligible for deletion or compaction. When a time-based policy is set, all messages within the segment must exceed the set limit. For example, assume the `retention.ms` for a topic is 300,000 ms (5 minutes). If the `segment.ms` is 1,800,000ms (30 minutes) then messages will remain for a minimum of 30 minutes while the segment containing them remains open. In this scenario, five minutes after a new segment begins, the retention policy would trigger deletion of the closed segment.
 
 |===
 | Retention property | Cluster level | Topic level +
@@ -40,7 +42,7 @@ No default
 
 | Size-based
 | `retention_bytes`  +
-Default - `null`
+No default
 | `retention.bytes`  +
 No default
 
@@ -56,6 +58,12 @@ Default - `null`
 | `retention.local.target.bytes`  +
 No default
 
+| Segment lifetime
+| `log_segment_ms`  +
+No default
+| `segment.ms`  +
+No default
+
 | Segment size
 | `log_segment_size`  +
 Default - `1073741824`
@@ -63,11 +71,15 @@ Default - `1073741824`
 No default
 |===
 
-Data expires from object storage following `retention.ms` or `retention.bytes`. For example, if `retention.bytes` is set to 10 GiB, then every partition in the topic has a limit of 10 GiB storage in the cloud. When `retention.bytes` is exceeded by data in object storage, the data in object storage is trimmed. With Tiered Storage enabled, data expires from local storage following `retention.local.target.ms` or `retention.local.target.bytes`.
+Data expires from object storage following both `retention.ms` and `retention.bytes`. For example, if `retention.bytes` is set to 10 GiB, then every partition in the topic has a limit of 10 GiB storage. When `retention.bytes` is exceeded by data in object storage, the data in object storage is trimmed, even if `retention.ms` is not yet exceeded. With Tiered Storage enabled, data expires from local storage following `retention.local.target.ms` or `retention.local.target.bytes`.
 
-NOTE: Both size-based and time-based retention policies are applied simultaneously, so it's possible for your size-based property to override your time-based property, or vice versa. For example, if your size-based property requires removing one segment, and your time-based property requires removing three segments, then three segments are removed. Size-based properties reclaim disk space as close as possible to the maximum size, without exceeding the limit.
+image:shared:segment-rolling-size-and-time.png[Time-based segment rolling]
 
-Based on these properties, Redpanda runs a log cleanup process in the background. If you start to run out of disk space, adjust your retention properties to reduce the amount of disk space used.
+Retention policy functions by deleting or compacting closed segments. The segment lifetime and segment size configurations help ensure new segments are created regularly within each partition. This illustration shows how Redpanda creates new segments based on size and time. After the limit for a segment is reached, whether it's size- or time-based, Redpanda closes the segment and begins filling a new segment. If the limits are set too high, the segment may fill available disk space before closing and therefore never become eligible for deletion or compaction. If the values are set too low, your partitions will have a large number of segments that must be checked each time deletion or compaction processes execute, having a potential adverse impact on system resource utilization.
+
+NOTE: Both size-based and time-based retention policies are applied simultaneously. It's possible for your size-based property to override your time-based property, or vice versa. For example, if your size-based property requires removing one segment, and your time-based property requires removing three segments, then three segments are removed. Size-based properties reclaim disk space as close as possible to the maximum size, without exceeding the limit.
+
+Redpanda runs a log cleanup process in the background to apply these policy settings. If you start to run out of disk space, adjusting your retention properties is an excellent way to reduce the amount of disk space used.
 
 See also:
 
@@ -79,6 +91,7 @@ See also:
 Messages are eligible for deletion once their age exceeds the value specified in `delete_retention_ms` (the cluster-level property) or `retention.ms` (the topic-level property). Only closed segments are eligible for deletion and all messages in a closed segment must exceed the age limit before Redpanda considers the segment for cleanup. If `retention.ms` is not set at the topic level, the topic inherits the `delete_retention_ms` setting.
 
 NOTE: By default, time-based retention is based on the `broker_timestamp` field of each message. This timestamp is populated by the broker when initially receiving the message. Each segment tracks the max broker timestamp contained in that segment as the batch timestamp in the segment index. Segments are closed when partition leadership changes or when the segment size limit is reached. Closed segments are deleted when the difference between the system time and the batch timestamp exceeds the configured retention time.
+
 
 To set retention time for a single topic, use `retention.ms`, which overrides `delete_retention_ms`.
 
@@ -105,10 +118,7 @@ See also:
 
 === Set size-based retention
 
-A message is deleted if the size of the partition in which it is contained reaches the value specified in
-`retention_bytes` or `retention.bytes`. When a partition reaches that value, the oldest messages in the partition are deleted.
-
-To set retention size for a single topic, use `retention.bytes`, which overrides the cluster property `retention_bytes`. If `retention.bytes` is not set at the topic-level, the topic inherits the cluster-level setting.
+Messages are eligible for deletion after the storage size of the partition containing them exceeds the value specified in `retention_bytes` (the cluster-level property) or `retention.bytes` (the topic-level property). If `retention.bytes` is not set at the topic level, the topic inherits the `retention_bytes` setting. Segments are deleted in chronological order until the partition is back under the specified size limit.
 
 * `retention.bytes` - Topic-level property that specifies the maximum size of a partition. There is no default.
 +
@@ -153,7 +163,7 @@ Redpanda supports group offset deletion with the Kafka OffsetDelete API through 
 
 == Configure segment size
 
-The `log_segment_size` property specifies the size of each log segment.
+The `log_segment_size` property specifies the size of each log segment within the partition. Redpanda closes segments after they exceed this size and messages begin filling a new segment.
 
 To set `log_segment_size`:
 
@@ -177,7 +187,7 @@ Compaction, or key-based retention, saves space by retaining at least the most r
 
 When compaction is configured, topics take their size from `compacted_log_segment_size`. The `log_segment_size` property does not apply to compacted topics.
 
-Setting a `segment.bytes` size on a topic applies whether the topic is compacted or not, and the `max_compacted_log_segment_size` property applies to compacted topics regardless of any other properties. The `max_compacted_log_segment_size` property controls how many segments are merged together. For example, if you set `segment.bytes` to 128 MB, but leave `max_compacted_log_segment_size` at 5 GB, then you get 128 MB segments when they're written, but up to 5 GB segments after compaction.
+When compaction executes, one or more segments are merged into one new compacted segment. The old segments are deleted. The size of the initial segments are controlled by `segment.bytes`.  The `max_compacted_log_segment_size` property controls how many segments are merged together. For example, if you set `segment.bytes` to 128 MB, but leave `max_compacted_log_segment_size` at 5 GB, fresh segments are 128 MB but merged segments may grow up to 5 GB after compaction.
 
 Redpanda periodically performs compaction in the background. The compaction period is configured by the cluster property xref:reference:cluster-properties.adoc#log_compaction_interval_ms[log_compaction_interval_ms].
 
@@ -185,11 +195,13 @@ Keep in mind that very large segments delay, or possibly prevent, compaction. A 
 
 For details about how to modify cluster configuration properties, see xref:./cluster-property-configuration.adoc[Cluster configuration].
 
+For further information on how compaction works, see xref:./compaction-settings.adoc[Compaction tuning].
+
 === Log rolling
 
-Writing data for a topic usually spans multiple log segments. An *active segment* of a topic is a log segment that is being written to. As data of a topic is written and an active segment becomes full (reaches `log_segment_size`), it's closed and changed to read-only mode, and a new segment is created, set to read-write mode, and becomes the active segment. *Log rolling* is the rotation between segments to create a new active segment.
+Writing data for a topic usually spans multiple log segments. An *active segment* of a topic is a log segment that is being written to. As data of a topic is written and an active segment becomes full (reaches `log_segment_size`), it's closed and changed to read-only mode. A new segment is created and set to read-write mode, and it becomes the active segment. *Log rolling* is the rotation between segments to create a new active segment.
 
-Log rolling can also be triggered by configurable timeouts. This is useful when topic retention limits need to be applied within a known fixed duration. A log rolling timeout starts from the first write to an active segment. When a timeout elapses before the segment is full, the segment is rolled. The timeouts are configured with cluster-level and topic-level properties:
+Configurable timeouts can also trigger log rolling. This is useful when applying topic retention limits within a known fixed duration. A log rolling timeout starts from the first write to an active segment. When a timeout elapses before the segment is full, the segment is rolled. The timeouts are configured with cluster-level and topic-level properties:
 
 * xref:reference:cluster-properties.adoc#log_segment_ms[log_segment_ms] (or `log.roll.ms`) is a cluster property that configures the default segment rolling timeout for all topics of a cluster.
 +
@@ -211,6 +223,7 @@ rpk topic alter-config <topic> --set segment.ms=<segment_ms_duration>
 
 * xref:reference:tunable-properties.adoc#log_segment_ms_min[log_segment_ms_min] and xref:reference:tunable-properties.adoc#log_segment_ms_max[log_segment_ms_max] are cluster-level properties that configure the lower and upper limits, respectively, of log rolling timeouts.
 
+[[space_management]]
 == Space management
 
 Redpanda divides disk storage into different categories to provide a flexible configuration of space:
