@@ -7,10 +7,11 @@ install-upgrade:version-upgrade.adoc, \
 cluster-management:version-upgrade.adoc, \
 cluster-administration:version-upgrade.adoc, \
 reference:version-upgrade.adoc
+:rolling-upgrade:
 
 To benefit from Redpanda's new features and enhancements, upgrade to the latest version. Redpanda Data recommends that you perform a rolling upgrade on production clusters, which requires all brokers to be placed into maintenance mode and restarted separately, one after the other.
 
-Redpanda platform version numbers follow the convention AB.C.D, where AB is the two digit year, C is the feature release, and D is the patch release. For example, version 22.3.1 indicates the first patch release on the third feature release of the year 2022. Patch releases include bug fixes and minor improvements, with no change to user-facing behavior. New and enhanced features are documented with each feature release.
+include::partial$versioning.adoc[]
 
 include::partial$rolling-upgrades/upgrade-limitations.adoc[]
 
@@ -89,297 +90,20 @@ include::partial$rolling-upgrades/restart-impact.adoc[leveloffset=+1]
 
 == Perform a rolling upgrade
 
-A rolling upgrade involves putting a broker into xref:manage:node-management.adoc[maintenance mode], upgrading the broker, taking the broker out of maintenance mode, and then repeating the process on the next broker in the cluster. Placing brokers into maintenance mode ensures a smooth upgrade of your cluster while reducing the risk of interruption or degradation in service.
+include::partial$rolling-upgrades/rolling-restart-intro.adoc[]
 
-When a broker is placed into maintenance mode, it reassigns its partition leadership to other brokers for all topics that have a replication factor greater than one. Reassigning partition leadership involves _draining_ leadership from the broker and _transferring_ that leadership to another broker.
+include::partial$rolling-upgrades/enable-maintenance-mode.adoc[]
 
-. Check for topics that have a replication factor greater than one.
-+
-If you have topics with `replication.factor=1`, and if you have sufficient disk space, Redpanda Data recommends temporarily increasing the replication factor. This can help limit outages for these topics during the rolling upgrade. Do this before the upgrade to make sure there's time for the data to replicate to other brokers. For more information, see xref:manage:data-migration.adoc#change-topic-replication-factor[Change topic replication factor].
+include::partial$rolling-upgrades/upgrade-your-version.adoc[]
 
-. Ensure that all brokers are active before upgrading:
-+
-[,bash]
-----
-rpk redpanda admin brokers list
-----
-+
-All brokers should show `active` for `MEMBERSHIP-STATUS` and `true` for `IS-ALIVE`:
-+
-.Example output
-[%collapsible]
-====
-[.no-copy]
-```
-NODE-ID  NUM-CORES  MEMBERSHIP-STATUS  IS-ALIVE  BROKER-VERSION
-0        1          active             true      v22.3.11
-1        1          active             true      v22.3.11
-2        1          active             true      v22.3.11
-```
-====
+include::partial$rolling-upgrades/check-metrics.adoc[]
 
-New features in a version are enabled after all brokers in the cluster are upgraded. If problems occur, the upgrade is not committed.
+include::partial$rolling-upgrades/restart-the-broker.adoc[]
 
-NOTE: Redpanda started supporting xref:develop:consume-data/consumer-offsets.adoc[consumer offsets] in version 22.1. When upgrading from version 21.11 to 22.1, after all brokers are upgraded, Redpanda starts to migrate consumer group topics to `__consumer_offsets`. This takes some time, depending on the data size. Until it finishes, all consumer group-related operations (consume, offset commit, coordinator election) are blocked. The migration to consumer offsets is complete when you see `consumer offset feature enabled` in all brokers.
+include::partial$rolling-upgrades/disable-maintenance-mode.adoc[]
 
-=== Enable maintenance mode
-
-. Check that all brokers are healthy:
-+
-[,bash]
-----
-rpk cluster health
-----
-+
-.Example output:
-[%collapsible]
-====
-[.no-copy]
-----
-CLUSTER HEALTH OVERVIEW
-=======================
-Healthy:                     true <1>
-Controller ID:               0
-All nodes:                   [0 1 2] <2>
-Nodes down:                  [] <3>
-Leaderless partitions:       [] <3>
-Under-replicated partitions: [] <3>
-----
-<1> The cluster is either healthy (`true`) or unhealthy (`false`).
-<2> The node IDs of all brokers in the cluster.
-<3> If the cluster is unhealthy, these fields will contain data.
-====
-
-. Select a broker that has not been upgraded yet and place it into maintenance mode:
-+
-```bash
-rpk cluster maintenance enable <node-id> --wait
-```
-+
-The `--wait` option tells the command to wait until a given broker, 0 in this example, finishes draining all partitions it originally served. After the partition draining completes, the command completes.
-+
-.Expected output:
-+
-[.no-copy]
-----
-Successfully enabled maintenance mode for node 0
-Waiting for node to drain...
-----
-
-. Verify that the broker is in maintenance mode:
-+
-```bash
-rpk cluster maintenance status
-```
-+
-.Expected output:
-[%collapsible]
-====
-[.no-copy]
-----
-NODE-ID  DRAINING  FINISHED  ERRORS  PARTITIONS  ELIGIBLE  TRANSFERRING  FAILED
-0        true      true      false   3           0         2             0
-1        false     false     false   0           0         0             0
-2        false     false     false   0           0         0             0
-----
-
-The `Finished` column should read `true` for the broker that you put into maintenance mode.
-====
-
-. Validate the health of the cluster again:
-+
-```bash
-rpk cluster health --watch --exit-when-healthy
-```
-+
-The combination of the `--watch` and `--exit-when-healthy` flags tell rpk to monitor the cluster health and exit only when the cluster is back in a healthy state.
-+
-[NOTE]
-====
-You can also evaluate xref:manage:monitoring.adoc[external metrics] to determine cluster health. If the cluster has any issues, take the broker out of maintenance mode by running the following command before proceeding with other operations, such as decommissioning or retrying the rolling upgrade:
-
-```bash
-rpk cluster maintenance disable <node-id>
-```
-====
-
-=== Upgrade your version
-
-[tabs]
-======
-Linux::
-+
---
-For Linux distributions, the process changes according to the distribution:
-
-[tabs]
-====
-Fedora/RedHat::
-+
-In the terminal, run:
-+
-[,bash]
-----
-sudo yum update redpanda
-----
-
-Debian/Ubuntu::
-+
-In the terminal, run:
-+
-[,bash]
-----
-sudo apt update
-sudo apt install redpanda
-----
-
-====
---
-
-Docker::
-+
---
-
-CAUTION: Running Redpanda directly on Docker is not supported for production usage. This platform should only be used for testing.
-
-To perform an upgrade you must replace the current image with a new one.
-
-First, check which image is currently running in Docker:
-
-```bash
-docker ps
-```
-
-Stop and remove the containers:
-
-```bash
-docker stop <container_id>
-docker rm <container_id>
-```
-
-Remove current images:
-
-```bash
-docker rmi <image_id>
-```
-
-Pull the desired Redpanda version, or adjust the setting to `latest` in the `version` tag:
-
-```bash
-docker pull docker.redpanda.com/redpandadata/redpanda:<version>
-```
-
-After it completes, restart the cluster:
-
-```bash
-docker restart <container_name>
-```
-
-For more information, see the xref:get-started:quick-start.adoc[Redpanda Quickstart].
-
---
-macOS::
-+
---
-
-If you previously installed Redpanda with brew, run:
-
-```bash
-brew upgrade redpanda-data/tap/redpanda
-```
-
-For installations from binary files, download the preferred version from the release list and then overwrite the current rpk file in the installed location.
-
---
-======
-
-=== Check metrics
-
-Before continuing with the upgrade, check these important metrics to make sure the cluster is healthy and working as expected.
-
-[cols="1m,1a,1a"]
-|===
-| Metric Name | Description |Recommendations
-
-| xref:reference:public-metrics-reference.adoc#redpanda_kafka_under_replicated_replicas[redpanda_kafka_under_replicated_replicas]
-| Measures the number of under-replicated Kafka replicas. Non-zero: Replication lagging. Zero: All replicas replicated.
-| Pause upgrades if non-zero.
-
-| xref:reference:public-metrics-reference.adoc#redpanda_cluster_unavailable_partitions[redpanda_cluster_unavailable_partitions]
-| Represents the number of partitions that are currently unavailable. Value of zero indicates all partitions are available. Non-zero indicates the respective count of unavailable partitions.
-| Ensure metric shows zero unavailable partitions before restart.
-
-| xref:reference:public-metrics-reference.adoc#redpanda_kafka_request_bytes_total[redpanda_kafka_request_bytes_total]
-| Total bytes processed for Kafka requests.
-| Ensure produce and consume rate for each broker recovers to its pre-upgrade value before restart.
-
-| xref:reference:public-metrics-reference.adoc#redpanda_kafka_request_latency_seconds[redpanda_kafka_request_latency_seconds]
-| Latency for processing Kafka requests. Indicates the delay between a Kafka request being initiated and completed.
-| Ensure the p99 histogram value recovers to its pre-upgrade level before restart.
-
-| xref:reference:public-metrics-reference.adoc#redpanda_rpc_request_latency_seconds[redpanda_rpc_request_latency_seconds]
-| Latency for processing RPC requests. Shows the delay between an RPC request initiation and completion.
-| Ensure the p99 histogram value returns to its pre-upgrade level before restart.
-
-| xref:reference:public-metrics-reference.adoc#redpanda_cpu_busy_seconds_total[redpanda_cpu_busy_seconds_total]
-| CPU utilization for a given second. The value is a decimal between 0.0 and 1.0. A value of 1.0 means that the CPU was busy for the entire second, operating at 100% capacity. A value of 0.5 implies the CPU was busy for half the time (or 500 milliseconds) in the given second. A value of 0.0 indicates that the CPU was idle and not busy during the entire second.
-|If you're seeing high values consistently, investigate the reasons. It could be due to high traffic or other system bottlenecks.
-
-|===
-
-=== Restart the broker
-
-Restart the broker's Redpanda service with xref:reference:rpk/rpk-redpanda/rpk-redpanda-stop.adoc[`rpk redpanda stop`], then xref:reference:rpk/rpk-redpanda/rpk-redpanda-start.adoc[`rpk redpanda start`].
-
-=== Disable maintenance mode
-
-After you've successfully upgraded the broker:
-
-. Take the broker out of maintenance mode:
-+
-```bash
-rpk cluster maintenance disable <node-id>
-```
-+
-Expected output:
-+
-[.no-copy]
-----
-Successfully disabled maintenance mode for node 0
-----
-
-. Ensure that the broker is no longer in maintenance mode:
-+
-```bash
-rpk cluster maintenance status
-```
-+
-.Expected output:
-[%collapsible]
-====
-[.no-copy]
-```
-NODE-ID  DRAINING  FINISHED  ERRORS  PARTITIONS  ELIGIBLE  TRANSFERRING  FAILED
-0        false     false     false   0           0         0             0
-1        false     false     false   0           0         0             0
-2        false     false     false   0           0         0             0
-```
-====
-
-=== Post-upgrade tasks
-
-To verify that the cluster is running properly, run:
-
-```bash
-rpk cluster health
-```
-
-To view additional information about your brokers, run:
-
-```bash
-rpk redpanda admin brokers list
-```
+include::partial$rolling-upgrades/post-upgrade-tasks.adoc[]
 
 include::shared:partial$suggested-reading.adoc[]
 
-* xref:manage:monitoring.adoc[Set up a real-time dashboard to monitor your cluster health]
+* xref:manage:monitoring.adoc[]
