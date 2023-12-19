@@ -9,7 +9,7 @@ Redpanda now provides the framework to build and deploy inline transformations (
 
 == OIDC authentication
 
-You can xref:manage:security/authentication.adoc#enable-oidc[enable OIDC] so that Redpanda can delegate the authentication process to an external identity provider (IdP) such as Okta, Azure AD, or on-premise Active Directory Federation Service (AD FS). When you enable OIDC, Redpanda does not need to manage user credentials directly, but can instead rely on the trusted authentication capabilities of IdPs. Redpanda's implementation of OIDC provides SASL/OAUTHBEARER support for the Kafka API, and enables standard OIDC authentication across the Schema Registry, HTTP Proxy, and Admin APIs.
+You can xref:manage:security/authentication.adoc#enable-oidc[enable OIDC] for Redpanda to delegate the authentication process to an external identity provider (IdP) such as Okta, Azure AD, or on-premise Active Directory Federation Service (AD FS). When you enable OIDC, Redpanda does not need to manage user credentials directly, but can instead rely on the trusted authentication capabilities of IdPs. Redpanda's implementation of OIDC provides SASL/OAUTHBEARER support for the Kafka API, and enables standard OIDC authentication across the Schema Registry, HTTP Proxy, and Admin APIs.
 
 == Audit logging 
 
@@ -22,34 +22,30 @@ Redpanda's xref:manage:audit-logging.adoc[audit logging] supports fine-grained r
 
 You can persistently store auditing events to a topic in an append-only fashion, which guarantees retention for the requested time period, even against Redpanda administrators. Auditing is compatible with the Open Cybersecurity Schema Framework (OCSF) and works with industry-standard tools, such as Splunk, Sumo Logic, and AWS.
 
-== Manually move partitions
+== Whole cluster restore
 
-As an alternative to Redpanda partition balancing, you now can xref:manage:cluster-maintenance/cluster-balancing.adoc#manually-move-partitions explicitely [change partition assignments] with `rpk cluster partitions move`.
-
-== Improved compaction
-
-To optimize storage utilization, you can enable compaction in a cluster or a topic's cleanup policy, and configure xref:manage:cluster-maintenance/compaction-settings.adoc[compaction settings] settings.
+With Tiered Storage enabled, you can do a whole cluster restore to recover data from a failed cluster, including its metadata, onto a new cluster. This is a simpler and cheaper alternative to active-active replication, for example with MirrorMaker 2. Use this recovery method to restore your application to the latest functional state as quickly as possible.
 
 == Recovery mode 
 
 xref:manage:recovery-mode.adoc[Recovery mode] lets you repair and restore a failed cluster that cannot start normally due to issues such as a system crash or out-of-memory errors. In recovery mode, Redpanda limits functionality to cluster configuration changes and other manual administrative actions so that you can repair the cluster.
 
-== CPU profiler
+== Improved compaction
 
-There is a new Admin API endpoint to https://docs.redpanda.com/api/admin-api/#tag/Debugging/operation/get_cpu_profile[query the CPU profiler] for troubleshooting. 
+Redpanda compaction now is more efficient and similar to Kafka's compaction. The amount of memory that each shard may use when creating the key map for a partition during compaction defaults to 128 MiB. The compaction process uses this key map to de-dupe keys within the compacted segments. For an overview of compaction, see xref:manage:cluster-maintenance/compaction-settings.adoc[].
 
 == Redpanda Console updates
 
 - You can xref:manage:schema-reg/schema-reg-ui.adoc[perform Schema Registry operations] in Redpanda Console, such as registering a schema, creating a new version of it, and configuring compatibility. The Schema Registry page lists verified schemas, including their serialization format and versions. 
 - Redpanda Console automatically tries to xref:reference:console/record-deserialization.adoc[deserialize] incoming messages and show them in human-readable format. It tests different deserialization strategies until it finds one with no errors. If no deserialization attempts are successful, Redpanda Console renders the byte array in a hex viewer and displays troubleshooting information.
 
-== Not yet merged
+== Manually move partitions
 
-- The `delete_retention_ms` property has been deprecated. Use `log_retention_ms` in its place. (issue 1979)
-- Whole cluster restore for disaster recovery (waiting final update & merge, issue 1978, https://github.com/redpanda-data/docs/pull/118[pr]) & DR in Kubernetes (Issue 1990). With automatic metadata backup, there's periodic backup of topics and schema definitions, consumer offsets, and users/ACLs to object storage. Metadata lives with topic data in the same bucket/container. With one-step cluster restore, an `rpk` command restores all cluster state from object storage. It aligns consumer offsets with topic data, allowing consumers to resume seamlessly.
-- Node-wise partition recovery (Issue 1982)
-- Public metrics TLS certificates (Issue 1950). You can monitor client and truststore certificates in Grafana by alerting and protecting against downtime from certificate expiration. This provides information on usage to ensure that services are using the correct certificate including Service (e.g., Kafka, Schema Registry), certificate serial number, date loaded.
-- Broker time message retention and timestamp skew alerting (Issue 1980)
+As an alternative to Redpanda partition balancing, you now can xref:manage:cluster-maintenance/cluster-balancing.adoc#manually-move-partitions explicitely [change partition assignments] with `rpk cluster partitions move`.
+
+== Broker time retention
+
+Redpanda employs a unique strategy to help optimize retention. Every time a producer posts a message to a topic, Redpanda records the broker's system date and time in the message's `broker_timestamp` property. This helps ensure that retention functions as intended in cases where a producer submits a message with a created timestamp skewed from the broker's time. Closed segments are only eligible for deletion under Redpanda's retention policy when the age of all messages in the segment exceed a set threshold. If the message's timestamp is in the future, it will never exceed this policy and the segment is not eligible for deletion under Redpanda's cleanup processing.
 
 == New commands
 
@@ -58,6 +54,7 @@ New commands in this release include the following:
 - xref:reference:rpk/rpk-registry/rpk-registry.adoc[`rpk registry`]: This includes commands to interact with the Schema Registry.
 - xref:reference:rpk/rpk-transform/rpk-transform.adoc[`rpk transform`]: This includes commands to develop, deploy, and manage data transforms.
 - xref:reference:rpk/rpk-cluster/rpk-cluster-partitions.adoc[`rpk cluster partitions`] This includes commands to move partitions, verify that the reassignment completes, and cancel moves.
+- `rpk cluster partitions unsafe-recover`
 - `rpk cluster txn` (?)
 
 New flags
@@ -80,10 +77,15 @@ Renamed commands (old ones still work with aliases)
 ** xref:reference:rpk/rpk-redpanda/rpk-redpanda-config-set.adoc[`rpk redpanda config set`]
 ** xref:reference:rpk/rpk-version.adoc[`rpk version`] 
 
+== Deprecated features 
+
+- The `delete_retention_ms` property has been deprecated. Use `log_retention_ms` instead. See xref:upgrade:deprecated/index.adoc[Deprecated Features]
+
 == Documentation enhancements
 
 - Documentation search now include the option to search Redpanda blogs and videos. 
-- xref:manage:cluster-maintenance/rolling-restart.adoc[Rolling restarts] involve restarting one broker at a time while the remaining brokers in your cluster continue running. This is to minimize downtime during a full cluster restart.
+- xref:manage:cluster-maintenance/rolling-restart.adoc[Rolling restarts]: This documentation has been clarified with restarts and upgrades. Rolling restarts involve restarting one broker at a time while the remaining brokers in your cluster continue running. This is to minimize downtime during a full cluster restart.
+- https://docs.redpanda.com/api/admin-api/#tag/Debugging/operation/get_cpu_profile[CPU profiler]: There is a new Admin API endpoint to query the CPU profiler for troubleshooting. 
 
 == Next steps
 
