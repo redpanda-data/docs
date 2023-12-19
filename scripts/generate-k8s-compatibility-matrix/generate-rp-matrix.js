@@ -69,7 +69,7 @@ async function generateTable() {
 
       } else if (chartDetails && chartDetails.consoleChartVersions && MATRIX_TO_GENERATE === 'console') {
 
-        fetchLatestConsoleChartVersion(chartDetails.consoleChartVersions, allConsoleChartVersions)
+        await fetchLatestConsoleChartVersion(chartDetails.consoleChartVersions, allConsoleChartVersions)
           .then(({ latestVersion, appVersion }) => {
             table += `| link:https://github.com/redpanda-data/helm-charts/releases/redpanda-${chartDetails.chartVersion}[${chartMajorMinor}]\n`;
             table += `| link:https://github.com/redpanda-data/helm-charts/releases/console-${latestVersion}[${latestVersion}]\n`;
