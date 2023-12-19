@@ -324,13 +324,13 @@ def build_ascii(ascii_result, executed_command, explanation, usage, it_flags, fl
 
     if it_flags:
         ascii_result += """\n\n== Flags"""
-        ascii_result += """\n\n[cols="1m,1a,2a]"""
+        ascii_result += """\n\n[cols="1m,1a,2a"]"""
         ascii_result += """\n|==="""
         ascii_result += """\n|*Value* |*Type* |*Description*"""
 
     for flag in flag_list:
         ascii_result += """\n\n"""
-        ascii_result += "|`"+flag.value+"` |"
+        ascii_result += "|"+flag.value+" |"
         ascii_result += flag.type+" |"
         ascii_result += flag.explanation
 
