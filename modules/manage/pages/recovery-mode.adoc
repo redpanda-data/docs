@@ -1,0 +1,223 @@
+= Recovery Mode
+:description: Recovery mode starts Redpanda with limited functionality and disables partitions so you can repair a failed cluster.
+
+Recovery mode allows you to repair and restore a failed cluster that cannot start normally due to issues such as a system crash or out-of-memory (OOM) errors. In recovery mode, Redpanda limits functionality to cluster configuration changes and other manual administrative actions so that you can repair the cluster. 
+
+== Enabled functionality 
+
+You can perform the following operations in recovery mode:
+
+* Kafka API
+** Modify topic properties
+** Delete topics
+** Add and remove ACLs
+** Edit consumer group metadata
+* Redpanda Admin API
+** Edit cluster configuration properties
+** Add and remove users
+** Add new brokers to the cluster
+** Delete WASM transforms
+
+== Disabled functionality
+
+Recovery mode starts a cluster with limited functionality, and deactivates normal traffic and data operations such as topic reads and writes. Redpanda does not load user-managed partitions on disk. This helps prevent triggering a storm of partition leader elections and replication (such as increased learner replica recovery load after a long broker downtime) that may occur on startup. 
+
+Normal traffic and especially malicious traffic can disrupt availability for all users, including admin users. Recovery mode helps avoid placing the cluster under a heavy load of Kafka API and HTTP Proxy connections as you work to resuscitate the cluster.
+
+The following node-wide and cluster-wide processes are disabled as they may disrupt recovery operations:
+
+* Partition and leader balancers
+* Tiered storage housekeeping
+* Tiered storage cache management
+* Compaction
+
+The following APIs are not available:
+
+* Kafka API (fetch and produce requests)
+* HTTP Proxy 
+* Schema Registry
+
+With normal Kafka traffic restricted, and certain node-wide and cluster-wide processes disabled, you have a more stable environment for troubleshooting issues and restoring the cluster to a usable state. 
+
+== Prerequisites
+
+To enable recovery mode, ensure that you have xref:get-started:intro-to-rpk.adoc[rpk] installed, and you have local access to machines running Redpanda.
+
+A broker can only enter recovery mode as it starts up, and not while it is already running. You first set the broker configuration property to enable recovery mode, and then do a broker restart.
+
+== Start Redpanda in recovery mode
+
+To use recovery mode, first configure the broker to enter recovery mode when it starts.
+
+. Run the xref:reference:rpk/rpk-redpanda/rpk-redpanda-mode.adoc[`rpk redpanda mode`] command to set the `recovery_mode_enabled` broker configuration property to `true`.
++
+[,bash] 
+---- 
+rpk redpanda mode recovery
+----
+
+. Start the cluster. You can run `rpk cluster health` to check whether the cluster has entered recovery mode.
++
+[,bash,lines=9,.no-copy]
+----
+$ rpk cluster health
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:                          true
+Unhealthy reasons:                []
+Controller ID:                    0
+All nodes:                        [0 1 2]
+Nodes down:                       []
+Nodes in recovery mode:           [0 1 2]
+Leaderless partitions (0):        []
+Under-replicated partitions (0):  []
+----
++
+It is possible to start a mixed-mode cluster, where some individual brokers are in recovery mode while others are not, but Redpanda Data recommends starting all brokers in the cluster in recovery mode together.
+
+All private Redpanda topics such as `__consumer_offsets` are accessible. Data in user-created topics is not available, but you can still manage these user-created topics' metadata.
+
+== Exit recovery mode
+
+Exit recovery mode by running the following commands:
+
+* `rpk redpanda mode developer` to exit to developer mode
+* `rpk redpanda mode production` to exit to production mode
+
+== Disable partitions
+
+You may find that problems preventing normal cluster startup are isolated to certain partitions or topics. You can use rpk or the xref:api:ROOT:admin-api.adoc#tag/Partitions[Admin API] to disable these partitions. You can disable partitions at the topic level, or individual partition level. A disabled partition or topic returns a "Replica Not Available" error code for Kafka API requests. 
+
+To disable a partition, you need a healthy controller in the cluster, and so you must start the cluster in recovery mode if there is a problematic partition affecting cluster startup. If you disable a partition while in recovery mode, starting Redpanda again in non-recovery mode leaves the partition in a deactivated state. You must explicitly re-enable the partition.
+
+You can also disable a partition _outside_ of recovery mode, if the issue is localized to the partition and does not interfere with cluster startup.
+
+See the examples below for using the Admin API to enable or disable partitions. The examples assume that the Admin API port is `8081`.
+
+NOTE: Use `kafka` as the `namespace` when making API calls to manage partitions in user topics.
+
+=== Disable a specific partition of a topic
+
+[tabs]
+====
+Curl::
++
+--
+```bash
+curl -X POST -d '{"disabled": true}' http://localhost:8081/cluster/partitions/<namespace>/<topic_name>/<partition_id>
+```
+--
+rpk::
++
+--
+```bash
+rpk cluster partitions disable --topic <topic_name> --partition <partition_id>
+```
+--
+
+====
+
+=== Enable a specific partition of a topic
+
+[tabs]
+====
+Curl::
++
+--
+```bash
+curl -X POST -d '{"disabled": false}' http://localhost:8081/cluster/partitions/<namespace>/<topic_name>/<partition_id>
+```
+--
+rpk::
++
+--
+```bash
+rpk cluster partitions enable --topic <topic_name> --partition <partition_id>
+```
+--
+====
+
+=== Disable all partitions of a specific topic
+
+[tabs]
+====
+Curl::
++
+--
+```bash
+curl -X POST -d '{"disabled": true}' http://localhost:8081/cluster/partitions/<namespace>/<topic_name>
+```
+--
+rpk::
++
+--
+```bash
+rpk cluster partitions disable --topic <topic_name>
+```
+--
+====
+
+=== Enable all partitions of a specific topic
+
+[tabs]
+====
+Curl::
++
+--
+```bash
+curl -X POST -d '{"disabled": false}' http://localhost:8081/cluster/partitions/<namespace>/<topic_name>
+```
+--
+rpk::
++
+--
+```bash
+rpk cluster partitions enable --topic <topic_name>
+```
+--
+====
+
+=== List all disabled partitions
+
+[tabs]
+====
+Curl::
++
+--
+```bash
+curl http://localhost:8081/cluster/partitions?disabled=true
+```
+--
+rpk::
++
+--
+```bash
+rpk cluster partitions list --disabled
+```
+--
+====
+
+=== List all disabled partitions of a specific topic
+
+[tabs]
+====
+Curl::
++
+--
+```bash
+curl http://localhost:8081/cluster/partitions/<namespace>/<topic_name>?disabled=true
+```
+--
+rpk::
++
+--
+```bash
+rpk cluster partitions list --topic <topic_name> --disabled
+```
+--
+====
+
+include::shared:partial$suggested-reading.adoc[]
+
+// * xref:./tiered-storage.adoc#whole-cluster-restore-for-disaster-recovery[] - this PR is not yet merged
+* xref:cluster-maintenance/rolling-restart.adoc[]
