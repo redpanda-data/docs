@@ -1,27 +1,165 @@
-= Record Deserialization
-:description: Learn how record deserialization in Redpanda Console works and what encodings it supports.
-:page-aliases: console:features/record-deserialization.adoc
+= Deserialization in Redpanda Console
+:description: Learn how Redpanda Console deserializes messages.
+:page-aliases: console:features/record-deserialization.adoc, manage:console/protobuf.adoc
 
-When consuming messages, Redpanda Console's message viewer is capable of automatically deserializing messages.
-It identifies the correct deserialization type by trying to decode the record's key, value, or header with all
-available deserialization methods. The supported deserialization methods are:
+In Redpanda, the messages exchanged between producers and consumers contain raw bytes. Schemas work as an agreed-upon format, like a contract, for producers and consumers to serialize and deserialize those messages. If a producer breaks this contract, consumers can fail. 
 
-* Kafka's internal binary formats (for example the `__consumer_offsets` topic )
+Redpanda Console automatically tries to deserialize incoming messages and show them in human-readable format. It tests different deserialization strategies until it finds one with no errors. If no deserialization attempts are successful, Redpanda Console renders the byte array in a hex viewer. Sometimes it may be expected to see the payload in hex bytes (for example, because the payload is encrypted or because it uses a serializer that Redpanda Console cannot deserialize). When this happens, Redpanda Console displays troubleshooting information. You can also download the raw bytes of the message to feed it directly to your client deserializer or share it with support. 
+
+Deserialized messages are rendered as JSON objects and can be used as JavaScript objects in
+xref:./programmable-push-filters.adoc[programmable push filters].
+
+== Automatic deserialization
+
+Redpanda Console tries to automatically identify the correct deserialization type by decoding the message's key, value, or header with all available deserialization methods. The following deserialization methods are supported:
+
+* Kafka's internal binary formats; for example, the `__consumer_offsets` topic
 * JSON
-* JSON Schema with schema registry encoding
+* JSON with Schema Registry encoding
+* Smile
 * XML
-* Avro with schema registry encoding
+* Avro with Schema Registry encoding
 * Protobuf
-* Protobuf with schema registry encoding
-* Messagepack (only for topics that are explicitly enabled to test MessagePack)
-* UTF-8 / Strings
+* Protobuf with Schema Registry encoding
+* Messagepack (for topics explicitly enabled to test MessagePack)
+* UTF-8 / strings
+* `uint8`, `uint16`, `uint32`, `uint64`
 
-Decoded messages will be rendered as JSON objects and can also be used as JavaScript object in
-xref:./programmable-push-filters.adoc[push filters].
-If none of these deserialization attempts appear to be successful, Redpanda Console will render the byte array
-in a hex viewer. Encoding formats that are not self-contained requires additional configuration. 
+Encoding formats that are not self-contained requires additional configuration. 
+
+[NOTE]
+====
+You can change the default *Auto* deserialization to your preferred deserialization format. This can be useful if the automatic deserialization fails, or if you're using plain numbers (for example, `int` or `int32`) as the type for key/value (because it might not show up as a number).
+====
+
+== Protobuf deserialization
+
+If you have one or more topics that contain Protobuf serialized messages, you can configure Redpanda Console to deserialize
+the binary content into JSON, which makes the message human-readable and usable in
+xref:reference:console/programmable-push-filters.adoc[programmable push filters], like a JavaScript object. Protobuf serialization is commonly used with Kafka clusters in two ways:
+
+* With the Schema Registry (schema meta information gets embedded as part of the record's value)
+* To write Protobuf serialized content into Kafka topics without a binary or custom wrapper
+
+Redpanda Console supports both formats. Most Kafka clients that serialize Protobuf messages put the serialized byte array into a binary wrapper that contains meta information, like the schema ID or the used prototypes, so the application that deserializes the Kafka records must recognize the format. The deserialization process requires Redpanda Console to be aware of the used `.proto` files as well as a mapping of what prototype should be used for each topic. This information can either be sourced from the Schema Registry or it can be provided with additional configuration so the files can be pulled from the local file system or a GitHub repository.
+
+NOTE: To support imports, all prototypes are first registered in a proto registry.
+You must ensure that all imported prototypes are part of the repository. Standard types (such as Google's timestamp type) are included by default and don't need to be added.
+
+=== Schema Registry
+
+Messages that have been serialized using Confluent's KafkaProtobufSerializer can only be deserialized if the Schema Registry is configured to recognize them.
+Unlike other providers, the Schema Registry does not require you to set up mappings that define which topics use which prototypes. Instead,
+this information is inferred from the messages, and the Schema Registry finds the right prototype for deserialization.
+
+To set up the Schema Registry in Redpanda Console with self-hosted Redpanda, see xref:manage:schema-reg/schema-reg-ui.adoc[]. The Protobuf deserializer uses the same Schema Registry client that is configured under `kafka.schemaRegistry`. 
+A valid configuration looks like the following:
+
+[,yaml]
+----
+kafka:
+  schemaRegistry:
+    enabled: true
+    urls: ["https://my-schema-registry.com"]
+    username: console
+    password: redacted # Or set using flags or env variable
+  protobuf:
+    enabled: true
+    schemaRegistry:
+      enabled: true # This tells the proto service to consider the schema registry when deserializing messages
+      refreshInterval: 5m # How often the compiled proto schemas in the cache should be updated
+----
+
+=== Local file system
+
+You can provide all required proto files by mounting them from your file system. All files must use the `.proto` file extension.
+In the `config.yaml` file, configure Redpanda Console to search one or more paths for your provided proto files, so it can
+build a registry with all types:
+
+[,yaml]
+----
+kafka:
+  protobuf:
+    enabled: true
+    mappings:
+      - topicName: orders
+        valueProtoType: fake_model.Order # You can specify the proto type for the record key and/or value (just one will work too)
+        keyProtoType: package.Type
+    fileSystem:
+      enabled: true
+      refreshInterval: 5m # 5min is the default refresh interval
+      paths:
+        - /etc/protos
+----
+
+=== GitHub repository
+
+To provide the proto files through a GitHub repository, first place the files in a directory. Redpanda will search the specified GitHub repository to a directory depth of up to five levels, so no specific directory name is required. To
+use multiple import paths, set the `importPaths` property. For example, if your repository includes
+third-party Protobuf types, such as Google's types, that are in a different directory to your own types, set the `importPaths` property to the paths of both directories.
+
+Enable `git` in the `config.yaml` file:
+
+[,yaml]
+----
+kafka:
+  protobuf:
+    enabled: true
+    mappings: []
+      - topicName: xy
+        valueProtoType: fake_model.Order # You can specify the proto type for the record key and/or value (just one will work too)
+        keyProtoType: package.Type
+    # importPaths is a list of paths from which to import Proto files into Redpanda Console.
+    # Paths are relative to the root directory.
+    # The `git` configuration must be enabled to use this feature.
+    importPaths: []
+    git:
+      enabled: true
+      refreshInterval: 5m
+      repository:
+        url: https://github.com/redpanda-data/owlshop-protos.git
+      basicAuth:
+        enabled: true
+        username: token # API token from basic auth
+        password: redacted
+----
+
+=== Topic mapping
+
+If you don't use the Schema Registry for Protobuf deserialization, you must provide a mapping configuration so Redpanda Console is aware of what
+proto types it should use for each Kafka topic.
+For example, assume you have a Kafka topic called `address-v1` and the respective `address.proto` file in your GitHub repository, which looks like the following:
+
+[,proto]
+----
+syntax = "proto3";
+package fake_models;
+
+option go_package = "pkg/protobuf";
+
+message Address {
+  int32 version = 1;
+  string id = 2;
+  message Customer {
+    string customer_id = 1;
+    string customer_type = 2;
+  }
+}
+----
+
+The required mapping configuration looks like the following:
+
+[,yaml]
+----
+kafka:
+  protobuf:
+    enabled: true
+    mappings:
+    - topicName: address-v1
+        valueProtoType: fake_model.Address # The full prototype URL is required
+        # keyProtoType: The key is a plain string in Kafka, hence we don't have a prototype for the record's key
+----
 
 == Suggested reading
 
-* xref:manage:console/protobuf.adoc[]
 * xref:manage:schema-reg/schema-reg-overview.adoc[]
