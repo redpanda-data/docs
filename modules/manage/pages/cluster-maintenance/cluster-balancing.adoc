@@ -80,13 +80,19 @@ This option requires an Enterprise license.
 This mode is not recommended for production clusters. Only set to `off` if you need to move partitions manually.
 |===
 
-== Partition balancing with Kafka API
+== Manually move partitions
 
-As an alternative to Redpanda partition balancing, you can change partition assignments explicitly with the Kafka API or with any 3rd-party tool in the Kafka ecosystem that controls partition movement using the Kafka API.
+As an alternative to Redpanda partition balancing, you can change partition assignments explicitly with `rpk cluster partitions move`.
 
-To reassign partitions with the Kafka API:
+To reassign partitions with `rpk`:
 
-. Set the `partition_autobalancing_mode` property to `off`. If Redpanda partition balancing is enabled, Redpanda may change partition assignments regardless of what you do through the Kafka API.
+. Set the `partition_autobalancing_mode` property to `off`. If Redpanda partition balancing is enabled, Redpanda may change partition assignments regardless of what you do with `rpk`.
++
+[,bash]
+----
+rpk cluster config set partition_autobalancing_mode off
+----
+
 . Show initial replica sets. For example, for topic `test`:
 +
 [,bash]
@@ -98,56 +104,37 @@ PARTITION  LEADER  EPOCH  REPLICAS  LOG-START-OFFSET  HIGH-WATERMARK
 2          3       1      [0 1 3]   0                 672
 ----
 
-. Put all partition reassignments in a JSON file. For example, to change the replica set of partition 1 from `[0 1 2]` to `[3 1 2]` and change the replica set of partition 2 from `[0 1 3]` to `[2 1 3]`:
-+
-[,json]
-----
-{
-  "version": 1,
-  "partitions": [
-    {
-      "topic": "test",
-      "partition": 1,
-      "replicas": [
-        3,
-        1,
-        2
-      ]
-    },
-    {
-      "topic": "test",
-      "partition": 2,
-      "replicas": [
-        2,
-        1,
-        3
-      ]
-    }
-  ]
-}
-----
-
-. Reassign partitions with the `kafka-reassign-partitions.sh` script. This example uses `example.json` as the name of the JSON file:
+. Change partition assignments. For example, to change the replica set of partition 1 from `[0 1 2]` to `[3 1 2]`, and to change the replica set of partition 2 from `[0 1 3]` to `[2 1 3]`, run:
 +
 [,bash]
 ----
-kafka-reassign-partitions.sh --bootstrap-server localhost:9092,localhost:9093,localhost:9094,localhost:9095 --reassignment-json-file example.json --execute
-Current partition replica assignment
+rpk cluster partitions move test -p 1:3,1,2 -p 2:2,1,3
+NAMESPACE  TOPIC  PARTITION  OLD-REPLICAS     NEW-REPLICAS      ERROR
+kafka      test   1          [0-1, 1-1, 2-0]  [1-1, 2-0, 3-0]
+kafka      test   2          [0-0, 1-0, 3-1]  [1-0, 2-0, 3-1]
 
-{"version":1,"partitions":[{"topic":"test","partition":1,"replicas":[1,2,0],"log_dirs":["any","any","any"]},{"topic":"test","partition":2,"replicas":[3,1,0],"log_dirs":["any","any","any"]}]}
+Successfully began 2 partition movement(s).
 
-Save this to use as the --reassignment-json-file option during rollback
-Successfully started partition reassignments for test-1,test-2
+Check the movement status with 'rpk cluster partitions move-status' or see new assignments with 'rpk topic describe -p TOPIC'.
 ----
-
-. Verify that the reassignment is complete with the flags `--verify --preserve-throttles`:
++
+or
 +
 [,bash]
 ----
-kafka-reassign-partitions.sh --bootstrap-server localhost:9092,localhost:9093,localhost:9094,localhost:9095 --reassignment-json-file example.json --verify --preserve-throttles
-Status of partition reassignment:
-Reassignment of partition test-1 is complete.
-Reassignment of partition test-2 is complete.
+rpk cluster partitions move -p test/1:3,1,2 -p test/2:2,1,3
+----
+
+. Verify that the reassignment is complete with `move-status`:
++
+[,bash]
+----
+rpk cluster partitions move-status
+ONGOING PARTITION MOVEMENTS
+===========================
+NAMESPACE-TOPIC  PARTITION  MOVING-FROM  MOVING-TO  COMPLETION-%  PARTITION-SIZE  BYTES-MOVED  BYTES-REMAINING
+kafka/test       1          [0 1 2]      [1 2 3]    57            87369012        50426326     36942686
+kafka/test       2          [0 1 3]      [1 2 3]    52            83407045        43817575     39589470
 ----
 +
 Alternatively, run `rpk topic describe` again to show your reassigned replica sets:
@@ -156,29 +143,35 @@ Alternatively, run `rpk topic describe` again to show your reassigned replica se
 ----
 rpk topic describe test -p
 PARTITION  LEADER  EPOCH  REPLICAS  LOG-START-OFFSET  HIGH-WATERMARK
-0          3       2      [1 2 3]   0                 0
-1          2       2      [1 2 3]   0                 0
-2          2       1      [1 2 3]   0                 0
+0          1       2      [1 2 3]   0                 645
+1          1       2      [1 2 3]   0                 682
+2          3       1      [1 2 3]   0                 672
 ----
-
-To cancel an in-progress partition reassignment with the Kafka API, use the flags `--cancel --preserve-throttles`:
-
++
+To cancel all in-progress partition reassignments, run `move-cancel`:
++
 [,bash]
 ----
-kafka-reassign-partitions.sh --bootstrap-server localhost:9092,localhost:9093,localhost:9094,localhost:9095 --reassignment-json-file example.json --cancel --preserve-throttles
-Successfully cancelled partition reassignments for: test-1,test-2
+rpk cluster partitions move-cancel
+----
++
+To cancel specific movements to or from a given node, run:
++
+[,bash]
+----
+rpk cluster partitions move-cancel --node 2
 ----
 
-=== Differences in partition balancing between Redpanda and Kafka
+NOTE: If you prefer, Redpanda also supports the use of the `AlterPartitionAssignments` Kafka API and using standard kafka tools such as `kafka-reassign-partitions.sh`.
 
-* Kafka's `kafka-reassign-partitions.sh` script attempts to use throttle configurations that Redpanda does not support, such as `replica.alter.log.dirs.io.max.bytes.per.second`. Include the flag `--preserve-throttles` to avoid errors when verifying or canceling a partition reassignment.
-* Kafka supports increasing and decreasing the topic replication factor through partition reassignments. Redpanda currently doesn't support this.
+== Differences in partition balancing between Redpanda and Kafka
+
 * In a partition reassignment, you must provide the broker ID for each replica. Kafka validates the broker ID for any new replica that wasn't in the previous replica set against the list of alive brokers. Redpanda validates all replicas against the list of alive brokers.
-* When there are two identical partition reassignment requests, Kafka cancels the first one without returning an error code, while Redpanda rejects one with `unknown_server_error`.
+* When there are two identical partition reassignment requests, Kafka cancels the first one without returning an error code, while Redpanda rejects the second one with `Partition configuration update in progress` or `update_in_progress`.
 * In Kafka, attempts to add partitions to a topic during in-progress reassignments result in a `reassignment_in_progress` error, while Redpanda successfully adds partitions to the topic.
-* Kafka doesn't support shard-level partition assignments, but Redpanda does. When resolving a partition reassignment, Redpanda automatically determines the shard placements. If you want a partition on a specific shard, you must assign partitions with the Admin API.
+* Kafka doesn't support shard-level (core) partition assignments, but Redpanda does. For help specifying a shard for partition assignments, see `rpk cluster partitions move --help`.
 
-=== Assign partitions at topic creation
+== Assign partitions at topic creation
 
 To manually assign partitions at topic creation, run:
 

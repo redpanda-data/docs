@@ -1,0 +1,342 @@
+include::shared:partial$public-beta.adoc[] 
+
+Data transforms let you run common data streaming tasks, like filtering, scrubbing, and transcoding, within Redpanda. For example, you may have consumers that require you to redact credit card numbers or convert JSON to Avro. Data transforms can also interact with the Redpanda Schema Registry to work with encoded data types.
+
+Data transforms use a WebAssembly (Wasm) engine inside a Redpanda broker. A Wasm function acts on a single record in an input topic. You can develop and manage data transforms with xref:reference:rpk/rpk-transform/rpk-transform.adoc[`rpk transform`] commands.
+
+You should build and deploy transforms from a separate, non-production machine (host machine). Using a separate host machine avoids potential resource conflicts and stability issues on the nodes that run your brokers.
+
+See also: xref:./how-transforms-work.adoc[] and <<Limitations>>
+
+== Prerequisites
+
+You must have the following:
+
+- xref:deploy:deployment-option/self-hosted/index.adoc[A Redpanda cluster] running version {page-component-version}.
+- External access to the Kafka API and the Admin API.
+ifdef::env-kubernetes[]
++
+Ensure that your Redpanda cluster has xref:manage:kubernetes/networking/external/index.adoc[external access] enabled and is accessible from your host machine using the advertised addresses.
++
+TIP: For a tutorial on setting up a Redpanda cluster with external access, see xref:deploy:deployment-option/self-hosted/kubernetes/get-started-dev.adoc[].
+endif::[]
+- At least version 1.20 of https://go.dev/doc/install[Go^] installed on your host machine.
+- The xref:get-started:rpk-install.adoc[`rpk` command-line client].
++
+Install `rpk` on your host machine and configure it to connect to your Redpanda cluster.
+ifdef::env-kubernetes[]
++
+You can use a xref:manage:kubernetes/networking/connect-to-redpanda.adoc#rpk-profile[pre-configured `rpk` profile]:
++
+[source,bash]
+----
+rpk profile create --from-profile <(kubectl get configmap --namespace <namespace> redpanda-rpk -o go-template='{{ .data.profile }}') <profile-name>
+----
++
+Replace `<profile-name>` with the name that you want to give this `rpk` profile.
+endif::[]
+
+== Enable data transforms
+
+. To enable data transforms, set the `data_transforms_enabled` cluster property to `true`:
++
+ifdef::env-kubernetes[]
+```bash
+kubectl exec redpanda-0 -c redpanda -n <namespace> -- rpk cluster config set data_transforms_enabled true
+```
+endif::[]
+ifndef::env-kubernetes[]
+```bash
+rpk cluster config set data_transforms_enabled true
+```
+endif::[]
+. Restart all brokers:
++
+ifdef::env-kubernetes[]
+[,bash]
+----
+kubectl rollout restart statefulset redpanda --namespace=<namespace>
+----
+
+. Wait for all Pods to restart:
++
+[,bash]
+----
+kubectl rollout status statefulset redpanda --namespace=<namespace> --watch
+----
+endif::[]
+ifndef::env-kubernetes[]
+[,bash]
+----
+rpk redpanda stop
+rpk redpanda start
+----
+endif::[]
+
+[[configure-memory]]
+== Configure memory for data transforms
+
+Redpanda reserves memory for each transform function within the broker. You need enough memory for your input record and output record to be in memory at the same time, as well as the runtime overhead. For TinyGo, the overhead is 64 KB. For standard Golang, the overhead is 16 MB.
+
+Set the following properties based on the number of functions you have and the amount of memory you anticipate needing.
+
+- `wasm_per_core_memory_reservation`: Total amount of memory (in bytes) to reserve per shard for all Wasm VMs. Default = 20 MiB. Requires restart.
+- `wasm_per_function_memory_limit`: Amount of memory (in bytes) to reserve per instance of a Wasm VM. Default = 2 MiB. Requires restart.
+
+For example, to set `wasm_per_core_memory_reservation` to 40 MiB:
+
+[,bash]
+----
+rpk cluster config set wasm_per_core_memory_reservation=41943040
+----
+
+The maximum number of functions that can be deployed to a cluster is equal to `wasm_per_core_memory_reservation` / `wasm_per_function_memory_limit`. When that limit is hit, Redpanda cannot allocate memory for the VM and the transforms stay in error states.
+
+See also: xref:./how-transforms-work.adoc[]
+
+== Create a data transforms project
+
+. Create and initialize a data transforms project:
++
+```bash
+rpk transform init
+```
++
+A successful command generates project files in your current directory:
++
+[.no-copy]
+----
+.
+├── go.mod
+├── go.sum
+├── README.md
+├── transform.go
+└── transform.yaml
+----
++
+The `transform.go` file contains the transform logic, and the `transform.yaml` file specifies the transform's configuration.
++
+TIP: When creating a custom data transform, initialization steps can be done either in `main` (because it's only run once at the start of the package) or in Go's standard predefined `init()` function. Although state can be cached in global variables, Redpanda may restart a Wasm module at any point, which causes the state to be lost.
+
+. Implement your project by adding transform logic to `transform.go`.
++
+The following examples show some basic transforms. Each example can be copied into the `transform.go` file.
++
+[tabs]
+====
+Identity transform::
++
+--
+```go
+package main
+
+import (
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+)
+
+// This example shows the basic usage of the package:
+// This transform does nothing but copy the same data from an
+// input topic to an output topic.
+func main() {
+	// Make sure to register your callback and perform other setup in main
+	transform.OnRecordWritten(identityTransform)
+}
+
+// This will be called for each record in the source topic.
+//
+// The output records returned will be written to the destination topic.
+func identityTransform(e transform.WriteEvent) ([]transform.Record, error) {
+	return []transform.Record{e.Record()}, nil
+}
+```
+--
+Transcoder transform::
++
+--
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/csv"
+	"encoding/json"
+	"errors"
+	"io"
+	"strconv"
+
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+)
+
+// This example shows a transform that converts CSV inputs into JSON outputs.
+func main() {
+	transform.OnRecordWritten(csvToJsonTransform)
+}
+
+type Foo struct {
+	A string `json:"a"`
+	B int    `json:"b"`
+}
+
+func csvToJsonTransform(e transform.WriteEvent) ([]transform.Record, error) {
+	// The input data is a CSV (without a header row) that is the structure of:
+	// key, a, b
+	reader := csv.NewReader(bytes.NewReader(e.Record().Value))
+	// Improve performance by reusing the result slice.
+	reader.ReuseRecord = true
+	output := []transform.Record{}
+	for {
+		row, err := reader.Read()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+		if len(row) != 3 {
+			return nil, errors.New("unexpected number of rows")
+		}
+		// Convert the last column into an int
+		b, err := strconv.Atoi(row[2])
+		if err != nil {
+			return nil, err
+		}
+		// Marshal our JSON value
+		f := Foo{
+			A: row[1],
+			B: b,
+		}
+		v, err := json.Marshal(&f)
+		if err != nil {
+			return nil, err
+		}
+		// Add our output record using the first column as the key.
+		output = append(output, transform.Record{
+			Key:   []byte(row[0]),
+			Value: v,
+		})
+
+	}
+	return output, nil
+}
+```
+
+--
+Validation filter transform::
++
+--
+```go
+import (
+	"encoding/json"
+
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+)
+
+// This example shows a filter that outputs only valid JSON into the
+// output topic.
+func main() {
+	transform.OnRecordWritten(filterValidJson)
+}
+
+func filterValidJson(e transform.WriteEvent) ([]transform.Record, error) {
+	v := []transform.Record{}
+	if json.Valid(e.Record().Value) {
+		v = append(v, e.Record())
+	}
+	return v, nil
+}
+```
+
+--
+====
+
+== Build and deploy the transform
+
+. Build the transform into a Wasm module with metadata:
++
+```bash
+rpk transform build
+```
+
+. Create demo topics to apply the transform function to:
++
+```bash
+rpk topic create demo-1 demo-2
+```
+
+. Deploy the Wasm module to your cluster. For example, with the identity transform:
++
+```bash
+rpk transform deploy --input-topic=demo-1 --output-topic=demo-2
+```
+
+. Validate that your transform is running. For example:
+.. Produce a few records to the `demo-1` topic.
++
+```bash
+echo "foo\nbar" | rpk topic produce demo-1
+```
+.. Consume from the `demo-2` topic.
++
+```bash
+rpk topic consume demo-2
+```
++
+[,json,role="no-copy"]
+----
+{
+  "topic": "demo-2",
+  "value": "foo",
+  "timestamp": 1687545891433,
+  "partition": 0,
+  "offset": 0
+}
+{
+  "topic": "demo-2",
+  "value": "bar",
+  "timestamp": 1687545892434,
+  "partition": 0,
+  "offset": 1
+}
+----
+
+[NOTE]
+====
+You can see STDOUT and STDERR for your function in the broker's logs.
+
+ifdef::env-kubernetes[]
+See xref:manage:kubernetes/troubleshooting/troubleshoot.adoc#view-redpanda-logs[View Redpanda logs].
+endif::[]
+====
+
+== Monitor data transforms
+
+You can monitor your transforms with the following metrics:
+
+* `transform_execution_latency_sec`
+* `transform_execution_errors`
+* `wasm_engine_cpu_seconds_total`
+* `wasm_engine_memory_usage`
+* `wasm_engine_max_memory`
+* `wasm_binary_executable_memory_usage`
+* `transform_read_bytes`
+* `transform_write_bytes`
+* `transform_lag`
+* `transform_failures`
+* `transform_state`
+
+See xref:reference:public-metrics-reference.adoc[]
+
+== Limitations
+
+- Transforms have no external access to disk or network resources.
+- Only single record transforms is supported, but multiple output records from a single input record is supported. For aggregations, joins, or complex transformations, use Apache Flink.
+- Only a single output topic is supported.
+- Transforms have at-least-once delivery.
+- When clients use the Kafka Transactions API on partitions of an input topic, transforms process only committed records.
+- Because data transforms are powered by Wasm, transform functions can be authored in any language. However, a data transforms SDK currently is only available in xref:reference:data-transform-api.adoc[Golang].
+
+== Suggested reading
+
+- xref:./how-transforms-work.adoc[]
+- xref:reference:data-transform-api.adoc[]
+- xref:reference:rpk/rpk-transform/rpk-transform.adoc[`rpk transform` commands]

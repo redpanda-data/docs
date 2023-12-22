@@ -1,0 +1,49 @@
+= How Data Transforms Work
+:description: Learn how Redpanda data transforms work.
+
+include::shared:partial$public-beta.adoc[] 
+
+Redpanda provides the framework to build and deploy inline transformations (data transforms) on data written to Redpanda topics, delivering processed and validated data to consumers in the format they expect. Redpanda does this directly inside the broker, eliminating the need to manage a separate stream processing environment or use 3rd-party tools.
+
+image::shared:wasm1.png[Data transforms in a broker] 
+
+Data transforms let you run common data streaming tasks, like filtering, scrubbing, and transcoding, within Redpanda. For example, you may have consumers that require you to redact credit card numbers or convert JSON to Avro. Data transforms can also interact with the Redpanda Schema Registry to work with encoded data types. To learn how to build and deploy data transforms, see xref:./run-transforms.adoc[].
+
+== Data transforms with WebAssembly
+
+Data transforms use https://webassembly.org/[WebAssembly^] (Wasm) engines inside a Redpanda broker, allowing Redpanda to control the entire transform lifecycle. For example, Redpanda can stop and start transforms when partitions are moved or to free up system resources for other tasks. 
+
+Data transforms take data from an input topic and map it to an output topic. For each topic partition, a leader is responsible for handling the data. Redpanda runs a virtual machine (VM) on the same CPU core (shard) as these partition leaders to execute the transforms function.
+
+To execute a transforms function, Redpanda uses just-in-time (JIT) compilation to compile the bytecode in memory, write it to an executable space, then run the directly translated machine code. This JIT compilation ensures efficient execution of the machine code, as it is tailored to the specific hardware it runs on.
+
+When you deploy a data transform to a Redpanda broker, it stores the Wasm bytecode and associated metadata, such as input and output topics and environment variables. The broker then replicates this data across the cluster using internal Kafka topics. When the data is distributed, each shard runs its own instance of the transform function. This process includes several resource management features:
+
+- Each shard can run only one instance of the transform function at a time to ensure efficient resource utilization and prevent overload.
+- Memory for each function is reserved within the broker with the `wasm_per_core_memory_reservation` and `wasm_per_function_memory_limit` properties. See xref:./run-transforms.adoc#configure-memory[Configure memory for data transforms].
+- CPU time is dynamically allocated to the Wasm runtime to ensure that the code does not run forever and cannot block the broker from handling traffic or doing other work, such as Tiered Storage uploads.
+
+== Flow of data transforms
+
+When a shard becomes the leader of a given partition on the input topic of one or more active transforms, Redpanda does the following:
+
+. Spins up a Wasm VM using the JIT-compiled Wasm module.
+. Pushes records from the input partition into the Wasm VM.
+. Writes the output. The output partition may exist on the same broker or on another broker in the cluster.
+
+Within Repdanda, a single Raft controller manages cluster information, including data transforms. On every shard, Redpanda knows what data transforms exist in the cluster, as well as metadata about the transform function, such as input and output topics and environment variables. 
+
+image::shared:wasm_architecture.png[Wasm architecture in Redpanda]
+
+Each transform function reads from a specified input topic and writes to a specified output topic. The transform function processes every record produced to an input topic and returns zero or more records that are then produced to the specified output topic. Data transforms are applied to all partitions on an input topic. A record is processed after it has been successfully written to disk on the input topic. Because the transform happens in the background after the write finishes, the transform doesn't affect the original produced record, doesn't block writes to the input topic, and doesn't block produce and consume requests.
+
+A new transform function reads the input topic from the latest offset. That is, it only reads new data produced to the input topic: it does not read records produced to the input topic before the transform was deployed. If a partition leader moves from one broker to another, then the instance of the transform function assigned to that partition moves with it.
+
+When a partition replica xref:get-started:architecture.adoc#partition-leadership-elections[loses leadership], the broker hosting that partition replica stops the instance of the transform function running on the same shard. The broker that is now hosting the partition's new leader starts the transform function on the same shard as that leader, and the transform function resumes from the last committed offset.
+
+If the previous instance of the transform function failed to commit its latest offsets before moving with the partition leader (for example, if the broker crashed), then it's likely that the new instance will reprocess some events. For broker failures, transform functions have at-least-once semantics, because records are retried from the committed last offset, and offsets are committed periodically. For more information, see xref:./run-transforms.adoc[].
+
+== Suggested reading
+
+- xref:reference:data-transform-api.adoc[]
+- xref:reference:rpk/rpk-transform/rpk-transform.adoc[`rpk transform` commands] 

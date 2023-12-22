@@ -1,79 +1,97 @@
 = What's New
 :description: Summary of new features and updates in the release.
+:page-aliases: get-started:whats-new-233.adoc
 
-This topic includes new content added in version 23.2. For a complete list of all product updates, see the https://github.com/redpanda-data/redpanda/releases/tag/v23.2.1[Redpanda release notes^].
+This topic summarizes new content added in version 23.3. For a complete list of all product updates, see the https://github.com/redpanda-data/redpanda/releases/[Redpanda release notes^]. 
 
-== Follower fetching
+See also: xref:deploy:deployment-option/cloud/whats-new-cloud.adoc[]
 
-xref:develop:consume-data/follower-fetching.adoc[Follower fetching] lets a consumer fetch records from the closest replica of a topic partition, regardless of whether it's a leader or a follower. This can minimize cloud networking costs and consumer read latency for clusters deployed across different data centers and availability zones.
+== Data transforms
 
-== Server-side schema ID validation
+Redpanda now provides the framework to build and deploy inline transformations (xref:develop:data-transforms/index.adoc[data transforms]) on data written to Redpanda topics, delivering processed and validated data to consumers in the format they expect. For example, you may have consumers that require you to redact credit card numbers or convert JSON to Avro. Data transforms use WebAssembly (Wasm) engines inside a broker, which eliminates the need to manage a separate stream processing environment or use third-party tools.
 
-With this enterprise feature, records produced to a topic may use a serializer/deserializer client library, such as Confluent's SerDes library, to encode their keys and values according to a schema in Schema Registry. xref:manage:schema-id-validation.adoc[Schema ID validation] enables brokers to detect and drop records that don't match the configured schema, as identified by the schema ID. Records associated with unregistered or incorrect schemas are thus detected and dropped earlier, by a broker rather than a downstream consumer.
+== OIDC authentication
 
-== Tiered Storage enhancements
+You can xref:manage:security/authentication.adoc#enable-oidc[enable OIDC] for Redpanda to delegate the authentication process to an external identity provider (IdP) such as Okta, Azure AD, or on-premise Active Directory Federation Service (AD FS). When you enable OIDC, Redpanda does not need to manage user credentials directly, but can instead rely on the trusted authentication capabilities of IdPs. Redpanda's implementation of OIDC provides SASL/OAUTHBEARER support for the Kafka API, and enables standard OIDC authentication across the Schema Registry, HTTP Proxy, and Admin APIs.
 
-As data in object storage grows, the metadata for it grows. To support efficient long-term data retention, Redpanda splits the metadata in object storage, maintaining metadata of only recently-updated segments in memory or local disk, while safely archiving the remaining metadata in object storage and caching it locally on disk. Archived metadata is then loaded only when historical data is accessed. This allows Tiered Storage to handle partitions of virtually any size or retention length.
+== Audit logging 
 
-- xref:manage:tiered-storage.adoc#caching[Fine-grained caching]: To support more concurrent consumers of historical data with less local storage, Redpanda can download small chunks of remote segments to the cache directory. For example, when a client fetch request spans a subsection of a 1 GiB segment, instead of downloading the entire 1 GiB segment, Redpanda can download 16 MiB chunks that contain just enough data required to fulfill the fetch request.
+Redpanda's xref:manage:audit-logging.adoc[audit logging] supports fine-grained reporting of calls to the Kafka, HTTP Proxy, Schema Registry, and Admin APIs. Events include:
 
-- xref:manage:cluster-maintenance/disk-utilization.adoc#space-management[Automatic disk space management]: Redpanda now divides disk storage into different categories to provide a flexible configuration of space: reserved disk space, cache storage, and log storage. When data usage begins to approach the target size of log storage, Redpanda does local storage housekeeping to bring usage back under the target size. This allows Redpanda to leverage available local storage safely and efficiently.
+* Changes to clusters, users, topics, ACLs, or consumer groups
+* Any time a user is authenticated
+* Any time a topic is written to or read from (requires explicit opt-in)
+* HTTP requests for the Schema Registry, HTTP Proxy, and Admin APIs
 
-- xref:manage:tiered-storage.adoc#view-space-usage[View space usage]: You can now use `rpk cluster logdirs describe` to get details about Tiered Storage space usage in both object storage and local disk.
+Auditing events can be stored in a topic, ensuring their retention for a specified period. They are protected against removal by all users, including Redpanda administrators. Auditing is compatible with the Open Cybersecurity Schema Framework (OCSF) and works with industry-standard tools, such as Splunk, Sumo Logic, and AWS.
 
-== Controller snapshots
+== Whole cluster restore
 
-Redpanda now loads the controller log from a snapshot on startup. xref:./architecture.adoc#controller-partition-and-snapshots[Controller snapshots] save the current cluster metadata state to disk, which significantly improves startup times of brokers in long-running Redpanda clusters. For example, with a partition that has moved several times, a snapshot can restore the latest state without replaying every move command.
+With Tiered Storage enabled, you can do a xref:manage:whole-cluster-restore.adoc[whole cluster restore] to recover all cluster data and metadata from a failed cluster to a new cluster. This is a simpler and cheaper alternative to active-active replication, for example with MirrorMaker 2. Use this recovery method to restore your applications to the latest functional state as quickly as possible.
 
-== Delete records from a topic
+== Recovery mode 
 
-Redpanda enables you to xref:develop:config-topics.adoc#delete-records-from-a-topic[delete data from the beginning of a partition up to a specific offset]. The offset represents the true creation time of the event, not the time when it was stored by Redpanda. Deleting records frees up space in local disk and in object storage, which is especially helpful if your producers are pushing more data than you anticipated when sizing your storage infrastructure, or if you want to implement a data retention policy aligned with a particular business event and not based on age or size. There are different ways to delete records from a topic, including using the `rpk topic trim-prefix` command or using the DeleteRecords Kafka API with Kafka clients.
+xref:manage:recovery-mode.adoc[Recovery mode] lets you repair and revive a failed cluster that cannot start normally due to issues such as a system crash or out-of-memory errors. In recovery mode, Redpanda limits functionality to cluster configuration changes and other manual administrative actions so that you can repair the cluster.
 
-== Topic-aware leadership balancing
+== Compaction improvements
 
-The new default xref:manage:cluster-maintenance/cluster-balancing.adoc#partition-leadership-balancing[`leader_balancer_mode`] property ensures that each shard in a cluster is assigned an equal number of partition leaders and attempts to spread every topic's partition leaders evenly across all brokers in a cluster.
+xref:manage:cluster-maintenance/compaction-settings.adoc[Compaction] follows a new algorithm, making it more efficient and similar to Kafka's compaction. Compaction boundaries are no longer created between segments or Raft terms, and compaction is performed on data already uploaded to Tiered Storage as long as that data still exists in local storage. This improves the efficiency of compaction in both storage tiers.
 
-Additionally, Redpanda has improved data balancing, ensuring that a topic's partitions (not just leaders) are evenly distributed across a cluster. It allocates partitions to random healthy brokers, to avoid topic hotspots, without needing to wait for a batch of moves to finish before it schedules the next batch.
+Redpanda builds a map of keys to track the latest offset per key using multiple segments. The compaction process uses this key map to deduplicate keys within the compacted segments. It no longer stores full-fidelity keys, but instead maps SHA-256 hashes to offsets. The amount of memory that each shard may use when creating the key map for a partition is configurable. The default is 128 MiB. 
 
-== Local message retention
+== Move partitions
 
-With this release, both size-based and time-based xref:manage:cluster-maintenance/disk-utilization.adoc#configure-message-retention[retention policies] are applied simultaneously, so it's possible for your size-based property to override your time-based property, or vice versa. For example, if your size-based property requires removing one segment, and your time-based property requires removing three segments, then three segments are removed. Size-based properties reclaim disk space as close as possible to the maximum size, without exceeding the limit.
+As an alternative to Redpanda partition balancing, you now can explicitely xref:manage:cluster-maintenance/cluster-balancing.adoc#manually-move-partitions[change partition assignments] with `rpk cluster partitions move`.
 
-== Client throughput quotas
+== Broker time retention
 
-You can now xref:manage:cluster-maintenance/manage-throughput.adoc#client-throughput-limits[manage client throughput] of Kafka ingress and egress traffic allowed through each broker with a single configuration setting at the cluster level.
+Each time a producer sends a message to a topic, Redpanda records the broker's system date and time in the xref:develop:produce-data/configure-producers.adoc#broker-timestamps[`broker_timestamp`] property of the message. This feature helps maintain accurate retention policies, even when the message's creation timestamp deviates from the broker's time.
 
-== Kubernetes Operator
+== Monitor TLS certificates
 
-Redpanda offers a new approach to deploying xref:deploy:deployment-option/self-hosted/kubernetes/kubernetes-production-deployment.adoc[Redpanda in Kubernetes] using an operator. You can still choose to use Helm for its simplicity, or you can use the Redpanda Operator for a more GitOps-friendly declarative deployment process.
+Redpanda now xref:reference:public-metrics-reference.adoc#tls_metrics[exposes metrics] to help administrators manage their installed certificates. When queried, these metrics list details for all resources that have an installed certificate. This may include APIs, storage, or other assets. These metrics also support labels so that you can more readily report statistics on single resources. Configuring alerts on these metrics is a critical tool for managing certificate expiration and avoiding surprise outages. 
 
-== Redpanda Console enhancements
+== Redpanda Console updates
 
-- To secure Redpanda Console using TLS, you can either let Redpanda Console handle TLS termination or you can offload it to an upstream component, such as a reverse proxy or a cloud HTTPS load balancer. xref:manage:security/console/tls-termination.adoc[TLS termination] is the process of decrypting incoming TLS-encrypted traffic.
-- SSO authentication for xref:manage:security/console/azure-ad.adoc[Azure AD] and xref:manage:security/console/keycloak.adoc[Keycloak].
-- A xref:deploy:deployment-option/self-hosted/docker-image.adoc[connectors Docker image] is now available for integrating your Redpanda data with different data systems. You can use the Redpanda Console or Kafka Connect REST API to manage connectors.
+- You can xref:manage:schema-reg/schema-reg-ui.adoc[perform Schema Registry operations] in Redpanda Console, such as registering a schema, creating a new version of it, and configuring compatibility. The Schema Registry page lists verified schemas, including their serialization format and versions. 
+- Redpanda Console automatically tries to xref:reference:console/record-deserialization.adoc[deserialize] incoming messages and show them in human-readable format. It tests different deserialization strategies until it finds one with no errors. If no deserialization attempts are successful, Redpanda Console renders the byte array in a hex viewer and displays troubleshooting information.
 
-== New commands and properties
+== rpk updates
 
-New commands and properties in this release include the following:
+The following `rpk` commands are new in this release:
 
-- xref:reference:rpk/rpk-profile/rpk-profile.adoc[`rpk profile`]: This allows users to switch between clusters seamlessly.
-- xref:reference:rpk/rpk-cloud/rpk-cloud-login.adoc[`rpk cloud login`]: This allows users to connect to cloud environments using a browser.
-- xref:reference:rpk/rpk-topic/rpk-topic-trim-prefix.adoc[`rpk topic trim-prefix`]: This allows users to delete records from a topic.
-- xref:reference:rpk/rpk-topic/rpk-topic-describe-storage.adoc[`rpk topic describe-storage`]: This provides detailed information about storage, including local and object disk usage and time of last write to object storage.
-- xref:reference:cluster-properties.adoc#legacy_permit_unsafe_log_operations[`legacy_permit_unsafe_log_operations`] and xref:reference:cluster-properties.adoc#legacy_unsafe_log_warning_interval_sec[`legacy_unsafe_log_warning_interval_sec`]: These properties enable a Redpanda cluster operator to use unsafe control characters within strings, such as consumer group names or user names.
+- xref:reference:rpk/rpk-registry/rpk-registry.adoc[`rpk registry`]: This includes commands to interact with the Schema Registry.
+- xref:reference:rpk/rpk-transform/rpk-transform.adoc[`rpk transform`]: This includes commands to develop, deploy, and manage data transforms.
+- xref:reference:rpk/rpk-cluster/rpk-cluster-partitions.adoc[`rpk cluster partitions`] This includes commands to move partitions, verify that the reassignment completes, and cancel moves.
+- xref:reference:rpk/rpk-cluster/rpk-cluster-partitions-unsafe-recover.adoc[`rpk cluster partitions unsafe recover`]: This command allows you to unsafely recover all data adversely affected by the loss of brokers.
+- xref:reference:rpk/rpk-cluster/rpk-cluster-txn.adoc[`rpk cluster txn`] This includes commands to observe transactions and producers.
 
-== Documentation improvements
+The following commands have new flags:
 
-Although not specific to version 23.2, the following sections are new or have been significantly enhanced in the documentation:
+- xref:reference:rpk/rpk-acl/rpk-acl.adoc[`rpk acl`]
+- xref:reference:rpk/rpk-container/rpk-container-start.adoc[`rpk container start`]
+- xref:reference:rpk/rpk-profile/rpk-profile-create.adoc[`rpk profile create`]
+- xref:reference:rpk/rpk-topic/rpk-topic-consume.adoc[`rpk topic consume`]
+- xref:reference:rpk/rpk-topic/rpk-topic-produce.adoc[`rpk topic produce`]
 
-- xref:api:ROOT:admin-api.adoc[Admin API]
-- xref:reference:topic-properties.adoc[Topic Configuration Properties]
-- xref:./intro-to-rpk.adoc[Redpanda CLI]
-- xref:develop:benchmark.adoc[Benchmark Redpanda]
-- xref:deploy:deployment-option/self-hosted/manual/production/production-deployment-automation.adoc[Automated Deployment]
-- xref:develop:config-topics.adoc[Manage Topics]
-- xref:manage:cluster-maintenance/decommission-brokers.adoc[Decommission Brokers]
+The following commands have improved documentation or examples:
+
+- xref:reference:rpk/rpk-cluster/rpk-cluster-config-set.adoc[`rpk cluster config set`]
+- xref:reference:rpk/rpk-cluster/rpk-cluster-partitions-move-status.adoc[`rpk cluster partitions move-status`]
+- xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`]
+- xref:reference:rpk/rpk-redpanda/rpk-redpanda-config-set.adoc[`rpk redpanda config set`]
+- xref:reference:rpk/rpk-version.adoc[`rpk version`]  
+
+== Deprecated features 
+
+- The `delete_retention_ms` property has been xref:upgrade:deprecated/index.adoc[deprecated]. Use `log_retention_ms` instead. 
+- The `rpk cluster storage recovery` command was renamed to `rpk cluster storage restore`. You can still use `rpk cluster storage recovery` as an alias.
+
+== Documentation enhancements
+
+- Documentation search now includes the option to search Redpanda blogs and videos. 
+- xref:manage:cluster-maintenance/rolling-restart.adoc[Rolling restarts] involve restarting one broker at a time while the remaining brokers in your cluster continue running. The documentation has been clarified for restarts and upgrades.
+- https://docs.redpanda.com/api/admin-api/#tag/Debugging/operation/get_cpu_profile[CPU profiler^]: There is a new Admin API endpoint to query the CPU profiler for troubleshooting. 
 
 == Next steps
 
