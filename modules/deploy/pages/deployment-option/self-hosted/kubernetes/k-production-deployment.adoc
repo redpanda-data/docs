@@ -1,0 +1,667 @@
+= Deploy Redpanda for Production in Kubernetes
+:description: Deploy a Redpanda cluster in Kubernetes.
+:tags: ["Kubernetes"]
+:page-aliases: deploy:deployment-option/self-hosted/kubernetes/kubernetes-best-practices.adoc, deploy:deployment-option/self-hosted/kubernetes/redpanda-cluster-recommendations.adoc, deploy:deployment-option/self-hosted/kubernetes/kubernetes-deploy.adoc
+:page-toclevels: 1
+:page-context-links: [{"name": "Linux", "to": "deploy:deployment-option/self-hosted/manual/production/production-deployment.adoc" },{"name": "Kubernetes", "to": "deploy:deployment-option/self-hosted/kubernetes/k-production-deployment.adoc" } ]
+
+This topic describes how to configure and deploy one or more Redpanda clusters in Kubernetes.
+
+== Prerequisites
+
+Make sure that your Kubernetes cluster meets the xref:./k-requirements.adoc[requirements].
+
+== Deploy a Redpanda cluster
+
+To deploy Redpanda, you can use the following methods:
+
+- *Helm and the Redpanda Operator*: Use the Redpanda Operator to manage your Redpanda cluster. To deploy a Redpanda cluster, you apply a Redpanda resource, which is used by the underlying Flux controllers to deploy the Redpanda Helm chart.
+- *Helm*: Deploy the Redpanda Helm chart directly.
+
+Regardless of the method you choose to deploy Redpanda, you'll deploy the Redpanda Helm chart, which includes Redpanda and Redpanda Console. Redpanda Console comes bundled as a subchart within the Redpanda Helm chart.
+
+TIP: For more details about the differences between these two methods, see xref:./k-deployment-overview.adoc[].
+
+[tabs]
+====
+Helm + Operator::
++
+--
+
+The Redpanda Operator handles the deployment and management of the Redpanda Helm chart for you using https://fluxcd.io/flux/concepts/[Flux^].
+
+The Redpanda Operator extends Kubernetes with custom resource definitions (CRDs), allowing you to define Redpanda clusters as native Kubernetes resources. The resource that the Redpanda Operator uses to represent a Redpanda cluster is the Redpanda resource.
+
+When you deploy a Redpanda resource, the Redpanda Operator takes that configuration and passes it to Flux. Flux, in turn, interacts with Helm, creating the necessary HelmRepository and HelmRelease resources to deploy and manage the Redpanda Helm chart.
+
+NOTE: The Redpanda Operator is namespace scoped. You must install the Redpanda Operator in the same namespace as your Redpanda resource (Redpanda cluster).
+
+. Make sure that you have permission to install custom resource definitions (CRDs):
++
+```bash
+kubectl auth can-i create CustomResourceDefinition --all-namespaces
+```
++
+You should see `yes` in the output.
++
+You need these cluster-level permissions to install glossterm:cert-manager[^] and Redpanda Operator CRDs in the next steps.
+
+. Install https://cert-manager.io/docs/installation/helm/[cert-manager^]:
++
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm install cert-manager jetstack/cert-manager \
+  --set installCRDs=true \
+  --namespace cert-manager  \
+  --create-namespace
+```
++
+The Redpanda Helm chart enables TLS by default and uses cert-manager to manage TLS certificates.
+
+. Install the Redpanda Operator CRDs:
++
+```bash
+kubectl kustomize https://github.com/redpanda-data/redpanda-operator//src/go/k8s/config/crd | kubectl apply -f -
+```
+
+. Deploy the Redpanda Operator.
++
+[,bash,subs="attributes+"]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <namespace> \
+  --set image.repository=docker.redpanda.com/redpandadata/redpanda-operator \
+  --create-namespace
+----
+
+. Ensure that the Deployment is successfully rolled out:
++
+```bash
+kubectl --namespace <namespace> rollout status --watch deployment/redpanda-controller-operator
+```
++
+[.no-copy]
+----
+deployment "redpanda-controller-operator" successfully rolled out
+----
+
+. Install a xref:reference:k-crd.adoc[Redpanda custom resource] to deploy a Redpanda cluster and Redpanda Console.
++
+.`redpanda-cluster.yaml`
+[,yaml,lines=4+6+7]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec: {}
+----
++
+- `metadata.name`: Name to assign the Redpanda cluster. This name is also assigned to the Helm release.
+- xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-src-go-k8s-apis-redpanda-v1alpha1-chartref[`spec.chartRef`]: Information about the Helm chart that will be used to deploy Redpanda.
+- xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-src-go-k8s-apis-redpanda-v1alpha1-redpandaclusterspec[`spec.clusterSpec`]: This is where you can override default values in the Redpanda Helm chart. See <<Configuration advice>> for details.
+
+. Apply the Redpanda resource:
++
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
++
+NOTE: The Redpanda resource must be deployed in the same namespace as the Redpanda Operator. Each new deployment of Redpanda requires a separate namespace.
+
+. Wait for the Redpanda Operator to deploy Redpanda using the Helm chart:
++
+```bash
+kubectl get redpanda --namespace <namespace> --watch
+```
++
+[.no-copy]
+----
+NAME       READY   STATUS
+redpanda   True    Redpanda reconciliation succeeded
+----
++
+This step may take a few minutes. You can watch for new Pods to make sure that the deployment is progressing:
++
+```bash
+kubectl get pod --namespace <namespace>
+```
++
+If it's taking too long, see xref:manage:kubernetes/troubleshooting/k-troubleshoot.adoc[Troubleshooting].
+
+. Verify that each Redpanda broker is scheduled on only one Kubernetes node:
++
+```bash
+kubectl get pod --namespace <namespace>  \
+  -o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name -l \
+  app.kubernetes.io/component=redpanda-statefulset
+```
++
+Expected output:
++
+[.no-copy]
+----
+example-worker3   redpanda-0
+example-worker2   redpanda-1
+example-worker    redpanda-2
+----
+
+--
+Helm::
++
+--
+
+https://helm.sh/docs[Helm^] is a package manager for Kubernetes, which simplifies the process of defining, installing, and upgrading Kubernetes applications. Helm uses charts, a collection of files that describe a related set of Kubernetes resources, to deploy applications in a Kubernetes cluster.
+
+. Install cert-manager using Helm:
++
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm install cert-manager jetstack/cert-manager \
+  --set installCRDs=true \
+  --namespace cert-manager  \
+  --create-namespace
+```
++
+The Redpanda Helm chart enables TLS by default and uses cert-manager to manage TLS certificates.
+
+. Install the Redpanda Helm chart to deploy a Redpanda cluster and Redpanda Console.
++
+Configure any additional Helm values that you want to override. See <<Configuration advice>> for details.
++
+```bash
+helm repo add redpanda https://charts.redpanda.com
+helm install redpanda redpanda/redpanda \
+  --namespace <namespace> \
+  --create-namespace
+```
++
+NOTE: Each deployment of the Redpanda Helm chart requires a separate namespace. Ensure you choose a unique namespace for each deployment.
+
+. Wait for the Redpanda cluster to be ready:
++
+```bash
+kubectl --namespace <namespace> rollout status statefulset redpanda --watch
+```
++
+When the Redpanda cluster is ready, the output should look similar to the following:
++
+[.no-copy]
+----
+statefulset rolling update complete 3 pods at revision redpanda-8654f645b4...
+----
+
+. Verify that each Redpanda broker is scheduled on only one Kubernetes node:
++
+```bash
+kubectl get pod --namespace <namespace> \
+-o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name -l \
+app.kubernetes.io/component=redpanda-statefulset
+```
++
+Expected output:
++
+[.no-copy]
+----
+example-worker3   redpanda-0
+example-worker2   redpanda-1
+example-worker    redpanda-2
+----
+
+--
+====
+
+== Deploy multiple Redpanda clusters
+
+You can deploy more than one Redpanda cluster in the same Kubernetes cluster by using a different namespace and unique node ports.
+
+[tabs]
+====
+Helm + Operator::
++
+--
+
+. Install another instance of the Redpanda Operator in a different namespace to your existing ones. This Redpanda Operator will manage Redpanda clusters only in its namespace.
++
+[,bash,subs="attributes+"]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <another-namespace> \
+  --set image.repository=docker.redpanda.com/redpandadata/redpanda-operator \
+  --create-namespace
+----
+
+. Apply a Redpanda resource in the same namespace as your new Redpanda Operator to deploy your new Redpanda cluster.
++
+NOTE: Make sure to use unique node ports for the listeners in your Redpanda resource so that they don't conflict with any existing node ports in your other Redpanda clusters. See <<External access>>.
++
+.`redpanda-cluster-two.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda-two
+spec:
+  chartRef: {}
+  clusterSpec:
+    listeners:
+      kafka:
+        external:
+          default:
+            advertisedPorts: [31093]
+      admin:
+        external:
+          default:
+            advertisedPorts: [31645]
+      http:
+        external:
+          default:
+            advertisedPorts: [30083]
+      rpc:
+        port: 33146
+      schemaRegistry:
+        external:
+          default:
+            advertisedPorts: [30084]
+----
+--
+Helm::
++
+--
+Install the Redpanda Helm chart in a different namespace to your existing Redpanda clusters.
+
+NOTE: Make sure to use unique node ports for the listeners in your Redpanda resource so that they don't conflict with any existing node ports in your other Redpanda clusters. See <<External access>>.
+
+```bash
+helm repo add redpanda https://charts.redpanda.com
+helm install redpanda-two redpanda/redpanda \
+  --namespace <anothernamespace> \
+  --set listeners.kafka.external.default.advertisedPorts[0]=31093 \
+  --set listeners.admin.external.default.advertisedPorts[0]=31645 \
+  --set listeners.http.external.default.advertisedPorts[0]=30083 \
+  --set listeners.rpc.port=33146 \
+  --set listeners.schemaRegistry.external.default.advertisedPorts[0]=30084
+  --create-namespace
+```
+--
+
+====
+
+== Configuration advice
+
+This section provides advice for configuring the Redpanda Helm chart. For all available settings, see xref:reference:k-redpanda-helm-spec.adoc[]. To learn how to customize the Redpanda Helm chart, see xref:manage:kubernetes/k-configure-helm-chart.adoc[Customize the Helm Chart].
+
+=== Name overrides
+
+Deploying multiple instances of the same Helm chart in a Kubernetes cluster can lead to naming conflicts. Using `nameOverride` and `fullnameOverride` helps differentiate between them. If you have a production and staging environment for Redpanda, different names help to avoid confusion.
+
+- Use `nameOverride` to customize the labels `app.kubernetes.io/component=<nameOverride>-statefulset` and `app.kubernetes.io/name=<nameOverride>`.
+- Use `fullnameOverride` to customize the name of the StatefulSet and Services.
+
+[source,yaml]
+----
+nameOverride: 'redpanda-production'
+fullnameOverride: 'redpanda-instance-prod'
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#nameoverride[Helm specification].
+
+=== Labels
+
+Kubernetes labels help you to organize, query, and manage your resources. Use labels to categorize Kubernetes resources in different deployments by environment, purpose, or team.
+
+[source,yaml]
+----
+commonLabels:
+  env: 'production'
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#commonlabels[Helm specification].
+
+=== Tolerations
+
+Tolerations and taints allow Pods to be scheduled onto nodes where they otherwise wouldn't. If you have nodes dedicated to Redpanda with a taint `dedicated=redpanda:NoSchedule`, the following toleration allows the Redpanda brokers to be scheduled on them.
+
+[source,yaml]
+----
+tolerations:
+- key: "dedicated"
+  operator: "Equal"
+  value: "redpanda"
+  effect: "NoSchedule"
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#tolerations[Helm specification].
+
+=== Docker image
+
+You can specify the image tag to deploy a known version of the Redpanda Docker image. By default, the image tag is set in `Chart.appVersion`. Avoid using the `latest` tag, which can lead to unexpected changes.
+
+If you're using a private repository, always ensure your nodes have the necessary credentials to pull the image.
+
+[source,yaml,subs="attributes+"]
+----
+image:
+  repository: docker.redpanda.com/redpandadata/redpanda
+  tag: "v{full-version}"
+imagePullSecrets: []
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#image[Helm specification].
+
+=== Number of Redpanda brokers
+
+By default, the Redpanda Helm chart deploys a StatefulSet with three Pod replicas (Redpanda brokers). In a production cluster, deploy at least three Redpanda brokers to use as _seed servers_. Seed servers are used to bootstrap the gossip process for new brokers joining a cluster. When a new broker joins, it connects to the seed servers to find out the topology of the Redpanda cluster. A larger number of seed servers makes consensus more robust and minimizes the chance of unwanted clusters forming when brokers are restarted without any data.
+
+[,yaml]
+----
+statefulset:
+  replicas: 3
+----
+
+NOTE: You must provision one dedicated worker node for each Redpanda broker that you plan to deploy in your Redpanda cluster. The Redpanda Helm chart configures <<affinity-rules, `podAntiAffinity` rules>> to make sure that each Redpanda broker runs on its own worker node.
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#statefulset-replicas[Helm specification].
+
+See also:
+
+- xref:./k-high-availability.adoc[]
+- xref:./k-requirements.adoc#number-of-worker-nodes[Kubernetes Cluster Requirements]
+
+=== TLS
+
+By default, the Helm chart enables TLS (Transport Layer Security) for encrypted communication. Internal (`default`) and external (`external`) self-signed certificates are generated using cert-manager. See <<TLS Certificates>>.
+
+[source,yaml]
+----
+tls:
+  enabled: true
+  certs:
+    # This key represents the name of the certificate.
+    default:
+      caEnabled: true
+    # This key represents the name of the certificate.
+    external:
+      caEnabled: true
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#tls[Helm specification].
+
+See also: xref:manage:kubernetes/security/kubernetes-tls.adoc[]
+
+=== Authentication
+
+If you want to authenticate clients connections to the Redpanda cluster, you can enable SASL authentication.
+
+[source,yaml]
+----
+auth:
+  sasl:
+    enabled: true
+    mechanism: "SCRAM-SHA-512"
+    secretRef: "sasl-password-secret"
+    users: []
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#auth[Helm specification].
+
+See also: xref:manage:kubernetes/security/authentication/k-authentication.adoc[]
+
+=== Resources
+
+By default, the resources allocated to Redpanda are for a development environment. In a production cluster, the resources you allocate should be proportionate to your machine type. You should determine and set these values before deploying the cluster.
+
+[source,yaml]
+----
+resources:
+  cpu:
+    cores: 4
+  memory:
+    enable_memory_locking: true
+    container:
+      max: 10Gi
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#resources[Helm specification].
+
+See also:
+
+- xref:manage:kubernetes/k-manage-resources.adoc[]
+- xref:deploy:deployment-option/self-hosted/kubernetes/k-requirements.adoc[]
+
+=== Storage
+
+By default, the Redpanda Helm chart creates PersistentVolumeClaims (PVCs) for each Redpanda broker in the StatefulSet. The PVC uses the default StorageClass in your cluster.
+
+In production, it's best to use local PersistentVolumes (PVs) that are backed by NVMe devices to store the Redpanda data directory. NVMe devices outperform traditional SSDs or HDDs. For cloud instance types that support NVMe disks, see xref:./cloud-instance-local-storage.adoc[].
+
+Redpanda Data recommends creating StorageClasses that use the https://github.com/metal-stack/csi-driver-lvm[local volume manager (LVM) CSI driver] to automatically provision PVs. The LVM allows you to group physical storage devices into a logical volume group. Allocating logical volumes from a logical volume group provides greater flexibility in terms of storage expansion and management. The LVM supports features such as resizing, snapshots, and striping, which are not available with the other drivers such as the local volume static provisioner.
+
+[,yaml]
+----
+storage:
+  persistentVolume:
+    enabled: true
+    size: 100Gi
+    storageClass: csi-driver-lvm-striped-xfs
+----
+
+[TIP]
+====
+For an example of configuring local PersistentVolumes backed by NVMe disks, see one of the following guides:
+
+* xref:./aks-guide.adoc#create-sc[Azure Kubernetes Service] (AKS)
+* xref:./eks-guide.adoc#create-sc[Elastic Kubernetes Service] (EKS)
+* xref:./gke-guide.adoc#create-sc[Google Kubernetes Engine] (GKE)
+====
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#storage[Helm specification].
+
+See also:
+
+- xref:manage:kubernetes/storage/k-volume-types.adoc[]
+- xref:manage:kubernetes/storage/k-configure-storage.adoc[]
+
+=== External access
+
+By default, the Redpanda Helm chart deploys a NodePort Service for external access to the Redpanda listeners. You can configure individual node ports for each listener.
+
+The NodePort Service provides the lowest latency of all the Kubernetes Services because it does not include any unnecessary routing or middleware. Client connections go to the Redpanda brokers in the most direct way possible, through the worker nodes.
+
+By default, the fully qualified domain names (FQDNs) that brokers advertise are their internal addresses within the Kubernetes cluster, which are not reachable from outside the cluster. To make the cluster accessible from outside, each broker must advertise a domain that can be reached from outside the cluster.
+
+[,yaml]
+----
+external:
+  enabled: true
+  type: NodePort
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#external[Helm specification].
+
+See also:
+
+- xref:manage:kubernetes/networking/k-networking-and-connectivity.adoc[]
+- xref:manage:kubernetes/networking/k-configure-listeners.adoc[]
+
+=== ExternalDNS
+
+You should use ExternalDNS to manage DNS records for your Pods' domains. ExternalDNS synchronizes exposed Kubernetes Services with various DNS providers, rendering Kubernetes resources accessible through DNS servers.
+
+Benefits of ExternalDNS include:
+
+* *Automation*: ExternalDNS automatically configures public DNS records when you create, update, or delete Kubernetes Services or Ingresses. This eliminates the need for manual DNS configuration, which can be error-prone.
+* *Compatibility*: ExternalDNS is compatible with a wide range of DNS providers, including major cloud providers such as AWS, Google Cloud, and Azure, and DNS servers like CoreDNS and PowerDNS.
+* *Integration with other tools*: ExternalDNS can be used with other Kubernetes tools, such as ingress controllers or cert-manager for managing TLS certificates.
+
+[,yaml]
+----
+external:
+  enabled: true
+  type: LoadBalancer
+  externalDns:
+    enabled: true
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#external[Helm specification].
+
+See also:
+
+- xref:manage:kubernetes/networking/external/k-nodeport.adoc#externaldns[ExternalDNS with a NodePort Service]
+- xref:manage:kubernetes/networking/external/k-loadbalancer.adoc#externaldns[ExternalDNS with LoadBalancer Services]
+
+=== Logging
+
+By default, the log-level is set to `info`. In production, use the `info` logging level to avoid overwhelming the storage. For debugging purposes, temporarily change the logging level to `debug`.
+
+[source,yaml]
+----
+logging:
+  level: "info"
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#logging[Helm specification].
+
+=== Monitoring
+
+By default, monitoring is disabled. If you have the https://prometheus-operator.dev/[Prometheus Operator], enable monitoring to deploy a ServiceMonitor resource for Redpanda. Observability is essential in production environments.
+
+[source,yaml]
+----
+monitoring:
+  enabled: true
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#monitoring[Helm specification].
+
+See also: xref:manage:kubernetes/monitor.adoc[]
+
+=== StatefulSet update strategy
+
+For smooth and uninterrupted updates, use the default `RollingUpdate` strategy. Additionally, set a budget to ensure a certain number of replicas stay available during the update.
+
+[source,yaml]
+----
+statefulset:
+  updateStrategy:
+    type: "RollingUpdate"
+  budget:
+    maxUnavailable: 1
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#statefulset[Helm specification].
+
+=== Affinity rules
+
+By default, the Redpanda Helm chart also uses `podAntiAffinity` rules to stop the Kubernetes scheduler from placing multiple Redpanda brokers on the same node. These rules offer two benefits:
+
+- To minimize the risk of data loss by ensuring that a node's failure results in the loss of only one Redpanda broker.
+- To prevent resource contention between brokers by ensuring they are never co-located on the same node.
+
+Affinities control Pod placement in the cluster based on various conditions. Set these according to your high availability and infrastructure needs. For example, this is a soft rule that tries to ensure the Kubernetes scheduler doesn't place two Pods with the same `app: redpanda` label in the same zone. However, if it's not possible, the scheduler can still place the Pods in the same zone.
+
+[source,yaml,lines=7]
+----
+statefulset:
+  podAntiAffinity:
+    topologyKey: kubernetes.io/hostname
+    type: hard
+    weight: 100
+    custom:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: "app"
+              operator: "In"
+              values:
+              - "redpanda"
+          topologyKey: "kubernetes.io/zone"
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#statefulset[Helm specification].
+
+See also: xref:./k-high-availability.adoc[]
+
+=== Graceful shutdown
+
+By default, Pods are given 90 seconds to shut down gracefully. If your brokers require additional time for a graceful shutdown, modify the `terminationGracePeriodSeconds`.
+
+[source,yaml]
+----
+statefulset:
+  terminationGracePeriodSeconds: 100
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#statefulset[Helm specification].
+
+See also: xref:upgrade:k-rolling-upgrade.adoc[]
+
+=== Service account
+
+Restricting permissions is a best practice. Create a dedicated ServiceAccount for each Pod. To assign roles to this ServiceAccount, see <<RBAC>>.
+
+[source,yaml]
+----
+serviceAccount:
+  create: true
+  name: "redpanda-service-account"
+----
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#serviceaccount[Helm specification].
+
+[[RBAC]]
+=== Role-based access control (RBAC)
+
+RBAC is a method for providing permissions to ServiceAccounts based on roles. Some features such as rack awareness require both a ServiceAccount and RBAC to access resources using the Kubernetes API.
+
+[source,yaml]
+----
+rbac:
+  enabled: true
+  annotations: {}
+----
+
+NOTE: If you use the Redpanda Operator, you must also deploy the Redpanda Operator Helm chart with `rbac.createRPKBundleCRs` set to `true` to give it the required roles.
+
+For all available settings, see the xref:reference:k-redpanda-helm-spec.adoc#rbac[Helm specification].
+
+See also: xref:manage:kubernetes/k-rack-awareness.adoc[]
+
+== Find the latest versions of the Redpanda Helm charts
+
+To list the latest version of the Redpanda Helm chart, use the `helm search` command:
+
+[,bash]
+----
+helm search repo redpanda
+----
+
+To find the versions that are installed on your machine, run the following:
+
+[,bash]
+----
+helm list --namespace <namespace>
+----
+
+include::deploy:partial$kubernetes/default-components.adoc[leveloffset=+1]
+
+include::deploy:partial$kubernetes/guides/troubleshoot.adoc[leveloffset=+1]
+
+== Next steps
+
+See the xref:manage:kubernetes/index.adoc[Manage Kubernetes topics] to learn how to customize the chart to meet your needs.
+
+include::shared:partial$suggested-reading.adoc[]
+
+- xref:./k-high-availability.adoc[]
+- xref:reference:k-redpanda-helm-spec.adoc[Redpanda Helm Specification]
+- xref:reference:k-crd.adoc[Redpanda CRD Reference]

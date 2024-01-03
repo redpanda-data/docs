@@ -1,0 +1,141 @@
+= Store the Redpanda Data Directory in PersistentVolumes
+:description: Learn how to configure Redpanda to store the data directory in Kubernetes PersistentVolumes with a static provisioner or a dynamic provisioner.
+:page-aliases: manage:kubernetes/storage/configure-persistent-storage.adoc
+
+You can configure Redpanda to use Kubernetes xref:./k-volume-types.adoc[PersistentVolumes] (PV) to store the Redpanda data directory using either a static provisioner or a dynamic provisioner.
+
+== Prerequisites
+
+You must have the following:
+
+* Kubernetes cluster: Ensure you have a running Kubernetes cluster, either locally, such as with minikube or kind, or remotely.
+
+* https://kubernetes.io/docs/tasks/tools/#kubectl[Kubectl^]: Ensure you have the `kubectl` command-line tool installed and configured to communicate with your cluster.
+
+* Storage resources: You need to set up the necessary storage resources in your Kubernetes cluster.
+
+* File system: Ensure that the chosen volume is on an ext4 or XFS file system.
+
+[[configure-rp]]
+== Configure Redpanda to use PersistentVolumes
+
+Both the Redpanda Helm chart and the Redpanda custom resource provide an interface for configuring persistent storage. These are the default settings:
+
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml,lines=10-14]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    storage:
+      persistentVolume:
+        enabled: true
+        size: 20Gi
+        storageClass: ""
+        labels: {}
+        annotations: {}
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+
+[tabs]
+====
+--values::
++
+.`redpanda-persistent-storage.yaml`
+[source,yaml,lines=3-7]
+----
+storage:
+  persistentVolume:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+    labels: {}
+    annotations: {}
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values redpanda-persistent-storage.yaml --reuse-values
+```
+
+--set::
++
+[,bash,lines=4-8]
+----
+helm upgrade --install redpanda redpanda/redpanda \
+  --namespace <namespace> \
+  --create-namespace \
+  --set storage.persistentVolume.enabled=true \
+  --set storage.persistentVolume.size=20Gi \
+  --set storage.persistentVolume.storageClass="" \
+  --set storage.persistentVolume.labels={} \
+  --set storage.persistentVolume.annotations={}
+----
+
+====
+--
+======
+
+- `storage.persistentVolume.enabled`: Determines if a PersistentVolumeClaim (PVC) should be created for the Redpanda data directory. When set to `true`, a PVC is created.
+
+- `storage.persistentVolume.size`: The size of the PVC. By default, it's set to `20Gi`, indicating a volume of 20 Gigabytes. Your underlying PV or StorageClass must support this size.
+
+- `storage.persistentVolume.storageClass`: Specifies the StorageClass name for the PVC. If set to `"-"`, dynamic provisioning is disabled. Leaving it undefined or empty uses the default dynamic provisioner.
+
+- `storage.persistentVolume.labels`:  For adding additional labels to the created PVC.
+
+- `storage.persistentVolume.annotations`:  For adding additional annotations to the created PVC.
+
+== Verify PersistentVolumeClaims
+
+After configuring Redpanda for persistent storage, verify that the Redpanda Pods have claimed the required PV.
+
+. Use the following command to list the PVCs in your cluster:
++
+[,bash]
+----
+kubectl get pvc --namespace <namespace>
+----
++
+Ensure that the PVCs related to Redpanda are in the Bound state and note the PVs they're bound to.
+
+. Choose a Pod and describe it:
++
+[,bash]
+----
+kubectl describe pod <redpanda-pod-name> --namespace <namespace>
+----
+
+In the output, ensure the PVC is mounted to the correct path and that the source PV matches what you've configured.
+
+include::shared:partial$suggested-reading.adoc[]
+
+- xref:./k-volume-types.adoc[]
+- For more details about PersistentVolumes, see the https://kubernetes.io/docs/concepts/storage/persistent-volumes/[Kubernetes documentation^].
+- xref:reference:k-redpanda-helm-spec.adoc[Redpanda Helm Specification]
+- xref:reference:k-crd.adoc[Redpanda CRD Reference]
+
+== Next Steps
+
+* After setting up persistent storage for Redpanda, monitor your storage usage. Monitoring storage helps to detect issues early, optimize performance, and plan capacity changes.
+- xref:manage:kubernetes/monitoring/index.adoc#infrastructure-resources[Monitor disk usage] in Redpanda.
+- https://kubernetes.io/docs/concepts/storage/volume-health-monitoring/[Volume health monitoring^] in Kubernetes.
+
+* Enable xref:manage:kubernetes/k-rack-awareness.adoc[rack awareness] to minimize data loss in the event of a rack failure.

@@ -1,0 +1,52 @@
+= Resilience Testing in Kubernetes
+:description: With resilience testing, you can introduce failures and observe how the system behaves under each failure scenario.
+:page-aliases: manage:kubernetes/resilience-testing.adoc
+
+Resilience testing is an important part of ensuring that a system is reliable and can recover from failures. To perform resilience testing for Redpanda in Kubernetes, you can introduce failure scenarios and observe how the system behaves under each scenario.
+
+== Prerequisites
+
+* Create a test environment that mimics your production environment as closely as possible. The test environment should include a Redpanda cluster with at least three replicas, and any services that your application depends on. You can find guides for deploying Redpanda in xref:deploy:deployment-option/self-hosted/kubernetes/get-started-dev.adoc[Get Started with Redpanda in Kubernetes].
+* xref:./monitoring/index.adoc[Set up monitoring] so that you can observe changes in the system behavior.
+
+== Simulate failure scenarios
+
+This section provides the steps to simulate failure scenarios in Kubernetes. After each simulation, it's important to monitor the behavior of the Redpanda cluster and any clients that are connected to it.
+
+=== Broker going down
+
+You can simulate a broker going down for an extended period of time by manually terminating one of them.
+
+. Find out on which node each of your brokers is running:
++
+[,bash]
+----
+kubectl get pod --namespace <namespace>  \
+  -o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name -l \
+  app.kubernetes.io/component=redpanda-statefulset
+----
+
+. Taint the node that's running the broker that you want to terminate:
++
+[,bash]
+----
+kubectl taint nodes <node-name> isolate-broker=true:NoExecute
+----
++
+Replace `<node-name>` with the name of the node you want to taint.
++
+Any Pods that do not tolerate this taint are terminated and evicted from the node.
+
+. Monitor the logs and metrics of the remaining brokers to observe how they behave when a broker is unexpectedly terminated.
+. Remove the taint when you're ready for the broker to come back online:
++
+[,bash]
+----
+kubectl taint nodes <node-name> isolate-broker=true:NoExecute-
+----
+
+. Check whether the terminated broker can rejoin the cluster when it is rescheduled on the node and comes back online.
+
+include::shared:partial$suggested-reading.adoc[]
+
+It's best practice to automate failure scenarios as part of your regular testing to identify any weaknesses in your deployment. You can use tools, such as https://netflix.github.io/chaosmonkey/[Chaos Monkey^] and https://docs.litmuschaos.io/docs/getting-started/installation/[LitmusChaos^].
