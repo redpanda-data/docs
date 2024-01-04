@@ -37,9 +37,9 @@ directory_path = os.path.join(script_directory, '..', 'modules')
 # List of excluded file paths (relative paths)
 exclusion_list = [
     'reference\\pages\\redpanda-operator\\crd.adoc',
-    'reference\\pages\\console-helm-spec.adoc',
+    'reference\\pages\\k-console-helm-spec.adoc',
     'reference\\pages\\crd.adoc',
-    'reference\\pages\\redpanda-helm-spec.adoc',
+    'reference\\pages\\k-redpanda-helm-spec.adoc',
     'reference\\partials\\bundle-contents-k8s.adoc',
     'reference\\partials\\bundle-contents-linux.adoc'
 ]

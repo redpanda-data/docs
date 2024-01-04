@@ -1,0 +1,145 @@
+= Configure Cluster Properties in Kubernetes
+:description: Learn how to configure cluster properties in Kubernetes.
+:page-context-links: [{"name": "Linux", "to": "manage:cluster-maintenance/cluster-property-configuration.adoc" },{"name": "Kubernetes", "to": "manage:kubernetes/k-cluster-property-configuration.adoc" } ]
+:page-aliases: manage:kubernetes/cluster-property-configuration.adoc
+
+When you install Redpanda, it automatically generates cluster configuration with default settings assigned to each cluster property.
+You might want to change some of the default settings, particularly if you plan to use features such as rack awareness or Tiered Storage, which are disabled by default.
+
+To configure cluster properties, you must override the defaults in the Redpanda Helm chart's values.
+Some cluster configuration properties require a restart.
+By overriding the defaults, you allow Helm to restart the Pods for you automatically to make the changes take effect.
+Using Helm to make cluster configuration changes also allows you to replicate, reproduce, and recover your cluster.
+
+To view all cluster properties, along with their descriptions and default settings, see xref:reference:cluster-properties.adoc[cluster configuration properties] and xref:reference:tunable-properties.adoc[tunable properties]. Some cluster configuration properties are nested within other objects in the Helm chart's values. For example, `cloud_storage_access_key` is nested inside `storage.tieredStorage`.
+
+NOTE: xref:reference:tunable-properties.adoc[Tunable properties], such as internal buffer sizes, have default settings that you typically do not need to modify during normal operations. You should only change these properties after collecting sufficient data to warrant a change.
+
+== Edit cluster properties
+
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    storage:
+      tieredConfig:
+        cloud_storage_access_key: <access-key>
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+
+To change any property settings, edit the default configuration using the `--values` or `--set` flags in the `helm upgrade --install` command. For example, to set the config_ref:cloud_storage_access_key,true,cluster-properties[] cluster configuration:
+
+[tabs]
+====
+--values::
++
+.`cloud-storage.yaml`
+[,yaml]
+----
+storage:
+  tieredConfig:
+    cloud_storage_access_key: <access-key>
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values cloud-storage.yaml --reuse-values
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set storage.tieredConfig.cloud_storage_access_key=<access-key>
+```
+
+====
+--
+======
+
+== View the current value of a property
+
+To see the current value of a property for a broker, you can run `rpk cluster config get <property_name>` inside a container that's running Redpanda.
+
+In this example, the command is executed on a Pod called `redpanda-0` in the `redpanda` namespace. You can provide your own namespace in the `--namespace` flag.
+
+```bash
+kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
+  rpk cluster config get log_compression_type
+```
+
+Example output:
+
+```
+producer
+```
+
+== Export a Redpanda configuration file
+
+To see all Redpanda configurations for a broker, you can use the `rpk cluster config export` command to save the current Redpanda configuration to a file. For example, you may want to use the configuration file during debugging.
+
+TIP: To get more detailed information about your Redpanda deployment, generate a xref:manage:kubernetes/troubleshooting/k-diagnostics-bundle.adoc[diagnostics bundle], which includes the Redpanda configuration files for all brokers in the cluster.
+
+. Execute the `rpk cluster config export` command inside a Pod container that's running a Redpanda broker.
++
+```bash
+kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
+rpk cluster config export --filename <filename>.yaml
+```
++
+To save the configuration file outside of your current working directory, provide an absolute path to the `--filename` flag. Otherwise, the file is saved in your current working directory.
++
+Example output
++
+```
+Wrote configuration to file "/tmp/config_625125906.yaml".
+```
+
+. On your host machine, make a directory in which to save the configuration file:
++
+```bash
+mkdir configs
+```
+
+. Copy the configuration file from the Pod to your host machine:
++
+Replace `<path-to-file>` with the path to your exported file.
++
+```bash
+kubectl cp redpanda/redpanda-0:<path-to-file> configs/redpanda-0-configuration-file.yaml
+```
+
+. Remove the exported file from the Redpanda container:
++
+```bash
+kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- rm <path-to-file>
+```
+
+When you've finished with the file, remove it from your host machine:
+
+```bash
+rm -r configs
+```
+
+include::shared:partial$suggested-reading.adoc[]
+
+* https://redpanda.com/blog/raft-centralized-cluster-configuration-improvements/[Using Raft to centralize cluster configuration in Redpanda^].
