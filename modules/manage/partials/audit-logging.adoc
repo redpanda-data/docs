@@ -22,8 +22,6 @@ Redpanda's audit logging mechanism supports several options to control the volum
 
 ifdef::env-kubernetes[You can configure these options directly in either the Helm values or the Redpanda resource.]
 
-:env-kubernetes:
-
 ifdef::env-kubernetes[]
 * `auditLogging.enabled`: Sets the value of the xref:reference:cluster-properties.adoc#audit_enabled[`audit_enabled`] cluster property to enable audit logging. When you set this to `true`, Redpanda checks for an existing topic named `_redpanda.audit_log`. If none is found, Redpanda automatically creates one for you. Default: `false`.
 * `auditLogging.partitions`: Sets the value of the xref:reference:cluster-properties.adoc#audit_log_num_partitions[`audit_log_num_partitions`] cluster property to define the number of partitions used by a newly created audit topic. This configuration applies only to the audit log topic and may be different from the cluster or other topic configurations. This cannot be altered for an existing audit log topic. Default: `12`.
@@ -123,14 +121,93 @@ a|* All Admin API calls
 All audit log settings are applied at the cluster level.
 You can configure audit log settings in the Redpanda Helm chart, using Helm values or the Redpanda resource with the Redpanda Operator.
 
-TIP: If you want to manage the audit topic using a xref:manage:kubernetes/Topic resource, create the Topic resource first, and make sure to set `overwriteTopicName` to `_redpanda.audit_log`.
-
 ifdef::env-kubernetes[]
 [tabs]
 ======
 Helm + Operator::
 +
 --
+If you want to manage the audit topic using a xref:manage:kubernetes/k-manage-topics.adoc[Topic resource]:
+
+. Create the Redpanda resource with SASL enabled:
++
+.`redpanda-cluster.yaml`
+[,yaml,lines=9-13]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    auth:
+      sasl:
+        enabled: true
+        secretRef: "redpanda-users"
+----
+
+. Create a Secret to hold the password of either a user or a superuser:
++
+[,bash]
+----
+kubectl --namespace <namespace> create secret generic audit-topic-user-password --from-literal=password=<password>
+----
++
+NOTE: If you aren't using a superuser, make sure the user is authorized to manage the `_redpanda.audit_log` topic.
+
+. Create the Topic resource, and make sure to set `overwriteTopicName` to `_redpanda.audit_log`:
++
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Topic
+metadata:
+  name: audit-topic
+spec:
+  partitions: <partitions>
+  overwriteTopicName: _redpanda.audit_log
+  kafkaApiSpec:
+    brokers:
+      - "redpanda-0.redpanda.<namespace>.svc.cluster.local:9093"
+      - "redpanda-1.redpanda.<namespace>.svc.cluster.local:9093"
+      - "redpanda-2.redpanda.<namespace>.svc.cluster.local:9093"
+    tls:
+      caCertSecretRef:
+        name: "redpanda-default-cert"
+        key: "ca.crt"
+    sasl:
+      username: <username>
+      mechanism: <mechanism>
+      passwordSecretRef:
+        name: audit-topic-user-password
+        key: password
+----
++
+This example configuration contains values for the `kafkaApiSpec.tls` and `kafkaApiSpec.brokers` settings that work with the default Helm values. If you modified these settings in your deployment, make sure to replace those values.
+
+. Update the Redpanda resource to enable audit logging:
++
+.`redpanda-cluster.yaml`
+[,yaml,lines=13+14]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    auth:
+      sasl:
+        enabled: true
+        secretRef: "redpanda-users"
+    auditLogging:
+      enabled: true
+----
+
+If you don't want to use the Topic resource, you can enable audit logging and Redpanda will create the audit topic for you:
+
 .`redpanda-cluster.yaml`
 [,yaml,lines=9-22]
 ----
@@ -199,9 +276,9 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 ** At least one superuser.
 --
 +
-For details, see xref:manage:kubernetes/security/authentication/sasl-kubernetes[].
+For details, see xref:manage:kubernetes/security/authentication/k-authentication.adoc[].
 
-- `auditLogging.enabled`: This is a boolean value to enable audit logging. When you set this to `true`, Redpanda checks for an existing topic named `_redpanda.audit_log`. If the topic is not found, Redpanda automatically creates one for you. Default: `false`.
+- `auditLogging.enabled`: Enable audit logging. When you set this to `true`, Redpanda checks for an existing topic named `_redpanda.audit_log`. If the topic is not found, Redpanda automatically creates one for you. Default: `false`.
 
 endif::[]
 
@@ -237,6 +314,10 @@ With audit logging, the pattern of message generation may be very different from
 A typical scenario with audit logging is to route the messages to an analytics platform like Splunk. If your retention period is too long, you will find that you are storing excessive amounts of replicated messages in both Redpanda and in your analytics suite. Identifying the right balance of retention and replication settings minimizes this duplication while retaining your data in a system that provides actionable intelligence.
 
 Assess the retention needs for your audit logs. You may not need to keep the logs around for the default seven days. This is controlled by setting xref:reference:topic-properties.adoc#retentionms[`retention.ms`] for the `_redpanda.audit_log` topic or by setting xref:reference:cluster-properties.adoc#delete_retention_ms[`delete_retention_ms`] at the cluster level.
+
+== Next steps
+
+xref:manage:audit-logging/audit-log-samples.adoc[See samples of audit log messages].
 
 include::shared:partial$suggested-reading.adoc[]
 
