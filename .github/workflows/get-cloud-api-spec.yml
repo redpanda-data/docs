@@ -1,0 +1,53 @@
+name: Fetch and Save Cloud API Spec
+
+on:
+  workflow_dispatch: # Allows manual trigger of the workflow
+  repository_dispatch: # Allows other repositories to trigger this workflow
+    types: [trigger-cloud-api-docs]
+
+jobs:
+  fetch-and-save-cloud-api-spec:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v3
+        with:
+          ref: 'api'
+          path: redpanda-docs
+          token: ${{ secrets.ACTIONS_BOT_TOKEN }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run script and save output
+        run: node scripts/get-api-specs/get-cloud-api-spec.js > ./redpanda-docs/modules/ROOT/attachments/cloud-api.yaml
+
+      # Check for any changes made in the documentation.
+      - name: Check if changes were made
+        id: check_changes
+        run: |
+          cd ./redpanda-docs
+          changes=$(git status --porcelain)
+          if [ -z "$changes" ]; then
+            echo "has_changes=false" >> $GITHUB_ENV
+          else
+            echo "has_changes=true" >> $GITHUB_ENV
+          fi
+
+      # If changes were detected, commit those changes.
+      - name: Commit changes
+        if: env.has_changes == 'true'
+        run: |
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git add .
+          git commit -m "auto-docs: Update Cloud API spec"
+          git push origin api
+        env:
+          ACCESS_TOKEN: ${{ secrets.ACTIONS_BOT_TOKEN }}
