@@ -16,7 +16,7 @@ let githubOptions = {
 if (process.env.VBOT_GITHUB_API_TOKEN) {
   githubOptions.auth = process.env.VBOT_GITHUB_API_TOKEN;
 } else {
-  console.error(chalk.red('GitHub API token is not set in environment variables'));
+  console.error('GitHub API token is not set in environment variables');
   process.exit(1);
 }
 
