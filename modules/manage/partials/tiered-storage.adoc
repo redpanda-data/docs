@@ -1331,31 +1331,34 @@ ifndef::env-kubernetes[Edit them with the `rpk cluster config edit` command.]
 
 == Faster partition movement during cluster resize
 
-Tiered Storage gives you the option to boost node operations particularly when resizing a cluster. For instance, adding a new node to increase capacity for an overburdened cluster could introduce additional stress as partition replicas are transferred to the new node. For cloud deployments, commissioning or decommissioning a broker can be a slow and expensive process, especially across multiple availability zones (AZ).
+Tiered Storage gives you the option to boost the speed of and reduce the impact of node operations particularly when resizing a cluster. For instance, adding a new node to increase capacity for an overburdened cluster could introduce additional stress as partition replicas are transferred to the new node. For cloud deployments, commissioning or decommissioning a broker can be a slow and expensive process, especially across multiple availability zones (AZ).
 
-Tiered Storage can help make the cluster resize process more cost-efficient by leveraging data that has already been uploaded to object storage. Instead of transferring all data from local storage to the reassigned replicas, the replicas can instead be initialized using object storage.
+Tiered Storage can help make the cluster resize process faster and more cost-efficient by leveraging data that has already been uploaded to object storage. Instead of transferring all data from local storage to the reassigned replicas, the replicas can instead be initialized to rely more heavily on Tiered Storage for read requests.
 
-To accomplish this, Redpanda takes an on-demand snapshot of a log segment that contains an offset already uploaded to object storage. This is a later offset compared to the default log start offset managed by the glossterm:Raft[] protocol. When an empty replica is initialized, the later offset uploaded to object storage can be used as the start offset source. Reads that access data before the offset in object storage can be executed as remote reads. Therefore, only the locally-retained data after the uploaded offset needs to be sent over the network to the replicas. This also results in less time taken overall to reconfigure the cluster, and faster recovery in case of failures.    
+To accomplish this, Redpanda takes an on-demand snapshot at an offset that is already uploaded to object storage. This is a later offset compared to the default log start offset managed by the glossterm:Raft[] protocol. When an empty replica is initialized, the later offset uploaded to object storage can be used as the start offset source. Reads that access data before the uploaded offset can be executed as remote reads. Therefore, only the locally-retained data after the uploaded offset needs to be sent over the network to the replicas. This also results in less time taken overall to grow or shrink the cluster.    
 
 === Configure partition movement through Tiered Storage
 
-In addition to configuring topics for Tiered Storage, also configure at least one of the following cluster configuration properties:
+To activate faster partition movement when nodes enter and leave the cluster:
 
+. Make sure to <<enable-tiered-storage,configure topics for Tiered Storage>>. 
+. Configure at least one of the following cluster configuration properties. These properties limit the size of data replicated across nodes to local storage using Raft:
++
 * `initial_retention_local_target_bytes_default`: Initial local retention size target for partitions of topics with Tiered Storage enabled. (default: null)
 ** Use the `initial.retention.local.target.bytes` topic configuration property to override on the topic level.
 * `initial_retention_local_target_ms_default`: Initial local retention time target for partitions of topics with Tiered Storage enabled. (default: null)
 ** Use the `initial.retention.local.target.ms` topic configuration property to override on the topic level.
-
++
 If no values are set for the cluster configuration properties, all locally retained data is delivered by default to the new (learner) node when joining a partition replica set.
 
-IMPORTANT: Since topics become more reliant on object storage to serve data, you may experience higher latency. Carefully weigh the tradeoffs between faster partition movement and broker commission/decommission, and increased latency due to less data available to be read from local storage.
+IMPORTANT: Since topics become more reliant on object storage to serve data, you may experience higher latency reads for data beyond the range of the configured local <<set-retention-limits,retention target>>. Carefully weigh the tradeoffs between faster broker commission/decommission and the increased read latency due to less data being available in local storage.
 
-=== Monitor partition movement
+=== Monitor fast partition movement
 
-Use the following are available for monitoring partition movement configured through Tiered Storage:
+Use the following to monitor fast partition movement through Tiered Storage:
 
 * The `vectorized_cluster_partition_start_offset` metric on newly-joined nodes should be greater than on existing nodes.
-* Raft protocol logs taking an on-demand snapshot with the `debug` level, for example:
+* Raft protocol logs taking an on-demand snapshot will be logged at the `debug` level, for example:
 +
 [,bash]
 ----
