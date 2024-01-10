@@ -4,9 +4,13 @@
 
 API reference documentation for Redpanda data transforms.
 
-== Data transforms functions
+== Data Transforms
 
-=== OnRecordWritten
+Package `transform` contains the core functions and types for transforming data within Redpanda.
+
+=== Data transforms functions
+
+==== OnRecordWritten
 
 ```go
 func OnRecordWritten(fn OnRecordWrittenCallback)
@@ -18,17 +22,17 @@ The function should be called in a package's `main` function to register the tra
 
 ---
 
-== Data transforms types
+=== Data transforms types
 
-=== OnRecordWrittenCallback
+==== OnRecordWrittenCallback
 
 ```go
-type OnRecordWrittenCallback func(e WriteEvent) ([]Record, error)
+type OnRecordWrittenCallback func(e WriteEvent, w RecordWriter) error
 ```
 
 The `OnRecordWrittenCallback` type is a callback to transform records after a write event happens in the input topic. It's the type of the parameter for the <<onrecordwritten, `OnRecordWritten`>> function.
 
-=== Record
+==== Record
 
 ```go
 type Record struct {
@@ -58,7 +62,7 @@ type Record struct {
 
 The `Record` type is a record that has been written to Redpanda.
 
-=== RecordAttrs
+==== RecordAttrs
 
 ```go
 type RecordAttrs struct {
@@ -66,13 +70,7 @@ type RecordAttrs struct {
 }
 ```
 
-====  TimestampType
-
-```go
-func (a RecordAttrs) TimestampType() int8
-```
-
-=== RecordHeader
+==== RecordHeader
 
 ```go
 type RecordHeader struct {
@@ -84,7 +82,7 @@ type RecordHeader struct {
 The `RecordHeader` type is an optional key/value pair that is passed along with records.
 
 
-=== WriteEvent
+==== WriteEvent
 
 ```go
 type WriteEvent interface {
@@ -95,6 +93,273 @@ type WriteEvent interface {
 
 The `WriteEvent` type contains information about a record that was written.
 
+==== RecordWriter
+
+```go
+type RecordWriter interface {
+      // Write writes a record to the output topic.
+      //
+      // When writing a record, only the key, value and headers are
+      // used other information like the timestamp will be overridden
+      // by the broker.
+      Write(Record) error
+}
+```
+
+`RecordWriter` is an interface for writing transformed records to the destination topic.
+
+== Schema Registry Client
+
+Package `sr` is a Schema Registry client for usage within Redpanda Data Transforms.
+
+Data transforms support reading schemas and writing schemas to the schema registry within Redpanda. 
+
+Once a schema is obtained, a record maybe decoded using the appropriate library. Using the TinyGo compiler and runtime, the following libraries for Apache Avro and Protocol Buffers have been known to work.
+
+- https://github.com/linkedin/goavro[goavro]
+- https://github.com/planetscale/vtprotobuf[`vtprotobuf`, the Vitess Protocol Buffers compiler]
+
+=== Schema Registry variables
+
+```go
+var (
+	// ErrNotRegistered is returned from Serde when attempting to encode a
+	// value or decode an ID that has not been registered, or when using
+	// Decode with a missing new value function.
+	ErrNotRegistered = errors.New("registration is missing for encode/decode")
+
+	// ErrBadHeader is returned from Decode when the input slice is shorter
+	// than five bytes, or if the first byte is not the magic 0 byte.
+	ErrBadHeader = errors.New("5 byte header for value is missing or does not have the 0 magic byte")
+)
+```
+
+=== Schema Registry functions
+
+==== ExtractID
+
+```go
+func ExtractID(b []byte) (int, error)
+```
+
+Extract the ID from the header of a schema registry encoded value.
+
+Returns ErrBadHeader if the array is missing the leading magic byte or is too small.
+
+=== Schema Registry types
+
+==== ClientOpt
+
+```go
+type ClientOpt interface {
+	// contains filtered or unexported methods
+}
+```
+
+`ClientOpt` is an option to configure a <<schemaregistryclient, `SchemaRegistryClient`>>
+
+==== MaxCacheEntries
+
+```go
+func MaxCacheEntries(size int) ClientOpt
+```
+
+`MaxCacheEntries` configures how many entries to cache within the client.
+
+By default the cache is unbounded, use 0 to disable the cache. 
+
+==== Reference
+
+```go
+type Reference struct {
+	Name    string
+	Subject string
+	Version int
+}
+```
+
+`SchemaReference` is a way for a one schema to reference another. The details for how referencing is done are type specific; for example, JSON objects that use the key "$ref" can refer to another schema via URL. For more details on references, see the following: xref:manage:schema-reg/schema-reg-api.adoc#reference-a-schema[Reference a schema]
+
+==== Schema
+
+```go
+type Schema struct {
+	Schema     string
+	Type       SchemaType
+	References []Reference
+}
+```
+
+`Schema` is a schema that can be registered within schema registry 
+
+==== SchemaRegistryClient
+
+```go
+type SchemaRegistryClient interface {
+	// LookupSchemaById looks up a schema via it's global ID.
+	LookupSchemaById(id int) (s *Schema, err error)
+	// LookupSchemaByVersion looks up a schema via a subject for a specific version.
+	//
+	// Use version -1 to get the latest version.
+	LookupSchemaByVersion(subject string, version int) (s *SubjectSchema, err error)
+	// CreateSchema creates a schema under the given subject, returning the version and ID.
+	//
+	// If an equivalent schema already exists globally, that schema ID will be reused.
+	// If an equivalent schema already exists within that subject, this will be a noop and the
+	// existing schema will be returned.
+	CreateSchema(subject string, schema Schema) (s *SubjectSchema, err error)
+}
+```
+
+`SchemaRegistryClient` is a client for interacting with the schema registry within Redpanda.
+
+The client provides caching out of the box, which can be configured with options.
+
+==== NewClient
+
+```go
+func NewClient(opts ...ClientOpt) (c SchemaRegistryClient)
+```
+
+`NewClient` creates a new <<schemaregistryclient, `SchemaRegistryClient`>> with the specified options applied.
+
+==== SchemaType
+
+```go
+type SchemaType int
+```
+
+`SchemaType` is an enum for the different types of schemas that can be stored in schema registry.
+
+```go
+const (
+	TypeAvro SchemaType = iota
+	TypeProtobuf
+	TypeJSON
+)
+```
+
+==== Serde
+
+```go
+type Serde[T any] struct {
+	// contains filtered or unexported fields
+}
+```
+
+`Serde` encodes and decodes values according to the schema registry wire format. A `Serde` itself does not perform schema auto-discovery and type auto-decoding. To aid in strong typing and validated encoding/decoding, you must register IDs and values to how to encode or decode them.
+
+To use a `Serde` for encoding, you must pre-register schema ids and values you will encode, and then you can use the encode functions. The latest registered ID that supports encoding will be used to encode.
+
+To use a `Serde` for decoding, you can either pre-register schema ids and values you will consume, or you can discover the schema every time you receive an `ErrNotRegistered` error from decode.
+
+==== (*Serde[T]) AppendEncode
+
+```go
+func (s *Serde[T]) AppendEncode(b []byte, v T) ([]byte, error)
+```
+
+`AppendEncode` appends an encoded value to b according to the schema registry wire format and returns it. If <<encodefn,`EncodeFn`>> was not used, this returns `ErrNotRegistered`.
+
+==== (*Serde[T]) Decode
+
+```go
+func (s *Serde[T]) Decode(b []byte, v T) error
+```
+
+`Decode` decodes b into v. If <<decodefn, `DecodeFn`>> option was not used, this returns `ErrNotRegistered`.
+
+Serde does not handle references in schemas; it is up to you to register the full decode function for any top-level ID, regardless of how many other schemas are referenced in top-level ID.
+
+==== (*Serde[T]) Encode
+
+```go
+func (s *Serde[T]) Encode(v T) ([]byte, error)
+```
+
+`Encode` encodes a value according to the schema registry wire format and returns it. If <<encodefn, `EncodeFn`>> was not used, this returns `ErrNotRegistered`.
+
+==== (*Serde[T]) MustAppendEncode
+
+```go
+func (s *Serde[T]) MustAppendEncode(b []byte, v T) []byte
+```
+
+`MustAppendEncode` returns the value of <<serdet-append-encode, `AppendEncode`>>, panicking on error. This is a shortcut for if your encode function cannot error.
+
+==== (*Serde[T]) MustEncode
+
+```go
+func (s *Serde[T]) MustEncode(v T) []byte
+```
+
+`MustEncode` returns the value of <<serdet-encode, `Encode`>>, panicking on error. This is a shortcut for if your encode function cannot error.
+
+==== (*Serde[T]) Register
+
+```go
+func (s *Serde[T]) Register(id int, opts ...SerdeOpt[T])
+```
+
+`Register` registers a schema ID and the value it corresponds to, as well as the encoding or decoding functions. You need to register functions depending on whether you are only encoding, only decoding, or both.
+
+==== (*Serde[T]) SetDefaults
+
+```go
+func (s *Serde[T]) SetDefaults(opts ...SerdeOpt[T])
+```
+
+`SetDefaults` sets default options to apply to every registered type. These options are always applied first, so you can override them as necessary when registering.
+
+This can be useful if you always want to use the same encoding or decoding functions. 
+
+==== SerdeOpt
+
+```go
+type SerdeOpt[T any] interface {
+	// contains filtered or unexported methods
+}
+```
+
+`SerdeOpt` is an option to configure a <<serde, `Serde`>>.
+
+==== AppendEncodeFn
+
+```go
+func AppendEncodeFn[T any](fn func([]byte, T) ([]byte, error)) SerdeOpt[T]
+```
+
+`AppendEncodeFn` allows <<serde, `Serde`>> to encode a value to an existing slice. This can be more efficient than <<encodefn, `EncodeFn`>>; this function is used if it exists. 
+
+==== DecodeFn
+
+```go
+func DecodeFn[T any](fn func([]byte, T) error) SerdeOpt[T]
+```
+
+`DecodeFn` allows <<serde, `Serde`>> to decode into a value.
+
+==== EncodeFn
+
+```go
+func EncodeFn[T any](fn func(T) ([]byte, error)) SerdeOpt[T]
+```
+
+`EncodeFn` allows <<serde, `Serde`>> to encode a value.
+
+==== SubjectSchema
+
+```go
+type SubjectSchema struct {
+	Schema
+
+	Subject string
+	Version int
+	ID      int
+}
+```
+
+`SchemaSubject` is a schema along with the subject, version and ID of the schema 
 
 == Related topics
 
