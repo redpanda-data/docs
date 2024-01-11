@@ -29,6 +29,107 @@ List of superuser usernames.
 
 ---
 
+== Audit logging properties
+
+[[audit_enabled]]
+=== audit_enabled
+
+Enables or disables audit logging. When you set this to true, Redpanda checks for an existing topic named `_redpanda.audit_log`. If none is found, Redpanda automatically creates one for you.
+
+*Default*: `false`
+
+*Restart required*: no
+
+---
+
+[[audit_enabled_event_types]]
+=== audit_enabled_event_types
+
+List of strings in JSON style identifying the event types to include in the audit log. This may include any of the following - `management, produce, consume, describe, heartbeat, authenticate, schema_registry, admin`.
+
+*Default*: `'["management","authenticate","admin"]'`
+
+*Restart required*: no
+
+---
+
+[[audit_exclude_principals]]
+=== audit_exclude_principals
+
+List of strings in JSON style identifying the principals the audit logging system should ignore. Principals can be listed as `User:name` or `name`, both are accepted.
+
+*Default*: null
+
+*Restart required*: no
+
+---
+
+[[audit_exclude_topics]]
+=== audit_exclude_topics
+
+List of strings in JSON style identifying the topics the audit logging system should ignore. This list cannot include the `_redpanda.audit_log` topic. Redpanda will reject the command if you do attempt to include that topic.
+
+*Default*: null
+
+*Restart required*: no
+
+---
+
+[[audit_client_max_buffer_size]]
+=== audit_client_max_buffer_size
+
+Defines the number of bytes allocated by the internal audit client for audit messages. When changing this, you must disable audit logging and then re-enable it for the change to take effect. Consider increasing this if your system generates a very large number of audit records in a short amount of time.
+
+*Default*: `16777216`
+
+*Restart required*: No, but audit `audit_enabled` must be toggled to `false` then back to `true` if it's currently enabled.
+
+---
+
+[[audit_log_num_partitions]]
+=== audit_log_num_partitions
+
+Defines the number of partitions used by a newly created audit topic. This configuration applies only to the audit log topic and may be different from the cluster or other topic configurations. This cannot be altered for existing audit log topics.
+
+*Default*: `12`
+
+*Restart required*: no
+
+---
+
+[[audit_log_replication_factor]]
+=== audit_log_replication_factor
+
+Defines the replication factor for a newly created audit log topic. This configuration applies only to the audit log topic and may be different from the cluster or other topic configurations. This cannot be altered for existing audit log topics. Setting this value is optional. If a value is not provided, Redpanda will use the `internal_topic_replication_factor` cluster config value.
+
+*Default*: `null`
+
+*Restart required*: no
+
+---
+
+[[audit_queue_drain_interval_ms]]
+=== audit_queue_drain_interval_ms
+
+Internally, Redpanda batches audit log messages in memory and periodically writes them to the audit log topic. This defines the period in milliseconds between draining this queue to the audit log topic. Longer intervals may help prevent duplicate messages, especially in high throughput scenarios, but they also increase the risk of data loss during hard shutdowns where the queue is lost.
+
+*Default*: `500`
+
+*Restart required*: no
+
+---
+
+[[audit_queue_max_buffer_size_per_shard]]
+=== audit_queue_max_buffer_size_per_shard
+
+Defines the maximum amount of memory in bytes used by the audit buffer in each shard. Once this size is reached, requests to log additional audit messages will return a non-retryable error.
+
+*Default*: `1048576`
+
+*Restart required*: yes
+
+---
+
 == Object storage properties
 
 === cloud_storage_azure_storage_account
@@ -126,6 +227,18 @@ Max size of object storage cache.
 *Default*: 21474836480 (20 GiB)
 
 *Restart required*: yes
+
+---
+
+=== cloud_storage_cluster_metadata_upload_interval_ms
+
+Time interval to wait between cluster metadata uploads.
+
+*Units*: milliseconds
+
+*Default*: 3600000 (1 hour)
+
+*Restart required*: no
 
 ---
 
@@ -227,6 +340,18 @@ Cluster identifier.
 
 ---
 
+=== controller_snapshot_max_age_sec
+
+Max time that will pass before Redpanda attempts to create a controller snapshot after a new controller command appears.
+
+*Units*: seconds
+
+*Default*: 60
+
+*Restart required*: no
+
+---
+
 === enable_auto_rebalance_on_node_add
 {badge-deprecated}
 
@@ -237,6 +362,18 @@ Enable automatic partition rebalancing when new nodes are added.
 *Default*: false
 
 *Restart required*: no
+
+---
+
+=== enable_cluster_metadata_upload_loop
+
+Enables cluster metadata uploads. Required for xref:manage:whole-cluster-restore.adoc[whole cluster restore].
+
+*Type*: boolean
+
+*Default*: true
+
+*Restart required*: yes
 
 ---
 
@@ -638,7 +775,7 @@ Principal mapping rules for mTLS authentication on the Kafka API. If `null`, the
 
 A list of topics that are protected from deletion and configuration changes by Kafka clients. Set by default to a list of Redpanda internal topics.
 
-*Default*: `['__audit', '__consumer_offsets', '_schemas']`
+*Default*: `['_redpanda.audit_log', '__consumer_offsets', '_schemas']`
 
 *Restart required*: no
 
@@ -655,7 +792,7 @@ A list of topics that are protected from deletion and configuration changes by K
 
 A list of topics that are protected from being produced to by Kafka clients. Set by default to a list of Redpanda internal topics.
 
-*Default*: `['__audit']`
+*Default*: `['_redpanda.audit_log']`
 
 *Restart required*: no
 
@@ -872,6 +1009,35 @@ The topic property xref:./topic-properties.adoc#segmentms[`segment.ms`] override
 * xref:./tunable-properties.adoc#log_segment_ms_max[log_segment_ms_max]
 
 *Supported versions*: Redpanda v23.1 or later
+
+---
+
+=== oidc_clock_skew_tolerance
+
+The amount of time (in seconds) to allow for when validating the expiry claim in the token.
+
+
+*Units*: seconds
+
+*Default*: 30 sec
+
+---
+
+=== oidc_discovery_url
+
+The URL pointing to the well-known discovery endpoint for the OIDC provider.
+
+*Default*:  https://auth.prd.cloud.redpanda.com/.well-known/openid-configuration
+
+---
+
+=== oidc_token_audience
+
+A string representing the intended recipient of the token.
+
+*Type*: string
+
+*Default*: `redpanda`
 
 ---
 
@@ -1119,23 +1285,9 @@ NOTE: `cloud_storage_cache_size_percent` overrides `cloud_storage_cache_size`.
 
 === delete_retention_ms
 
-Delete segments that are older than this age.
+{badge-deprecated}
 
-The topic property xref:./topic-properties.adoc#retentionms[`retention.ms`] overrides the value of `delete_retention_ms` at the topic level.
-
-[NOTE]
-====
-The `delete_retention_ms` cluster property is different than the `delete.retention.ms` Apache Kafka topic property, and Redpanda doesn't support `delete.retention.ms`.
-
-* `delete_retention_ms` sets the same time-based retention limit value for all topics in the cluster.
-* `delete.retention.ms` sets the time-based retention limit for tombstone markers of a compacted topic.
-====
-
-*Units*: milliseconds
-
-*Default*: 604800000 (1 week)
-
-*Restart required*: no
+IMPORTANT: Starting in version 23.3.1, `delete_retention_ms` is deprecated. Use <<log_retention_ms, `log_retention_ms`>> instead.
 
 ---
 
@@ -1151,6 +1303,31 @@ Amount of disk space to reserve for general system overhead.
 
 ---
 
+=== initial_retention_local_target_bytes_default
+
+Initial local retention size target for partitions of topics with xref:manage:tiered-storage.adoc[Tiered Storage] enabled.
+
+*Units*: bytes
+
+*Default*: null
+
+*Restart required*: no
+
+---
+
+=== initial_retention_local_target_ms_default
+
+Initial local retention time target for partitions of topics with xref:manage:tiered-storage.adoc[Tiered Storage] enabled.
+
+*Units*: milliseconds
+
+*Default*: null
+
+*Restart required*: no
+
+---
+
+[[log_cleanup_policy]]
 === log_cleanup_policy
 
 Default cleanup policy for topic logs.
@@ -1165,6 +1342,7 @@ The topic property xref:./topic-properties.adoc#cleanuppolicy[`cleanup.policy`] 
 
 ---
 
+[[log_compaction_interval_ms]]
 === log_compaction_interval_ms
 
 How often to trigger background compaction.
@@ -1191,6 +1369,7 @@ The topic property xref:./topic-properties.adoc#compressiontype[`compression.typ
 
 ---
 
+[[log_message_timestamp_type]]
 === log_message_timestamp_type
 
 Default timestamp type for topic messages (CreateTime or LogAppendTime).
@@ -1202,6 +1381,16 @@ The topic property xref:./topic-properties.adoc#messagetimestamptype[`message.ti
 *Valid values*: `CreateTime`, `LogAppendTime`
 
 *Restart required*: no
+
+---
+
+=== log_retention_ms
+
+The amount of time to keep a log file before deleting it (in milliseconds). If set to -1, no time limit is applied. This is a cluster-wide default when a topic does not set or disable xref:./topic-properties.adoc#retentionms[`retention.ms`].
+
+*Units*: milliseconds
+
+*Default*: 1 week
 
 ---
 
@@ -1399,7 +1588,7 @@ URL of the cluster metrics reporter.
 
 === auto_create_topics_enabled
 
-Allow automatic topic creation.
+Allow automatic topic creation. To prevent runaway topic creation, this property is not supported for Redpanda Cloud BYOC and dedicated clusters. You should explicitly manage topic creation for these Redpanda Cloud clusters.
 
 *Type*: boolean
 

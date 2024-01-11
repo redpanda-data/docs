@@ -165,7 +165,7 @@ async function fetchOperatorChartDetails(chartVersion) {
     const crds = response.data.crds;
     if (crds) {
       for (i = 0; i < crds.length; i++) {
-        crdVersions += `\n\nxref:reference:kubernetes-crd-index.adoc[${crds[i].kind} ${crds[i].version}]`
+        crdVersions += `\n\nxref:reference:k-crd-index.adoc[${crds[i].kind} ${crds[i].version}]`
       }
     }
 
