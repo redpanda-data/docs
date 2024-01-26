@@ -123,10 +123,14 @@ TIP: When creating a custom data transform, initialization steps can be done eit
 The following examples show some basic transforms. Each example can be copied into the `transform.go` file.
 +
 [tabs]
+======
+Go::
++
+--
+[tabs]
 ====
 Identity transform::
 +
---
 ```go
 package main
 
@@ -149,11 +153,9 @@ func identityTransform(e transform.WriteEvent, w transform.RecordWriter) error {
 	return w.Write(e.Record())
 }
 ```
---
+
 Transcoder transform::
 +
---
-
 ```go
 package main
 
@@ -221,10 +223,9 @@ func csvToJsonTransform(e transform.WriteEvent, w transform.RecordWriter) error 
 }
 ```
 
---
+
 Validation filter transform::
 +
---
 ```go
 import (
 	"encoding/json"
@@ -245,9 +246,122 @@ func filterValidJson(e transform.WriteEvent, w transform.RecordWriter) error {
 	return nil
 }
 ```
-
 --
+
+
+Rust::
++
+--
+
+[tabs]
 ====
+Identity transform::
++
+```rust
+use anyhow::Result;
+use redpanda_transform_sdk::*;
+
+// This example shows the basic usage of the crate:
+// This transform does nothing but copy the same data from an
+// input topic to an output topic.
+fn main() {
+    // Make sure to register your callback and perform other setup in main
+    on_record_written(my_transform);
+}
+
+// This will be called for each record in the source topic.
+//
+// The output records returned will be written to the destination topic.
+fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> Result<()> {
+    writer.write(event.record)?;
+    Ok(())
+```
+
+
+Transcoder transform::
++
+```rust
+// Copyright 2024 Redpanda Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use anyhow::Result;
+use redpanda_transform_sdk::*;
+use serde::{Deserialize, Serialize};
+
+// This example shows a transform that converts CSV inputs into JSON outputs.
+fn main() {
+    on_record_written(my_transform);
+}
+
+#[derive(Serialize, Deserialize)]
+struct Foo {
+    a: String,
+    b: i32,
+}
+
+fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> Result<()> {
+    // The input data is a CSV (without a header row) that is defined as our Foo structure.
+    let mut reader = csv::Reader::from_reader(event.record.value().unwrap_or_default());
+    // For each record in our CSV
+    for result in reader.deserialize() {
+        let foo: Foo = result?;
+        // Convert it to JSON
+        let value = serde_json::to_vec(&foo)?;
+        // Then output it with the same key.
+        writer.write(BorrowedRecord::new(event.record.key(), Some(&value)))?;
+    }
+    Ok(())
+}
+```
+
+Validation filter transform::
++
+```rust
+// Copyright 2024 Redpanda Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use anyhow::Result;
+use redpanda_transform_sdk::*;
+
+// This example shows a filter that outputs only valid JSON to the output topic.
+fn main() {
+    on_record_written(filter_valid_json);
+}
+
+fn filter_valid_json(event: WriteEvent, writer: &mut RecordWriter) -> Result<()> {
+    let value = event.record.value().unwrap_or_default();
+    if serde_json::from_slice::<serde_json::Value>(value).is_ok() {
+        writer.write(event.record)?;
+    }
+    Ok(())
+}
+```
+
+====
+--
+======
 
 == Build and deploy the transform
 
