@@ -20,7 +20,9 @@ Ensure that your Redpanda cluster has xref:manage:kubernetes/networking/external
 +
 TIP: For a tutorial on setting up a Redpanda cluster with external access, see xref:deploy:deployment-option/self-hosted/kubernetes/get-started-dev.adoc[].
 endif::[]
-- At least version 1.20 of https://go.dev/doc/install[Go^] installed on your host machine.
+- Development tools installed on your host machine:
+** For Golang, you must have at least version 1.20 of https://go.dev/doc/install[Go^].
+** For Rust, you must have the latest stable version of https://rustup.rs/[Rust].
 - The xref:get-started:rpk-install.adoc[`rpk` command-line client].
 +
 Install `rpk` on your host machine and configure it to connect to your Redpanda cluster.
@@ -76,7 +78,7 @@ endif::[]
 [[configure-memory]]
 == Configure memory for data transforms
 
-Redpanda reserves memory for each transform function within the broker. You need enough memory for your input record and output record to be in memory at the same time, as well as the runtime overhead. For TinyGo, the overhead is 64 KB. For standard Golang, the overhead is 16 MB.
+Redpanda reserves memory for each transform function within the broker. You need enough memory for your input record and output record to be in memory at the same time.
 
 Set the following properties based on the number of functions you have and the amount of memory you anticipate needing.
 
@@ -96,11 +98,18 @@ See also: xref:./how-transforms-work.adoc[]
 
 == Create a data transforms project
 
+[tabs]
+======
+Go::
++
+--
 . Create and initialize a data transforms project:
 +
 ```bash
-rpk transform init
+rpk transform init --language=tinygo
 ```
++
+If you do not include the `--language` flag, the `transform init` command will prompt you for the language.
 +
 A successful command generates project files in your current directory:
 +
@@ -118,7 +127,7 @@ The `transform.go` file contains the transform logic, and the `transform.yaml` f
 +
 TIP: When creating a custom data transform, initialization steps can be done either in `main` (because it's only run once at the start of the package) or in Go's standard predefined `init()` function. Although state can be cached in global variables, Redpanda may restart a Wasm module at any point, which causes the state to be lost.
 
-. Implement your project by adding transform logic to `transform.go`.
+. Implement your project by adding transform logic.
 +
 The following examples show some basic transforms. Each example can be copied into the `transform.go` file.
 +
@@ -126,7 +135,6 @@ The following examples show some basic transforms. Each example can be copied in
 ====
 Identity transform::
 +
---
 ```go
 package main
 
@@ -149,11 +157,9 @@ func identityTransform(e transform.WriteEvent, w transform.RecordWriter) error {
 	return w.Write(e.Record())
 }
 ```
---
+
 Transcoder transform::
 +
---
-
 ```go
 package main
 
@@ -221,10 +227,8 @@ func csvToJsonTransform(e transform.WriteEvent, w transform.RecordWriter) error 
 }
 ```
 
---
 Validation filter transform::
 +
---
 ```go
 import (
 	"encoding/json"
@@ -245,9 +249,118 @@ func filterValidJson(e transform.WriteEvent, w transform.RecordWriter) error {
 	return nil
 }
 ```
-
---
 ====
+--
+Rust::
++
+--
+. Create and initialize a data transforms project:
++
+```bash
+rpk transform init --language=rust
+```
++
+If you do not include the `--language` flag, the `transform init` command will prompt you for the language.
++
+A successful command generates project files in your current directory:
++
+[.no-copy]
+----
+.
+├── Cargo.lock
+├── Cargo.toml
+├── README.md
+├── src
+│  └── main.rs
+└── transform.yaml
+----
+The `src/main.rs` file contains the transform logic, and the `transform.yaml` file specifies the transform's configuration.
++
+TIP: When creating a custom data transform, initialization steps can be done in `main()` because it's only run once at the start of the package. Although state can be cached in global variables, Redpanda may restart a Wasm module at any point, which causes the state to be lost.
++
+The following examples show some basic transforms. Each example can be copied into the `main.rs` file.
++
+[tabs]
+====
+Identity transform::
++
+```rust
+use anyhow::Result;
+use redpanda_transform_sdk::*;
+
+// This example shows the basic usage of the crate:
+// This transform does nothing but copy the same data from an
+// input topic to an output topic.
+fn main() {
+    // Make sure to register your callback and perform other setup in main
+    on_record_written(my_transform);
+}
+
+// This will be called for each record in the source topic.
+//
+// The output records returned will be written to the destination topic.
+fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> Result<()> {
+    writer.write(event.record)?;
+    Ok(())
+}
+```
+
+
+Transcoder transform::
++
+```rust
+use anyhow::Result;
+use redpanda_transform_sdk::*;
+use serde::{Deserialize, Serialize};
+
+// This example shows a transform that converts CSV inputs into JSON outputs.
+fn main() {
+    on_record_written(my_transform);
+}
+
+#[derive(Serialize, Deserialize)]
+struct Foo {
+    a: String,
+    b: i32,
+}
+
+fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> Result<()> {
+    // The input data is a CSV (without a header row) that is defined as our Foo structure.
+    let mut reader = csv::Reader::from_reader(event.record.value().unwrap_or_default());
+    // For each record in our CSV
+    for result in reader.deserialize() {
+        let foo: Foo = result?;
+        // Convert it to JSON
+        let value = serde_json::to_vec(&foo)?;
+        // Then output it with the same key.
+        writer.write(BorrowedRecord::new(event.record.key(), Some(&value)))?;
+    }
+    Ok(())
+}
+```
+
+Validation filter transform::
++
+```rust
+use anyhow::Result;
+use redpanda_transform_sdk::*;
+
+// This example shows a filter that outputs only valid JSON to the output topic.
+fn main() {
+    on_record_written(filter_valid_json);
+}
+
+fn filter_valid_json(event: WriteEvent, writer: &mut RecordWriter) -> Result<()> {
+    let value = event.record.value().unwrap_or_default();
+    if serde_json::from_slice::<serde_json::Value>(value).is_ok() {
+        writer.write(event.record)?;
+    }
+    Ok(())
+}
+```
+====
+--
+======
 
 == Build and deploy the transform
 
@@ -333,10 +446,11 @@ See xref:reference:public-metrics-reference.adoc[]
 - Only a single output topic is supported.
 - Transforms have at-least-once delivery.
 - When clients use the Kafka Transactions API on partitions of an input topic, transforms process only committed records.
-- Because data transforms are powered by Wasm, transform functions can be authored in any language. However, a data transforms SDK currently is only available in xref:reference:data-transform-api.adoc[Golang].
+- Because data transforms are powered by Wasm, transform functions can be authored in any language. However, a data transforms SDK currently is only available in xref:reference:data-transform-api.adoc[Golang] and xref:reference:data-transform-rust-sdk.adoc[Rust].
 
 == Suggested reading
 
 - xref:./how-transforms-work.adoc[]
-- xref:reference:data-transform-api.adoc[]
+- xref:reference:data-transform-golang-sdk.adoc[]
+- xref:reference:data-transform-rust-sdk.adoc[]
 - xref:reference:rpk/rpk-transform/rpk-transform.adoc[`rpk transform` commands]
