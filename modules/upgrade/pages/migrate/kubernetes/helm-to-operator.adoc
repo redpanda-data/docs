@@ -73,9 +73,7 @@ You need these cluster-level permissions to install the Redpanda Operator CRDs i
 
 . Install the Redpanda Operator custom resource definitions (CRDs):
 +
-```bash
-kubectl kustomize https://github.com/redpanda-data/redpanda-operator//src/go/k8s/config/crd | kubectl apply -f -
-```
+include::deploy:partial$kubernetes/install-crds.adoc[]
 
 . Install the Redpanda Operator *in the same namespace as your Redpanda Helm chart*:
 +
@@ -84,7 +82,7 @@ kubectl kustomize https://github.com/redpanda-data/redpanda-operator//src/go/k8s
 helm repo add redpanda https://charts.redpanda.com
 helm upgrade --install redpanda-controller redpanda/operator \
   --namespace <namespace> \
-  --set image.repository=docker.redpanda.com/redpandadata/redpanda-operator \
+  --set image.tag={latest-operator-version} \
   --create-namespace
 ----
 
@@ -144,84 +142,6 @@ NAME       READY   STATUS
 redpanda   True    Redpanda reconciliation succeeded
 ----
 
-== Troubleshooting
-
-While the deployment process can sometimes take a few minutes, a prolonged 'not ready' status may indicate an issue.
-
-=== HelmRelease is not ready
-
-If you are using the Redpanda Operator with Helm, you may see the following message while waiting for a Redpanda custom resource to be deployed:
-
-[.no-copy]
-----
-NAME       READY   STATUS
-redpanda   False   HelmRepository 'redpanda/redpanda-repository' is not ready
-redpanda   False   HelmRelease 'redpanda/redpanda' is not ready
-----
-
-While the deployment process can sometimes take a few minutes, a prolonged 'not ready' status may indicate an issue. Follow the steps below to investigate:
-
-. Check the status of the HelmRelease:
-+
-```bash
-kubectl describe helmrelease redpanda --namespace <namespace>
-```
-
-. Review the Redpanda Operator logs:
-+
-```bash
-kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
-```
-
-Replace `<namespace>` with the namespace in which you deployed the Redpanda Operator.
-
-=== HelmRelease retries exhausted
-
-The `HelmRelease retries exhausted` error occurs when the Helm Controller has tried to reconcile the HelmRelease a number of times, but these attempts have failed consistently.
-
-The Helm Controller watches for changes in HelmRelease objects. When changes are detected, it tries to reconcile the state defined in the HelmRelease with the state in the cluster. The process of reconciliation includes installation, upgrade, testing, rollback or uninstallation of Helm releases.
-
-You may see this error due to:
-
-- Incorrect configuration in the HelmRelease.
-- Issues with the chart, such as a non-existent chart version or the chart repository not being accessible.
-- Missing dependencies or prerequisites required by the chart.
-- Issues with the underlying Kubernetes cluster, such as insufficient resources or connectivity issues.
-
-To debug this error do the following:
-
-. Check the status of the HelmRelease:
-+
-```bash
-kubectl describe helmrelease <cluster-name> --namespace <namespace>
-```
-
-. Review the Redpanda Operator logs:
-+
-```bash
-kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
-```
-
-When you find and fix the error, you must use the Flux CLI, `fluxctl`, to suspend and resume the reconciliation process:
-
-. https://fluxcd.io/flux/installation/#install-the-flux-cli[Install Flux CLI^].
-
-. Suspend the HelmRelease:
-+
-```bash
-flux suspend helmrelease <cluster-name> --namespace <namespace>
-```
-
-. Resume the HelmRelease:
-+
-```bash
-flux resume helmrelease <cluster-name> --namespace <namespace>
-```
-
-=== Open an issue
-
-If you cannot solve the issue or you need assistance during the migration process, https://github.com/redpanda-data/redpanda/issues/new/choose[open a GitHub issue^] in the Redpanda repository. Before opening a new issue, search the existing issues on GitHub to see if someone has already reported a similar problem or if any relevant discussions that can help you.
-
 == Roll back from Redpanda Operator to Helm
 
 If you migrated to the Redpanda Operator and want to revert to using only Helm, follow these steps:
@@ -236,12 +156,15 @@ kubectl edit pod <operator-name> --namespace <namespace>
 
 . Remove the https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/[finalizers^] from the Redpanda, HelmRelease, HelmChart, and HelmRepository resources:
 +
-```bash
+[,bash]
+----
 kubectl --namespace <namespace> patch redpanda <cluster-name> -p '{"metadata":{"finalizers":null}}' --type=merge
 kubectl --namespace <namespace> patch helmrelease <cluster-name> -p '{"metadata":{"finalizers":null}}' --type=merge
-kubectl --namespace <namespace> patch helmchart <cluster-name> -p '{"metadata":{"finalizers":null}}' --type=merge
-kubectl --namespace <namespace> patch helmrepository <cluster-name> -p '{"metadata":{"finalizers":null}}' --type=merge
-```
+kubectl --namespace <namespace> patch helmchart <namespace>-<cluster-name> -p '{"metadata":{"finalizers":null}}' --type=merge
+kubectl --namespace <namespace> patch helmrepository <helm-repository-name> -p '{"metadata":{"finalizers":null}}' --type=merge
+----
++
+Replace the `<helm-repository-name>` placeholder with the value of `spec.chartRef.helmRepositoryName` in your Redpanda resource. The default value is `redpanda-repository`.
 
 . Delete the resources:
 +
@@ -253,6 +176,18 @@ kubectl delete helmrepository <cluster-name> --namespace <namespace>
 ```
 
 After completing these steps, the Redpanda Operator is no longer managing your Helm deployment.
+
+== Troubleshooting
+
+While the deployment process can sometimes take a few minutes, a prolonged 'not ready' status may indicate an issue.
+
+include::manage:kubernetes/troubleshooting/k-troubleshoot.adoc[tags=deployment]
+
+For more troubleshooting steps, see xref:manage:kubernetes/troubleshooting/k-troubleshoot.adoc[Troubleshoot Redpanda in Kubernetes].
+
+=== Open an issue
+
+If you cannot solve the issue or need assistance during the migration process, https://github.com/redpanda-data/redpanda-operator/issues/new/choose[open a GitHub issue^]. Before opening a new issue, search the existing issues on GitHub to see if someone has already reported a similar problem or if any relevant discussions can help you.
 
 == Next steps
 

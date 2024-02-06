@@ -1,0 +1,288 @@
+= Rust SDK for Data Transforms
+:description: Work with data transforms using Rust.
+
+Rust SDK reference documentation for Redpanda data transforms.
+
+The `redpanda_transform_sdk` crate contains the core functions and types for transforming data within Redpanda.
+
+== Functions
+
+The Rust SDK includes the following https://doc.rust-lang.org/rust-by-example/fn.html[function] to manage data transforms to an output topic.  
+
+=== on_record_written
+
+The `on_record_written()` function registers a callback that transforms records after they have been written to an input topic. This function is executed when a record is written to the topic. The callback is executed after the record has been written and fsynced to disk and the producer has been acknowledged.
+
+[,rust]
+----
+pub fn on_record_written<E, F>(cb: F) -> !
+where
+    E: Debug,
+    F: Fn(WriteEvent<'_>, &mut dyn RecordWriter) -> Result<(), E>,
+----
+
+Callback parameters
+
+- <<writeevent,`WriteEvent`>>
+- <<recordwriter, `RecordWriter`>>
+
+Example:
+
+This transform function copies the same data from an input topic to an output topic.:
+
+[,rust]
+----
+use anyhow::Result;
+use redpanda_transform_sdk::*;
+
+fn main() {
+    on_record_written(my_transform);
+}
+
+// This will be called for each record in the source topic. The output records returned will be written to the destination topic.
+fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> Result<()> {
+    writer.write(event.record)?;
+    Ok(())
+}
+----
+
+`on_record_written()` should be called from the `main()` function, since the method blocks and runs forever unless explicitly stopped. Carry out any necessary pre-processing steps before calling this method.
+
+If an error is returned, Redpanda prints the error and aborts processing in the VM. Redpanda will then retry processing with backoff.
+
+---
+
+== Structs
+
+A https://doc.rust-lang.org/rust-by-example/custom_types/structs.html[struct] is a custom data type that allows you to define a structure composed of related data attributes.
+
+=== BorrowedHeader
+
+`BorrowedHeader` is a zero-copy <<borrowedrecord,`BorrowedRecord`>> header.
+
+[,rust]
+----
+pub struct BorrowedHeader<'a> { /* private fields */ }
+
+impl<'a> BorrowedHeader<'a> {
+    /// Create a new header without any copies.
+    pub fn new(key: &'a [u8], value: Option<&'a [u8]>) -> Self;
+
+    /// Returns the header's key.
+    pub fn key(&self) -> &[u8];
+
+    /// Returns the header's value or `None` if there is no value.
+    pub fn value(&self) -> Option<&[u8]>;
+
+    /// Clones this header obtaining ownership of the clone.
+    pub fn to_owned(&self) -> RecordHeader;
+}
+----
+
+=== BorrowedRecord
+
+`BorrowedRecord` is a zero-copy representation of a <<record,`Record`>> in Redpanda. 
+
+[,rust]
+----
+pub struct BorrowedRecord<'a> { /* private fields */ }
+
+impl<'a> BorrowedRecord<'a> {
+    /// Create a new record without any copies.
+    pub fn new(key: Option<&'a [u8]>, value: Option<&'a [u8]>) -> Self;
+
+    /// Create a new record without any copies.
+    pub fn new_with_headers(
+        key: Option<&'a [u8]>,
+        value: Option<&'a [u8]>,
+        headers: Vec<BorrowedHeader<'a>>,
+    ) -> Self;
+
+    /// Returns the record's key or `None` if there is no key.
+    pub fn key(&self) -> Option<&'a [u8]>;
+
+    /// Returns the record's value or `None` if there is no value.
+    pub fn value(&self) -> Option<&'a [u8]>;
+
+    /// Return the headers for this record.
+    pub fn headers(&self) -> &[BorrowedHeader<'a>];
+}
+----
+
+=== Record
+
+`Record` is a record in Redpanda. It consists of a key-value pair of bytes, along with a collection of <<recordheader,`RecordHeader`>>.
+
+Records are generated as the result of any transforms that act upon a `BorrowedRecord`.
+
+[,rust]
+----
+pub struct Record { /* private fields */ }
+
+impl Record {
+    /// Create a new empty record with no key, no value and no headers.
+    pub fn empty() -> Self;
+
+    /// Create a new record with the given key and value.
+    pub fn new(key: Option<Vec<u8>>, value: Option<Vec<u8>>) -> Self;
+
+    /// Create a new record with the given, key, value and headers.
+    pub fn new_with_headers(
+        key: Option<Vec<u8>>,
+        value: Option<Vec<u8>>,
+        headers: Vec<RecordHeader>,
+    ) -> Self;
+
+    /// Returns the record's key or `None` if there is no key.
+    pub fn key(&self) -> Option<&[u8]>;
+
+    /// Sets the key for this record.
+    pub fn set_key(&mut self, k: Vec<u8>);
+
+    /// Returns the record's value or `None` if there is no value.
+    pub fn value(&self) -> Option<&[u8]>;
+
+    /// Sets the value for this record.
+    pub fn set_value(&mut self, v: Vec<u8>);
+
+    /// Append a header to this record.
+    pub fn add_header(&mut self, header: RecordHeader);
+
+    /// Returns a collection of headers for this record.
+    pub fn headers(&self) -> impl ExactSizeIterator<Item = BorrowedHeader>;
+}
+----
+
+=== RecordHeader
+
+A `RecordHeader` is a key-value pair attached to a <<record,`Record`>>. Headers are opaque to the broker and are purely a mechanism for the producer and consumers to pass information.
+
+[,rust]
+----
+pub struct RecordHeader { /* private fields */ }
+
+impl RecordHeader {
+    /// Create a new `RecordHeader`.
+    pub fn new(key: Vec<u8>, value: Option<Vec<u8>>) -> Self;
+
+    /// Returns the header's key.
+    pub fn key(&self) -> &[u8];
+
+    /// Sets the key for this header.
+    pub fn set_key(&mut self, k: Vec<u8>);
+
+    /// Returns the header's value or `None` if there is no value.
+    pub fn value(&self) -> Option<&[u8]>;
+
+    /// Sets the value for this header.
+    pub fn set_value(&mut self, v: Vec<u8>);
+}
+----
+
+=== RecordWriter
+
+`RecordWriter` is a struct that writes transformed records to the output topic.
+
+[,rust]
+----
+pub struct RecordWriter<'a> { /* private fields */ }
+
+impl<'a> RecordWriter<'a> {
+    // Creates a new [`RecordWriter`] using the specified `sink`.
+    pub fn new(sink: &'a mut dyn RecordSink) -> Self;
+
+    /// Write a record to the output topic returning any errors.
+    pub fn write<'b>(&mut self, r: impl Into<BorrowedRecord<'b>>) -> Result<(), WriteError>;
+}
+----
+
+=== WriteEvent
+
+`WriteEvent` is an event generated after the broker completes a write. A `WriteEvent` is asynchronously triggered after the broker acknowledges the producer's write request, and is then passed to <<on_record_written,on_record_written>>. 
+
+[,rust]
+----
+pub struct WriteEvent<'a> { /* private fields */ }
+----
+
+=== WrittenRecord
+
+A written <<record,Record>> within Redpanda. A `WrittenRecord` is handed to <<on_record_written,on_record_written>> event handlers as the record that Redpanda wrote. The record contains a key-value pair with some headers and the record's timestamp.
+
+[,rust]
+----
+pub struct WrittenRecord<'a> { /* private fields */ }
+
+impl<'a> WrittenRecord<'a> {
+    /// Create a new record without any copies.
+    ///
+    /// NOTE: This method is useful for tests to mock out custom events to your transform function.
+    pub fn from_record(record: impl Into<BorrowedRecord<'a>>, timestamp: SystemTime) -> Self;
+
+    /// Create a new record without any copies.
+    ///
+    /// NOTE: This method is useful for tests to mock out custom events to your transform function.
+    pub fn new(key: Option<&'a [u8]>, value: Option<&'a [u8]>, timestamp: SystemTime) -> Self;
+
+    /// Create a new record without any copies.
+    ///
+    /// NOTE: This method is useful for tests to mock out custom events to your transform function.
+    pub fn new_with_headers(
+        key: Option<&'a [u8]>,
+        value: Option<&'a [u8]>,
+        timestamp: SystemTime,
+        headers: Vec<BorrowedHeader<'a>>,
+    ) -> Self;
+
+    /// Returns the record's key or `None` if there is no key.
+    pub fn key(&self) -> Option<&'a [u8]>;
+
+    /// Returns the record's value or `None` if there is no value.
+    pub fn value(&self) -> Option<&'a [u8]>;
+
+    /// Returns the record's timestamp.
+    ///
+    /// NOTE: Record timestamps in Redpanda have millisecond resolution.
+    pub fn timestamp(&self) -> SystemTime;
+
+    /// Return the headers for this record.
+    pub fn headers(&self) -> &[BorrowedHeader<'a>];
+}
+----
+
+== Enums
+
+An https://doc.rust-lang.org/rust-by-example/custom_types/enum.html[enum] is a custom data type that is defined by enumerating its possible variants.
+
+=== WriteError
+
+A `WriteError` can occur when writing records to the output topic.
+
+[,rust]
+----
+#[non_exhaustive]
+pub enum WriteError {
+    Unknown(i32),
+}
+----
+
+== Traits
+
+A https://doc.rust-lang.org/rust-by-example/trait.html[trait] defines behavior that a type shares with other types.
+
+=== RecordSink
+
+`RecordSink` is a trait that can receive a stream of records and output them to a destination topic.
+
+[,rust]
+----
+pub trait RecordSink {
+    // Required method
+    fn write(&mut self, r: BorrowedRecord<'_>) -> Result<(), WriteError>;
+}
+----
+
+== Related topics
+
+- xref:develop:data-transforms/run-transforms.adoc[]
+- xref:develop:data-transforms/how-transforms-work.adoc[]
