@@ -226,53 +226,56 @@ rpk topic alter-config <topic> --set segment.ms=<segment_ms_duration>
 [[space_management]]
 == Space management
 
-Redpanda divides disk storage into different categories to provide a flexible configuration of space:
+NOTE: Space management will only work when xref:../tiered-storage.adoc[Tiered-Storage] is enabled on all topics.
 
-* Reserved disk space (`disk_reservation_percent`): This overhead reservation is disk space that Redpanda does not use.
- ** As disk space used by cache storage and log storage expand to their target sizes, this provides buffer space to avoid free disk space alerts.
- ** Because SSDs that run near capacity can experience performance degradation, this provides buffer space to prevent running a device at capacity.
-* Cache storage (`cloud_storage_cache_size_percent` or `cloud_storage_cache_size`): This is the maximum size of the xref:manage:tiered-storage.adoc#caching[disk cache] used if Tiered Storage is enabled. As the cache reaches its limit, new data added to the cache removes old data from the cache.
-* Log storage (`retention_local_target_capacity_percent` or `retention_local_target_capacity_bytes`): This log data reservation is the disk space used as the target maximum size for user data, as well as Redpanda internal topics, like the control log. It's generally about 70-80% of total disk space.
+The goal of space management is to utilize the local disk space as a cache. It works alongside xref:../tiered-storage.adoc[Tiered-Storage] to provide faster access to recent data, while making sure that local disk utilization is managed in accordance with retention policies and other processes, such as xref:./continuous-data-balancing.adoc[Continuous Data Balancing] and xref:./decommission-brokers.adoc[Decommissioning]. 
+
+Space management divides the disk space into different areas that can be managed separately:
+
+* Reserved disk space (`disk_reservation_percent`) is the area of disk space that Redpanda does not use.
+** As the disk space used by the other areas grows to their target sizes, this provides a buffer space to avoid free disk space alerts.
+** SSDs that run near capacity can experience performance degradation, so this buffer space prevents the disks running at capacity.
+* Cache storage (`cloud_storage_cache_size_percent` or `cloud_storage_cache_size`) is the maximum size of the xref:../tiered-storage.adoc#caching[disk cache] used by Tiered Storage. As the cache reaches its limit, new data added to the cache removes old data from the cache.
+* Log storage (`retention_local_target_capacity_percent` or `retention_local_target_capacity_bytes`) is the area of disk space used for topic data.
+** Typically 70-80% of total disk space.
 
 image::shared:disk_storage.png[Redpanda disk storage categories]
 
-When log data usage begins to approach the target size of log storage, data is removed from local disk according to an eviction policy that follows cluster-level and topic-level retention settings. When log data usage exceeds its configured target size, Redpanda selects data to remove to bring usage back under the target size. Redpanda attempts to be fair with one round-robin removal at a time of a segment across partitions that are eligible to have segments removed. Data removal occurs in each phase. As soon as storage usage falls below the target, the data removal process ends.
+Log segment eviction occurs in each of the following phases, and as soon as log storage usage falls below the target, the eviction process ends.
 
 See also: xref:manage:tiered-storage.adoc#object-storage-housekeeping[Object storage housekeeping]
 
 === Phases of data removal
 
-==== 1: Follow retention policy
+==== Phase 1: Follow retention policy
 
-A periodic housekeeping task in Redpanda performs compaction and removes data that has expired according to your retention policy. This process applies to both Tiered Storage and non-Tiered Storage topics. When the target size is reached, Redpanda prefers removal of expired data over compaction, and attempts to apply retention to partitions in the order that removes the largest amount of data.
+A housekeeping process in Redpanda periodically performs compaction and removes partition data that has expired according to your retention policy. This applies to both tiered storage and non-tiered storage topics. Space management attempts to apply retention to partitions in the order that removes the largest amount of data.
 
-* When `retention_local_strict` is false (default), the housekeeping process removes data above the configured consumable retention. This means that data usage is allowed to expand to occupy more of the log data reservation.
-* When `retention_local_strict` is true, the housekeeping process uses local retention settings to select what data to remove.
+* When `retention_local_strict` is false (default), the housekeeping process removes data above the configured log storage reservation. 
+* When `retention_local_strict` is true, the housekeeping process uses topic-level retention settings to select what data to remove.
 +
-NOTE: The `retention_local_strict` property is set to true in clusters upgraded from release 23.1 and earlier.
+NOTE: The `retention_local_strict` property is set to true in clusters upgraded from release `23.1` and earlier.
 
-==== 2: Trim to local retention
+==== Phase 2: Trim to local retention
 
-This phase removes data that has exceeded the effective local retention policy, including explicit local retention settings applied to a topic, as well as the default local retention settings applied to Tiered Storage topics. Default local retention is the local retention assigned to any partition that does not have an explicit topic-level override.
+This phase removes partition data that has exceed the effective local retention policy. Including the explicit retention settings applied to a topic, as well as the cluster-level defaults, which are assigned to any topic that does not have explicit topic-level overrides.
 
-* When `retention_local_strict` is false (default), Redpanda does not remove any additional data: the local retention policy was met in the previous phase.
-* When `retention_local_strict` is true, Redpanda removes data fairly across all topics until each topic has reached its local retention.
+* When `retention_local_strict` is false (default), the retention policy was met in the previous phase, so no more data is removed.
+* When `retention_local_strict` is true, the housekeeping process removes data fairly across all topics until each topic has reached its local retention target.
 
-After this phase, all partitions should be operating at a size that reflects their effective local retention. The next phase starts to override local retention settings to remove more data.
+After this phase has completed, all partitions will be operating at a size that reflects their effective local retention target. The next phase starts to override the local retention settings to remove more data.
 
-==== 3: Trim data with default local retention settings
+==== Phase 3: Trim data with default local retention settings
 
-For topics with default local retention settings, this phase removes data down to a low-space level.
+For topics with the default local retention settings, this phase removes partition data to a _low-space_ level, which is a configured size of two log segments that provide minimal space for partition operation. The housekeeping process only considers removing data that is safely stored in tiered storage.
 
-The low-space level is a configured size (two segments) that provides minimal space for partition operation. Redpanda only considers trimming data that is safely in the cloud.
+==== Phase 4: Trim data with explicitly-configured retention settings
 
-==== 4: Trim data with explicitly-configured retention settings
+For topics with explicitly-configured retention settings, this phase removes data down to the _low-space_ level of two log segments.
 
-For topics with explicitly-configured retention settings, this phase removes data down to a low-space level.
+==== Phase 5: Trim to active (latest) segment
 
-==== 5: Trim to active (latest) segment
-
-This phase trims all topics down to their last active segment. (Data in the active segment cannot be removed.) Data is not available for reclaim from the active segment until it is rolled, which occurs when it reaches its max size or when the `segment.ms` time expires.
+The final _catch-all_ trims all topics down to their last active segment. Data in the active log segment cannot be removed, and will not be available for reclaim until it is rolled, which occurs when it reaches `segment.bytes` or when `segment.ms` time expires.
 
 == Monitor disk space
 
