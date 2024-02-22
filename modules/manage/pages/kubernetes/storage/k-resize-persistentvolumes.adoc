@@ -3,13 +3,13 @@
 :description: Learn how to expand the size of your PersistentVolumes to give Redpanda brokers more storage capacity.
 :page-aliases: manage:kubernetes/storage/resize-persistentvolumes.adoc
 
-To give Redpanda brokers more storage, you can expand the size of PersistentVolumes. The way you expand PersistentVolumes depends on the provisioner that you use.
+To give Redpanda brokers more storage, you can expand the size of PersistentVolumes (PVs). The way you expand PVs depends on the provisioner that you use.
 
 CAUTION: Some storage operations may cause temporary disruptions to your service or require the restart of associated Pods. Plan these operations during maintenance windows or times of low usage.
 
 == Expand PersistentVolumes that use static provisioners
 
-The process of resizing PersistentVolumes that use a static provisioner varies depending on the way your file system is allocated. Follow the recommended process for your system. You do not need to make any configuration changes to the Redpanda Helm chart or your Redpanda custom resource.
+The process of resizing PVs that use a static provisioner varies depending on the way your file system is allocated. Follow the recommended process for your system. You do not need to make any configuration changes to the Redpanda Helm chart or your Redpanda custom resource.
 
 == Expand PersistentVolumes that use dynamic provisioners
 
@@ -17,8 +17,18 @@ To expand a PersistentVolume that uses a dynamic provisioner, you can reconfigur
 
 NOTE: When you increase the size of a PVC connected to a StatefulSet, only new Pods recognize the changed PVC size. Existing Pods remain associated with the original PVC size. Manual intervention is necessary to modify the size of PVCs for existing Pods. Not all storage drivers recognize and act upon such modifications. Before making any changes, ensure your storage driver supports this operation.
 
-=== Expand PersistentVolumes for the Redpanda data directory
+. Delete the StatefulSet associated with your Redpanda brokers using the `cascade=orphan` option. This action deletes the StatefulSet while leaving the Pods and their associated PVCs intact.
++
+```bash
+kubectl --namespace <namespace> delete statefulset <cluster-name> --cascade=orphan
+```
 
+. Manually resize any pre-existing PVCs to your desired capacity by modifying the `spec.resources.requests.storage` field to the new size.
+
+. Redeploy the StatefulSet with the updated PVC size.
++
+For the Redpanda data directory:
++
 [tabs]
 ======
 Helm + Operator::
@@ -77,9 +87,9 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 ====
 --
 ======
-
-=== Expand PersistentVolumes for the Tiered Storage cache
-
++
+For the Tiered Storage cache:
++
 [tabs]
 ======
 Helm + Operator::
@@ -140,6 +150,28 @@ helm upgrade --install redpanda redpanda/redpanda \
 ====
 --
 ======
+
+== Verify PersistentVolumeClaims
+
+After redeploying the StatefulSet, verify that the Redpanda Pods have claimed the required PVs.
+
+. Use the following command to list the PVCs in your cluster:
++
+[,bash]
+----
+kubectl get pvc --namespace <namespace>
+----
++
+Ensure that the PVCs related to Redpanda are in the Bound state and note the PVs to which they're bound.
+
+. Choose a Pod and describe it:
++
+[,bash]
+----
+kubectl describe pod <redpanda-pod-name> --namespace <namespace>
+----
+
+In the output, ensure the PVC is mounted to the correct path and that the source PV matches what you've configured.
 
 include::shared:partial$suggested-reading.adoc[]
 
