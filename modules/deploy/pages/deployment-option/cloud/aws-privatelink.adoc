@@ -20,9 +20,9 @@ TIP: Make sure to replace the variable values in the code examples on this page 
 * Install `rpk`.
 * Your Redpanda cluster and <<create-client-vpc,VPC>> must be in the same region.
 * You must use the Redpanda Cloud API to enable the Redpanda endpoint service for your clusters. Follow the steps below to <<get-an-access-token,get an access token>>.  
-* Use the AWS CLI to create a new client VPC or modify an existing one to use the PrivateLink endpoint.
+* Use the https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-getting-started.html[AWS CLI] to create a new client VPC or modify an existing one to use the PrivateLink endpoint.
 
-== Get an access token 
+== Get a Cloud API access token 
 
 . Specify the base URL of the Redpanda Cloud API:
 +
@@ -31,9 +31,9 @@ TIP: Make sure to replace the variable values in the code examples on this page 
 PUBLIC_API_ENDPOINT="https://api.cloud.redpanda.com"
 ----
 
-. In the Redpanda Cloud UI, go to **Namespaces** and select the namespace in which you want to create a cluster.
+. In the https://cloudv2.redpanda.com/[Redpanda Cloud UI], go to **Namespaces** and select the namespace in which you want to create a cluster.
 +
-Copy the namespace ID (UUID) from the URL in the browser.
+Copy and store the namespace ID (UUID) from the URL in the browser.
 +
 [,bash]
 ----
@@ -42,7 +42,7 @@ NAMESPACE_ID=<uuid>
 
 . Go to the organization (org) level **Home** in the UI, and navigate to **Clients**. If you don't have an existing client, you can create a new one by clicking **Add client**.
 +
-Copy the client ID and secret.
+Copy and store the client ID and secret.
 +
 [,bash]
 ----
@@ -63,11 +63,13 @@ AUTH_TOKEN=`curl -s --request POST \
     --data audience=cloudv2-production.redpanda.cloud | jq .access_token | sed 's/"//g'`
 ----
 
-== Enable PrivateLink endpoint service for new clusters
+You must send the API token in the `Authorization` header when making requests to the Cloud API.
+
+== Create new cluster with PrivateLink endpoint service enabled
 
 . Call https://docs.api.redpanda.com/#post-/v1beta1/networks[`POST /v1beta1/networks`] to create a network.
 +
-Make sure to supply your own values in the example request below. Store the network ID (`network_id`) after the network is created.
+Make sure to supply your own values in the example request below. Store the network ID (`network_id`) after the network is created in order to check whether you can proceed to cluster creation.
 +
 --
 - `name`
@@ -98,7 +100,7 @@ NETWORK_ID=`curl -vv -X POST \
 echo $NETWORK_ID
 ----
 +
-Wait for the network to be ready before creating the cluster in the next step. You can check the state of the network by calling https://docs.api.redpanda.com/#get-/v1beta1/networks/-id-[`GET /v1beta1/networks/{id}`]. You can create the cluster when the state is `STATE_READY`.
+Wait for the network to be ready before creating the cluster in the next step. You can check the state of the network creation by calling https://docs.api.redpanda.com/#get-/v1beta1/networks/-id-[`GET /v1beta1/networks/{id}`]. You can create the cluster when the state is `STATE_READY`.
 
 . Create a new cluster with the endpoint service enabled by calling https://docs.api.redpanda.com/#post-/v1beta1/clusters[`POST /v1beta1/clusters`].
 +
@@ -144,7 +146,7 @@ echo $CLUSTER_ID
 +
 **BYOC clusters:** Check that the cluster operation is completed by calling https://docs.api.redpanda.com/#get-/v1beta1/operations/-id-[`GET /v1beta1/operations/{id}`], and passing the operation ID returned from the Create Cluster call.
 +
-When the Create Cluster operation is completed (`STATE_COMPLETED`), run the following `rpk cloud` command to finish creating your BYOC cluster:
+When the Create Cluster operation is completed (`STATE_COMPLETED`), run the following `rpk cloud` command to finish setting up your BYOC cluster:
 +
 [,bash]
 ----
@@ -199,7 +201,9 @@ curl -X GET \
     $PUBLIC_API_ENDPOINT/v1beta1/clusters/$CLUSTER_ID | jq '.private_link.status.aws | {service_name, service_state}'
 ----
 
-== Connect to PrivateLink endpoint service
+== Configure PrivateLink connection to Redpanda Cloud
+
+When you have a PrivateLink-enabled cluster, you can create an endpoint to connect your VPC and your cluster.
 
 === Get cluster domain
 
@@ -244,6 +248,8 @@ The VPC region must be the same region where the Redpanda cluster is deployed. R
 PROFILE=<specific-profile-from-credential-file>
 
 aws ec2 create-vpc --region $REGION --profile $PROFILE --cidr-block 10.0.0.0/20
+
+# Store the client VPC ID from the command output
 CLIENT_VPC_ID=<client_vpc_id>
 ----
 
@@ -278,7 +284,7 @@ SECURITY_GROUP_ID=<security_group_id>
 
 === Add security group rules
 
-This setting is based on the assumption that the Redpanda broker count is three. If you are not using three brokers, modify the example below:
+The example below to add security group rules is based on the assumption that the Redpanda broker count is three. If you are not using three brokers, modify the example:
 
 * Replace `32094` with `32092 + <broker_count-1>`.
 * Replace `35084` with `35082 + <broker_count-1>`.
@@ -314,7 +320,7 @@ aws ec2 authorize-security-group-ingress --region $REGION --profile $PROFILE \
 
 === Create VPC subnet
 
-You require the subnet ID `subnet_id` from the command output to <<create-vpc-endpoint,create a VPC endpoint>>. Run the following command, specifying the subnet availability zone (for example, `usw2-az1`): 
+You need the subnet ID `subnet_id` from the command output to <<create-vpc-endpoint,create a VPC endpoint>>. Run the following command, specifying the subnet availability zone (for example, `usw2-az1`): 
 
 [,bash]
 ----
@@ -384,7 +390,7 @@ Use port `30282` to access the Redpanda Proxy seed service.
 
 [,bash]
 ----
-curl -vv -u <user>:<password> -H "Content-Type: application/vnd.kafka.json.v2+json" --sslv2 --http2 https://rp-endpoint.$CLUSTER_DOMAIN:30081/topics
+curl -vv -u <user>:<password> -H "Content-Type: application/vnd.kafka.json.v2+json" --sslv2 --http2 https://rp-endpoint.$CLUSTER_DOMAIN:30282/topics
 ----
 
 include::shared:partial$suggested-reading.adoc[]
