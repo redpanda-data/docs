@@ -397,9 +397,9 @@ Creating a multi-AZ deployment in RedPanda cloud is very straightforward - just 
 
 ==== Configuring terraform
 
-You will need to configure the appropriate terraform script for your cloud provider. Within the deployment-automation project, locate the file for your cloud of choice and edit the availability_zones parameter. For example, under AWS, you will edit the `aws/main.tf` file:
+The first thing yu need to do is to configure the appropriate terraform script for your cloud provider. Within the deployment-automation project, locate the file for your cloud of choice and edit the availability_zones parameter. Include each availability zone you intend to use for your deployment. For example, under AWS, you will edit the `aws/main.tf` file:
 
-```
+```bash
 variable "availability_zone" {
 description = "The AWS AZ to deploy the infrastructure on"
 default     = ["us-west-2a", "us-west-2b", "us-west-2c"]
@@ -409,9 +409,110 @@ type        = list(string)
 
 Alternatively, you can supply the configuration at the command line as follows:
 
-```
+```bash
 $ terraform apply -var=availability_zone='["us-west-2a","us-west-2b","us-west-2c"]'
 ```
+
+==== Deploying with terraform and ansible
+
+Once you have teraform configured for your cloud provider and chosen availability zones, you can proceed to deploying your cluster. This example steps through deploying a multi-AZ cluster and validating the rack configuration.
+
+[,bash]
+----
+# Initialize a private key if you haven’t done so already:
+ssh-keygen -f ~/.ssh/id_rsa
+
+# Clone the deployment-automation repository:
+git clone https://github.com/redpanda-data/deployment-automation
+
+# Choose your cloud provider and initialize terraform
+pushd deployment-automation/aws # choose one: aws|azure|gcp
+terraform init
+
+# Deploy the infrastructure (note: we assume you have cloud credentials available)
+terraform apply -var=availability_zone='["us-west-2a","us-west-2b","us-west-2c"]'
+
+# Verify that the racks have been correctly specified in the host.ini file:
+popd
+export HOSTS=$(find . -name hosts.ini)
+head -4 $HOSTS
+
+[redpanda]
+34.102.108.41 ansible_user=adminpanda ansible_become=True private_ip=10.168.0.41 rack=us-west2-a
+35.236.32.47 ansible_user=adminpanda ansible_become=True private_ip=10.168.0.39 rack=us-west2-b
+35.236.29.38 ansible_user=adminpanda ansible_become=True private_ip=10.168.0.40 rack=us-west2-c
+
+# Install Ansible Galaxy Roles
+ansible-galaxy install -r ./requirements.yml
+
+# Provision the cluster with Ansible
+ansible-playbook ansible/provision-basic-cluster.yml -i $HOSTS
+
+### Verify that Rack awareness is enabled
+
+# SSH into a cluster node substituting the username and hostname from the values above
+ssh -i ~/.ssh/id_rsa <username>@<hostname of redpanda node>
+
+# Check rack awareness is enabled
+rpk cluster config get enable_rack_awareness
+
+true
+
+# Check the brokers are assigned to distinct racks
+rpk cluster status | grep RACK -A3
+
+ID    HOST           PORT  RACK
+0*    34.102.108.41  9092  us-west2-a
+1     35.236.32.47   9092  us-west2-b
+2     35.236.29.38   9092  us-west2-c
+----
+
+==== Employing follower fetching
+
+Using Redpanda's follower fetching feature helps greatly in reducing the latency and potential costs involve in a multi-AZ deployment. This example illustrates how to use the feature.
+
+[,bash]
+----
+# SSH into a cluster node using appropriate credentials
+ssh -i ~/.ssh/id_rsa <username>@<hostname of redpanda node>
+
+# Create a topic with 1 partition and 3 replicas
+rpk topic create foo -p1 -r3
+
+TOPIC  STATUS
+foo    OK
+
+# Determine which broker is the leader
+rpk topic describe foo -a | grep HIGH-WATERMARK -A1
+
+PARTITION  LEADER  EPOCH  REPLICAS  LOG-START-OFFSET  HIGH-WATERMARK
+0          0       1      [0 1 2]   0                 3
+
+# Produce 1000 records using rpk
+for i in {1..1000}; do echo $(cat /dev/urandom | head -c50 | base64); done | rpk topic produce foo
+
+Produced to partition 0 at offset 0 with timestamp 1687508554559.
+Produced to partition 0 at offset 1 with timestamp 1687508554574.
+Produced to partition 0 at offset 2 with timestamp 1687508554593.
+... 997 more lines ...
+
+# Consume for three seconds, writing debug logs and ignoring regular output
+timeout 3 rpk topic consume foo -v --rack us-west2-c 1>/dev/null 2>debug.log
+
+# Filter the debug log to only show lines of interest
+cat debug.log | grep -v ApiVersions | egrep 'opening|read'
+
+08:25:14.974  DEBUG  opening connection to broker  {"addr": "10.168.0.41:9092", "broker": "seed 0"}
+08:25:14.976  DEBUG  read Metadata v7  {"broker": "seed 0", "bytes_read": 236, "read_wait": "36.312µs", "time_to_read": "534.898µs", "err": null}
+08:25:14.977  DEBUG  opening connection to broker  {"addr": "34.102.108.41:9092", "broker": "0"}
+08:25:14.980  DEBUG  read ListOffsets v4  {"broker": "0", "bytes_read": 51, "read_wait": "16.19µs", "time_to_read": "1.090468ms", "err": null}
+08:25:14.981  DEBUG  opening connection to broker  {"addr": "34.102.108.41:9092", "broker": "0"}
+08:25:14.982  DEBUG  read Fetch v11  {"broker": "0", "bytes_read": 73, "read_wait": "17.705µs", "time_to_read": "858.613µs", "err": null}
+08:25:14.982  DEBUG  opening connection to broker  {"addr": "35.236.29.38:9092", "broker": "2"}
+08:25:14.989  DEBUG  read Fetch v11  {"broker": "2", "bytes_read": 130337, "read_wait": "54.712µs", "time_to_read": "4.466249ms", "err": null}
+08:25:17.946  DEBUG  read Fetch v11  {"broker": "2", "bytes_read": 0, "read_wait": "41.144µs", "time_to_read": "2.955927224s", "err": "context canceled"}
+08:25:17.947  DEBUG  read Fetch v11  {"broker": "0", "bytes_read": 22, "read_wait": "175.952µs", "time_to_read": "500.832µs", "err": null}
+----
 
 include::shared:partial$suggested-reading.adoc[]
 
