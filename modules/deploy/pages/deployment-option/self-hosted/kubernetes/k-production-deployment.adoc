@@ -13,6 +13,8 @@ This topic describes how to configure and deploy one or more Redpanda clusters i
 
 Make sure that your Kubernetes cluster meets the xref:./k-requirements.adoc[requirements].
 
+You must already have a ConfigMap that stores your `io-config.yaml` file. See xref:./k-tune-workers.adoc#io[Generate optimal I/O configuration settings].
+
 == Deploy a Redpanda cluster
 
 To deploy Redpanda, you can use the following methods:
@@ -63,6 +65,15 @@ The Redpanda Helm chart enables TLS by default and uses cert-manager to manage T
 +
 include::deploy:partial$kubernetes/install-crds.adoc[]
 
+. Create a YAML file to override the default version of the Redpanda Operator.
++
+.`redpanda-operator-values.yaml`
+[,yaml,subs="attributes+"]
+----
+image:
+  tag: {latest-operator-version}
+----
+
 . Deploy the Redpanda Operator.
 +
 [,bash,subs="attributes+"]
@@ -70,8 +81,8 @@ include::deploy:partial$kubernetes/install-crds.adoc[]
 helm repo add redpanda https://charts.redpanda.com
 helm upgrade --install redpanda-controller redpanda/operator \
   --namespace <namespace> \
-  --set image.tag={latest-operator-version} \
-  --create-namespace
+  --create-namespace \
+  --values redpanda-operator-values.yaml
 ----
 +
 NOTE: If you already have Flux installed and you want it to continue managing resources across the entire cluster, use the `--set enableHelmControllers=false` flag.  This flag prevents the Redpanda Operator from deploying its own set of Helm controllers that may conflict with those installed with Flux.
@@ -98,12 +109,20 @@ metadata:
   name: redpanda
 spec:
   chartRef: {}
-  clusterSpec: {}
+  clusterSpec:
+    statefulset:
+      extraVolumes: |-
+        - name: redpanda-io-config
+          configMap:
+            name: redpanda-io-config
+      extraVolumeMounts: |-
+        - name: redpanda-io-config
+          mountPath: /etc/redpanda/io-config.yaml
 ----
 +
 - `metadata.name`: Name to assign the Redpanda cluster. This name is also assigned to the Helm release.
 - xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-src-go-k8s-apis-redpanda-v1alpha1-chartref[`spec.chartRef`]: Information about the Helm chart that will be used to deploy Redpanda.
-- xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-src-go-k8s-apis-redpanda-v1alpha1-redpandaclusterspec[`spec.clusterSpec`]: This is where you can override default values in the Redpanda Helm chart. See <<Configuration advice>> for details.
+- xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-src-go-k8s-apis-redpanda-v1alpha1-redpandaclusterspec[`spec.clusterSpec`]: This is where you can override default values in the Redpanda Helm chart. Here, you mount the <<prerequisites, I/O configuration file>> to the Pods that run Redpanda. For other configuration details, see <<Configuration advice>>.
 
 . Apply the Redpanda resource:
 +
@@ -170,6 +189,23 @@ helm install cert-manager jetstack/cert-manager \
 +
 The Redpanda Helm chart enables TLS by default and uses cert-manager to manage TLS certificates.
 
+. Override the default values to mount your <<prerequisites, I/O configuration file>> onto each Pod that runs Redpanda.
++
+.`redpanda-values.yaml`
+[,yaml]
+----
+statefulset:
+  extraVolumes: |-
+    - name: redpanda-io-config
+      configMap:
+        name: redpanda-io-config
+  extraVolumeMounts: |-
+    - name: redpanda-io-config
+      mountPath: /etc/redpanda/io-config.yaml
+----
++
+Redpanda reads from this file at startup to optimize itself for the given I/O parameters.
+
 . Install the Redpanda Helm chart to deploy a Redpanda cluster and Redpanda Console.
 +
 Configure any additional Helm values that you want to override. See <<Configuration advice>> for details.
@@ -178,7 +214,8 @@ Configure any additional Helm values that you want to override. See <<Configurat
 helm repo add redpanda https://charts.redpanda.com
 helm install redpanda redpanda/redpanda \
   --namespace <namespace> \
-  --create-namespace
+  --create-namespace \
+  --values redpanda-values.yaml
 ```
 +
 NOTE: Each deployment of the Redpanda Helm chart requires a separate namespace. Ensure you choose a unique namespace for each deployment.
@@ -651,6 +688,8 @@ To find the versions that are installed on your machine, run the following:
 ----
 helm list --namespace <namespace>
 ----
+
+include::deploy:partial$self-test.adoc[leveloffset=+1]
 
 include::deploy:partial$kubernetes/default-components.adoc[leveloffset=+1]
 
