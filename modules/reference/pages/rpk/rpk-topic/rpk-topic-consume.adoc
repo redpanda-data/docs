@@ -7,208 +7,81 @@ according to `--format`, and prints them to `STDOUT`. The output formatter
 understands a wide variety of formats.
 
 The default output format `--format json` is a special format that outputs each
-record as JSON. There may be more single-word-no-escapes formats added later.
-Outside of these special formats, formatting follows the rules described below.
+record as JSON.
 
-== Format output
+include::reference:partial$topic-format.adoc[]
 
-Formatting output is based on percent escapes and modifiers. Slashes can be
-used for common escapes:
-
-[.no-copy]
-----
-    \t \n \r \\ \xNN
-
-prints tabs, newlines, carriage returns, slashes, or hex encoded characters.p
-
-Percent encoding prints record fields, fetch partition fields, or extra values:
-
-    %t    topic
-    %T    topic length
-    %k    key
-    %K    key length
-    %v    value
-    %V    value length
-    %h    begin the header specification
-    %H    number of headers
-    %p    partition
-    %o    offset
-    %e    leader epoch
-    %d    timestamp (formatting described below)
-    %a    record attributes (formatting described below)
-    %x    producer id
-    %y    producer epoch
-
-    %[    partition log start offset
-    %|    partition last stable offset
-    %]    partition high watermark
-
-    %%    percent sign
-    %{    left brace
-    %}    right brace
-
-    %i    the number of records formatted
-----
-
-=== Modifiers
-
-Text and numbers can be formatted in many different ways, and the default
-format can be changed within brace modifiers. `%v` prints a value, while `+%v\{hex}+`
-prints the value hex encoded. `%T` prints the length of a topic in ASCII, while
-`+%T\{big8}+` prints the length of the topic as an eight byte big endian.
-
-All modifiers go within braces following a percent-escape.
-
-=== Numbers
-
-Formatting number values can have the following modifiers:
-
-[.no-copy]
-----
-     ascii       print the number as ascii (default)
-
-     hex64       sixteen hex characters
-     hex32       eight hex characters
-     hex16       four hex characters
-     hex8        two hex characters
-     hex4        one hex character
-
-     big64       eight byte big endian number
-     big32       four byte big endian number
-     big16       two byte big endian number
-     big8        alias for byte
-
-     little64    eight byte little endian number
-     little32    four byte little endian number
-     little16    two byte little endian number
-     little8     alias for byte
-
-     byte        one byte number
-     bool        "true" if the number is non-zero, "false" if the number is zero
-----
-
-All numbers are truncated as necessary per the modifier. Printing `+%V\{byte}+` for
-a length 256 value will print a single null, whereas printing `+%V\{big8}+` would
-print the bytes 1 and 0.
-
-When writing number sizes, the size corresponds to the size of the raw values,
-not the size of encoded values. `+%T% t\{hex}+` for the topic `foo` will print
-`3 666f6f`, not `6 666f6f`.
-
-=== Timestamps
-
-By default, the timestamp field is printed as a millisecond number value. In
-addition to the number modifiers above, timestamps can be printed with either
-Go formatting or strftime formatting:
-
-[.no-copy]
-----
-    %d{go[2006-01-02T15:04:05Z07:00]}
-    %d{strftime[%F]}
-----
-
-An arbitrary amount of brackets (or braces, or # symbols) can wrap your date
-formatting:
-
-[.no-copy]
-----
-    %d{strftime### [%F] ###}
-----
-
-The above will print `[YYYY-MM-DD]`, while the surrounding three `#``+ on each
-side are used to wrap the formatting. Further details on Go time formatting can
-be found at https://pkg.go.dev/time[https://pkg.go.dev/time^], while further details on strftime
-formatting can be read by checking +``man strftime`.
-
-=== Attributes
+== Attributes
 
 Each record (or batch of records) has a set of possible attributes. Internally,
 these are packed into bit flags. Printing an attribute requires first selecting
 which attribute you want to print, and then optionally specifying how you want
 it to be printed:
 
-[.no-copy]
+[,bash]
 ----
-     %a{compression}
-     %a{compression;number}
-     %a{compression;big64}
-     %a{compression;hex8}
+%a{compression}
+%a{compression;number}
+%a{compression;big64}
+%a{compression;hex8}
 ----
 
-Compression is by default printed as text ("none", "gzip", ...). Compression
+Compression is by default printed as text (`none`, `gzip`, ...). Compression
 can be printed as a number with `;number`, where number is any number
-formatting option described above. No compression is 0, gzip is 1, etc.
+formatting option described above. No compression is `0`, gzip is `1`, etc.
 
-[.no-copy]
+[,bash]
 ----
-     %a{timestamp-type}
-     %a{timestamp-type;big64}
-----
-
-The record's timestamp type is printed as -1 for very old records (before
-timestamps existed), 0 for client generated timestamps, and 1 for broker
-generated timestamps. Number formatting can be controlled with ";number".
-
-[.no-copy]
-----
-     %a{transactional-bit}
-     %a{transactional-bit;bool}
+%a{timestamp-type}
+%a{timestamp-type;big64}
 ----
 
-Prints 1 if the record a part of a transaction or 0 if it is not.
-Number formatting can be controlled with `;number`.
+The record's timestamp type prints as:
 
-[.no-copy]
+*  `-1` for very old records (before timestamps existed)
+*  `0` for client-generated timestamps
+*  `1` for broker-generated timestamps
+
+NOTE: Number formatting can be controlled with `;number`.
+
+[,bash]
 ----
-     %a{control-bit}
-     %a{control-bit;bool}
+%a{transactional-bit}
+%a{transactional-bit;bool}
 ----
 
-Prints 1 if the record is a commit marker or 0 if it is not.
-Number formatting can be controlled with ";number".
+Prints `1` if the record is a part of a transaction or `0` if it is not.
+
+[,bash]
+----
+%a{control-bit}
+%a{control-bit;bool}
+----
+
+Prints `1` if the record is a commit marker or `0` if it is not.
 
 === Text
 
 Text fields without modifiers default to writing the raw bytes. Alternatively,
 there are the following modifiers:
 
-[.no-copy]
-----
-    %t{hex}
-    %k{base64}
-    %v{base64raw}
-    %v{unpack[<bBhH>iIqQc.$]}
-----
+[cols=",",]
+|===
+|Modifier |Description
 
-The hex modifier hex encodes the text, the base64 modifier base64 encodes the
-text with standard encoding, and the base64raw modifier encodes the text with
-raw standard encoding. The unpack modifier has a further internal
-specification, similar to timestamps above:
+|`%t\{hex}` |Hex encoding
 
-[.no-copy]
-----
-    x    pad character (does not parse input)
-    <    switch what follows to little endian
-    >    switch what follows to big endian
+|`%k\{base64}` |Base64 standard encoding
 
-    b    signed byte
-    B    unsigned byte
-    h    int16  ("half word")
-    H    uint16 ("half word")
-    i    int32
-    I    uint32
-    q    int64  ("quad word")
-    Q    uint64 ("quad word")
+|`%k\{base64raw}` |Base64 encoding raw
 
-    c    any character
-    .    alias for c
-    s    consume the rest of the input as a string
-    $    match the end of the line (append error string if anything remains)
-----
+|`%v{unpack[<bBhH>iIqQc.$]}` |The unpack modifier has a further internal
+specification, similar to timestamps above.
+|===
 
 Unpacking text can allow translating binary input into readable output. If a
-value is a big-endian uint32, %v will print the raw four bytes, while
-%v{unpack[>I]} will print the number in as ascii. If unpacking exhausts the
+value is a big-endian uint32, `%v` prints the raw four bytes, while
+`%v{unpack[>I]}` prints the number in as ASCII. If unpacking exhausts the
 input before something is unpacked fully, an error message is appended to the
 output.
 
@@ -216,87 +89,100 @@ output.
 
 Headers are formatted with percent encoding inside of the modifier:
 
-[.no-copy]
-----
-    %h{ %k=%v{hex} }
-----
+```
+%h{%k=%v{hex}}
+```
 
-will print all headers with a space before the key and after the value, an
+This prints all headers with a space before the key and after the value, an
 equals sign between the key and value, and with the value hex encoded. Header
 formatting actually just parses the internal format as a record format, so all
-of the above rules about %K, %V, text, and numbers apply.
+of the above rules about `%K`, `%V`, text, and numbers apply.
 
 === Examples
 
-* A key and value, separated by a space and ending in newline:
-`-f '%k %v\n'`
-* A key length as four big endian bytes, and the key as hex:
-`+-f '%K\{big32}%k\{hex}'+`
-* A little endian uint32 and a string unpacked from a value:
-`-f '%v\{unpack[is$]}'`
+A key and value, separated by a space and ending in newline:
+
+```
+-f '%k %v\n'
+```
+
+A key length as four big endian bytes and the key as hex:
+
+```
+-f '%K{big32}%k{hex}'
+```
+
+A little endian uint32 and a string unpacked from a value:
+
+```
+-f '%v{unpack[is$]}'
+```
 
 === Offsets
 
 The `--offset` flag allows for specifying where to begin consuming, and
-optionally, where to stop consuming. The literal words "start" and "end"
+optionally, where to stop consuming. The literal words `start` and `end`
 specify consuming from the start and the end.
 
-[.no-copy]
-----
-    start     consume from the beginning
-    end       consume from the end
-    :end      consume until the current end
-    +oo       consume oo after the current start offset
-    -oo       consume oo before the current end offset
-    oo        consume after an exact offset
-    oo:       alias for oo
-    :oo       consume until an exact offset
-    o1:o2     consume from exact offset o1 until exact offset o2
-    @t        consume starting from a given timestamp
-    @t:       alias for @t
-    @:t       consume until a given timestamp
-    @t1:t2    consume from timestamp t1 until timestamp t2
-----
+[cols=",",]
+|===
+|Offset |Description
 
-There are a few options for timestamps, with each option being evaluated
-until one succeeds:
+|`start` |Consume from the beginning
+|`end` |Consume from the end
+|`:end` |Consume until the current end
+|`+oo` |Consume oo after the current start offset
+|`-oo` |Consume oo before the current end offset
+|`oo` |Consume after an exact offset
+|`oo:` |Alias for oo
+|`:oo` |Consume until an exact offset
+|`o1:o2` |Consume from exact offset o1 until exact offset o2
+|`@t` |Consume starting from a given timestamp
+|`@t:` |alias for @t
+|`@:t` |Consume until a given timestamp
+|`@t1:t2` |Consume from timestamp t1 until timestamp t2
+|===
 
-[.no-copy]
-----
-    13 digits             parsed as a unix millisecond
-    9 digits              parsed as a unix second
-    YYYY-MM-DD            parsed as a day, UTC
-    YYYY-MM-DDTHH:MM:SSZ  parsed as RFC3339, UTC; fractional seconds optional (.MMM)
-    end                   for t2 in @t1:t2, the current end of the partition
-    -dur                  a negative duration from now or from a timestamp
-    dur                   a positive duration from now or from a timestamp
-----
+Each timestamp option is evaluated until one succeeds.
 
-Durations can be relative to the current time or relative to a timestamp.
-If a duration is used for t1, that duration is relative to now.
-If a duration is used for t2, if t1 is a timestamp, then t2 is relative to t1.
-If a duration is used for t2, if t1 is a duration, then t2 is relative to now.
+[cols=",",]
+|===
+|Timestamp |Description
+
+|13 digits |Parsed as a unix millisecond
+
+|9 digits |Parsed as a unix second
+
+|YYYY-MM-DD |Parsed as a day, UTC
+
+|YYYY-MM-DDTHH:MM:SSZ |Parsed as RFC3339, UTC; fractional seconds
+optional (.MMM)
+
+|-dur |Duration; from now (as t1) or from t1 (as t2)
+
+|dur |For t2 in @t1:t2, relative duration from t1
+
+|end |For t2 in @t1:t2, the current end of the partition
+|===
 
 Durations are parsed simply:
 
-[.no-copy]
-----
-    3ms    three milliseconds
-    10s    ten seconds
-    9m     nine minutes
-    1h     one hour
-    1m3ms  one minute and three milliseconds
-----
+```
+3ms    three milliseconds
+10s    ten seconds
+9m     nine minutes
+1h     one hour
+1m3ms  one minute and three milliseconds
+```
 
-For example,
+For example:
 
-[.no-copy]
-----
-    -o @2022-02-14:1h   consume 1h of time on Valentine's Day 2022
-    -o @-48h:-24h       consume from 2 days ago to 1 day ago
-    -o @-1m:end         consume from 1m ago until now
-    -o @:-1hr           consume from the start until an hour ago
-----
+```
+-o @2022-02-14:1h   consume 1h of time on Valentine's Day 2022
+-o @-48h:-24h       consume from 2 days ago to 1 day ago
+-o @-1m:end         consume from 1m ago until now
+-o @:-1hr           consume from the start until an hour ago
+```
 
 == Usage
 

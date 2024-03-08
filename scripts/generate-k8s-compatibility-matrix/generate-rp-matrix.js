@@ -141,24 +141,15 @@ function getLatestVersion(versions) {
 }
 
 async function fetchAppVersionForChart(chartVersion) {
-    const response = await axios.get(`${CONSOLE_HELM_CHART_REFERENCE}/${chartVersion}`, {
-      headers: {
-        'X-API-KEY-ID': ARTIFACT_HUB_API_KEY_ID,
-        'X-API-KEY-SECRET': ARTIFACT_HUB_API_KEY_SECRET
-      }
-    });
-    return response.data.app_version.replace(/^v/, '');
+  const url = `${CONSOLE_HELM_CHART_REFERENCE}/${chartVersion}`
+  const response = await fetchWithExponentialBackoff(url)
+  return response.data.app_version.replace(/^v/, '');
 }
 
 async function fetchOperatorChartDetails(chartVersion) {
   try {
     const url = `${OPERATOR_HELM_CHART_REFERENCE}/${chartVersion}`;
-    const response = await axios.get(url, {
-      headers: {
-        'X-API-KEY-ID': ARTIFACT_HUB_API_KEY_ID,
-        'X-API-KEY-SECRET': ARTIFACT_HUB_API_KEY_SECRET
-      }
-    });
+    const response = await fetchWithExponentialBackoff(url)
     const appVersion = response.data.app_version.replace(/^v/, '');
     let crdVersions = ''
 
@@ -183,12 +174,7 @@ async function fetchOperatorChartDetails(chartVersion) {
 async function fetchRedpandaChartDetails(chartVersion) {
   try {
     const url = `${REDPANDA_HELM_CHART_REFERENCE}/${chartVersion}`;
-    const response = await axios.get(url, {
-      headers: {
-        'X-API-KEY-ID': ARTIFACT_HUB_API_KEY_ID,
-        'X-API-KEY-SECRET': ARTIFACT_HUB_API_KEY_SECRET
-      }
-    });
+    const response = await fetchWithExponentialBackoff(url)
     const appVersion = response.data.app_version.replace(/^v/, '');
     if (appVersion === 'latest' || !versionIsGreaterOrEqual(appVersion, MIN_RP_VERSION)) {
       return null;
@@ -235,14 +221,27 @@ async function fetchRedpandaChartDetails(chartVersion) {
   }
 }
 
-async function fetchAllChartVersions(chart) {
+async function fetchWithExponentialBackoff(url, retries = 5, delay = 1000) {
   try {
-    const response = await axios.get(chart, {
+    const response = await axios.get(url, {
       headers: {
         'X-API-KEY-ID': ARTIFACT_HUB_API_KEY_ID,
         'X-API-KEY-SECRET': ARTIFACT_HUB_API_KEY_SECRET
       }
     });
+    return response;
+  } catch (error) {
+    if (retries === 0 || error.response.status !== 429) throw error;
+
+    console.log(`Rate limit exceeded. Retrying in ${delay}ms...`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+    return fetchWithExponentialBackoff(url, retries - 1, delay * 2);
+  }
+}
+
+async function fetchAllChartVersions(chart) {
+  try {
+    const response = await fetchWithExponentialBackoff(chart)
     return response.data.available_versions
       .filter(item => item.prerelease === false)
       .map(v => v.version)
