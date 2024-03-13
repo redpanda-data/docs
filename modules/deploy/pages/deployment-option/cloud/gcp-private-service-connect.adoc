@@ -1,0 +1,413 @@
+= Configure GCP Private Service Connect for BYOC
+:description: Set up GCP Private Service Connect to securely access Redpanda Cloud. 
+:page-cloud: true
+
+include::shared:partial$feature-flag.adoc[]
+
+// This guide describes the steps for setting up Private Service Connect (PSC) on Redpanda Cloud.
+
+// Redpanda GCP PSC can be enabled during cluster creation or for an existing cluster.
+
+// After completing this guide, a PSC service attachment will have been deployed for your Redpanda Cloud cluster. You may then establish connections to it from any GCP project included in the allow list.
+
+After <<get-a-cloud-api-access-token,getting an access token>>, you can <<,enable PSC when creating a new BYOC cluster>>, or you can <<,enable PSC for existing BYOC clusters>>.
+
+== Requirements
+
+* You must use the Redpanda Cloud API to enable the Redpanda endpoint service for your clusters. Follow the steps below to <<get-a-cloud-api-access-token,get an access token>>. 
+
+== Get a Cloud API access token 
+
+. Save the base URL of the Redpanda Cloud API in an environment variable:
++
+[,bash]
+----
+PUBLIC_API_ENDPOINT="https://api.cloud.redpanda.com"
+----
+
+. In the https://cloudv2.redpanda.com/[Redpanda Cloud UI], go to **Namespaces** and select the namespace in which you want to create a cluster.
++
+Copy and store the namespace ID (UUID) from the URL in the browser.
++
+[,bash]
+----
+NAMESPACE_ID=<uuid>
+----
+
+. Go to the organization (org) level **Home** in the UI, and navigate to **Clients**. If you don't have an existing client, you can create a new one by clicking **Add client**.
++
+Copy and store the client ID and secret.
++
+[,bash]
+----
+CLOUD_CLIENT_ID=<client-ID>
+CLOUD_CLIENT_SECRET=<client-secret>
+----
+
+. Get an API token using the client ID and secret. You can click the **Request an API token** link to see code examples to generate the token.
++
+[,bash]
+----
+AUTH_TOKEN=`curl -s --request POST \
+    --url 'https://auth.prd.cloud.redpanda.com/oauth/token' \
+    --header 'content-type: application/x-www-form-urlencoded' \
+    --data grant_type=client_credentials \
+    --data client_id=$CLOUD_CLIENT_ID \
+    --data client_secret=$CLOUD_CLIENT_SECRET \
+    --data audience=cloudv2-production.redpanda.cloud | jq .access_token | sed 's/"//g'`
+----
+
+You must send the API token in the `Authorization` header when making requests to the Cloud API.
+
+== BYOVPC
+
+You must use one additional customer-managed resource to use PSC on a BYOVPC Redpanda Cloud cluster. You need a NAT subnet with the *Purpose* set to `PRIVATE_SERVICE_CONNECT`. You can create the subnet using the `1_subnet` Terraform module. Review the module, then run the commands below.
+
+Make sure to provide your own values for the following:
+- `region`: The region of the Redpanda Cloud cluster.
+- `project_id`: The *host* GCP project ID.
+- `vpc_id`: The Redpanda Cloud cluster VPC ID.
+- `psc_nat_subnet_name`: The name of the NAT subnet for Private Service Connect.
+- `psc_nat_subnet_cidr`: The CIDR of the PSC NAT subnet. The mask should be at least `/29`. Each PSC connection takes up one IP address from the NAT subnet, so the CIDR must be able to accommodate all projects from which connections to the service attachment will be issued.
+
+See the official documentation for https://cloud.google.com/vpc/docs/configure-private-service-connect-producer#add-subnet-psc[creating a subnet for Private Service Connect^].
+
+[,bash]
+----
+cd terraform/1_subnet
+cat << EOF > input.tfvars
+region = "<region>"
+project_id = "<host-GCP-project-ID>"
+vpc_id = "<host-VPC-ID>"
+psc_nat_subnet_name = "<PSC-NAT-subnet-name>"
+psc_nat_subnet_cidr = "<PSC-NAT-subnet-CIDR>"
+EOF
+terraform init
+terraform apply -var-file=input.tfvars
+----
+
+== Create new BYOVPC cluster with PSC enabled 
+
+. Update the Redpanda Cloud Agent IAM role.
++
+To allow the agent to create and manage PSC resources, add the following permissions to its IAM role:
++
+```
+compute.forwardingRules.use
+compute.regionOperations.get
+compute.serviceAttachments.create
+compute.serviceAttachments.delete
+compute.serviceAttachments.get
+compute.serviceAttachments.list
+compute.serviceAttachments.update
+compute.subnetworks.use
+```
+
+. Call https://docs.api.redpanda.com/#post-/v1beta1/networks[`POST /v1beta1/networks`] to create a network.
++
+Set the following environment variables:
+- `NETWORK_NAME`: Provide a name for the network. The name is used to identify this network in the Cloud UI.
+- `REGION`: Choose a GCP region where the network will be created.
+- `BYOVPC_NETWORK_GCP_PROJECT_ID`: The ID of the GCP project where your VPC is created.
+- `BYOVPC_NETWORK_NAME`: The name of your VPC.
+- `BYOVPC_MANAGEMENT_BUCKET`: The name of the Google Storage bucket you created for the cluster.
++
+[,bash]
+----
+network_post_body=`cat << EOF
+{
+    "cloud_provider": "CLOUD_PROVIDER_GCP",
+    "cluster_type": "TYPE_BYOC",
+    "name": "$NETWORK_NAME",
+    "namespace_id": "$NAMESPACE_ID",
+    "region": "$REGION",
+    "customer_managed_resources": {
+        "gcp": {
+            "network_name": "$BYOVPC_NETWORK_NAME",
+            "network_project_id": "$BYOVPC_NETWORK_GCP_PROJECT_ID",
+            "management_bucket": { "name" : "$BYOVPC_MANAGEMENT_BUCKET" }
+        }
+    }
+}
+EOF`
+
+curl -vv -X POST \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer $AUTH_TOKEN" \
+-d "$network_post_body" $PUBLIC_API_ENDPOINT/v1beta1/networks
+----
++
+Store the network ID (`metadata.network_id`) from the Create Network call.
++
+[,bash]
+----
+NETWORK_ID=<metadata.network_id>
+----
+
+. Create a PSC-enabled Redpanda Cloud cluster.
++
+Set the following environment variables. The variables with a `BYOVPC_` prefix represent resources that should have been created previously as part of the BYOVPC process.
++
+- `CLUSTER_NAME`: Provide a name for the new cluster.
+- `NETWORK_ID`: The ID of the network created in the previous step.
+- `REGION`: The GCP region where the network will be created.
+- `ZONES`: List of GCP zones where the brokers will be deployed. Format: `["<zone 1>", "<zone 2>", "<zone N>"]`
+- `THROUGHPUT_TIER`: The Redpanda Cloud cluster tier. E.g. `tier-1-gcp-v2-x86`.
+- `REDPANDA_VERSION`: The Redpanda Cloud cluster version.
+- `CONSUMER_ACCEPT_LIST`: The list of IDs of GCP projects from which PSC connection requests are accepted. Format: `[{"source": "<GCP project ID 1>"}, {"source": "<GCP project ID 2>"}, {"source": "<GCP project ID N>"}]`
+- `BYOVPC_SUBNET_NAME`: The name of the GCP subnet that was created for the cluster.
+- `BYOVPC_SUBNET_PODS_RANGE_NAME`: The name of the IPv4 range designated for K8s pods.
+- `BYOVPC_SUBNET_SERVICES_RANGE_NAME`: The name of the IPv4 range designated for services.
+- `BYOVPC_SUBNET_MASTER_RANGE_NAME`: The name of the master IPv4 range.
+- `BYOVPC_PSC_NAT_SUBNET_NAME`: The name of the GCP subnet that was created for PSC NAT.
+- `BYOVPC_AGENT_SERVICE_ACC_EMAIL`: The email for the agent service account.
+- `BYOVPC_CONNECTORS_SERVICE_ACC_EMAIL`: The email for the connectors service account.
+- `BYOVPC_CONSOLE_SERVICE_ACC_EMAIL`: The email for the console service account.
+- `BYOVPC_REDPANDA_SERVICE_ACC_EMAIL`: The email for the Redpanda service account.
+- `BYOVPC_GKE_SERVICE_ACC_EMAIL`: The email for the GKE service account.
+- `BYOVPC_TIERED_STORAGE_BUCKET`: The name of the Google Storage bucket to use for tiered storage.
+
+[,bash]
+----
+CLUSTER_POST_BODY=`cat << EOF
+{
+    "cloud_provider": "CLOUD_PROVIDER_GCP",
+    "connection_type": "CONNECTION_TYPE_PRIVATE",
+    "type": "TYPE_BYOC",
+    "name": "$CLUSTER_NAME",
+    "namespace_id": "$NAMESPACE_ID",
+    "network_id": "$NETWORK_ID",
+    "region": "$REGION",
+    "zones": $ZONES,
+    "throughput_tier": "$THROUGHPUT_TIER",
+    "redpanda_version": "$REDPANDA_VERSION",
+    "private_link": {
+        "enabled": true,
+        "gcp": {
+            "consumer_accept_list": $CONSUMER_ACCEPT_LIST
+        }
+    },
+    "customer_managed_resources": {
+        "gcp": {
+            "subnet": {
+                "name":"$BYOVPC_SUBNET_NAME",
+                "secondary_ipv4_range_pods": { "name": "$BYOVPC_SUBNET_PODS_RANGE_NAME" },
+                "secondary_ipv4_range_services": { "name": "$BYOVPC_SUBNET_SERVICES_RANGE_NAME" },
+                "k8s_master_ipv4_range": "$BYOVPC_SUBNET_MASTER_RANGE_NAME"
+            },
+            "psc_nat_subnet_name": "$BYOVPC_PSC_NAT_SUBNET_NAME"
+            "agent_service_account": { "email": "$BYOVPC_AGENT_SERVICE_ACC_EMAIL" },
+            "connector_service_account": { "email": "$BYOVPC_CONNECTORS_SERVICE_ACC_EMAIL" },
+            "console_service_account": { "email": "$BYOVPC_CONSOLE_SERVICE_ACC_EMAIL" },
+            "redpanda_cluster_service_account": { "email": "$BYOVPC_REDPANDA_SERVICE_ACC_EMAIL" },
+            "gke_service_account": { "email": "$BYOVPC_GKE_SERVICE_ACC_EMAIL" },
+            "tiered_storage_bucket": { "name" : "$BYOVPC_TIERED_STORAGE_BUCKET" },
+        }
+    }
+}
+EOF`
+
+curl -vv -X POST \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer $AUTH_TOKEN" \
+-d "$CLUSTER_POST_BODY" $PUBLIC_API_ENDPOINT/v1beta1/clusters
+----
+
+== Enable PSC on an existing BYOVPC Redpanda Cloud cluster
+
+. Update the Redpanda Cloud Agent IAM role.
++
+To allow the agent to create and manage the Service Attachment, add the following permissions to its IAM role:
+```
+compute.forwardingRules.use
+compute.regionOperations.get
+compute.serviceAttachments.create
+compute.serviceAttachments.delete
+compute.serviceAttachments.get
+compute.serviceAttachments.list
+compute.serviceAttachments.update
+compute.subnetworks.use
+```
+
+. In the Redpanda Cloud UI, go to the cluster overview and copy the cluster ID from the **Details** section.
++
+[,bash]
+----
+CLUSTER_ID=<cluster_id>
+----
+
+. Make a https://docs.api.redpanda.com/#patch-/v1beta1/clusters/-cluster.id-[`PATCH /v1beta1/clusters/{cluster.id}`] request to update the cluster to include the newly-created PSC NAT subnet and enable PSC.
++
+Set the following environment variables:
+* `ACCEPT_LIST`: a JSON list specifying the projects from which incoming connections will be accepted. All other sources. For example, `[{"source": "consumer-project-ID-1"},{"source": "consumer-project-ID-2"}]`.
+* `PSC_NAT_SUBNET_NAME`: The name of the PSC NAT subnet. Use the fully-qualified name, for example `"projects/<PROJECT>/regions/<REGION>/subnetworks/<SUBNET-NAME>"`.
++
+[,bash]
+----
+ACCEPT_LIST='[]'
+PSC_NAT_SUBNET_NAME='<PSC NAT subnet name>'
+CLUSTER_PATCH_BODY=`cat << EOF
+{
+    "customer_managed_resources": {
+    "gcp": {
+        "psc_nat_subnet_name": "$PSC_NAT_SUBNET_NAME"
+    }
+    },
+    "private_link": {
+    "enabled": true,
+    "gcp": {
+        "consumer_accept_list": $ACCEPT_LIST
+    }
+    }
+}
+EOF`
+curl -v -X PATCH \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer $AUTH_TOKEN" \
+-d "$CLUSTER_PATCH_BODY" ${PUBLIC_API_ENDPOINT}/v1beta1/clusters/$CLUSTER_ID
+----
++
+Wait for the cluster to apply the new configuration (around 15 minutes). The PSC service attachment is available when the cluster update is complete. You can monitor the service attachment creation by running the following `gcloud` command:
++
+[,bash]
+----
+gcloud compute service-attachments list --project '<service-project-ID>'
+----
+
+== Optional: Deploy consumer resources
+
+=== Deploy PSC consumer-side resources
+
+These resources will set up a connection to the service attachment created in the previous step.
+
+Make sure to provide your own values for the following:
+- `service_attachment_uri`: The URI to the service attachment. The format must be: `projects/<Redpanda-cluster-project-ID>/regions/<Redpanda-cluster-region>/serviceAttachments/<service-attachment-name>`.
+- `consumer_project_id`: The ID of the GCP project where the consumer (client) resources will be created. Should match one of the projects included in the `consumer_accept_list` field from previous steps.
+- `consumer_region`: The region where the consumer resources will be deployed.
+- `consumer_vpc_id`: The ID of the VPC where clients will be deployed.
+- `consumer_subnet_name`: The subnet where the clients will run. This cannot be a subnet with the *Purpose* set to `PRIVATE_SERVICE_CONNECT`. GCP doesn't allow such subnets to be reused for other purposes.
+
+[,bash]
+----
+cd terraform/2_consumer_resources
+cat << EOF > input.tfvars
+consumer_project_id = "<consumer-GCP-project-ID>"
+consumer_vpc_id = "<consumer-VPC-ID>"
+service_attachment_uri = "<service-attachment-uri>"
+consumer_region = "<consumer-region>"
+consumer_subnet_name = "<consumer-subnet-name>"
+EOF
+terraform init
+terraform apply -var-file=input.tfvars 
+----
+
+The module outputs a `psc_forwarding_rule_ip`. This is the IP through which the service attachment can be reached. To be able to use the Kafka API, as well as the HTTP Proxy subscriptions, you will need to set up the right private DNS zone and records. 
+
+=== Deploy the DNS zone and records
+
+Make sure to provide your own values for the following:
+
+- `consumer_project_id`: The ID of the GCP project where consumer (client) resources will be created. Should match one of the projects included in the `consumer_accept_list` field in previous steps.
+- `consumer_vpc_id`: The ID of the VPC where the consumers will be deployed.
+- `dns_a_records`: The list of DNS A records for each Redpanda broker API. These will be provided by the Redpanda team and will never change. Format: `["<record 1>", "<record 2>", "<record N>"]`. *All records must end with a dot*.
+- `dns_zone`: The base DNS zone for the records. Can be derived from them. *The DNS zone name must end with a dot*.
+- `dns_a_records_target_ip`: The IP address that the A records will point to, which should be that of the forwarding rule deployed in the previous step. You can query the target IP address with the following `gcloud` command:
++
+[,bash]
+----
+gcloud compute forwarding-rules describe redpanda-psc-endpoint --region <region> --project <consumer project ID>
+----
+
+[,bash]
+----
+cd terraform/3_dns
+cat << EOF > input.tfvars
+consumer_project_id = "<consumer GCP project ID>"
+consumer_vpc_id = "<consumer VPC ID>"
+dns_a_records = <list of broker A records>
+dns_zone = "<base Redpanda DNS zone>"
+dns_a_records_target_ip = "<PSC consumer forwarding rule IP>"
+EOF
+terraform init
+terraform apply -var-file=input.tfvars 
+----
+
+=== Update your firewall rules
+
+Make sure that your consumer VPC firewall allows traffic to and from the PSC forwarding rule IP address on the expected ports.
+
+=== Test the setup
+
+You can test the PSC connection from any VM or container in the consumer VPC. If configuring a client isn't possible right away, you can do these checks using `rpk` or curl:
+
+==== Kafka API checks
+
+. Set the following environment variables.
++
+[,bash]
+----
+REDPANDA_BROKERS='<broker URL>:30292'
+REDPANDA_SASL_MECHANISM='<SCRAM-SHA-256 or SCRAM-SHA-512>'
+REDPANDA_SASL_USERNAME='<username>'
+REDPANDA_SASL_PASSWORD='<password>'
+----
+
+. Check the cluster status using `rpk`.
++
+[,bash]
+----
+rpk cluster info
+----
+
+. Create a test topic.
++
+[,bash]
+----
+rpk topic create psc-test
+----
+
+. Produce to the test topic.
++
+[,bash]
+----
+echo 'hello PSC!' | rpk topic produce psc-test
+----
+
+. Consume from the test topic.
++
+[,bash]
+----
+rpk topic consume psc-test -n 1
+----
+
+== Access Redpanda services through VPC endpoint
+
+The service attachment exposes 2 sets of ports:
+
+* *Seed ports*: These ports load balance requests among brokers. Useful for initiating a connection from a client.
++
+|=== 
+| Redpanda service | Default seed port |
+
+| Kafka API | 30292 |
+| HTTP Proxy | 30282 |
+| Schema Registry | 30081 |
+|===
+
+* *Broker-API-specific ports*: These ports route requests to a specific API on a specific broker. Can be determined from the broker ID or number.
+
+For Kafka API:
+
+- 32092: Kafka API on broker 0
+- 32093: Kafka API on broker 1
+- 32094: Kafka API on broker 2
+Etc.
+
+For HTTP Proxy:
+
+- 35082: HTTP Proxy API on broker 0
+- 35083: HTTP Proxy API on broker 1
+- 35084: HTTP Proxy API on broker 1
+Etc.
+
+NOTE: There are no broker-API-specific ports for the Schema Registry because it's a 100% stateless API, which means that any broker can process any request.
