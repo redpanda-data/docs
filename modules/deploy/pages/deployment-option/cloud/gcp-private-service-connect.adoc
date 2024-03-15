@@ -9,12 +9,19 @@ include::shared:partial$feature-flag.adoc[]
 // Redpanda GCP PSC can be enabled during cluster creation or for an existing cluster.
 
 // After completing this guide, a PSC service attachment will have been deployed for your Redpanda Cloud cluster. You may then establish connections to it from any GCP project included in the allow list.
+Redpanda GCP Private Service Connect (PSC) provides secure access to Redpanda Cloud from your own VPC. Traffic over PSC does not go through the public internet because a PSC connection is treated as its own private GCP service. While your VPC has access to the Redpanda VPC, Redpanda cannot access your VPC.
 
+Consider using PSC if you have multiple VPCs and could benefit from a more simplified approach to network management:
+
+* PSC allows overlapping CIDR ranges in VPC networks.
+* PSC does not limit the number of connections.
+* You control from which GCP projects connections are allowed.
 After <<get-a-cloud-api-access-token,getting an access token>>, you can <<create-new-byovpc-cluster-with-psc-enabled,enable PSC when creating a new BYOC cluster>>, or you can <<enable-psc-on-an-existing-byovpc-cluster,enable PSC for existing BYOC clusters>>.
 
 == Requirements
 
 * You must use the Redpanda Cloud API to enable the Redpanda endpoint service for your clusters. Follow the steps below to <<get-a-cloud-api-access-token,get an access token>>. 
+* Use [gcloud](https://cloud.google.com/sdk/docs/install) to create the consumer-side resources, such as a VPC and forwarding rule, or modify an existing one to use the PSC service attachment created for your cluster.
 
 == Get a Cloud API access token 
 
@@ -59,32 +66,27 @@ AUTH_TOKEN=`curl -s --request POST \
 
 You must send the API token in the `Authorization` header when making requests to the Cloud API.
 
-== BYOVPC
+== BYOC with customer-managed resources
 
-You must use one additional customer-managed resource to use PSC on a BYOVPC Redpanda Cloud cluster. You need a NAT subnet with the *Purpose* set to `PRIVATE_SERVICE_CONNECT`. You can create the subnet using the `1_subnet` Terraform module. Review the module, then run the commands below.
-
+You must provide one additional customer-managed resource to use PSC on a BYOVPC Redpanda Cloud cluster. You need a NAT subnet with *Purpose* set to `PRIVATE_SERVICE_CONNECT`. You can create the subnet using `gcloud`.
 Make sure to provide your own values for the following:
 
-- `region`: The region of the Redpanda Cloud cluster.
-- `project_id`: The *host* GCP project ID.
-- `vpc_id`: The Redpanda Cloud cluster VPC ID.
-- `psc_nat_subnet_name`: The name of the NAT subnet for Private Service Connect.
-- `psc_nat_subnet_cidr`: The CIDR of the PSC NAT subnet. The mask should be at least `/29`. Each PSC connection takes up one IP address from the NAT subnet, so the CIDR must be able to accommodate all projects from which connections to the service attachment will be issued.
+- `SUBNET_NAME`: The name of the NAT subnet.
+- `PROJECT`: The **host** GCP project ID.
+- `NETWORK_NAME`: The name of the VPC you'll use for your Redpanda Cloud cluster.
+- `REGION`: The region of the Redpanda Cloud cluster.
+- `SUBNET_RANGE`: The CIDR range of the subnet. The mask should be at least `/29`. Each PSC connection takes up one IP address from the NAT subnet, so the CIDR must be able to accommodate all projects from which connections to the service attachment will be issued.
 
 See the official documentation for https://cloud.google.com/vpc/docs/configure-private-service-connect-producer#add-subnet-psc[creating a subnet for Private Service Connect^].
 
 [,bash]
 ----
-cd terraform/1_subnet
-cat << EOF > input.tfvars
-region = "<region>"
-project_id = "<host-GCP-project-ID>"
-vpc_id = "<host-VPC-ID>"
-psc_nat_subnet_name = "<PSC-NAT-subnet-name>"
-psc_nat_subnet_cidr = "<PSC-NAT-subnet-CIDR>"
-EOF
-terraform init
-terraform apply -var-file=input.tfvars
+gcloud compute networks subnets create SUBNET_NAME \
+    --project=PROJECT \
+    --network=NETWORK_NAME \
+    --region=REGION \
+    --range=SUBNET_RANGE \
+    --purpose=PRIVATE_SERVICE_CONNECT
 ----
 
 == Create new BYOVPC cluster with PSC enabled 
@@ -120,8 +122,8 @@ Set the following environment variables:
 ----
 network_post_body=`cat << EOF
 {
-    "cloud_provider": "CLOUD_PROVIDER_GCP",
-    "cluster_type": "TYPE_BYOC",
+    "cloud_provider": "$CLOUD_PROVIDER_GCP",
+    "cluster_type": "$TYPE_BYOC",
     "name": "$NETWORK_NAME",
     "namespace_id": "$NAMESPACE_ID",
     "region": "$REGION",
@@ -163,7 +165,7 @@ Set the following environment variables. The variables with a `BYOVPC_` prefix r
 - `BYOVPC_SUBNET_NAME`: The name of the GCP subnet that was created for the cluster.
 - `BYOVPC_SUBNET_PODS_RANGE_NAME`: The name of the IPv4 range designated for K8s pods.
 - `BYOVPC_SUBNET_SERVICES_RANGE_NAME`: The name of the IPv4 range designated for services.
-- `BYOVPC_SUBNET_MASTER_RANGE_NAME`: The name of the master IPv4 range.
+- `BYOVPC_SUBNET_MASTER_RANGE`: The master IPv4 range.
 - `BYOVPC_PSC_NAT_SUBNET_NAME`: The name of the GCP subnet that was created for PSC NAT.
 - `BYOVPC_AGENT_SERVICE_ACC_EMAIL`: The email for the agent service account.
 - `BYOVPC_CONNECTORS_SERVICE_ACC_EMAIL`: The email for the connectors service account.
@@ -199,7 +201,7 @@ CLUSTER_POST_BODY=`cat << EOF
                 "name":"$BYOVPC_SUBNET_NAME",
                 "secondary_ipv4_range_pods": { "name": "$BYOVPC_SUBNET_PODS_RANGE_NAME" },
                 "secondary_ipv4_range_services": { "name": "$BYOVPC_SUBNET_SERVICES_RANGE_NAME" },
-                "k8s_master_ipv4_range": "$BYOVPC_SUBNET_MASTER_RANGE_NAME"
+                "k8s_master_ipv4_range": "$BYOVPC_SUBNET_MASTER_RANGE"
             },
             "psc_nat_subnet_name": "$BYOVPC_PSC_NAT_SUBNET_NAME"
             "agent_service_account": { "email": "$BYOVPC_AGENT_SERVICE_ACC_EMAIL" },
@@ -219,8 +221,16 @@ curl -vv -X POST \
 -d "$CLUSTER_POST_BODY" $PUBLIC_API_ENDPOINT/v1beta1/clusters
 ----
 
-== Enable PSC on an existing BYOVPC cluster
+== Enable PSC on an existing BYOC cluster
 
+. In the Redpanda Cloud UI, go to the cluster overview and copy the cluster ID from the **Details** section.
++
+[,bash]
+----
+CLUSTER_ID=<cluster_id>
+----
+
+(Only needed for clusters with customer-managed resources)
 . Update the Redpanda Cloud Agent IAM role.
 +
 To allow the agent to create and manage the service attachment, add the following permissions to its IAM role:
@@ -237,19 +247,8 @@ compute.serviceAttachments.update
 compute.subnetworks.use
 ----
 
-. In the Redpanda Cloud UI, go to the cluster overview and copy the cluster ID from the **Details** section.
-+
-[,bash]
-----
-CLUSTER_ID=<cluster_id>
-----
+. Make a https://docs.api.redpanda.com/#patch-/v1beta1/clusters/-cluster.id-[`PATCH /v1beta1/clusters/{cluster.id}`] request to update the cluster to include the newly-created PSC NAT subnet.
 
-. Make a https://docs.api.redpanda.com/#patch-/v1beta1/clusters/-cluster.id-[`PATCH /v1beta1/clusters/{cluster.id}`] request to update the cluster to include the newly-created PSC NAT subnet and enable PSC.
-+
-Set the following environment variables:
-+
---
-* `ACCEPT_LIST`: a JSON list specifying the projects from which incoming connections will be accepted. All other sources. For example, `[{"source": "consumer-project-ID-1"},{"source": "consumer-project-ID-2"}]`.
 * `PSC_NAT_SUBNET_NAME`: The name of the PSC NAT subnet. Use the fully-qualified name, for example `"projects/<PROJECT>/regions/<REGION>/subnetworks/<SUBNET-NAME>"`.
 --
 +
@@ -260,15 +259,35 @@ PSC_NAT_SUBNET_NAME='<PSC NAT subnet name>'
 CLUSTER_PATCH_BODY=`cat << EOF
 {
     "customer_managed_resources": {
-    "gcp": {
-        "psc_nat_subnet_name": "$PSC_NAT_SUBNET_NAME"
+        "gcp": {
+            "psc_nat_subnet_name": "$PSC_NAT_SUBNET_NAME"
+        }
     }
-    },
+}
+EOF`
+curl -v -X PATCH \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer $AUTH_TOKEN" \
+-d "$CLUSTER_PATCH_BODY" ${PUBLIC_API_ENDPOINT}/v1beta1/clusters/$CLUSTER_ID
+----
+
+. Make a https://docs.api.redpanda.com/#patch-/v1beta1/clusters/-cluster.id-[`PATCH /v1beta1/clusters/{cluster.id}`] request to update the cluster to enable PSC.
++
+Set the following environment variables:
++
+--
+* `ACCEPT_LIST`: a JSON list specifying the projects from which incoming connections will be accepted. All other sources. For example, `[{"source": "consumer-project-ID-1"},{"source": "consumer-project-ID-2"}]`.
+--
++
+[,bash]
+----
+CLUSTER_PATCH_BODY=`cat << EOF
+{
     "private_link": {
-    "enabled": true,
-    "gcp": {
-        "consumer_accept_list": $ACCEPT_LIST
-    }
+        "enabled": true,
+        "gcp": {
+            "consumer_accept_list": $ACCEPT_LIST
+        }
     }
 }
 EOF`
