@@ -4,11 +4,6 @@
 
 include::shared:partial$feature-flag.adoc[]
 
-// This guide describes the steps for setting up Private Service Connect (PSC) on Redpanda Cloud.
-
-// Redpanda GCP PSC can be enabled during cluster creation or for an existing cluster.
-
-// After completing this guide, a PSC service attachment will have been deployed for your Redpanda Cloud cluster. You may then establish connections to it from any GCP project included in the allow list.
 Redpanda GCP Private Service Connect (PSC) provides secure access to Redpanda Cloud from your own VPC. Traffic over PSC does not go through the public internet because a PSC connection is treated as its own private GCP service. While your VPC has access to the Redpanda VPC, Redpanda cannot access your VPC.
 
 Consider using PSC if you have multiple VPCs and could benefit from a more simplified approach to network management:
@@ -16,7 +11,7 @@ Consider using PSC if you have multiple VPCs and could benefit from a more simpl
 * PSC allows overlapping CIDR ranges in VPC networks.
 * PSC does not limit the number of connections.
 * You control from which GCP projects connections are allowed.
-After <<get-a-cloud-api-access-token,getting an access token>>, you can <<create-new-byovpc-cluster-with-psc-enabled,enable PSC when creating a new BYOC cluster>>, or you can <<enable-psc-on-an-existing-byovpc-cluster,enable PSC for existing BYOC clusters>>.
+After <<get-a-cloud-api-access-token,getting an access token>>, you can <<create-new-byoc-cluster-with-psc-enabled,enable PSC when creating a new BYOC cluster>>, or you can <<enable-psc-on-an-existing-byoc-cluster,enable PSC for existing BYOC clusters>>.
 
 == Requirements
 
@@ -32,7 +27,7 @@ After <<get-a-cloud-api-access-token,getting an access token>>, you can <<create
 PUBLIC_API_ENDPOINT="https://api.cloud.redpanda.com"
 ----
 
-. In the https://cloudv2.redpanda.com/[Redpanda Cloud UI], go to **Namespaces** and select the namespace in which you want to create a cluster.
+. In the https://cloud.redpanda.com/[Redpanda Cloud UI], go to **Namespaces** and select the namespace in which you want to create a cluster.
 +
 Copy and store the namespace ID (UUID) from the URL in the browser.
 +
@@ -66,10 +61,11 @@ AUTH_TOKEN=`curl -s --request POST \
 
 You must send the API token in the `Authorization` header when making requests to the Cloud API.
 
-== BYOC with customer-managed resources
+== Configure BYOC with customer-managed resources
 
-You must provide one additional customer-managed resource to use PSC on a BYOVPC Redpanda Cloud cluster. You need a NAT subnet with *Purpose* set to `PRIVATE_SERVICE_CONNECT`. You can create the subnet using `gcloud`.
-Make sure to provide your own values for the following:
+For xref:deploy:deployment-option/cloud/vpc-byo-gcp.adoc[BYOC clusters with customer-managed VPC], you need a NAT subnet with the *Purpose* set to `PRIVATE_SERVICE_CONNECT`. You can create the subnet using `gcloud`.
+
+In the `gcloud` command below, make sure to provide your own values for the following:
 
 - `SUBNET_NAME`: The name of the NAT subnet.
 - `PROJECT`: The **host** GCP project ID.
@@ -89,7 +85,7 @@ gcloud compute networks subnets create SUBNET_NAME \
     --purpose=PRIVATE_SERVICE_CONNECT
 ----
 
-== Create new BYOVPC cluster with PSC enabled 
+== Create new BYOC cluster with PSC enabled 
 
 . Update the Redpanda Cloud Agent IAM role.
 +
@@ -230,8 +226,7 @@ curl -vv -X POST \
 CLUSTER_ID=<cluster_id>
 ----
 
-(Only needed for clusters with customer-managed resources)
-. Update the Redpanda Cloud Agent IAM role.
+. Update the Redpanda Cloud Agent IAM role. This step is required only for clusters with customer-managed resources.
 +
 To allow the agent to create and manage the service attachment, add the following permissions to its IAM role:
 +
@@ -248,7 +243,10 @@ compute.subnetworks.use
 ----
 
 . Make a https://docs.api.redpanda.com/#patch-/v1beta1/clusters/-cluster.id-[`PATCH /v1beta1/clusters/{cluster.id}`] request to update the cluster to include the newly-created PSC NAT subnet.
-
++
+Set the following environment variable:
++
+--
 * `PSC_NAT_SUBNET_NAME`: The name of the PSC NAT subnet. Use the fully-qualified name, for example `"projects/<PROJECT>/regions/<REGION>/subnetworks/<SUBNET-NAME>"`.
 --
 +
@@ -303,69 +301,6 @@ Wait for the cluster to apply the new configuration (around 15 minutes). The PSC
 ----
 gcloud compute service-attachments list --project '<service-project-ID>'
 ----
-
-== Optional: Deploy consumer resources
-
-=== Deploy PSC consumer-side resources
-
-These resources will set up a connection to the service attachment created in the previous step.
-
-Make sure to provide your own values for the following:
-
-- `service_attachment_uri`: The URI to the service attachment. The format must be: `projects/<Redpanda-cluster-project-ID>/regions/<Redpanda-cluster-region>/serviceAttachments/<service-attachment-name>`.
-- `consumer_project_id`: The ID of the GCP project where the consumer (client) resources will be created. Should match one of the projects included in the `consumer_accept_list` field from previous steps.
-- `consumer_region`: The region where the consumer resources will be deployed.
-- `consumer_vpc_id`: The ID of the VPC where clients will be deployed.
-- `consumer_subnet_name`: The subnet where the clients will run. This cannot be a subnet with the *Purpose* set to `PRIVATE_SERVICE_CONNECT`. GCP doesn't allow such subnets to be reused for other purposes.
-
-[,bash]
-----
-cd terraform/2_consumer_resources
-cat << EOF > input.tfvars
-consumer_project_id = "<consumer-GCP-project-ID>"
-consumer_vpc_id = "<consumer-VPC-ID>"
-service_attachment_uri = "<service-attachment-uri>"
-consumer_region = "<consumer-region>"
-consumer_subnet_name = "<consumer-subnet-name>"
-EOF
-terraform init
-terraform apply -var-file=input.tfvars 
-----
-
-The module outputs a `psc_forwarding_rule_ip`. This is the IP through which the service attachment can be reached. To be able to use the Kafka API, as well as the HTTP Proxy subscriptions, you will need to set up the right private DNS zone and records. 
-
-=== Deploy the DNS zone and records
-
-Make sure to provide your own values for the following:
-
-- `consumer_project_id`: The ID of the GCP project where consumer (client) resources will be created. Should match one of the projects included in the `consumer_accept_list` field in previous steps.
-- `consumer_vpc_id`: The ID of the VPC where the consumers will be deployed.
-- `dns_a_records`: The list of DNS A records for each Redpanda broker API. These will be provided by the Redpanda team and will never change. Format: `["<record 1>", "<record 2>", "<record N>"]`. *All records must end with a dot*.
-- `dns_zone`: The base DNS zone for the records. Can be derived from them. *The DNS zone name must end with a dot*.
-- `dns_a_records_target_ip`: The IP address that the A records will point to, which should be that of the forwarding rule deployed in the previous step. You can query the target IP address with the following `gcloud` command:
-+
-[,bash]
-----
-gcloud compute forwarding-rules describe redpanda-psc-endpoint --region <region> --project <consumer project ID>
-----
-
-[,bash]
-----
-cd terraform/3_dns
-cat << EOF > input.tfvars
-consumer_project_id = "<consumer GCP project ID>"
-consumer_vpc_id = "<consumer VPC ID>"
-dns_a_records = <list of broker A records>
-dns_zone = "<base Redpanda DNS zone>"
-dns_a_records_target_ip = "<PSC consumer forwarding rule IP>"
-EOF
-terraform init
-terraform apply -var-file=input.tfvars 
-----
-
-=== Update your firewall rules
-
-Make sure that your consumer VPC firewall allows traffic to and from the PSC forwarding rule IP address on the expected ports.
 
 == Test the connection
 
