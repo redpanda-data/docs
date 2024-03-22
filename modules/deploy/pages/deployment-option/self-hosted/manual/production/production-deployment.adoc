@@ -1,4 +1,4 @@
-= Deploy for Production
+= Deploy for Production: Manual
 :description: Steps to deploy a Redpanda production cluster.
 :page-aliases: deploy-self-hosted:production-deployment.adoc, deployment:custom-deployment.adoc, deployment:production-deployment.adoc
 :env-linux: true
@@ -8,7 +8,7 @@ You can deploy Redpanda for production with a default deployment, which uses rec
 
 [NOTE]
 ====
-* See xref:./production-deployment-automation.adoc[Automate Deployment for Production] to use Terraform and Ansible to deploy Redpanda.
+* See xref:./production-deployment-automation.adoc[] to use Terraform and Ansible to deploy Redpanda.
 * See xref:get-started:quick-start.adoc[Redpanda Quickstart] to try out Redpanda in Docker or xref:./dev-deployment.adoc[Deploy for Development].
 ====
 
@@ -50,85 +50,35 @@ To start deploying Redpanda for production, choose your deployment type:
 
 This section describes how to set up a production cluster of Redpanda.
 
-=== Install Redpanda
+include::deploy:partial$linux/install-redpanda.adoc[leveloffset=+2]
 
-Install Redpanda on each system you want to be part of your cluster. There are binaries available for Fedora/RedHat or Debian systems.
+include::deploy:partial$linux/install-console.adoc[leveloffset=+2]
 
-[tabs]
-=====
-Fedora/RedHat::
-+
---
-[,bash]
-----
-curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.rpm.sh' | \
-sudo -E bash && sudo yum install redpanda -y
-----
+=== Tune the Linux kernel for production
 
---
-Debian/Ubuntu::
-+
---
-[,bash]
-----
-curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.deb.sh' | \
-sudo -E bash && sudo apt install redpanda -y
-----
-
---
-=====
-
-=== Install Redpanda Console
-
-Redpanda Console is a developer-friendly web UI for managing and debugging your Redpanda cluster and your applications.
-
-For each new release, Redpanda compiles the Redpanda Console to a single binary for Linux, macOS, and Windows. You can find the binaries in the attachments of each release on https://github.com/redpanda-data/console/releases[GitHub^].
-
-[tabs]
-=====
-Fedora/RedHat::
-+
---
-[,bash]
-----
-curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.rpm.sh' | \
-sudo -E bash && sudo yum install redpanda-console -y
-----
-
---
-Debian/Ubuntu::
-+
---
-[,bash]
-----
-curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.deb.sh' | \
-sudo -E bash && sudo apt-get install redpanda-console -y
-----
-
---
-=====
-
-=== Set Redpanda to production mode
+To get the best performance from your hardware, set Redpanda to production mode on each node and run the autotuner tool. The autotuner identifies the hardware configuration of your node and optimizes the Linux kernel to give you the best performance.
 
 By default, Redpanda is installed in development mode, which turns off hardware optimization.
 
-To enable hardware optimization, set Redpanda to run in xref:reference:rpk/rpk-redpanda/rpk-redpanda-mode.adoc#production-mode[production mode]:
+. Make sure that your current Linux user has root privileges. The autotuner requires privileged access to the Linux kernel settings.
 
+. Set Redpanda to run in xref:reference:rpk/rpk-redpanda/rpk-redpanda-mode.adoc#production-mode[production mode]:
++
 [,bash]
 ----
 sudo rpk redpanda mode production
 ----
 
-To tune the hardware, run the autotuner on each node:
-
+. Tune the Linux kernel:
++
 [,bash]
 ----
 sudo rpk redpanda tune all
 ----
 
-[TIP]
-====
-To run `rpk redpanda tune all` on a Redpanda broker automatically after broker or host restarts, configure the service `redpanda-tuner`, which runs `rpk redpanda tune all`, to run at boot-up:
+Changes to the Linux kernel are not persisted. If a node restarts, make sure to run the autotuner again.
+
+To automatically tune the Linux kernel on a Redpanda broker after the node restarts, enable the `redpanda-tuner` service, which runs `rpk redpanda tune all`:
 
 * For RHEL, after installing the rpm package, run `systemctl` to both start and enable the `redpanda-tuner` service:
 +
@@ -144,15 +94,21 @@ sudo systemctl enable redpanda-tuner
 ----
 sudo systemctl start redpanda-tuner
 ----
-====
 
 For more details, see the xref:reference:rpk/rpk-redpanda/rpk-redpanda-tune.adoc[autotuner reference].
 
-.Optional: Benchmark your SSD
-[NOTE]
-====
-On taller machines, Redpanda recommends benchmarking your SSD. This can be done
-with xref:reference:rpk/rpk-iotune.adoc[rpk iotune]. You only need to run this once.
+=== Generate optimal I/O configuration settings
+
+After tuning the Linux kernel, you can optimize Redpanda for the I/O capabilities of your worker node by using `rpk` to run benchmarks that capture its read/write IOPS and bandwidth capabilities. After running the benchmarks `rpk` saves the results to an I/O configuration file (`io-config.yaml`) that Redpanda reads upon startup to optimize itself for the node.
+
+NOTE: Unlike the autotuner, it isn't necessary to run `rpk iotune` each time Redpanda is started, as its I/O output configuration file can be reused for each node that runs on the same type of hardware.
+
+Run xref:reference:rpk/rpk-iotune.adoc[rpk iotune]:
+
+[,bash]
+----
+sudo rpk iotune # takes 10mins
+----
 
 For reference, a local NVMe SSD should yield around 1 GB/s sustained writes.
 `rpk iotune` captures SSD wear and tear and gives accurate measurements
@@ -162,78 +118,13 @@ If you're on AWS, GCP, or Azure, creating a new instance and upgrading to
 an image with a recent Linux kernel version is often the easiest way to
 work around bad devices.
 
-[,bash]
-----
-sudo rpk iotune # takes 10mins
-----
+include::deploy:partial$linux/bootstrap.adoc[leveloffset=+2]
 
-====
+include::deploy:partial$linux/start-redpanda.adoc[leveloffset=+2]
 
-=== Start Redpanda
+include::deploy:partial$linux/start-console.adoc[leveloffset=+2]
 
-Configure Redpanda using the xref:reference:rpk/rpk-redpanda/rpk-redpanda-config-bootstrap.adoc[`rpk redpanda config bootstrap`] command, then start Redpanda:
-
-[,bash]
-----
-sudo rpk redpanda config bootstrap --self <ip-address-of-your-node> --ips <seed-server-ips> && \
-sudo rpk redpanda config set redpanda.empty_seed_starts_cluster false && \
-sudo systemctl start redpanda-tuner redpanda
-----
-
-Replace the following placeholders:
-
-* `<ip-address-of-your-node>`: The `--self` flag tells Redpanda the interface address to bind to for the Kafka API, the RPC API, and the Admin API. Usually, this is the node's private IP address.
-* `<seed-server-ips>`: The `--ips` flag lists all the seed servers in the cluster, including the one being started. Seed servers correspond to the `seed_servers` property in `redpanda.yaml`.
-+
-NOTE: The `--ips` flag must be set _identically_ (with nodes listed in identical order) on each node.
-
-When a Redpanda cluster starts, it instantiates a controller Raft group with all the seed servers specified in the `--ips` flag. After all seed servers complete their startup procedure and become accessible, the cluster is then available. After that, non-seed servers start up and are added to the cluster.
-
-[IMPORTANT]
-====
-* Redpanda strongly recommends at least three seed servers when forming a cluster. A larger number of seed servers increases the robustness of consensus and minimizes any chance that new clusters get spuriously formed after brokers are lost or restarted without any data.
-* It's important to have one or more seed servers in each fault domain (such as rack or cloud AZ). A higher number provides a stronger guarantee that clusters don't fracture unintentionally.
-* It's possible to change the seed servers for a short period of time after a cluster has been created. For example, you may want to designate one additional broker as a seed server to increase availability. To do this without cluster downtime, add the new broker to xref:reference:node-properties.adoc[`seed_servers`] and restart Redpanda to apply the change on a broker-by-broker basis.
-====
-
-=== Start Redpanda Console
-
-. Start Redpanda Console:
-+
-[,bash]
-----
-sudo systemctl start redpanda-console
-----
-
-. Make sure that Redpanda Console is active and running:
-+
-[,bash]
-----
-sudo systemctl status redpanda-console
-----
-
-=== Verify the installation
-
-To verify that the Redpanda cluster is up and running, use `rpk` to get information about the cluster:
-
-[,bash]
-----
-rpk cluster info
-----
-
-If topics were initially created in a test environment with a replication factor of `1`, use `rpk topic alter-config` to change the topic replication factor:
-
-[,bash]
-----
-rpk topic alter-config [TOPICS...] --set replication.factor=3
-----
-
-To create a topic:
-
-[,bash]
-----
-rpk topic create panda
-----
+include::deploy:partial$linux/verify-redpanda.adoc[leveloffset=+2]
 
 === Enable monitoring
 
@@ -245,7 +136,7 @@ This section provides information for creating your own automation for deploying
 
 TIP: Redpanda strongly recommends using one of these supported deployment tools. See xref:./production-deployment-automation.adoc[Automate Deploying for Production].
 
-=== Configure bootstrapping
+=== Configure a bootstrap file
 
 Redpanda cluster configuration is written with the Admin API and
 the `rpk cluster config` CLIs.
@@ -340,7 +231,7 @@ Starting with Redpanda version 23.1, the `/v1/features` endpoint also includes a
 == Next steps
 
 * If clients connect from a different subnet, see xref:manage:security/listener-configuration.adoc[Configure Listeners].
-* Observability is essential in production environments. See xref:manage:monitoring.adoc[]. 
+* Observability is essential in production environments. See xref:manage:monitoring.adoc[].
 
 include::shared:partial$suggested-reading.adoc[]
 
