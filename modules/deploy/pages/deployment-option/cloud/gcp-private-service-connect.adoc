@@ -16,7 +16,7 @@ After <<get-a-cloud-api-access-token,getting an access token>>, you can <<create
 == Requirements
 
 * You must use the Redpanda Cloud API to enable the Redpanda endpoint service for your clusters. Follow the steps below to <<get-a-cloud-api-access-token,get an access token>>. 
-* Use [gcloud](https://cloud.google.com/sdk/docs/install) to create the consumer-side resources, such as a VPC and forwarding rule, or modify an existing one to use the PSC service attachment created for your cluster.
+* Use https://cloud.google.com/sdk/docs/install[gcloud^] to create the consumer-side resources, such as a VPC and forwarding rule, or modify an existing one to use the PSC service attachment created for your cluster.
 
 == Get a Cloud API access token 
 
@@ -271,10 +271,10 @@ curl -v -X PATCH \
 
 . Make a https://docs.api.redpanda.com/#patch-/v1beta1/clusters/-cluster.id-[`PATCH /v1beta1/clusters/{cluster.id}`] request to update the cluster to enable PSC.
 +
-Set the following environment variables:
+Set the following environment variable:
 +
 --
-* `ACCEPT_LIST`: a JSON list specifying the projects from which incoming connections will be accepted. All other sources. For example, `[{"source": "consumer-project-ID-1"},{"source": "consumer-project-ID-2"}]`.
+`ACCEPT_LIST`: a JSON list specifying the projects from which incoming connections will be accepted. All other sources. For example, `[{"source": "consumer-project-ID-1"},{"source": "consumer-project-ID-2"}]`.
 --
 +
 [,bash]
@@ -312,7 +312,7 @@ You can test the PSC connection from any VM or container in the consumer VPC. If
 +
 [,bash]
 ----
-REDPANDA_BROKERS='<broker URL>:30292'
+REDPANDA_BROKERS='<broker-url>:30292'
 REDPANDA_SASL_MECHANISM='<SCRAM-SHA-256 or SCRAM-SHA-512>'
 REDPANDA_SASL_USERNAME='<username>'
 REDPANDA_SASL_PASSWORD='<password>'
@@ -334,24 +334,71 @@ rpk topic create psc-test
 
 . Produce to the test topic.
 +
+[tabs]
+====
+rpk::
++
 [,bash]
 ----
 echo 'hello PSC!' | rpk topic produce psc-test
 ----
+Curl::
++
+[,bash]
+----
+curl -s \
+  -X POST \
+  ${REDPANDA_BROKERS}/topics/psc-test \
+  -H "Content-Type: application/vnd.kafka.json.v2+json" \
+  -d '{
+  "records":[
+      {
+          "value":"Redpanda",
+          "partition":0
+      },
+      {
+          "value":"HTTP proxy",
+          "partition":1
+      },
+      {
+          "value":"Test event",
+          "partition":2
+      }
+  ]
+}'
+----
+====
 
 . Consume from the test topic.
++
+[tabs]
+====
+rpk::
 +
 [,bash]
 ----
 rpk topic consume psc-test -n 1
 ----
+Curl::
++
+[,bash]
+----
+curl -s -o /dev/null -w "%{http_code}" \
+  -X POST \
+  ${REDPANDA_BROKERS}/subscription"\
+  -H "Content-Type: application/vnd.kafka.v2+json" \
+  -d '{
+  "topics": [
+     "psc-test"
+  ]
+}'
+----
+====
 
 == Access Redpanda services through VPC endpoint
 
-The service attachment exposes 2 sets of ports:
+The service attachment exposes a set of seed ports. The seed ports load balance requests among brokers. Use the following ports for initiating a connection from a consumer:
 
-* *Seed ports*: These ports load balance requests among brokers. Useful for initiating a connection from a client.
-+
 |=== 
 | Redpanda service | Default seed port 
 
@@ -359,21 +406,3 @@ The service attachment exposes 2 sets of ports:
 | HTTP Proxy | 30282 
 | Schema Registry | 30081 
 |===
-
-* *Broker-API-specific ports*: These ports route requests to a specific API on a specific broker. Can be determined from the broker ID or number.
-
-For Kafka API:
-
-- 32092: Kafka API on broker 0
-- 32093: Kafka API on broker 1
-- 32094: Kafka API on broker 2  
-Etc.
-
-For HTTP Proxy:
-
-- 35082: HTTP Proxy API on broker 0
-- 35083: HTTP Proxy API on broker 1
-- 35084: HTTP Proxy API on broker 1  
-Etc.
-
-NOTE: There are no broker-API-specific ports for the Schema Registry because it's a 100% stateless API, which means that any broker can process any request.
