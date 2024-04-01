@@ -1,13 +1,15 @@
 [[bootstrapping]]
 = Bootstrap broker configurations
 
-Each broker requires a set of broker configurations that determine how all brokers communicate with each other and with clients. Bootstrapping a cluster configures the listener addresses and advertised addresses, which ensure proper network connectivity and accessibility.
+Each broker requires a set of broker configurations that determine how all brokers communicate with each other and with clients. Bootstrapping a cluster configures the glossterm:listener[listeners], glossterm:seed-server[seed servers], and glossterm:advertised listener[advertised listeners], which ensure proper network connectivity and accessibility.
+
+Starting in version 23.3.8, `rpk` enhances the bootstrapping process with additional flags for configuring advertised listener addresses directly.
 
 Use the xref:reference:rpk/rpk-redpanda/rpk-redpanda-config-bootstrap.adoc[`rpk redpanda config bootstrap`] command to bootstrap Redpanda:
 
 [,bash]
 ----
-sudo rpk redpanda config bootstrap --self <listener-address> --ips <seed-server1-ip>,<seed-server2-ip>,<seed-server3-ip> && \
+sudo rpk redpanda config bootstrap --self <listener-address> --advertised-kafka <advertised-kafka-address> --ips <seed-server1-ip>,<seed-server2-ip>,<seed-server3-ip> && \
 sudo rpk redpanda config set redpanda.empty_seed_starts_cluster false
 ----
 
@@ -17,18 +19,14 @@ Replace the following placeholders:
 
 ** Set the listener address to `0.0.0.0` to listen on all network interfaces available on the machine.
 ** Set the listener address to a specific IP address to bind the listener to that address, restricting connections to that interface.
-* `<seed-server-ips>`: The `--ips` flag lists all the seed servers in the cluster, including the one being started. Seed servers correspond to the `seed_servers` property in `redpanda.yaml`.
+* `<advertised-kafka-address>`: The `--advertised-kafka` flag sets a different advertised Kafka address, which is useful for scenarios where the accessible address differs from the bind address.
++
+IMPORTANT: Redpanda does not allow advertised addresses set to `0.0.0.0`. If you set any advertised addresses to `0.0.0.0`, Redpanda will output startup validation errors.
+* `<seed-server-ips>`: The `--ips` flag lists all the seed servers in the cluster, including the one being started.
 +
 NOTE: The `--ips` flag must be set _identically_ (with nodes listed in identical order) on each node.
 
-[IMPORTANT]
-====
-* Redpanda strongly recommends at least three seed servers when forming a cluster. A larger number of seed servers increases the robustness of consensus and minimizes any chance that new clusters get spuriously formed after brokers are lost or restarted without any data.
-* It's important to have one or more seed servers in each fault domain (such as rack or cloud AZ). A higher number provides a stronger guarantee that clusters don't fracture unintentionally.
-* It's possible to change the seed servers for a short period of time after a cluster has been created. For example, you may want to designate one additional broker as a seed server to increase availability. To do this without cluster downtime, add the new broker to xref:reference:node-properties.adoc[`seed_servers`] and restart Redpanda to apply the change on a broker-by-broker basis.
-====
-
-After bootstrapping Redpanda, your `/etc/redpanda/redpanda.yaml` configuration file will be updated to include your seed servers and listener addresses.
+Bootstrapping Redpanda updates your `/etc/redpanda/redpanda.yaml` configuration file:
 
 .`/etc/redpanda/redpanda.yaml`
 [source,yaml]
@@ -56,41 +54,21 @@ redpanda:
         - address: <listener-address>
           port: 9644
     advertised_rpc_api:
-        address: 127.0.0.1
+        address: <listener-address>
         port: 33145
     advertised_kafka_api:
-        - address: 127.0.0.1
+        - address: <advertised-kafka-address>
           port: 9092
 ----
 
-== Update the advertised addresses
+== Recommendations
 
-Advertised addresses are communicated to clients and other brokers, acting as the endpoints for establishing connections to the Redpanda cluster. Each broker must have a unique advertised address that reflects how it can be reached across the network. This setup is crucial for enabling both internal and external clients to connect to the cluster effectively.
-
-For brokers accessible on the public internet, you might use the broker's public IP address as its advertised address. For brokers in a private network, using the broker's private IP address as the advertised address minimizes exposure to the broader internet, enhancing security.
-
-Configuring advertised addresses ensures that all clients, regardless of their location, can connect to the Redpanda cluster.
-
-By default, <<bootstrapping>> sets the advertised addresses to `127.0.0.1` (localhost). This configuration will not work if you have more than one broker because each broker must advertise a unique address.
-
-Set the `advertised_rpc_api` and `advertised_kafka_api` addresses to public or private IP addresses for the broker.
-
-- Use public IP addresses for external clients or nodes.
-- Use private IP addresses for internal network connectivity.
-
-[source,yaml]
-----
-redpanda:
-  advertised_kafka_api:
-    - address: <ip-address>
-      port: 9092
-  advertised_rpc_api:
-    address: <ip-address>
-    port: 33145
-----
+* Redpanda Data strongly recommends at least three seed servers when forming a cluster. A larger number of seed servers increases the robustness of consensus and minimizes any chance that new clusters get spuriously formed after brokers are lost or restarted without any data.
+* It's important to have one or more seed servers in each fault domain (for example, in each rack or cloud AZ). A higher number provides a stronger guarantee that clusters don't fracture unintentionally.
+* It's possible to change the seed servers for a short period of time after a cluster has been created. For example, you may want to designate one additional broker as a seed server to increase availability. To do this without cluster downtime, add the new broker to the xref:reference:node-properties.adoc[`seed_servers`] property and restart Redpanda to apply the change on a broker-by-broker basis.
 
 == Listeners for mixed environments
 
-In environments where a Redpanda cluster needs to serve both internal services within a secure private network and external clients over the public internet, you can configure multiple listeners for the Kafka API. This setup allows you to specify different interfaces and ports for internal and external traffic.
+For clusters serving both internal and external clients, configure multiple listeners for the Kafka API to separate internal from external traffic.
 
 For more details, see xref:manage:security/listener-configuration.adoc[].
