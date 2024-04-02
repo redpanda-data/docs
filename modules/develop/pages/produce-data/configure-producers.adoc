@@ -4,7 +4,7 @@
 :page-categories: Clients, Development
 
 Producers are client applications that write data to Redpanda
-in the form of events. Producers communicate with Redpanda through the Kafka API.
+in the form of events. Producers communicate with Redpanda through the Kafka API. Redpanda guarantees data safety by flushing every message to disk before acknowledgement back to clients. 
 
 When a producer publishes a message to a Redpanda cluster, it sends it to a
 specific partition. Every event consists of a key and value. When selecting
@@ -19,16 +19,11 @@ is acknowledged by the broker. A message is considered acknowledged when
 replication of the message to the majority of other brokers responsible for the
 partition in the cluster is complete.
 
-While it may seem logical that the producer should wait for the broker to
-acknowledge the message, there are times when you can
-gain more by letting the messages fly to the broker, unconfirmed. Sometimes trading speed for durability is the best strategy. 
-
 == Producer optimization strategies
 
 You can optimize for speed (throughput and latency) or safety (durability and
 availability) by adjusting properties. Finding the optimal configuration depends
-on your use case and requires some trial and error. The strategies described here
-are guidelines, not rules.
+on your use case and requires some trial and error. 
 
 There are many configuration options within Redpanda. The
 configuration options mentioned here work best when combined with other
@@ -38,19 +33,19 @@ and xref:develop:consume-data/consumer-offsets.adoc[Consumer Offsets].
 
 === Optimize for speed
 
-From a producer perspective, when you want to get data into
-Redpanda as quickly as possible, you can maximize throughput in a variety of ways.
-You can experiment with other component's properties, like the topic
-partition size. You can also test <<Producer acknowledgment settings, acks>> settings.
+To get data into
+Redpanda as quickly as possible, you can maximize latency and throughput in a variety of ways: 
 
-For example, the quicker a producer receives a reply from the broker that the
+* Experiment with <<Producer acknowledgment settings, acks>> settings. The quicker a producer receives a reply from the broker that the
 message has been committed, the sooner it can send the next message, which
 generally results in higher throughput. Hence, if you set `acks=1`, then the
-leader broker would not have to wait for replication to occur, and it can reply
-as soon as it is finished committing the message. As mentioned earlier, this
+leader broker does not need to wait for replication to occur, and it can reply
+as soon as it finishes committing the message. This
 can result in less durability overall.
-
-You can also explore how the producer batches messages. Increasing the
+* Enable <<Write caching, write caching>>, which caches batches of writes in memory until the segment appender chunk is full, instead of flushing for every `acks=all` write. Write caching provides lower latency and higher write throughput at the expense of lower durability guarantees.
+* Experiment with other component's properties, like the topic
+partition size. 
+* Explore how the producer batches messages. Increasing the
 value of `batch.size` and `linger.ms` can increase throughput by making the
 producer add more messages into one batch before sending it to the broker and
 waiting until the batches can properly fill up. This approach negatively impacts
@@ -74,25 +69,21 @@ ordering of messages.
 
 == Write caching
 
-Write caching lets Kafka clients produce to and consume data from topics without explicitly first flushing the data to disk, even with `acks=all`. Clients are acknowledged as soon as writes are buffered on the desired set of replicas, following the `acks` level. Write caching provides lower latency and higher write throughput at the expense of lower durability guarantees. It is recommended for testing or benchmarking, and it is enabled by default for clusters in development mode. 
+Write caching lets Kafka clients produce to and consume data from topics without explicitly first flushing (fsync) the data to disk, even with `acks=all`. Clients are acknowledged as soon as writes are buffered on the desired set of replicas, following the `acks` level. Write caching provides lower latency and higher write throughput at the expense of lower durability guarantees. 
 
-Write caching disabled by default for clusters in production mode. You can enable it at the cluster or the topic level. 
+For clusters in development mode, write caching is enabled by default. For clusters in production mode, it is disabled. 
 
-Cluster-level properties:
+NOTE: Write caching is only recommended for testing or benchmarking. Because it has no durability guarantees, it should only be used with ephemeral data workloads. Leaving write caching disabled safeguards your data against complete power failures in a data center or availability zone. 
 
-* `write_caching`: Sets cluster-level write caching. Default for production mode cluster is `off`. The default for development mode clusters is `on`.
-* `raft_replica_max_flush_delay_ms`: Sets the time-based flush to disk. Default is 100ms.
-* `raft_replica_max_pending_flush_bytes`: Sets the size-based flush to disk. Default is 256 KB.
+To enable write caching in production mode, set the cluster-level property xref:reference:cluster-properties.adoc#write_caching[`write_caching`]:
 
-Topic-level properties: 
+`rpk cluster config set write_caching=on`
 
-* `write.caching`: Overwrites write_caching at the topic level.
-* `flush.ms`: Overwrites `raft_replica_max_flush_delay_ms` at the topic level.
-* `flush.bytes`: Overwrites `raft_replica_max_pending_flush_bytes` at the topic level.
-
-To overwrite the cluster-level setting at the topic level, run:
+To override the cluster-level setting at the topic level, set the topic-level property xref:reference:topic-properties.adoc#writecaching[`write.caching`]:
 
 `rpk topic alter-config my_topic --set write.caching=on`
+
+With `write.caching` set for a topic, Redpanda flushes to disk according to xref:reference:topic-properties.adoc#flushms[`flush.ms`] and xref:reference:topic-properties.adoc#flushbytes[`flush.bytes`], whichever is reached first. 
 
 == Producer acknowledgment settings
 
@@ -262,7 +253,7 @@ larger than the default of `0` causes the producer to send fewer, more
 efficient batches of messages. If you set the value to `0`, there is still a
 high chance messages arrive around the same time to be batched together.
 
-== Common producer configuration options
+== Common producer configurations
 
 === `compression.type`
 
