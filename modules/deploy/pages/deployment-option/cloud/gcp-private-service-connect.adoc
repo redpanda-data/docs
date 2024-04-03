@@ -302,6 +302,20 @@ Wait for the cluster to apply the new configuration (around 15 minutes). The PSC
 gcloud compute service-attachments list --project '<service-project-ID>'
 ----
 
+== Access Redpanda services through VPC endpoint
+
+After you have enabled PSC for your cluster, your connection URLs are available in the *How to Connect* section of the cluster overview in the Redpanda Cloud UI. 
+
+The PSC bootstrap server hostname is unique to each cluster. The service attachment exposes a set of seed ports for access to Redpanda services. The seed ports load balance requests among brokers. Make sure you use the following ports for initiating a connection from a consumer:
+
+|=== 
+| Redpanda service | Default seed port 
+
+| Kafka API | 30292 
+| HTTP Proxy | 30282 
+| Schema Registry | 30081 
+|===
+
 == Test the connection
 
 You can test the PSC connection from any VM or container in the consumer VPC. If configuring a client isn't possible right away, you can do these checks using `rpk` or curl:
@@ -312,7 +326,7 @@ You can test the PSC connection from any VM or container in the consumer VPC. If
 +
 [,bash]
 ----
-REDPANDA_BROKERS='<PSC-Kafka-API-seed-URL>'
+REDPANDA_BROKERS='<PSC-Kafka-API-bootstrap-server-URL>'
 REDPANDA_SASL_MECHANISM='<SCRAM-SHA-256-or-SCRAM-SHA-512>'
 REDPANDA_SASL_USERNAME='<username>'
 REDPANDA_SASL_PASSWORD='<password>'
@@ -348,7 +362,7 @@ Curl::
 ----
 curl -s \
   -X POST \
-  <PSC-HTTP-Proxy-seed-URL>/topics/psc-test \
+  "<PSC-HTTP-Proxy-bootstrap-server-URL>/topics/psc-test" \
   -H "Content-Type: application/vnd.kafka.json.v2+json" \
   -d '{
   "records":[
@@ -372,57 +386,10 @@ rpk topic consume psc-test -n 1
 ----
 Curl::
 +
---
-. Create a consumer.
-+
 [,bash]
 ----
 curl -s \
-  -X POST \
-  "<PSC-HTTP-Proxy-seed-URL>/consumers/test_group"\
-  -H "Content-Type: application/vnd.kafka.v2+json" \
-  -d '{
-  "format":"json",
-  "name":"test_consumer",
-  "auto.offset.reset":"earliest",
-  "auto.commit.enable":"false",
-  "fetch.min.bytes": "1",
-  "consumer.request.timeout.ms": "10000"
-}'
-----
-. Subscribe the consumer to the test topic.
-+
-[,bash]
-----
-curl -s -o /dev/null -w "%{http_code}" \
-  -X POST \
-  "<PSC-HTTP-Proxy-seed-URL>/test_group/instances/<instance>/subscription"\
-  -H "Content-Type: application/vnd.kafka.v2+json" \
-  -d '{
-  "topics": [
-     "psc-test"
-  ]
-}'
-----
-. Retrieve events from the topic.
-
-[,bash]
-----
-curl -s \
-  "<PSC-HTTP-Proxy-seed-URL>/records?timeout=1000&max_bytes=100000"\
+  "<PSC-HTTP-Proxy-bootstrap-server-URL>/topics/psc-test/partitions/0/records?offset=0&timeout=1000&max_bytes=100000"\
   -H "Accept: application/vnd.kafka.json.v2+json"
 ----
---
 ====
-
-== Access Redpanda services through VPC endpoint
-
-The service attachment exposes a set of seed ports. The seed ports load balance requests among brokers. Use the following ports for initiating a connection from a consumer:
-
-|=== 
-| Redpanda service | Default seed port 
-
-| Kafka API | 30292 
-| HTTP Proxy | 30282 
-| Schema Registry | 30081 
-|===
