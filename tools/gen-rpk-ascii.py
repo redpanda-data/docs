@@ -24,16 +24,7 @@ rpk_basic_command = ["rpk"]
 def assert_period(s):return s if s.endswith('.') else s + '.'
 
 def escape_chars(s):
-    s = s.replace("redpanda.yaml", "`redpanda.yaml`")
-    s = s.replace("<IP>", "|IP|")
-    s = s.replace("<port>", "|port|")
-    s = s.replace("<name>", "|name|")
-    s = s.replace("<host>", "|host|")
-    s = s.replace("<storage type>", "|storage type|")
-    s = s.replace("<vm type>", "|vm type|")
-    s = s.replace("<vendor>", "|vendor|")
-    s = s.replace("<host:port>", "|host:port|")
-    s = s.replace("<tuner name>", "|tuner name|")
+    
     s = s.replace("./<timestamp>-bundle.zip", "./&lt;timestamp&gt;-bundle.zip")
     return s
 
@@ -82,7 +73,9 @@ def execute_process(commands):
 
 
 def get_explanation(process_line):
-    return process_line[: process_line.find("Usage")].rstrip("\n").strip()
+    explanation_line = process_line[: process_line.find("Usage")].rstrip("\n").strip()
+    explanation_line = explanation_line.replace("redpanda.yaml","`redpanda.yaml`")
+    return explanation_line
 
 
 # Get the usage of the command. If it's initial command, look for available commands. If it's a final a command, then look for flags. Finally if neither are present, extract the usage. Example:
@@ -175,9 +168,13 @@ Use "rpk [command] --help" for more information about a command. """
 
 def extract_flags(process_line):
     if process_line.find('Use "rpk') != -1:
-        return process_line[process_line.find("Flags:") : process_line.find('Use "rpk')]
+        flag_line = process_line[process_line.find("Flags:") : process_line.find('Use "rpk')]
     else:
-        return process_line[process_line.find("Flags:") :]
+        flag_line = process_line[process_line.find("Flags:") :]
+    flag_line = flag_line.replace("\"/var/lib/redpanda/.config/rpk/rpk.yaml\"","`/var/lib/redpanda/.config/rpk/rpk.yaml`")
+    flag_line = flag_line.replace("$PWD/redpanda.yaml","`$PWD/redpanda.yaml`")
+    flag_line = flag_line.replace("/etc/redpanda/redpanda.yaml","`/etc/redpanda/redpanda.yaml`")
+    return flag_line
 
 
 # Extract new commands (multilevel) or flags from the available ones. Example:
