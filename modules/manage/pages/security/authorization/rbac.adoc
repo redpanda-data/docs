@@ -1,0 +1,274 @@
+= Configure Role-Based Access Control
+:description: Role-based access controls are an extension to access control lists for managing permissions at scale.
+:page-categories: Management, Security
+
+Role-based access control (RBAC) provides a way to configure permissions for provisioned users at scale, and provides a streamlined interface to manage user access to many resources. RBAC works in conjunction with all supported authentication methods.
+
+IMPORTANT: Redpanda only supports RBAC for self-hosted clusters. Configuration is only supported through the command line using xref:get-started:intro-to-rpk.adoc[`rpk`].
+
+== RBAC
+
+RBAC is designed to address the critical challenge of access management at scale. It alleviates the process of manually maintaining and verifying a set of raw permissions (access control lists, or ACLs) for a user base that may contain thousands of users. RBAC provides a method to onboard new employees easier, audit accesses faster, and adapt more readily to evolutions of usage and compliance needs.
+
+Using RBAC, you can define roles to reflect organizational structure or job duties. This approach decouples users and permissions through the assignment of roles. RBAC allows a one-to-many mapping of a given role to many users, dramatically reducing the number of custom policies needed for a resource from one per user, to one per group of users.
+
+=== RBAC terminology
+
+Under the RBAC framework, you create *roles*, grant *permissions* to those roles, and assign the roles to *users*. When you change the permissions for a given role, all users with that role automatically gain the modified permissions. You grant or deny permissions for a role by creating an ACL and specifying the RBAC role as either allowed or denied  respectively.
+
+Redpanda treats all *users* as security principals and defines them with the `Type:Name` syntax (for example, `User:mike`). You may omit the `Type` when defining a principal and Redpanda will assume the `User:` type. All examples here use the full syntax for clarity.
+
+See xref:security/authorization/acl.adoc[access control lists] for more information on defining ACLs and working with principals.
+
+==== Roles
+
+A role is a named collection of ACLs which may have users (security principals) assigned to it. You can assign any number of roles to a given user. When installing a new Redpanda cluster, no roles are provisioned by default. If you wish to use RBAC, you will need to create your first roles using your `superuser` account.
+
+See xref:security/authentication.adoc#create_superusers[configure authentication] for more information on creating and managing superusers.
+
+When performing an upgrade from older versions of Redpanda, all existing SASL/SCRAM users are assigned to the placeholder `Users` role. This role has no assigned ACLs. You will need to use your `superuser` account to create additional roles and assign appropriate ACLs as necessary.
+
+==== Policy conflicts
+
+You can assign a combination of ACLs and roles to any given principal. ACLs allow permissions, deny permissions, or specify a combination of both. As a result, users may at times have role assignments with conflicting policies. If this situation arises, the user is permitted to perform an operation if and only if:
+
+* There does not exist a DENY permission matching the operation.
+* There exists an ALLOW permission matching the operation.
+
+=== RBAC example
+
+Consider a scenario where you have a set of private topics used by your software engineers to publish application update information to users. All your private topics begin with the prefix `private-`. You might create a new `<SoftwareEng>` role to represent the software engineers given permission to write to these private topics. You would then assign the `<SoftwareEng>` role as the allowed role for a new ACL specifying read and write permissions to `private-*`. Using a wildcard includes all existing private topics as well as any new private topics you might create later. You then assign the new role to John and Jane, your two software engineers who will write messages to this topic. The `rpk` commands to accomplish this are:
+
+[,bash]
+----
+rpk security role create '<SoftwareEng>' /
+rpk security acl create --operation read --operation write --topic private-* --allow-role '<SoftwareEng>' /
+rpk security role assign '<SoftwareEng>' --principal User:john,User:jane
+----
+
+This diagram shows the relationships between users, roles, and ACLs:
+
+image::shared:rbac-roles.png[RBAC role assignments]
+
+Building off the diagram, consider the situation where you want to create a new topic, `private-software-versions`, where users self-report the version of a component they are using. If you were using the ACL authorization mechanism, you would need to assign this ACL to every user in your Redpanda installation. Using RBAC allows you to make one update and apply it to everyone with that role. Adding the write permissions for this topic to the `<User>` role means everyone with that role (which in our diagram is all authenticated users) gains the authorization immediately. The `rpk` command to accomplish this is:
+
+[,bash]
+----
+rpk security acl create --operation write --topic private-software-versions --allow-role <User>
+----
+
+== Manage users and roles
+
+Redpanda allows you to manage your RBAC configurations through the use of `rpk`. The Redpanda Admin API provides another means of interacting with RBAC. Examples of using `rpk` for each RBAC operation are given here.
+
+=== Create a role
+
+Creating a new role is a two-step process. First you define the role, giving it a unique and descriptive name. Second, you assign one or more ACLs to allow or deny access for the new role. This defines the permissions that are inherited by all users assigned to the role. It is possible to have an empty role with no ACLs assigned.
+
+Administrators use `rpk` to create a new role by issuing the command:
+
+[,bash]
+----
+rpk security role create <role_name>
+----
+
+After the role is created, administrators create new ACLs and assign this role either allow or deny permissions. For example:
+
+[,bash]
+----
+rpk security acl create ... --allow-role <role_name>
+----
+
+Creating a new role, named `red`:
+[,bash]
+----
+rpk security role create red
+----
+
+[,bash,role=no-copy]
+----
+Successfully created role "red"
+----
+
+=== Delete a role
+
+When a role is deleted, Redpanda carries out the following actions automatically:
+
+- All role ACLs are deleted.
+- All users' assignments to the role are removed.
+
+Redpanda lists all impacted ACLs and role assignments when executing this command. You will receive a prompt to confirm the deletion action. The delete operation is irreversible.
+
+Using `rpk`, administrators delete a role by issuing the command:
+
+[,bash]
+----
+rpk security role delete <role-name>
+----
+
+To delete the role named `red`:
+[,bash]
+----
+rpk security role delete red
+----
+
+[,bash,role=no-copy]
+----
+PERMISSIONS
+===========
+PRINCIPAL         HOST  RESOURCE-TYPE  RESOURCE-NAME  RESOURCE-PATTERN-TYPE  OPERATION  PERMISSION  ERROR
+RedpandaRole:red  *     TOPIC          books          LITERAL                ALL        ALLOW
+RedpandaRole:red  *     TOPIC          videos         LITERAL                ALL        ALLOW
+
+PRINCIPALS ( 1 )
+==============
+NAME   TYPE
+panda  User
+? Confirm deletion of role "red"?  This action will remove all associated ACLs and unassign role members Yes
+Successfully deleted role "red"
+----
+
+=== Assign a role
+
+Administrators may assign a role to any security principal. Principals are referred to using the format: `Type:Name`. Redpanda currently supports only the `User` type. If you omit the type, Redpanda assumes the `User` type by default. With this command you may assign the role to multiple principals at the same time by using a comma separator between each principal.
+
+Using `rpk`, administrators assign a role to a principal by issuing the command:
+
+[,bash]
+----
+rpk security role assign <role-name> --principal <principals>
+----
+
+Assign a role named "red":
+[,bash]
+----
+rpk security role assign red --principal bear,panda
+----
+
+[,bash,role=no-copy]
+----
+Successfully assigned role "red" to
+NAME   PRINCIPAL-TYPE
+bear   User
+panda  User
+----
+
+=== Unassign a role
+
+Administrators may remove a role assignment from a security principal without deleting the role. Principals are referred to using the format: `Type:Name`. Redpanda currently supports only the `User` type. If you omit the type, Redpanda assumes the `User` type by default. With this command you may remove the role from multiple principals at the same time by using a comma separator between each principal.
+
+Using `rpk`, administrators remove a role assignment from a principal by issuing the command:
+
+[,bash]
+----
+rpk security role unassign <role_name> --principal <principals>
+----
+
+Unassigning a role, named "red":
+[,bash]
+----
+rpk security role unassign red --principal panda
+----
+
+[,bash,role=no-copy]
+----
+Successfully unassigned role "red" from
+NAME   PRINCIPAL-TYPE
+panda  User
+----
+
+=== Edit role permissions
+
+Using `rpk`, administrators can modify an existing role by adding additional ACLs to it using the command:
+
+[,bash]
+----
+rpk security acl create ... --allow-role <role_name>
+----
+
+[,bash]
+----
+rpk security acl create ... --deny-role <role_name>
+----
+
+Administrators may also use `rpk` to remove ACLs from a role by using the command:
+
+[,bash]
+----
+rpk security acl delete ... --allow-role <role_name>
+rpk security acl delete ... --deny-role <role_name>
+----
+
+When using the xref:reference:rpk/rpk-security/rpk-security-acl-delete[`rpk security acl delete`] command, Redpanda deletes all ACLs matching the parameters supplied. Be careful to closely match the exact ACL you wish to delete when using this command. If you supply only the `--allow-role` parameter, for example, Redpanda will delete every ACL granting that role authorization to a resource.
+
+To list all the ACLs associated with a role, administrators may use the command:
+
+[,bash]
+----
+rpk security acl list --allow-role <role_name> --deny-role <role_name>
+----
+
+See also:
+
+* xref:security/authorization/acl.adoc[Access Control Lists] for more information on defining and using ACLs.
+* xref:reference:rpk/rpk-acl/rpk-acl-create.adoc[]
+* xref:reference:rpk/rpk-acl/rpk-acl-delete.adoc[]
+* xref:reference:rpk/rpk-acl/rpk-acl-list.adoc[]
+
+=== List all roles
+
+Using `rpk`, administrators can view a list of all actives roles by issuing the command:
+
+[,bash]
+----
+rpk security role list
+----
+
+Listing all roles:
+[,bash]
+----
+rpk security role list
+----
+
+[,bash,role=no-copy]
+----
+NAME
+red
+----
+
+=== Describe a role
+
+When managing roles, you may need to review the ACLs the role grants or the list of principals assigned to the role.
+
+Using `rpk`, administrators can view the details of a given role by issuing the command:
+
+[,bash]
+----
+rpk security role describe <role_name>
+----
+
+Describing a role, named "red":
+[,bash]
+----
+rpk security role describe red
+----
+
+[,bash,role=no-copy]
+----
+PERMISSIONS
+===========
+PRINCIPAL         HOST  RESOURCE-TYPE  RESOURCE-NAME  RESOURCE-PATTERN-TYPE  OPERATION  PERMISSION  ERROR
+RedpandaRole:red  *     TOPIC          books          LITERAL                ALL        ALLOW
+RedpandaRole:red  *     TOPIC          videos         LITERAL                ALL        ALLOW
+
+PRINCIPALS (1)
+==============
+NAME  TYPE
+panda User
+----
+
+== Suggested reading
+
+* xref:reference:rpk/rpk-security/rpk-security.adoc[`rpk security`]
+* xref:reference:rpk/rpk-security/rpk-security-acl.adoc[`rpk security acl`]
+* xref:reference:rpk/rpk-security/rpk-security-acl-create.adoc[`rpk security acl create`]
