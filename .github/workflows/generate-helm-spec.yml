@@ -1,0 +1,108 @@
+name: Generate Helm Spec Docs
+
+on:
+  repository_dispatch: # Allows other repositories to trigger this workflow
+    types: [generate-helm-spec-docs]
+  workflow_dispatch: # Allows manual trigger of the workflow
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      # Download the helm-docs tool which generates documentation from Helm charts.
+      - name: Download helm-docs
+        run: |
+          curl -sL https://github.com/norwoodj/helm-docs/releases/download/v1.11.0/helm-docs_1.11.0_Linux_x86_64.tar.gz | tar xz
+
+      # Add the helm-docs tool to the system's PATH for easy access.
+      - name: Add helm-docs to $PATH
+        run: |
+          echo "helm-docs" >> $GITHUB_PATH
+          sudo mv helm-docs /usr/local/bin/
+
+      # Checkout the main branch of the helm-charts repository.
+      - name: Checkout helm-charts repository
+        uses: actions/checkout@v3
+        with:
+          repository: redpanda-data/helm-charts
+          ref: main
+          path: helm-charts
+          token: ${{ secrets.ACTIONS_BOT_TOKEN }}
+
+      # Generate the Helm documentation using the helm-docs tool.
+      - name: Generate Helm docs
+        run: |
+          helm-docs
+        working-directory: ./helm-charts
+
+      # Install pandoc, a tool to convert between different markup formats.
+      - name: Install pandoc
+        run: |
+          sudo apt-get install pandoc
+
+      # Checkout the main branch of the redpanda-docs repository.
+      - name: Checkout documentation repository
+        uses: actions/checkout@v3
+        with:
+          repository: redpanda-data/docs
+          ref: main
+          path: redpanda-docs
+          token: ${{ secrets.ACTIONS_BOT_TOKEN }}
+
+      # Convert the generated Markdown Helm documentation to AsciiDoc format using pandoc.
+      - name: Convert Markdown to AsciiDoc
+        run: |
+          pandoc ./helm-charts/charts/redpanda/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
+          pandoc ./helm-charts/charts/console/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
+          pandoc ./helm-charts/charts/connectors/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-connector-helm-spec.adoc
+          pandoc ./helm-charts/charts/operator/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-operator-helm-spec.adoc
+
+      - name: Modify third-level headings format
+        run: |
+          sed -i 's/\(\[[0-9]*\)\]\./\1\\]\./g' ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
+          sed -i 's/\(\[[0-9]*\)\]\./\1\\]\./g' ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
+          sed -i 's/\(\[[0-9]*\)\]\./\1\\]\./g' ./redpanda-docs/modules/reference/pages/k-connector-helm-spec.adoc
+          sed -i 's/\(\[[0-9]*\)\]\]/\1\\]\]/g' ./redpanda-docs/modules/reference/pages/k-operator-helm-spec.adoc
+          sed -i 's/=== \(http\([^[]\|\%5[BbDd]\)*\)\[\([^]]*\)\]/=== link:++\1++\[\3\]/' ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
+          sed -i 's/=== \(http\([^[]\|\%5[BbDd]\)*\)\[\([^]]*\)\]/=== link:++\1++\[\3\]/' ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
+          sed -i 's/=== \(http\([^[]\|\%5[BbDd]\)*\)\[\([^]]*\)\]/=== link:++\1++\[\3\]/' ./redpanda-docs/modules/reference/pages/k-connector-helm-spec.adoc
+          sed -i 's/=== \(http\([^[]\|\%5[BbDd]\)*\)\[\([^]]*\)\]/=== link:++\1++\[\3\]/' ./redpanda-docs/modules/reference/pages/k-operator-helm-spec.adoc
+
+      - name: Correct AsciiDoc format
+        run: |
+          # Correct the title format
+          sed -i 's/^== # \(.*\)/= \1/' ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
+          sed -i 's/^== # \(.*\)/= \1/' ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
+          sed -i 's/^== # \(.*\)/= \1/' ./redpanda-docs/modules/reference/pages/k-connector-helm-spec.adoc
+          sed -i 's/^== # \(.*\)/= \1/' ./redpanda-docs/modules/reference/pages/k-operator-helm-spec.adoc
+
+          # Correct the description format
+          sed -i 's/^== description: \(.*\)/:description: \1/' ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
+          sed -i 's/^== description: \(.*\)/:description: \1/' ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
+          sed -i 's/^== description: \(.*\)/:description: \1/' ./redpanda-docs/modules/reference/pages/k-connector-helm-spec.adoc
+          sed -i 's/^== description: \(.*\)/:description: \1/' ./redpanda-docs/modules/reference/pages/k-operator-helm-spec.adoc
+
+      # Check if any changes were made in the documentation.
+      - name: Check if changes were made
+        id: check_changes
+        run: |
+          cd ./redpanda-docs
+          changes=$(git status --porcelain)
+          if [ -z "$changes" ]; then
+            echo "has_changes=false" >> $GITHUB_ENV
+          else
+            echo "has_changes=true" >> $GITHUB_ENV
+          fi
+
+      # If changes were detected, commit those changes.
+      - name: Commit changes
+        if: env.has_changes == 'true'
+        run: |
+          cd ./redpanda-docs
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git add modules/reference/*
+          git commit -m "auto-docs: Update Helm spec"
+          git push origin main
+        env:
+          ACCESS_TOKEN: ${{ secrets.ACTIONS_BOT_TOKEN }}
