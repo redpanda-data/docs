@@ -1,0 +1,70 @@
+name: Generate CRD Reference Docs
+
+on:
+  workflow_dispatch: # Allows manual trigger of the workflow
+  repository_dispatch: # Allows other repositories to trigger this workflow
+    types: [generate-crd-docs]
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout the specified branch from redpanda repository.
+      - name: Checkout redpanda repository
+        uses: actions/checkout@v3
+        with:
+          repository: redpanda-data/redpanda-operator
+          ref: main
+          path: redpanda
+          token: ${{ secrets.ACTIONS_BOT_TOKEN }}
+
+      # Checkout the redpanda-docs repository based on the FORMATTED_BRANCH.
+      - name: Checkout this repository
+        uses: actions/checkout@v3
+        with:
+          ref: main
+          repository: redpanda-data/docs
+          path: redpanda-docs
+          token: ${{ secrets.ACTIONS_BOT_TOKEN }}
+
+      # Download crd-ref-docs utility for doc generation.
+      - name: Download crd-ref-docs
+        run: |
+          curl -fLO https://github.com/elastic/crd-ref-docs/releases/download/v0.0.9/crd-ref-docs
+          chmod +x crd-ref-docs
+          sudo mv crd-ref-docs /usr/local/bin/
+
+      # Generate Operator CRD documentation.
+      - name: Generate Operator CRD Docs
+        run: |
+          crd-ref-docs --source-path=./redpanda/src/go/k8s/api/redpanda/v1alpha1 --max-depth=10 --templates-dir=./redpanda-docs/.github/crd-config/templates/asciidoctor/operator --config=./redpanda-docs/.github/crd-config/config.yaml --renderer=asciidoctor --output-path=./redpanda-docs/modules/reference/pages/k-crd.adoc
+
+      # Generate Topic CRD documentation.
+      - name: Generate Operator CRD Docs
+        run: |
+          crd-ref-docs --source-path=./redpanda/src/go/k8s/api/cluster.redpanda.com/v1alpha1 --max-depth=10 --templates-dir=./redpanda-docs/.github/crd-config/templates/asciidoctor/topic --config=./redpanda-docs/.github/crd-config/config.yaml --renderer=asciidoctor --output-path=./redpanda-docs/modules/reference/pages/k-topic-crd.adoc
+
+      # Check for any changes made in the documentation.
+      - name: Check if changes were made
+        id: check_changes
+        run: |
+          cd ./redpanda-docs
+          changes=$(git status --porcelain)
+          if [ -z "$changes" ]; then
+            echo "has_changes=false" >> $GITHUB_ENV
+          else
+            echo "has_changes=true" >> $GITHUB_ENV
+          fi
+
+      # If changes were detected, commit those changes.
+      - name: Commit changes
+        if: env.has_changes == 'true'
+        run: |
+          cd ./redpanda-docs
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git add .
+          git commit -m "auto-docs: Update CRD reference doc"
+          git push origin main
+        env:
+          ACCESS_TOKEN: ${{ secrets.ACTIONS_BOT_TOKEN }}
