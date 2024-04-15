@@ -3,11 +3,13 @@
 
 Cloud properties intro
 
-== Cloud
+== Cloud configuration
 
 === cloud_storage_access_key
 
-AWS or GCP access key.
+AWS or GCP access key. This access key is part of the credentials that Redpanda requires to authenticate with object storage services for Tiered Storage. This access key is used with the <<cloud_storage_secret_key>> to form the complete credentials required for authentication.
+
+To authenticate using IAM roles, see <<cloud_storage_credentials_source>>.
 
 *Requires Restart:* No
 
@@ -60,7 +62,7 @@ TLS port override.
 
 === cloud_storage_attempt_cluster_restore_on_bootstrap
 
-If set to `true`, when a cluster is started for the first time and there is cluster metadata in the configured cloud storage bucket, Redpanda automatically starts a cluster restore from that metadata. If using an automated method for deployment where it's not easy to predictably determine that a restore is needed, we recommend setting to `true`. Take care to ensure that in such deployments, a cluster bootstrap with a given bucket means that any previous cluster using that bucket is fully destroyed; otherwise tiered storage subsystems may interfere with each other.
+When set to `true`, Redpanda automatically retrieves cluster metadata from a specified object storage bucket at the cluster's first startup. This option is ideal for orchestrated deployments, such as Kubernetes. Ensure any previous cluster linked to the bucket is fully decommissioned to prevent conflicts between Tiered Storage subsystems.
 
 *Requires Restart:* Yes
 
@@ -92,7 +94,7 @@ Azure Data Lake Storage v2 endpoint override. Use when Hierarchical Namespaces a
 
 === cloud_storage_azure_adls_port
 
-Azure Data Lake Storage v2 port override. Also see cloud_storage_azure_adls_endpoint.
+Azure Data Lake Storage v2 port override. Also see <<cloud_storage_azure_adls_endpoint>>.
 
 *Requires Restart:* Yes
 
@@ -114,12 +116,6 @@ The name of the Azure container to use with Tiered Storage. If `null`, the prope
 
 NOTE: The container must belong to <<cloud_storage_azure_storage_account,cloud_storage_azure_storage_account>>.
 
-*Type*: string
-
-
-
-*Supported versions*: Redpanda v23.1 or later.
-
 *Requires Restart:* Yes
 
 *Nullable:* Yes
@@ -136,13 +132,7 @@ NOTE: The container must belong to <<cloud_storage_azure_storage_account,cloud_s
 
 The shared key to be used for Azure Shared Key authentication with the Azure storage account configured by <<cloud_storage_azure_storage_account,cloud_storage_azure_storage_account>>.  If `null`, the property is disabled.
 
-NOTE: Redpanda expects this key string to be Base64 encoded.
-
-*Type*: string
-
-
-
-*Supported versions*: Redpanda v23.1 or later.
+NOTE: Redpanda expects this key string to be base64 encoded.
 
 *Requires Restart:* No
 
@@ -160,12 +150,6 @@ NOTE: Redpanda expects this key string to be Base64 encoded.
 
 The name of the Azure storage account to use with Tiered Storage. If `null`, the property is disabled.
 
-*Type*: string
-
-
-
-*Supported versions*: Redpanda v23.1 or later.
-
 *Requires Restart:* Yes
 
 *Nullable:* Yes
@@ -180,7 +164,7 @@ The name of the Azure storage account to use with Tiered Storage. If `null`, the
 
 === cloud_storage_backend
 
-Optional cloud storage backend variant used to select API capabilities. If not supplied, will be inferred from other configuration parameters.
+Optional object storage backend variant used to select API capabilities. If not supplied, will be inferred from other configuration parameters.
 
 *Requires Restart:* Yes
 
@@ -194,7 +178,7 @@ Optional cloud storage backend variant used to select API capabilities. If not s
 
 === cloud_storage_background_jobs_quota
 
-The number of total requests that the cloud storage background jobs are allowed to make during one background housekeeping run. This is a per shard limit.
+The total number of requests the object storage background jobs can make during one background housekeeping run. This is a per-shard limit. Adjusting this limit can optimize object storage traffic and impact shard performance.
 
 *Requires Restart:* No
 
@@ -228,7 +212,8 @@ AWS or GCS bucket that should be used to store data.
 
 === cloud_storage_cache_check_interval_ms
 
-Minimum time between trims of tiered storage cache.  If a fetch operation requires trimming the cache, and the most recent trim was within this period, then trimming will be delayed until this period has elapsed.
+Minimum interval between Tiered Storage cache trims, measured in milliseconds.
+This setting dictates the cooldown period after a cache trim operation before another trim can occur. If a cache fetch operation requests a trim but the interval since the last trim has not yet passed, the trim will be postponed until this cooldown expires. Adjusting this interval helps manage the balance between cache size and retrieval performance.
 
 *Requires Restart:* No
 
@@ -240,13 +225,13 @@ Minimum time between trims of tiered storage cache.  If a fetch operation requir
 
 *Accepted values:* [`-17592186044416`, `17592186044415`]
 
-*Default:* `5s`
+*Default:* `5000`
 
 ---
 
 === cloud_storage_cache_chunk_size
 
-Size of chunks of segments downloaded into cloud storage cache. Reduces space usage by only downloading the necessary chunk from a segment.
+Size of chunks of segments downloaded into object storage cache. Reduces space usage by only downloading the necessary chunk from a segment.
 
 *Requires Restart:* Yes
 
@@ -280,7 +265,7 @@ The directory where the cache archive is stored. This property is mandatory when
 
 === cloud_storage_cache_max_objects
 
-Maximum number of objects that may be held in the tiered storage cache.  This applies simultaneously with `cloud_storage_cache_size`, and which ever limit is hit first will drive trimming of the cache.
+Maximum number of objects that may be held in the Tiered Storage cache.  This applies simultaneously with <<cloud_storage_cache_size>>, and whichever limit is hit first will trigger trimming of the cache.
 
 *Requires Restart:* No
 
@@ -354,7 +339,7 @@ Selects a strategy for evicting unused cache chunks.
 
 === cloud_storage_chunk_prefetch
 
-Number of chunks to prefetch ahead of every downloaded chunk.
+Number of chunks to prefetch ahead of every downloaded chunk. Prefetching additional chunks can enhance read performance by reducing wait times for sequential data access. A value of `0` disables prefetching, relying solely on on-demand downloads. Adjusting this parameter allows for tuning the balance between improved read performance and increased network and storage I/O.
 
 *Requires Restart:* No
 
@@ -438,13 +423,13 @@ Timeout for cluster metadata uploads.
 
 *Accepted values:* [`-17592186044416`, `17592186044415`]
 
-*Default:* `60s`
+*Default:* `60000`
 
 ---
 
 === cloud_storage_credentials_host
 
-The hostname to connect to for retrieving role based credentials. Derived from cloud_storage_credentials_source if not set. Only required when using IAM role based access.
+The hostname to connect to for retrieving role based credentials. Derived from <<cloud_storage_credentials_source>> if not set. Only required when using IAM role-based access.
 
 *Requires Restart:* Yes
 
@@ -460,7 +445,10 @@ The hostname to connect to for retrieving role based credentials. Derived from c
 
 === cloud_storage_credentials_source
 
-The source of credentials used to connect to cloud services.
+The source of credentials used to authenticate to object storage services.
+Required for AWS and GCS authentication with IAM roles.
+
+To authenticate using access keys, see <<cloud_storage_access_key>>.
 
 
 *Valid values*: config_file, aws_instance_metadata, sts, gcp_instance_metadata.
@@ -477,7 +465,7 @@ The source of credentials used to connect to cloud services.
 
 === cloud_storage_disable_chunk_reads
 
-Disable chunk reads and switch back to legacy mode where full segments are downloaded.
+Disable chunk reads and switch back to legacy mode where full segments are downloaded. When set to `true`, this option disables the more efficient chunk-based reads, causing Redpanda to download entire segments. This legacy behavior might be useful in specific scenarios where chunk-based fetching is not optimal.
 
 *Requires Restart:* No
 
@@ -493,7 +481,7 @@ Disable chunk reads and switch back to legacy mode where full segments are downl
 
 === cloud_storage_disable_metadata_consistency_checks
 
-Disable all metadata consistency checks. This will allow redpanda to replay logs with inconsistent tiered-storage metadata. Normally, this option should be disabled.
+Disable all metadata consistency checks to allow Redpanda to replay logs with inconsistent Tiered Storage metadata. Normally, this option should be disabled.
 
 *Requires Restart:* No
 
@@ -509,7 +497,7 @@ Disable all metadata consistency checks. This will allow redpanda to replay logs
 
 === cloud_storage_disable_read_replica_loop_for_tests
 
-Begins the read replica sync loop in tiered-storage-enabled topic partitions. The property exists to simplify testing and shouldn't be set in production.
+Begins the read replica sync loop in topic partitions with Tiered Storage enabled. The property exists to simplify testing and shouldn't be set in production.
 
 *Requires Restart:* No
 
@@ -527,7 +515,6 @@ Begins the read replica sync loop in tiered-storage-enabled topic partitions. Th
 
 Disable TLS for all S3 or GCS connections.
 
-*Type*: boolean.
 
 *Requires Restart:* No
 
@@ -543,7 +530,7 @@ Disable TLS for all S3 or GCS connections.
 
 === cloud_storage_disable_upload_consistency_checks
 
-Disable all upload consistency checks. This will allow redpanda to upload logs with gaps and replicate metadata with consistency violations. Normally, this options should be disabled.
+Disable all upload consistency checks to allow Redpanda to upload logs with gaps and replicate metadata with consistency violations. Normally, this option should be disabled.
 
 *Requires Restart:* No
 
@@ -559,7 +546,7 @@ Disable all upload consistency checks. This will allow redpanda to upload logs w
 
 === cloud_storage_disable_upload_loop_for_tests
 
-Begins the upload loop in tiered-storage-enabled topic partitions. The property exists to simplify testing and shouldn't be set in production.
+Begins the upload loop in topic partitions with Tiered Storage enabled. The property exists to simplify testing and shouldn't be set in production.
 
 *Requires Restart:* No
 
@@ -576,6 +563,8 @@ Begins the upload loop in tiered-storage-enabled topic partitions. The property 
 === cloud_storage_enable_compacted_topic_reupload
 
 Enable re-uploading data for compacted topics.
+When set to `true`, Redpanda can re-upload data for compacted topics to object storage, ensuring that the most current state of compacted topics is available in the cloud. Disabling this property (`false`) may reduce storage and network overhead but at the risk of not having the latest compacted data state in object storage.
+When set to `true`, Redpanda can re-upload data for compacted topics to object storage, ensuring that the most current state of compacted topics is available in the cloud. Disabling this property (`false`) may reduce storage and network overhead but at the risk of not having the latest compacted data state in object storage.
 
 *Requires Restart:* No
 
@@ -592,6 +581,8 @@ Enable re-uploading data for compacted topics.
 === cloud_storage_enable_remote_read
 
 Default remote read config value for new topics.
+When set to `true`, new topics are by default configured to allow reading data directly from object storage, facilitating access to older data that might have been offloaded as part of Tiered Storage. With the default set to `false`, remote reads must be explicitly enabled at the topic level.
+When set to `true`, new topics are by default configured to allow reading data directly from object storage, facilitating access to older data that might have been offloaded as part of Tiered Storage. With the default set to `false`, remote reads must be explicitly enabled at the topic level.
 
 *Requires Restart:* No
 
@@ -608,6 +599,8 @@ Default remote read config value for new topics.
 === cloud_storage_enable_remote_write
 
 Default remote write value for new topics.
+When set to `true`, new topics are by default configured to upload data to object storage. With the default set to `false`, remote write must be explicitly enabled at the topic level.
+When set to `true`, new topics are by default configured to upload data to object storage. With the default set to `false`, remote write must be explicitly enabled at the topic level.
 
 *Requires Restart:* No
 
@@ -623,7 +616,8 @@ Default remote write value for new topics.
 
 === cloud_storage_enable_scrubbing
 
-Enable scrubbing of cloud storage partitions. The scrubber validates the integrity of data and metadata uploaded to cloud storage.
+Enable routine checks (scrubbing) of object storage partitions. The scrubber validates the integrity of data and metadata uploaded to object storage.
+
 
 *Requires Restart:* No
 
@@ -639,7 +633,11 @@ Enable scrubbing of cloud storage partitions. The scrubber validates the integri
 
 === cloud_storage_enable_segment_merging
 
-Enables adjacent segment merging. The segments are reuploaded if there is an opportunity for that and if it will improve the tiered-storage performance.
+Enables adjacent segment merging. The segments are reuploaded if there is an opportunity for that and if it will improve the performance of Tiered Storage.
+
+*Related topics*: 
+
+* xref:manage:tiered-storage/#object-storage-housekeeping[Object storage housekeeping]
 
 *Requires Restart:* No
 
@@ -673,7 +671,7 @@ Enable object storage. Must be set to `true` to use xref:manage:tiered-storage.a
 
 === cloud_storage_full_scrub_interval_ms
 
-Time interval between a final scrub and thte next scrub.
+Interval, in milliseconds, between a final scrub and the next scrub.
 
 *Requires Restart:* No
 
@@ -709,7 +707,7 @@ Timeout for running the cloud storage garbage collection (ms).
 
 === cloud_storage_graceful_transfer_timeout_ms
 
-Time limit on waiting for uploads to complete before a leadership transfer.  If this is null, leadership transfers will proceed without waiting.
+Time limit on waiting for uploads to complete before a leadership transfer.  If this is `null`, leadership transfers will proceed without waiting.
 
 *Requires Restart:* No
 
@@ -727,7 +725,7 @@ Time limit on waiting for uploads to complete before a leadership transfer.  If 
 
 === cloud_storage_housekeeping_interval_ms
 
-Interval for cloud storage housekeeping tasks.
+Interval, in milliseconds, between object storage housekeeping tasks.
 
 *Requires Restart:* No
 
@@ -773,13 +771,13 @@ Duration to wait for a hydration request to be fulfilled, if hydration is not co
 
 *Accepted values:* [`-17592186044416`, `17592186044415`]
 
-*Default:* `600s`
+*Default:* `600000`
 
 ---
 
 === cloud_storage_idle_threshold_rps
 
-The cloud storage request rate threshold for idle state detection. If the average request rate for the configured period is lower than this threshold the cloud storage is considered being idle.
+The object storage request rate threshold for idle state detection. If the average request rate for the configured period is lower than this threshold, the object storage is considered idle.
 
 *Requires Restart:* No
 
@@ -795,7 +793,7 @@ The cloud storage request rate threshold for idle state detection. If the averag
 
 === cloud_storage_idle_timeout_ms
 
-Timeout used to detect idle state of the cloud storage API. If the average cloud storage request rate is below this threshold for a configured amount of time the cloud storage is considered idle and the housekeeping jobs are started.
+The timeout, in milliseconds, used to detect the idle state of the object storage API. If the average object storage request rate is below this threshold for a configured amount of time the object storage is considered idle and the housekeeping jobs are started.
 
 *Requires Restart:* No
 
@@ -807,7 +805,7 @@ Timeout used to detect idle state of the cloud storage API. If the average cloud
 
 *Accepted values:* [`-17592186044416`, `17592186044415`]
 
-*Default:* `10s`
+*Default:* `10000`
 
 ---
 
@@ -825,13 +823,13 @@ Initial backoff time for exponential backoff algorithm (ms).
 
 *Accepted values:* [`-17592186044416`, `17592186044415`]
 
-*Default:* `100ms`
+*Default:* `100`
 
 ---
 
 === cloud_storage_manifest_cache_size
 
-Amount of memory that can be used to handle tiered-storage metadata.
+Amount of memory that can be used to handle Tiered Storage metadata.
 
 *Requires Restart:* No
 
@@ -847,7 +845,7 @@ Amount of memory that can be used to handle tiered-storage metadata.
 
 === cloud_storage_manifest_cache_ttl_ms
 
-The time interval that determines how long the materialized manifest can stay in cache under contention. This parameter is used for performance tuning. When the spillover manifest is materialized and stored in cache and the cache needs to evict it it will use 'cloud_storage_materialized_manifest_ttl_ms' value as a timeout. The cursor that uses the spillover manifest uses this value as a TTL interval after which it stops referencing the manifest making it available for eviction. This only affects spillover manifests under contention.
+The interval, in milliseconds, determines how long the materialized manifest can stay in the cache under contention. This setting is used for performance tuning. When the spillover manifest is materialized and stored in the cache and the cache needs to evict it, it will use 'cloud_storage_materialized_manifest_ttl_ms' value as a timeout. The cursor that uses the spillover manifest uses this value as a TTL interval after which it stops referencing the manifest making it available for eviction. This only affects spillover manifests under contention.
 
 *Requires Restart:* No
 
@@ -859,13 +857,13 @@ The time interval that determines how long the materialized manifest can stay in
 
 *Accepted values:* [`-17592186044416`, `17592186044415`]
 
-*Default:* `10s`
+*Default:* `10000`
 
 ---
 
 === cloud_storage_manifest_max_upload_interval_sec
 
-Wait at least this long between partition manifest uploads. Actual time between uploads may be greater than this interval. If this is null, metadata will be updated after each segment upload.
+Minimum interval, in seconds, between partition manifest uploads. Actual time between uploads may be greater than this interval. If this is `null`, metadata will be updated after each segment upload.
 
 *Requires Restart:* No
 
@@ -877,7 +875,7 @@ Wait at least this long between partition manifest uploads. Actual time between 
 
 *Accepted values:* [`-17179869184`, `17179869183`]
 
-*Default:* `60s`
+*Default:* `60`
 
 ---
 
@@ -895,7 +893,7 @@ Manifest upload timeout (ms).
 
 *Accepted values:* [`-17592186044416`, `17592186044415`]
 
-*Default:* `10s`
+*Default:* `10000`
 
 ---
 
@@ -919,7 +917,8 @@ Maximum concurrent segment hydrations of remote data per CPU core.  If unset, va
 
 === cloud_storage_max_connection_idle_time_ms
 
-Max https connection idle time (ms).
+Defines the maximum duration an HTTPS connection to object storage can stay idle in milliseconds before being terminated.
+This setting reduces resource utilization by closing inactive connections. Adjusting this parameter can help balance keeping connections ready for subsequent requests and freeing resources associated with idle connections. 
 
 *Requires Restart:* No
 
@@ -937,7 +936,7 @@ Max https connection idle time (ms).
 
 === cloud_storage_max_connections
 
-Max number of simultaneous connections to S3 per shard. Includes connections used for both uploads and downloads.
+Maximum simultaneous S3 connections per shard, applicable to upload and download activities.
 
 *Units*: number of simultaneous connections.
 
@@ -957,7 +956,7 @@ Max number of simultaneous connections to S3 per shard. Includes connections use
 
 === cloud_storage_max_segment_readers_per_shard
 
-Maximum concurrent I/O cursors of materialized remote segments per CPU core.  If unset, value of `topic_partitions_per_shard` is used, i.e. one segment reader per partition if the shard is at its maximum partition capacity.  These readers are cachedacross Kafka consume requests and store a readahead buffer.
+Maximum concurrent I/O cursors of materialized remote segments per CPU core.  If unset, the value of `topic_partitions_per_shard` is used, where one segment reader per partition is used if the shard is at its maximum partition capacity.  These readers are cached across Kafka consume requests and store a readahead buffer.
 
 *Requires Restart:* No
 
@@ -991,7 +990,8 @@ The per-partition limit for the number of segments pending deletion from the clo
 
 === cloud_storage_max_throughput_per_shard
 
-Max throughput used by tiered-storage per shard in bytes per second. This value is an upper bound of the throughput available to the tiered-storage subsystem. This parameter is intended to be used as a safeguard and in tests when we need to set precise throughput value independent of actual storage media. Please use 'cloud_storage_throughput_limit_percent' instead of this parameter in the production environment.
+Maximum bandwidth allocated to Tiered Storage operations per shard, in bytes per second.
+This setting limits the Tiered Storage subsystem's throughput per shard, facilitating precise control over bandwidth usage in testing scenarios. In production environments, use `cloud_storage_throughput_limit_percent` for more dynamic throughput management based on actual storage capabilities.
 
 *Requires Restart:* No
 
@@ -1019,7 +1019,7 @@ Timeout for SI metadata synchronization.
 
 *Accepted values:* [`-17592186044416`, `17592186044415`]
 
-*Default:* `10s`
+*Default:* `10000`
 
 ---
 
@@ -1073,7 +1073,7 @@ Timeout to check if new data is available for partition in S3 for read replica.
 
 *Accepted values:* [`-17592186044416`, `17592186044415`]
 
-*Default:* `30s`
+*Default:* `30000`
 
 ---
 
@@ -1097,7 +1097,7 @@ Retention in bytes for topics created during automated recovery.
 
 AWS or GCP region that houses the bucket used for storage.
 
-*Type*: string.
+*Type*: string
 
 *Requires Restart:* No
 
@@ -1125,7 +1125,7 @@ Timeout for IAM role related operations (ms).
 
 *Accepted values:* [`-17592186044416`, `17592186044415`]
 
-*Default:* `30s`
+*Default:* `30000`
 
 ---
 
@@ -1151,7 +1151,7 @@ Jitter applied to the cloud storage scrubbing interval.
 
 AWS or GCP secret key.
 
-*Type*: string.
+*Type*: string
 
 *Requires Restart:* No
 
@@ -1185,7 +1185,7 @@ Time that segment can be kept locally without uploading it to the remote storage
 
 === cloud_storage_segment_size_min
 
-Smallest acceptable segment size in the cloud storage. Default: cloud_storage_segment_size_target/2.
+Smallest acceptable segment size in the object storage. Default: cloud_storage_segment_size_target/2.
 
 *Requires Restart:* No
 
@@ -1201,7 +1201,7 @@ Smallest acceptable segment size in the cloud storage. Default: cloud_storage_se
 
 === cloud_storage_segment_size_target
 
-Desired segment size in the cloud storage. Default: segment.bytes.
+Desired segment size in the object storage. The default is set in the topic-level `segment.bytes` property.
 
 *Requires Restart:* No
 
@@ -1235,7 +1235,7 @@ Log segment upload timeout (ms).
 
 === cloud_storage_spillover_manifest_max_segments
 
-Maximum number of elements in the spillover manifest that can be offloaded to the cloud storage. This property is similar to 'cloud_storage_spillover_manifest_size' but it triggers spillover based on number of segments instead of the size of the manifest in bytes. The property exists to simplify testing and shouldn't be set in the production environment.
+Maximum number of segments in the spillover manifest that can be offloaded to the object storage. This setting serves as a threshold for triggering data offload based on the number of segments, rather than the total size of the manifest. It is designed for use in testing environments to control the offload behavior more granularly. In production settings, manage offloads based on the manifest size through `cloud_storage_spillover_manifest_size` for more predictable outcomes.
 
 *Requires Restart:* No
 
@@ -1251,7 +1251,7 @@ Maximum number of elements in the spillover manifest that can be offloaded to th
 
 === cloud_storage_spillover_manifest_size
 
-The size of the manifest which can be offloaded to the cloud. If the size of the local manifest stored in redpanda exceeds cloud_storage_spillover_manifest_size x2 the spillover mechanism will split the manifest into two parts and one of them will be uploaded to S3.
+The size of the manifest which can be offloaded to the cloud. If the size of the local manifest stored in Redpanda exceeds `cloud_storage_spillover_manifest_size` by two times the spillover mechanism will split the manifest into two parts and one will be uploaded to S3.
 
 *Requires Restart:* No
 
@@ -1267,7 +1267,7 @@ The size of the manifest which can be offloaded to the cloud. If the size of the
 
 === cloud_storage_throughput_limit_percent
 
-Max throughput used by tiered-storage per node expressed as a percentage of the disk bandwidth. If the server has several disks Redpanda will take into account only the one which is used to store tiered-storage cache. Note that even if the tiered-storage is allowed to use full bandwidth of the disk (100%) it won't necessary use it in full. The actual usage depend on your workload and the state of the tiered-storage cache. This parameter is a safeguard that prevents tiered-storage from using too many system resources and not a performance tuning knob.
+Maximum throughput used by Tiered Storage per broker expressed as a percentage of the disk bandwidth. If the server has several disks, Redpanda will use the one that stores the Tiered Storage cache. Even if the Tiered Storage is allowed to use the full bandwidth of the disk (100%) it won't necessarily use it in full. The actual usage depends on your workload and the state of the Tiered Storage cache. This setting is a safeguard that prevents Tiered Storage from using too many system resources and is not a performance tuning knob.
 
 *Requires Restart:* No
 
@@ -1303,7 +1303,7 @@ Grace period during which the purger will refuse to purge the topic.
 
 Path to certificate that should be used to validate server certificate during TLS handshake.
 
-*Type*: string.
+*Type*: string
 
 *Requires Restart:* No
 
@@ -1405,7 +1405,7 @@ Initial backoff interval when there is nothing to upload for a partition (ms).
 
 === cloud_storage_upload_loop_max_backoff_ms
 
-Max backoff interval when there is nothing to upload for a partition (ms).
+Maximum backoff interval when there is nothing to upload for a partition (ms).
 
 *Requires Restart:* No
 
