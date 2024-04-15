@@ -3,7 +3,7 @@
 :page-aliases: cluster-administration:cluster-balancing.adoc
 :page-categories: Management
 
-Cluster balancing protects you from unbalanced systems that saturate resources on one or more brokers. This can affect throughput and latency. Furthermore, a cluster with replicas on a down broker risks availability loss if more brokers fail, and a cluster that keeps losing brokers without healing eventually risks data loss. Redpanda provides various tools to balance clusters for best performance. 
+Cluster balancing is crucial for optimal performance. Unbalanced clusters can saturate resources on one or more brokers, impacting  throughput and latency. Furthermore, a cluster with replicas on a down broker risks availability loss if more brokers fail, and a cluster that keeps losing brokers without healing eventually risks data loss. Redpanda provides various tools to balance clusters for best performance. 
 
 |===
 | Balancer |Description
@@ -18,28 +18,32 @@ Redpanda automatically provides leadership balancing when brokers are added or d
 | Topic-aware balancing that moves partition replicas. This helps avoid topic replica hotspots on one or a few specific brokers in your cluster. 
  +
  +
-When creating new topics and balancing existing partitions, Redpanda first distributes a topic's partition count evenly on each broker. Because different topics in a cluster can have vastly different load profiles, this balances the workload across brokers. Next, Redpanda balances the cluster's overall partition count.
+When creating new topics or balancing existing partitions, Redpanda first distributes partition count evenly on each broker. Because different topics in a cluster can have vastly different load profiles, this balances the workload across brokers. Next, Redpanda balances the overall partition count across the cluster.
  +
  +
 Redpanda automatically provides partition replica balancing when brokers are added or decommissioned.
 
 | xref:manage:cluster-maintenance/continuous-data-balancing.adoc[Continuous Data Balancing]
-| With an Enterprise license, you can additionally enable _Continuous Data Balancing_ to continuously monitor broker and rack availability and disk usage. This enables self-healing clusters that dynamically balance partitions. It also maintains adherence to rack-aware replica placement policy and self-heals after rack (or availability zone) failure or replacement. This balancer does not keep the relative fullness of each broker within a defined range, it just prevents hitting the fullness threshold of each individual broker. 
+
+| With an Enterprise license, you can additionally enable _Continuous Data Balancing_ to continuously monitor broker and rack availability and disk usage. This enables self-healing clusters that dynamically balance partitions. It also ensures adherence to rack-aware replica placement policy and self-heals after rack (or availability zone) failure or replacement. This balancer does not keep the relative fullness of each broker within a defined range, it just prevents hitting the fullness threshold of each individual broker. 
+ +
+ +
+This requires an xref:get-started:licenses.adoc#redpanda-enterprise-edition[Enterprise license].
 |===
 
 
 == Partition leadership balancing
 
-Every Redpanda topic-partition forms a Raft group with a single elected leader. All reads and writes are handled by the partition leader. Raft uses a heartbeat mechanism to maintain leadership authority and to trigger leader elections. The partition leader sends a periodic heartbeat (xref:reference:tunable-properties.adoc#raft_heartbeat_interval_ms[`raft_heartbeat_interval_ms`]) to all followers to assert its leadership. If a follower does not receive a heartbeat within a timeout duration (xref:reference:tunable-properties.adoc#raft_heartbeat_timeout_ms[`raft_heartbeat_timeout_ms`]), then it triggers an election to choose a new partition leader. For more information, see xref:get-started:architecture.adoc#raft-consensus-algorithm[Raft consensus algorithm] and xref:get-started:architecture.adoc#partition-leadership-elections[partition leadership elections].
+Every Redpanda topic-partition forms a Raft group with a single elected leader. This leader manages all reads and writes for the partition. Raft uses a heartbeat mechanism to maintain leadership authority and to initiate leader elections. The partition leader regularly sends heartbeats (xref:reference:tunable-properties.adoc#raft_heartbeat_interval_ms[`raft_heartbeat_interval_ms`]) to its followers. If a follower does not receive a heartbeat within a timeout (xref:reference:tunable-properties.adoc#raft_heartbeat_timeout_ms[`raft_heartbeat_timeout_ms`]), it triggers a new leader election. For more information, see xref:get-started:architecture.adoc#raft-consensus-algorithm[Raft consensus algorithm] and xref:get-started:architecture.adoc#partition-leadership-elections[partition leadership elections].
 
-Topic-aware leadership balancing is enabled by default with the xref:reference:cluster-properties.adoc#enable_leader_balancer[`enable_leader_balancer`] property. Automatic partition leadership balancing improves cluster performance by transferring the leadership of a broker's partitions to other replicas. It changes where data is read from and written to first, but leadership transfer does not involve any data transfer.
+By default, Redpanda enables topic-aware leadership balancing with the xref:reference:cluster-properties.adoc#enable_leader_balancer[`enable_leader_balancer`] property. Automatic partition leadership balancing improves cluster performance by transferring partition leadership from one broker to other replicas. This transfer changes where data is read from and written to first, but leadership transfer does not involve any data transfer.
 
 The xref:reference:cluster-properties.adoc#leader_balancer_mode[`leader_balancer_mode`] property ensures that each shard in a cluster has an equal number of partitions. It determines the movement of leadership for the replica set of a partition. It supports two modes:
 
-* `random_hill_climbing`: This mode randomly searches for potential leadership movements. If one is found that better balances the number of leaders per shard and the leaders of a given topic per broker, then the movement is applied to the cluster. This is the default.
-* `greedy_balanced_shards`: This mode uses a heuristic to search for leadership movements that better balance leaders per shard. It applies any movement it finds.
+* `random_hill_climbing`: This mode randomly searches for potential leadership movements. If it identifies a movement that improves the balance of leaders per shard and the leaders of a given topic per broker, then the change is applied to the cluster. This is the default.
+* `greedy_balanced_shards`: This mode uses a heuristic approach to find leadership movements that better balance leaders per shard. It applies any beneficial movements it finds.
 
-NOTE: In addition to the periodic heartbeat, leadership balancing can also occur when a xref:upgrade:rolling-upgrade.adoc#impact-of-broker-restarts[broker restarts] or when the controller leader changes (such as when a controller partition changes leader). The _controller leader_ manages the entire cluster. For example, when a broker is decommissioned, the controller leader creates a reallocation plan for all partition replicas allocated to that broker. The _partition leader_ then handles the reconfiguration for its Raft group.
+NOTE: In addition to the periodic heartbeat, leadership balancing can also occur when a xref:upgrade:rolling-upgrade.adoc#impact-of-broker-restarts[broker restarts] or when the controller leader changes (such as when a controller partition changes leader). The _controller leader_ manages the entire cluster. For example, when decommissioning a broker, the controller leader creates a reallocation plan for all partition replicas allocated to that broker. The _partition leader_ then handles the reconfiguration for its Raft group.
 
 === Manually change leadership
 
@@ -63,13 +67,13 @@ NOTE: In Kubernetes, run the `transfer_leadership` request on the Pod that is ru
 
 == Partition replica balancing
 
-While leadership balancing doesn't move any data, partition balancing does move partition replicas to alleviate disk pressure and to honor the configured replication factor across brokers and the additional redundancy across failure domains (such as racks). Depending on the amount of data being transferred, this may take some time. Partition balancing is invoked periodically, determined by the xref:reference:tunable-properties.adoc#partition_autobalancing_tick_interval_ms[`partition_autobalancing_tick_interval_ms`] property.
+While leadership balancing doesn't move any data, partition balancing does move partition replicas to alleviate disk pressure and maintain the configured replication factor across brokers and the additional redundancy across failure domains (such as racks). Depending on the data volume, this process may take some time. Partition balancing is invoked periodically as determined by the xref:reference:tunable-properties.adoc#partition_autobalancing_tick_interval_ms[`partition_autobalancing_tick_interval_ms`] property.
 
-For predictable and stable performance, Redpanda ensures that a topic's partitions are evenly distributed across all brokers in a cluster. It allocates partitions to random healthy brokers, to avoid topic hotspots, without needing to wait for a batch of moves to finish before it schedules the next batch.
+For predictable and stable performance, Redpanda ensures an even distribution of a topic's partitions across all brokers in a cluster. It allocates partitions to random healthy brokers to prevent topic hotspots, without waiting for a batch of moves to finish before scheduling the next batch.
 
-Different topics in a Redpanda cluster can have vastly different load profiles, but partitions of a single topic are likely to be quite similar. To distribute the workload of "workhorse" topics, Redpanda first tries to achieve equal count of a topic's partitions on each broker. After that balances, Redpanda then tries to achieve equal overall partition count on each broker. This topic-aware partition balancing is enabled by default with the xref:reference:cluster-properties.adoc#partition_autobalancing_topic_aware[`partition_autobalancing_topic_aware`] property.
+Different topics in a cluster can have vastly different load profiles, but partitions of a single topic are often similar. To distribute the workload of high-demand topics, Redpanda first aims for an equal count of a topic's partitions on each broker. After that balances, Redpanda then aims for an equal overall partition count on each broker. This topic-aware partition balancing is enabled by default with the xref:reference:cluster-properties.adoc#partition_autobalancing_topic_aware[`partition_autobalancing_topic_aware`] property.
 
-For example, suppose you have a Redpanda cluster that has 3 brokers and 1 topic `light` with 100 partitions and replication factor=3. Partitions are balanced, so each broker hosts 100 replicas of partitions of topic `light`. You expand the cluster with 3 new brokers and, before partition balancing moves partitions to the new broker, you create another topic `heavy`, which serves 10x more produce/consume requests than `light`. The `heavy` topic also with 100 partitions and replication factor=3. With topic-aware partition balancing, when creating `heavy`, Redpanda prioritizes an equal count of partitions: brokers 1, 2 and 3 host 100 replicas of `light` and 50 replicas of `heavy`, and brokers 4, 5 and 6 host 50 replicas of `heavy`. Partition balancing then kicks in and evens out the distribution of replicas of `light`, so that there are 50 replicas of `light` and 50 replicas of `heavy` on each broker.
+For example, suppose you have a Redpanda cluster that has 3 brokers and 1 topic `light` with 100 partitions and replication factor=3. Partitions are balanced, so each broker hosts 100 replicas of partitions of topic `light`. You expand the cluster with 3 new brokers and, before partition balancing moves partitions to the new broker, you create another topic `heavy`, which serves 10x more produce/consume requests than `light`. The `heavy` topic also has 100 partitions and replication factor=3. With topic-aware partition balancing, when creating `heavy`, Redpanda prioritizes an equal count of partitions: brokers 1, 2, and 3 host 100 replicas of `light` and 50 replicas of `heavy`, and brokers 4, 5, and 6 host 50 replicas of `heavy`. Partition balancing then kicks in and evens out the distribution of replicas of `light`, so that there are 50 replicas of `light` and 50 replicas of `heavy` on each broker.
 
 Redpanda supports flexible use of network bandwidth for replicating under-replicated partitions. For example, if only one partition is moving, it can use the entire bandwidth for the broker. Redpanda detects which shards are idle, so other shards can essentially steal bandwidth from them. Total bandwidth is controlled by the xref:reference:cluster-properties.adoc#raft_learner_recovery_rate[`raft_learner_recovery_rate`] property.
 
@@ -96,7 +100,7 @@ This is the default setting.
 | `continuous`
 | Redpanda continuously monitors the cluster for broker failures and high disk usage and automatically redistributes partitions to maintain optimal performance and availability. It also monitors rack availability after failures, and for a given partition, it tries to move excess replicas from racks that have more than one replica to racks where there are none. See xref:./continuous-data-balancing.adoc[Configure Continuous Data Balancing]. +
  +
-This option requires an Enterprise license.
+This requires an Enterprise license.
 
 | `off`
 | All partition balancing from Redpanda is turned off. +
