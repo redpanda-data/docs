@@ -97,8 +97,11 @@ resources:
   cpu:
     cores: 200m
 ----
+
+When you use millicores, <<pinning, CPU pinning>> is disabled.
 ====
 
+[[pinning]]
 === Disable pinning in shared environments
 
 By default, Redpanda pins its threads to all cores that you allocate to it.
@@ -193,7 +196,7 @@ spec:
     resources:
       memory:
         container:
-          # Omit min to set it to the same value as max.
+          # If omitted, the `min` value is equal to the `max` value (requested resources defaults to limits)
           # min:
           max: <number><unit>
 ----
@@ -216,7 +219,7 @@ Helm::
 resources:
   memory:
     container:
-      # Omit min to set it to the same value as max.
+      # If omitted, the `min` value is equal to the `max` value (requested resources defaults to limits)
       # min:
       max: <number><unit>
 ----
@@ -237,7 +240,122 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 --
 ======
 
-Setting the `min` and `max` configurations to the same values ensures that Kubernetes assigns a `Guaranteed` Quality of Service (QoS) class to your Pods. Kubernetes uses QoS classes to decide which Pods to evict from a node that runs out of resources. When a node runs out of resources, Kubernetes evicts Pods with a `Guaranteed` QoS last. For more details about QoS, see the https://kubernetes.io/docs/tasks/configure-pod-container/quality-service-pod/#create-a-pod-that-gets-assigned-a-qos-class-of-guaranteed[Kubernetes documentation^].
+== Set Guaranteed QoS for Redpanda Pods
+
+Kubernetes uses https://kubernetes.io/docs/tasks/configure-pod-container/quality-service-pod/#create-a-pod-that-gets-assigned-a-qos-class-of-guaranteed[quality of service (QoS) classes] to decide which Pods to evict from a node that runs out of resources. When a node runs out of resources, Kubernetes evicts Pods with a `Guaranteed` QoS last. This stability is crucial for Redpanda because it requires consistent computational and memory resources to maintain high performance.
+
+The `Guaranteed` QoS class is achieved when every container in a Pod has identical resource requests and limits set for both CPU and memory. This strict configuration signals to Kubernetes that these resources are critical and should not be throttled or reclaimed under normal operating conditions.
+
+To configure the Pods that run Redpanda with Guaranteed QoS, specify both resource requests and limits for all _enabled_ containers in the Pods, including helm_ref:statefulset.sideCars[].
+
+For example:
+
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    resources:
+      memory:
+        container:
+          min: <number><unit>
+          max: <number><unit>
+    statefulset:
+      sideCars:
+        configWatcher:
+          enabled: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"  # Matches the request
+              memory: "256Mi"  # Matches the request
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`memory.yaml`
+[,yaml]
+----
+resources:
+  memory:
+    container:
+      min: <number><unit>
+      max: <number><unit>
+statefulset:
+  sidecars:
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values memory.yaml --reuse-values
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set resources.memory.container.min=<number><unit> \
+  --set resources.memory.container.max=<number><unit> \
+```
+
+====
+--
+======
+
+IMPORTANT: Ensure that the `requests` are equal to `limits` for both CPU and memory. This configuration prevents Kubernetes from overcommitting resources on a node, providing a stable environment for your Redpanda workload.
+
+[source,bash]
+----
+kubectl --namespace=<namespace> get pod <pod-name> -o jsonpath='{ .status.qosClass}{"\n"}'
+----
+
+=== Static CPU assignments
+
+In addition to setting `Guaranteed` QoS, you can configure static CPU assignments by specifying whole integer values for `resources.cpu.cores` can further enhance performance. This approach aligns with Linux's Completely Fair Scheduler (CFS) by avoiding fractional CPU allocations, which can lead to thread interruptions and reduced throughput.
+
+When Redpanda is configured with whole CPU cores, it can effectively manage these cores without interference from the CFS bandwidth control, which is particularly important for achieving maximum data processing throughput.
+
+Example configuration in `redpanda-cluster.yaml`:
+
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  resources:
+    cpu:
+      cores: 4  # Specify as an even integer
+----
+
+TIP: Consider enabling Kubernetes's Static CPU Manager policy on your cluster nodes to provide exclusive CPU allocation for performance-sensitive applications like Redpanda. This setup is beneficial in production environments where resource predictability is crucial.
+
+If `resources.cpu.cores` is set using fractions (e.g., `1100m` for 1.1 cores), Redpanda may not fully utilize the allocated CPU due to CFS quotas, leading to potential performance bottlenecks. Always aim for whole number assignments to ensure that CPU resources are fully utilized by Redpanda.
+
+For further details on Kubernetes resource management and QoS classes, see the official Kubernetes documentation: https://kubernetes.io/docs/tasks/configure-pod-container/quality-service-pod/[Quality of Service for Pods^].
 
 == Configure storage capacity
 
