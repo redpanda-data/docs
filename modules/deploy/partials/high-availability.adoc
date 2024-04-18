@@ -41,11 +41,11 @@ Consider the following Redpanda deployment strategies for the most common types 
 
 | Global, systemic outage (DNS failures, routing failures)
 | Complete outage for all systems and services impacting customers and staff
-| Offline backups (Tiered Storage), replicas in 3rd-party domains
+| Offline backups, replicas in 3rd-party domains
 
 | Data loss or corruption (accidental or malicious)
 | Corrupt or unavailable data that also affects synchronous replicas
-| Offline backups (Tiered Storage)
+| Offline backups
 |===
 
 ifndef::env-kubernetes[See also: xref:./production/production-deployment.adoc[Deploy for Production]]
@@ -80,7 +80,7 @@ See also: <<Single-AZ deployments>>
 
 An availability zone (AZ) consists of one or more data centers served by high-bandwidth links with low latency (and typically within a close distance of one another). All AZs have discrete failure domains (power, cooling, fire, and network), but they also have common-cause failure domains, such as catastrophic events, that affect their geographical location. To safeguard against such possibilities, a cluster can be deployed across multiple AZs by configuring each AZ as a rack using rack awareness.
 
-Redpanda's internal implementation of Raft lets it tolerate losing a minority of replicas for a given topic or for controller groups. For this to translate to a multi-AZ deployment, however, it's necessary to deploy to at least three AZs (affording the loss of one zone). In a typical multi-AZ deployment, cluster performance is constrained by inter-AZ bandwidth and latency.
+Implementing Raft internally lets Redpanda tolerate losing a minority of replicas for a given topic or for controller groups. For this to translate to a multi-AZ deployment, however, it's necessary to deploy to at least three AZs (affording the loss of one zone). In a typical multi-AZ deployment, cluster performance is constrained by inter-AZ bandwidth and latency.
 
 See also: <<Multi-AZ deployments>>
 
@@ -112,7 +112,7 @@ endif::[]
 A multi-region deployment is similar to a multi-AZ deployment, in that it needs at least three regions to counter the loss of a single region. Note that this deployment strategy increases latency due to the physical distance between regions. Consider the following strategies to mitigate this problem:
 
 * Manually configure leadership of each partition to ensure that leaders are congregated in the primary region (closest to the producers and consumers).
-* Configure producers to have `acks=1` instead of `acks=all`; however, this introduces the possibility of losing messages if the primary region becomes lost or unavailable.
+* If your produce latency exceeds your tolerances, you can configure producers to have `acks=1` instead of `acks=all`; however, this introduces the possibility of losing messages if the primary region becomes lost or unavailable.
 
 === Multi-cluster deployment
 
@@ -205,6 +205,8 @@ See also: xref:manage:cluster-maintenance/cluster-balancing.adoc[Cluster Balanci
 In a disaster, your secondary cluster may still be available, but you need to quickly restore the original level of redundancy by bringing up a new primary cluster. In a containerized environment such as Kubernetes, all state is lost from pods that use only local storage. HA deployments with Tiered Storage address both these problems, since it offers long-term data retention and topic recovery.
 
 See also: xref:{tiered-storage}[Tiered Storage]
+
+IMPORTANT: Tiered Storage operates as an asynchronous process and only applies to closed segments. Any open segments or segments existing only in local storage are not recoverable by your new primary cluster.
 
 == Single-AZ deployments
 
@@ -391,7 +393,9 @@ Redpanda requires a minimum of three availability zones when using a multi-AZ ap
 
 === Multi-AZ optimization
 
-You can configure follower fetching to help ease the latency problems associated with a multi-AZ configuration. This is achieved by configuring consumers to advertise their preferred rack using the `client.rack` option within their consumer configuration. This allows consumers to read data from their closest replica rather than always reading from a (potentially non-local) partition leader. Using this capability has the additional benefit of reducing non-local network traffic and thereby minimizing any cross-AZ network charges.
+You can configure follower fetching to help ease the cross-AZ cost problems associated with a multi-AZ configuration. This is achieved by configuring consumers to advertise their preferred rack using the `client.rack` option within their consumer configuration. This allows consumers to read data from their closest replica rather than always reading from a (potentially non-local) partition leader.
+
+Enabling follower fetching has the additional potential benefit of reducing broker latency. If the nearest replica is lagging, however, you may instead encounter increased data latency. Make sure to monitor your system to determine if the cost savings are worth this data latency risk.
 
 === Multi-AZ example
 
