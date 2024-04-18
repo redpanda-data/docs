@@ -10,9 +10,9 @@ The network bandwidth and disk utilization of brokers may be overloaded by clien
 
 To manage the volume of traffic going through a broker, Redpanda implements throughput quotas on the ingress and egress sides of every broker. The throughput quota accounts for all Kafka API traffic going in or out of a broker, with the value of quota representing the allowed rate of data passing through in one direction. When a connection is in breach of the quota, the throttler advises the client about the delay (throttle time) that would bring the rate back to the allowed level, and it implements that delay before handling Kafka API requests. To control the quotas, Redpanda provides configurable rate limits for total ingress and egress traffic through a broker.
 
-With Redpanda's xref:get-started:architecture.adoc#thread-per-core-model[thread-per-core model], the Kafka API traffic to and from a client connection is processed by a single core (shard). In order to manage throughput quotas efficiently, broker quotas are distributed between shards, and each per-shard quota is in turn shared by all connections served by the shard. Splitting broker quota optimally between shards is done behind the scenes by the quota balancer component.
+The throttling mechanism uses shared token buckets, one for ingress and one for egress. Tokens are added to the buckets at a constant rate and the number of tokens added is based on the amount of time elapsed since the last request for tokens. If the number of tokens in the bucket is below the `kafka_throughput_replenish_threshold`, then the bucket is topped up.
 
-To distribute the broker throughput quota, the balancer periodically monitors the throughput rate of a broker's shards, and it distributes more quota to the shards that can make better use of it than the others.
+Each request removes tokens from the corresponding ingress or egress bucket. If the bucket goes negative, Redpanda adds a throttling delay to the response which represents the amount of time needed for the bucket to return to a positive number of tokens. The delay will not exceed `max_kafka_throttle_delay_ms`. The shared bucket is topped up based on the amount of time since the last request for tokens.
 
 The properties for broker-wide throughput quota balancing are configured at the cluster level, for all brokers in a cluster:
 
@@ -29,7 +29,7 @@ The properties for broker-wide throughput quota balancing are configured at the 
 | The maximum delay inserted in the data path of Kafka API requests to throttle them down. Configuring this to be less than the Kafka client timeout can ensure that the delay that's inserted won't be long enough to cause a client timeout by itself.
 
 | xref:reference:tunable-properties.adoc#kafka_throughput_replenish_threshold[kafka_throughput_replenish_threshold]
-|
+| The threshold for refilling a token bucket. This is automatically clamped to the corresponding throughput limit for ingress or egress.
 
 |===
 
