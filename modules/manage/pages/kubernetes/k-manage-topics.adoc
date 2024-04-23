@@ -123,6 +123,108 @@ The cleanup policy determines how to manage the partition log files when they re
 
 If the cleanup policy is `delete` or `compact,delete` you can <<Delete records from a topic>>.
 
+=== Configure write caching
+
+Write caching is a relaxed mode of xref:develop:produce-data/configure-producers.adoc#acksall[`acks=all`] that provides better performance at the expense of durability. It acknowledges a message as soon as it is received and acknowledged on a majority of brokers, without waiting for it to be written to disk. This provides lower latency while still ensuring that a majority of brokers acknowledge the write.
+
+Write caching applies to user topics. It does not apply to transactions or consumer offsets. Transactions and offset commits are always fsynced.
+
+NOTE: For clusters in xref:reference:rpk/rpk-redpanda/rpk-redpanda-mode.adoc#development-mode[development mode], write caching is enabled by default. For clusters in production mode, it is disabled by default.
+
+Only enable write caching on workloads that can tolerate some data loss in the case of multiple, simultaneous broker failures. Leaving write caching disabled safeguards your data against complete data center or availability zone failures.
+
+==== Configure at cluster level
+
+To enable write caching by default in all user topics, set the cluster-level property xref:reference:cluster-properties.adoc#write_caching_default[`write_caching_default`]:
+
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    config:
+      cluster:
+        write_caching_default: true
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+
+[tabs]
+====
+--values::
++
+.`write-caching.yaml`
+[,yaml]
+----
+config:
+  cluster:
+    write_caching_default: true
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values write-caching.yaml --reuse-values
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set config.cluster.write_caching_default=true
+```
+
+====
+--
+======
+
+With `write_caching` enabled at the cluster level, Redpanda fsyncs to disk according to xref:reference:cluster-properties.adoc#raftreplicamaxpendingflushbytes[`raft_replica_max_pending_flush_bytes`] and xref:reference:cluster-properties.adoc#raftreplicamaxflushdelayms[`raft_replica_max_flush_delay_ms`], whichever is reached first.
+
+==== Configure at topic level
+
+To override the cluster-level setting at the topic level, set the topic-level property xref:reference:topic-properties.adoc#writecaching[`write.caching`]:
+
+.`example-topic.yaml`
+[,yaml,lines=9]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Topic
+metadata:
+  name: chat-room
+spec:
+  partitions: 3
+  replicationFactor: 3
+  additionalConfig:
+    write.caching: true
+  kafkaApiSpec:
+    brokers:
+      - "redpanda-0.redpanda.<namespace>.svc.cluster.local:9093"
+      - "redpanda-1.redpanda.<namespace>.svc.cluster.local:9093"
+      - "redpanda-2.redpanda.<namespace>.svc.cluster.local:9093"
+    tls:
+      caCertSecretRef:
+        name: "redpanda-default-cert"
+        key: "ca.crt"
+----
+
+With `write.caching` enabled at the topic level, Redpanda fsyncs to disk according to xref:reference:topic-properties.adoc#flushms[`flush.ms`] and xref:reference:topic-properties.adoc#flushbytes[`flush.bytes`], whichever is reached first.
+
 == Verify a topic
 
 After deploying a Topic resource, verify that the Redpanda Operator reconciled it.
