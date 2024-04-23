@@ -38,19 +38,15 @@ Redpanda is designed to maximize throughput by xref:get-started:architecture.ado
 - **Loss of CPU cache affinity**: As processes move across cores, they lose the cache locality, leading to increased cache misses and higher latency.
 - **Scheduling latency**: Dynamic CPU allocation can introduce delays as the scheduler determines which core a process should run on, based on current load and availability.
 
-Enabling CPU pinning for Redpanda in Kubernetes requires the following:
-
-- *Static CPU Manager policy*: To enable CPU pinning in Kubernetes, you must enable the https://kubernetes.io/docs/tasks/administer-cluster/cpu-management-policies/#static-policy[`static` CPU Manager policy], which bypasses the default CPU allocation behavior managed by the CFS.
-+
-When the `static` policy is enabled, each Pod is assigned specific CPU cores, and these assignments remain constant throughout the Pod's lifecycle. This fixed allocation is crucial for Redpanda in production, because it maintains CPU cache affinity. Cache affinity refers to the performance benefit that arises when a process is able to repeatedly access data from the same CPU cache, rather than re-fetching the data from main memory or a distant cache associated with another CPU core.
-- *Overprovisioning disabled (default)*: When overprovisioning is disabled in Redpanda, each thread runs on a dedicated core for maximum performance.
-- *Guaranteed quality of service for all Pods that run Redpanda*: Only containers that are both part of a https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/#guaranteed[`Guaranteed` Pod] and have integer CPU requests are assigned exclusive CPUs.
+To enable CPU pinning in Kubernetes, you must enable the https://kubernetes.io/docs/tasks/administer-cluster/cpu-management-policies/#static-policy[`static` policy] for the CPU manager. With this policy enabled, the CPU Manager controls a shared pool of CPUs. Initially, this shared pool contains all the CPUs in the worker node. However, when a container is created with an integral CPU request in a https://kubernetes.io/docs/tasks/configure-pod-container/quality-service-pod/#create-a-pod-that-gets-assigned-a-qos-class-of-guaranteed[`Guaranteed` Pod], CPUs for that container are removed from the shared pool and assigned exclusively to that container for its lifetime. Other containers are migrated off these exclusively allocated CPUs.
 
 === Enable CPU pinning
 
+To enable CPU pinning for Redpanda in Kubernetes:
+
 . Ensure that your worker nodes have enough CPU cores to allocate to Redpanda. Sharing cores with other applications can negate the benefits of CPU pinning.
 
-. Ensure the https://kubernetes.io/docs/tasks/administer-cluster/cpu-management-policies/#static-policy[`static` policy] is enabled on your worker nodes.
+. Ensure the https://kubernetes.io/docs/tasks/administer-cluster/cpu-management-policies/#static-policy[`static` policy] is enabled for the CPU Manager on your Kubernetes cluster. With this policy enabled, a request for an integral CPU amount in a `Guaranteed` Pod will result in that container being allocated whole CPUs with a guarantee that no other container will run on them.
 +
 [source,bash]
 ----
@@ -58,7 +54,7 @@ When the `static` policy is enabled, each Pod is assigned specific CPU cores, an
 cat /var/lib/kubelet/config.yaml | grep cpuManagerPolicy
 ----
 
-. Configure the Redpanda container to use integer cores and disable overprovisioning:
+. Configure the Redpanda container to request an integral CPU amount:
 +
 [tabs]
 ======
@@ -122,16 +118,20 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 --
 <1> Set the number of cores to an integer such as `4`. The more cores that are allocated to Redpanda, the more throughput it can support. For a description of CPU resource units, see the https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#meaning-of-cpu[Kubernetes documentation^].
 +
-NOTE: If `resources.cpu.cores` is set using fractions, such as `1100m`, Redpanda may not use all the allocated CPU due to CFS quotas, leading to potential performance bottlenecks. When you use CPU fractions, <<pinning, CPU pinning>> is disabled.
-<2> This default setting allows each Redpanda thread to run on a dedicated core for maximum performance. This setting is recommended for environments where high throughput and low latency are critical, and sufficient hardware resources are available.
+NOTE: If you use fractional values, <<pinning, CPU pinning is disabled>>.
+<2> This default setting allows each Redpanda thread to run on a dedicated core for maximum performance.
 --
 
 . <<qos, Enable the `Guaranteed` QoS class for your Pods that run Redpanda>>.
++
+Only containers that are both part of a `Guaranteed` Pod and have integer CPU requests are assigned exclusive CPUs.
 
 [[pinning]]
 === Disable pinning in shared environments
 
 On a dedicated worker node, CPU pinning allows maximum throughput, but in a development environment, where you may run other Pods on the same worker node as Redpanda, CPU pinning can cause your other processes to run slower than usual. In these shared environments, you can enable overprovisioning so that Redpanda reduces the aggressiveness of CPU usage to prevent resource hogging and ensuring fair CPU time distribution among all processes.
+
+CAUTION: When `resources.cpu.cores` is set to a fractional value, such as `1100m`, Redpanda may not use all the allocated CPU due to CFS quotas, leading to potential performance bottlenecks.
 
 [tabs]
 ======
@@ -205,7 +205,7 @@ resources:
 [[memory]]
 == Configure memory resources
 
-Memory configuration is another critical aspect of resource management. On a worker node, Kubernetes and Redpanda processes are running at the same time, including the Seastar subsystem that is built into the Redpanda binary. Each of these processes consumes memory. You can configure the memory resources that are allocated to these processes.
+On a worker node, Kubernetes and Redpanda processes are running at the same time, including the Seastar subsystem that is built into the Redpanda binary. Each of these processes consumes memory. You can configure the memory resources that are allocated to these processes.
 
 By default, the Helm chart allocates 80% of the configured memory in `resources.memory.container` to Redpanda, with the remaining reserved for overhead such as the Seastar subsystem and other container processes.
 Redpanda Data recommends this default setting.
@@ -277,8 +277,8 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 --
 ======
 
-<1> The amount of memory to give Redpanda, Seastar, and the other container processes. You should give Redpanda at least 2 Gi of memory per core. Given that the Helm chart allocates 80% of the container's memory to Redpanda, leaving the rest for the Seastar subsystem and other processes, set this value to at least 2.5 Gi per core to ensure Redpanda has a full 2 Gi. Redpanda supports the following memory resource units: B, K, M, G, Ki, Mi, and Gi. Memory units are converted to the nearest whole MiB. For a description of memory resource units, see the https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#meaning-of-memory[Kubernetes documentation^].
-<2> For production, enable memory locking to prevent the operating system from paging out Redpanda's memory to disk, which can significantly impact performance.
+<1> For production, enable memory locking to prevent the operating system from paging out Redpanda's memory to disk, which can significantly impact performance.
+<2> The amount of memory to give Redpanda, Seastar, and the other container processes. You should give Redpanda at least 2 Gi of memory per core. Given that the Helm chart allocates 80% of the container's memory to Redpanda, leaving the rest for the Seastar subsystem and other processes, set this value to at least 2.5 Gi per core to ensure Redpanda has a full 2 Gi. Redpanda supports the following memory resource units: B, K, M, G, Ki, Mi, and Gi. Memory units are converted to the nearest whole MiB. For a description of memory resource units, see the https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#meaning-of-memory[Kubernetes documentation^].
 
 [[qos]]
 == Quality of service and resource guarantees
