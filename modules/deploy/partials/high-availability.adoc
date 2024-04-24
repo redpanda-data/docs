@@ -24,11 +24,11 @@ Consider the following Redpanda deployment strategies for the most common types 
 | Failure | Impact | Mitigation strategy
 
 | Broker failure
-| Loss of function for an individual broker or for any virtual machine (VM) that hosts the broker
+| Loss of function for an individual glossterm:broker[^] or for any virtual machine (VM) that hosts the broker
 | Multi-broker deployment
 
 | Rack or switch failure
-| Loss of brokers/VMs hosted within that rack, or loss of connectivity to them
+| Loss of brokers/VMs hosted within that glossterm:rack[^], or loss of connectivity to them
 | Multi-broker deployment spread across multiple racks or network failure domains
 
 | Data center failure
@@ -41,11 +41,11 @@ Consider the following Redpanda deployment strategies for the most common types 
 
 | Global, systemic outage (DNS failures, routing failures)
 | Complete outage for all systems and services impacting customers and staff
-| Offline backups (Tiered Storage), replicas in 3rd-party domains
+| Offline backups, replicas in 3rd-party domains
 
 | Data loss or corruption (accidental or malicious)
 | Corrupt or unavailable data that also affects synchronous replicas
-| Offline backups (Tiered Storage)
+| Offline backups
 |===
 
 ifndef::env-kubernetes[See also: xref:./production/production-deployment.adoc[Deploy for Production]]
@@ -61,7 +61,7 @@ This section explains the trade-offs with different HA configurations.
 
 === Multi-broker deployment
 
-Redpanda is designed to be deployed in a cluster that consists of at least three brokers. Although clusters with a single broker are convenient for development and testing, they aren't resilient to failure. Adding brokers to a cluster provides a way to handle individual broker failures. You can also use <<Rack awareness>> to assign brokers to different racks, which allows Redpanda to tolerate the loss of a rack or failure domain.
+Redpanda is designed to be deployed in a cluster that consists of at least three brokers. Although clusters with a single broker are convenient for development and testing, they aren't resilient to failure. Adding brokers to a cluster provides a way to handle individual broker failures. You can also use <<rack awareness>> to assign brokers to different racks, which allows Redpanda to tolerate the loss of a rack or failure domain.
 
 ifdef::env-kubernetes[]
 By default, the Redpanda Helm chart deploys three Redpanda brokers in separate Pods that are all managed by a StatefulSet. If the Redpanda broker inside a Pod crashes, Kubernetes automatically restarts the Pod.
@@ -80,7 +80,9 @@ See also: <<Single-AZ deployments>>
 
 An availability zone (AZ) consists of one or more data centers served by high-bandwidth links with low latency (and typically within a close distance of one another). All AZs have discrete failure domains (power, cooling, fire, and network), but they also have common-cause failure domains, such as catastrophic events, that affect their geographical location. To safeguard against such possibilities, a cluster can be deployed across multiple AZs by configuring each AZ as a rack using rack awareness.
 
-Redpanda's internal implementation of Raft lets it tolerate losing a minority of replicas for a given topic or for controller groups. For this to translate to a multi-AZ deployment, however, it's necessary to deploy to at least three AZs (affording the loss of one zone). In a typical multi-AZ deployment, cluster performance is constrained by inter-AZ bandwidth and latency.
+Implementing Raft internally ensures that Redpanda can tolerate losing a minority of replicas for a given topic or for controller groups. For this to translate to a multi-AZ deployment, however, it's necessary to deploy to at least three AZs (affording the loss of one zone). In a typical multi-AZ deployment, cluster performance is constrained by inter-AZ bandwidth and latency.
+
+See also: <<Multi-AZ deployments>>
 
 ifdef::env-kubernetes[]
 For greater resilience in Kubernetes:
@@ -110,7 +112,7 @@ endif::[]
 A multi-region deployment is similar to a multi-AZ deployment, in that it needs at least three regions to counter the loss of a single region. Note that this deployment strategy increases latency due to the physical distance between regions. Consider the following strategies to mitigate this problem:
 
 * Manually configure leadership of each partition to ensure that leaders are congregated in the primary region (closest to the producers and consumers).
-* Configure producers to have `acks=1` instead of `acks=all`; however, this introduces the possibility of losing messages if the primary region becomes lost or unavailable.
+* If your produce latency exceeds your requirements, you can configure producers to have `acks=1` instead of `acks=all`. This reduces latency by only waiting for the leader to acknowledge, rather than waiting for all brokers to respond. However, using this configuration can decrease message durability. If the partition leader goes offline, you may lose any messages that are acknowledged but not yet replicated.
 
 === Multi-cluster deployment
 
@@ -203,6 +205,8 @@ See also: xref:manage:cluster-maintenance/cluster-balancing.adoc[Cluster Balanci
 In a disaster, your secondary cluster may still be available, but you need to quickly restore the original level of redundancy by bringing up a new primary cluster. In a containerized environment such as Kubernetes, all state is lost from pods that use only local storage. HA deployments with Tiered Storage address both these problems, since it offers long-term data retention and topic recovery.
 
 See also: xref:{tiered-storage}[Tiered Storage]
+
+IMPORTANT: Tiered Storage operates as an asynchronous process and only applies to closed segments. Any open segments or segments existing only in local storage are not recoverable by your new primary cluster.
 
 == Single-AZ deployments
 
@@ -370,6 +374,160 @@ ID HOST PORT RACK
 ====
 
 endif::[]
+
+== Multi-AZ deployments
+
+In a multi-AZ (availability zone) deployment a single Redpanda cluster has brokers distributed over multiple availability zones. With rack awareness, Redpanda places replicas across brokers in different failure zones, resulting in a cluster that can survive a zone outage.
+
+NOTE: Adding a zone does not necessarily increase availability. The replication factor of a given partition is most important. If all of your partitions use a replication factor of three, then adding an additional broker in a fourth zone just means fewer partitions are affected by an outage (since the workload is more spread out).
+
+The primary reason to deploy across multiple availability zones is to achieve extremely high availability, even at the expense of other considerations. Before choosing this approach, carefully consider your system's requirements. Some of the considerations of a multi-AZ approach include:
+
+* Cost: Maintaining presence across multiple availability zones may incur additional costs. You may require additional brokers to hit the minimum requirements for utilizing a multi-AZ deployment. Data sent between availability zones is often chargeable, resulting in additional cloud costs.
+* Performance:  A multi-AZ approach introduces additional message latency. Your brokers are further apart in terms of network distance with additional routing hops in place.
+* Complexity: The Redpanda operational complexity is not appreciably increased, but the complexity of your overall cloud solution is. Maintaining presence across availability zones requires additional servers with corresponding maintenance, access control, and standard operational considerations.
+
+=== Multi-AZ infrastructure requirements
+
+Redpanda requires a minimum of three availability zones when using a multi-AZ approach. Deploying across only two availability zones is problematic. For example, given a cluster with three brokers spread across two availability zones, you either end up with all three brokers in one zone or a pair of brokers in one with a single broker in the other. Either way, it's possible to lose a majority of your brokers with a single availability zone outage. You lose the ability to form consensus in affected partitions, negating the high availability state you desire.
+
+=== Multi-AZ optimization
+
+You can configure xref:develop:consume-data/follower-fetching.adoc[follower fetching] to help ease the cross-AZ cost problems associated with a multi-AZ configuration. This is achieved by configuring consumers to advertise their preferred rack using the `client.rack` option within their consumer configuration. This allows consumers to read data from their closest replica rather than always reading from a (potentially non-local) partition leader.
+
+NOTE: With follower fetching enabled, a consumer chooses the closest replica rather than the leader. This reduces network transfer costs against the possibility of increased end-to-end latency. Make sure to monitor your system to determine if the cost savings are worth this latency risk.
+
+=== Multi-AZ example
+
+Redpanda provides an official https://github.com/redpanda-data/deployment-automation[deployment automation] project using Ansible and Terraform to help self-hosted users stand up multi-AZ deployments quickly and efficiently.
+
+==== Configure Terraform
+
+Configure the appropriate Terraform script for your cloud provider. Within the deployment-automation project, locate the file for your cloud provider and edit the `availability_zones` parameter. Include each availability zone you intend to use for your deployment. For example, under AWS, edit the `aws/main.tf` file:
+
+[source,bash]
+----
+variable "availability_zone" {
+description = "The AWS AZ to deploy the infrastructure on"
+default     = ["us-west-2a", "us-west-2b", "us-west-2c"]
+type        = list(string)
+}
+----
+
+Alternatively, you can supply the configuration at the command line:
+
+[source,bash]
+----
+$ terraform apply -var=availability_zone='["us-west-2a","us-west-2b","us-west-2c"]'
+----
+
+==== Deploy using Terraform and Ansible
+
+After you configure Terraform for your cloud provider and choose availability zones, you can deploy your cluster. The following example deploys a multi-AZ cluster and validates the rack configuration.
+
+[,bash]
+----
+# Initialize a private key if you haven’t done so already
+ssh-keygen -f ~/.ssh/id_rsa
+
+# Clone the deployment-automation repository
+git clone https://github.com/redpanda-data/deployment-automation
+
+# Choose your cloud provider and initialize Terraform
+cd deployment-automation/aws # choose one: aws|azure|gcp
+terraform init
+
+# Deploy the infrastructure
+# (Note: This guidance is based on the assumption that you have cloud credentials available)
+terraform apply -var=availability_zone='["us-west-2a","us-west-2b","us-west-2c"]'
+
+# Verify you have correctly specified your racks in the host.ini file:
+cd ..
+export HOSTS=$(find . -name hosts.ini)
+head -4 $HOSTS
+
+[redpanda]
+34.102.108.41 ansible_user=adminpanda ansible_become=True private_ip=10.168.0.41 rack=us-west2-a
+35.236.32.47 ansible_user=adminpanda ansible_become=True private_ip=10.168.0.39 rack=us-west2-b
+35.236.29.38 ansible_user=adminpanda ansible_become=True private_ip=10.168.0.40 rack=us-west2-c
+
+# Ensure the environment is ready
+export CLOUD_PROVIDER=aws    # or azure or gcp accordingly
+export ANSIBLE_COLLECTIONS_PATHS=${PWD}/artifacts/collections
+export ANSIBLE_ROLES_PATH=${PWD}/artifacts/roles
+export ANSIBLE_INVENTORY=${PWD}/${CLOUD_PROVIDER}/hosts.ini
+
+# Install Ansible Galaxy roles
+ansible-galaxy install -r ./requirements.yml
+
+# Provision the cluster with Ansible
+ansible-playbook ansible/provision-basic-cluster.yml -i $HOSTS
+
+### Verify that rack awareness is enabled
+
+# SSH into a cluster node substituting the username and hostname from the values above
+ssh -i ~/.ssh/id_rsa <username>@<hostname of redpanda node>
+
+# Check to confirm that rack awareness is enabled
+rpk cluster config get enable_rack_awareness
+
+true
+
+# Check to confirm that the brokers are assigned to distinct racks
+rpk cluster status | grep RACK -A3
+
+ID    HOST           PORT  RACK
+0*    34.102.108.41  9092  us-west2-a
+1     35.236.32.47   9092  us-west2-b
+2     35.236.29.38   9092  us-west2-c
+----
+
+==== Use follower fetching
+
+Use xref:develop:consume-data/follower-fetching.adoc[follower fetching] to reduce the latency and potential costs involved in a multi-AZ deployment.
+
+[,bash]
+----
+# SSH into a node using appropriate credentials
+ssh -i ~/.ssh/id_rsa <username>@<hostname of redpanda node>
+
+# Create a topic with 1 partition and 3 replicas
+rpk topic create foo -p1 -r3
+
+TOPIC  STATUS
+foo    OK
+
+# Determine which broker is the leader
+rpk topic describe foo -a | grep HIGH-WATERMARK -A1
+
+PARTITION  LEADER  EPOCH  REPLICAS  LOG-START-OFFSET  HIGH-WATERMARK
+0          0       1      [0 1 2]   0                 3
+
+# Produce 1000 records using rpk
+for i in {1..1000}; do echo $(cat /dev/urandom | head -c50 | base64); done | rpk topic produce foo
+
+Produced to partition 0 at offset 0 with timestamp 1687508554559.
+Produced to partition 0 at offset 1 with timestamp 1687508554574.
+Produced to partition 0 at offset 2 with timestamp 1687508554593.
+... 997 more lines ...
+
+# Consume for three seconds, writing debug logs and ignoring regular output
+timeout 3 rpk topic consume foo -v --rack us-west2-c 1>/dev/null 2>debug.log
+
+# Filter the debug log to only show lines of interest
+cat debug.log | grep -v ApiVersions | egrep 'opening|read'
+
+08:25:14.974  DEBUG  opening connection to broker  {"addr": "10.168.0.41:9092", "broker": "seed 0"}
+08:25:14.976  DEBUG  read Metadata v7  {"broker": "seed 0", "bytes_read": 236, "read_wait": "36.312µs", "time_to_read": "534.898µs", "err": null}
+08:25:14.977  DEBUG  opening connection to broker  {"addr": "34.102.108.41:9092", "broker": "0"}
+08:25:14.980  DEBUG  read ListOffsets v4  {"broker": "0", "bytes_read": 51, "read_wait": "16.19µs", "time_to_read": "1.090468ms", "err": null}
+08:25:14.981  DEBUG  opening connection to broker  {"addr": "34.102.108.41:9092", "broker": "0"}
+08:25:14.982  DEBUG  read Fetch v11  {"broker": "0", "bytes_read": 73, "read_wait": "17.705µs", "time_to_read": "858.613µs", "err": null}
+08:25:14.982  DEBUG  opening connection to broker  {"addr": "35.236.29.38:9092", "broker": "2"}
+08:25:14.989  DEBUG  read Fetch v11  {"broker": "2", "bytes_read": 130337, "read_wait": "54.712µs", "time_to_read": "4.466249ms", "err": null}
+08:25:17.946  DEBUG  read Fetch v11  {"broker": "2", "bytes_read": 0, "read_wait": "41.144µs", "time_to_read": "2.955927224s", "err": "context canceled"}
+08:25:17.947  DEBUG  read Fetch v11  {"broker": "0", "bytes_read": 22, "read_wait": "175.952µs", "time_to_read": "500.832µs", "err": null}
+----
 
 include::shared:partial$suggested-reading.adoc[]
 
