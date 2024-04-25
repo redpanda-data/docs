@@ -13,7 +13,7 @@ image::shared:tiered_storage1.png[Tiered Storage architecture]
 
 [IMPORTANT]
 ====
-- When upgrading to Redpanda 23.2, uploads to object storage are paused until all brokers in the cluster are upgraded. If the cluster gets stuck while upgrading, roll it back to the original version. In a mixed-version state, the cluster could run out of disk space. If you need to force a mixed-version cluster to upload, move partition leadership to brokers running the original version.
+- When upgrading Redpanda, uploads to object storage are paused until all brokers in the cluster are upgraded. If the cluster gets stuck while upgrading, roll it back to the original version. In a mixed-version state, the cluster could run out of disk space. If you need to force a mixed-version cluster to upload, move partition leadership to brokers running the original version.
 ====
 
 == Prerequisites
@@ -27,6 +27,11 @@ To check if you already have a license key applied to your cluster:
 rpk cluster license info
 ----
 
+== Limitations
+
+- Migrating topics from one object storage provider to another is not supported.
+- Migrating topics from one bucket or container to another is not supported.
+
 == Set up Tiered Storage
 
 To set up Tiered Storage:
@@ -38,12 +43,6 @@ To set up Tiered Storage:
 === Configure object storage
 
 Redpanda natively supports Tiered Storage with Amazon Simple Storage Service (S3), Google Cloud Storage (GCS, which uses the Google Cloud Platform S3 API), and Microsoft Azure Blob Storage (ABS) and Azure Data Lake Storage (ADLS).
-
-[NOTE]
-====
-- Migrating topics from one object storage provider to another is not supported.
-- Migrating topics from one bucket or container to another is not supported.
-====
 
 ifdef::env-kubernetes[]
 ==== Amazon S3
@@ -249,6 +248,7 @@ spec:
       tiered:
         config:
           cloud_storage_enabled: true
+          cloud_storage_api_endpoint: storage.googleapis.com
           cloud_storage_credentials_source: gcp_instance_metadata
           cloud_storage_region: <region>
           cloud_storage_bucket: <redpanda-bucket-name>
@@ -272,6 +272,7 @@ storage:
   tiered:
     config:
       cloud_storage_enabled: true
+      cloud_storage_api_endpoint: storage.googleapis.com
       cloud_storage_credentials_source: gcp_instance_metadata
       cloud_storage_region: <region>
       cloud_storage_bucket: <redpanda-bucket-name>
@@ -286,6 +287,7 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 ```bash
 helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
   --set storage.tiered.config.cloud_storage_enabled=true \
+  --set storage.tiered.config.cloud_storage_api_endpoint=storage.googleapis.com \
   --set storage.tiered.config.cloud_storage_credentials_source=aws_instance_metadata \
   --set storage.tiered.config.cloud_storage_region=<region> \
   --set storage.tiered.config.cloud_storage_bucket=<redpanda-bucket-name>
@@ -393,8 +395,7 @@ IMPORTANT: Do not set an object storage property to an empty string `""` or to `
 
 ==== Microsoft ABS/ADLS
 
-
-NOTE: Starting in release 23.2.8, Redpanda supports storage accounts configured for ADLS Gen2 with https://learn.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-namespace[hierarchical namespaces^] enabled. For hierarchical namespaces created with a custom endpoint, set the properties `cloud_storage_azure_adls_endpoint` and `cloud_storage_azure_adls_port` in the Helm chart through the command line (`--set storage.tiered.config`) or the YAML file. If you haven't configured custom endpoints in Azure, there's no need to edit these properties.
+NOTE: Redpanda supports storage accounts configured for ADLS Gen2 with https://learn.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-namespace[hierarchical namespaces^] enabled. For hierarchical namespaces created with a custom endpoint, set the properties `cloud_storage_azure_adls_endpoint` and `cloud_storage_azure_adls_port` in the Helm chart through the command line (`--set storage.tiered.config`) or the YAML file. If you haven't configured custom endpoints in Azure, there's no need to edit these properties.
 
 To configure access to ABS/ADLS, use shared keys:
 
@@ -540,6 +541,7 @@ To configure access to Google Cloud Storage with an IAM role:
 [,properties]
 ----
 cloud_storage_enabled: true
+cloud_storage_api_endpoint: storage.googleapis.com
 cloud_storage_credentials_source: gcp_instance_metadata
 cloud_storage_region: <region>
 cloud_storage_bucket: <redpanda_bucket_name>
@@ -1340,13 +1342,13 @@ Tiered Storage gives you the option to boost the speed and reduce the impact of 
 
 Tiered Storage can help make the cluster resize process faster and more cost-efficient by leveraging data that has already been uploaded to object storage. Instead of transferring all data from local storage to the reassigned replicas, the replicas can instead be initialized to rely more heavily on Tiered Storage for read requests.
 
-To accomplish this, Redpanda takes an on-demand snapshot at an offset that is already uploaded to object storage. This is a later offset compared to the default log start offset managed by glossterm:Raft[]. When an empty replica is initialized, the later offset uploaded to object storage can be used as the start offset source. Reads that access data before the uploaded offset can be executed as remote reads. Therefore, the only data that needs to be sent over the network to replicas is the data locally retained after the uploaded offset. This also results in less time taken overall to grow or shrink the cluster.    
+To accomplish this, Redpanda takes an on-demand snapshot at an offset that is already uploaded to object storage. This is a later offset compared to the default log start offset managed by glossterm:Raft[]. When an empty replica is initialized, the later offset uploaded to object storage can be used as the start offset source. Reads that access data before the uploaded offset can be executed as remote reads. Therefore, the only data that needs to be sent over the network to replicas is the data locally retained after the uploaded offset. This also results in less time taken overall to grow or shrink the cluster.
 
 === Configure fast commission and decommission
 
 To activate fast commission and decommission when brokers enter and leave the cluster:
 
-. Make sure to <<enable-tiered-storage,configure topics for Tiered Storage>>. 
+. Make sure to <<enable-tiered-storage,configure topics for Tiered Storage>>.
 . Configure at least one of the following cluster configuration properties. These properties limit the size of data replicated across brokers to local storage using Raft:
 +
 --
@@ -1456,7 +1458,7 @@ a|
 AWS or GCS API endpoint.
 
 - For AWS, this can be left blank. It's generated automatically using the region and bucket.
-- For GCS, use `storage.googleapis.com`.
+- For GCS, you must use `storage.googleapis.com`.
 
 | config_ref:cloud_storage_azure_container,true,cluster-properties[]
 | Azure container name.
