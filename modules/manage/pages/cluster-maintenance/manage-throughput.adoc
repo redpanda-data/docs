@@ -2,13 +2,15 @@
 :description: Manage the throughput of Kafka traffic with configurable properties.
 :page-categories: Management, Networking
 
-Redpanda allows cluster administrators to configure throughput limits at both the broker level and the client level. For brokers, these configurable limits help protect the use of disk and network resources. Limits applied on the broker apply to all clients that produce or consume there. Alternatively, the client limits allow you to selectively throttle a single client or group of clients. These limits help protect individual clients from 'noisy neighbors' that may consume extreme amounts of available throughput and crowd out other clients.
+Redpanda supports applying throughput throttling on both ingress and egress independently, and allows configuration at the broker and client levels. The purpose of this is to prevent unbounded network and disk usage of the broker by clients. Broker-wide limits apply to all clients connected to the broker and restrict total traffic on the broker. Client limits apply to a set of clients defined by their `client_id` and help prevent a set of clients from starving other clients using the same broker.
+
+== Throughput throttling enforcement
+
+Throughput limits are enforced by applying backpressure to clients. When a connection is in breach of the throughput limit, the throttler advises the client about the delay (throttle time) that would bring the rate back to the allowed level. Redpanda starts by adding a `throttle_time_ms` field to responses. If that isn't honoured, delays are inserted on the connection's next read operation. The throttling delay may not exceed the limit set by xref:reference:tunable-properties.adoc#max_kafka_throttle_delay_ms[`max_kafka_throttle_delay_ms`].
 
 == Broker-wide throughput limits
 
-The network and storage bandwidth of brokers may be overloaded by clients that produce or consume throughput without limits. To prevent resource overloading caused by unconstrained throughput and to configure back pressure, Redpanda provides runtime-configurable properties that limit and balance throughput of Kafka API traffic.
-
-To manage the volume of traffic going through a broker, Redpanda implements throughput quotas on the ingress and egress sides of every broker. The throughput quota accounts for all Kafka API traffic going in or out of a broker, with the value of quota representing the allowed rate of data passing through in one direction. When a connection is in breach of the quota, the throttler advises the client about the delay (throttle time) that would bring the rate back to the allowed level, and it implements that delay before handling Kafka API requests. To control the quotas, Redpanda provides configurable rate limits for total ingress and egress traffic through a broker.
+Broker-wide throughput quotas account for all Kafka API traffic going in to or out of a broker, with the value of the quota representing the allowed rate of data passing through in one direction. To control the quotas, Redpanda provides configurable rate limits for total ingress and egress traffic. Redpanda also provides configurable properties which allow excluding clients from throughput throttling and give control over which Kafka request types are subject to throttling limits.
 
 === Broker-wide throughput limit properties
 
@@ -23,6 +25,12 @@ The properties for broker-wide throughput quota balancing are configured at the 
 | xref:reference:cluster-properties.adoc#kafka_throughput_limit_node_out_bps[kafka_throughput_limit_node_out_bps]
 | A broker's total throughput limit for egress Kafka traffic.
 
+| kafka_throughput_control
+| List of clients for whom broker-wide limits do not apply
+
+| kafka_throughput_controlled_api_keys
+| List of Kafka request types subject to broker-wide throughput limits; defaults to `produce` and `fetch.
+
 | xref:reference:tunable-properties.adoc#max_kafka_throttle_delay_ms[max_kafka_throttle_delay_ms]
 | The maximum delay inserted in the data path of Kafka API requests to throttle them down. Configuring this to be less than the Kafka client timeout can ensure that the delay that's inserted won't be long enough to cause a client timeout by itself.
 
@@ -32,10 +40,6 @@ The properties for broker-wide throughput quota balancing are configured at the 
 ====
 * By default, both `kafka_throughput_limit_node_in_bps` and `kafka_throughput_limit_node_out_bps` are disabled, no throughput limits are applied. You must manually set them to enable throughput throttling.
 ====
-
-=== Advanced broker-wide throughput limit tuning
-
-The throttling mechanism separates ingress and egress quotas and applies them across all CPU cores. When one of the throttling quotas is reached, Redpanda adds a throttling delay, `throttle_time_ms`, to subsequent responses. If the client still fails to back off, then the next read operation is delayed. Redpanda attempts to set the throttling delay to a number that will put the cluster back below the throttling threshold. This delay will not exceed the value set in xref:reference:tunable-properties.adoc#max_kafka_throttle_delay_ms[`max_kafka_throttle_delay_ms`]. Administrators may also use the tunable property  xref:reference:tunable-properties.adoc#kafka_throughput_replenish_threshold[`kafka_throughput_replenish_threshold`] to adjust the rate that Redpanda eases throttling once it is engaged.
 
 == Client throughput limits
 
