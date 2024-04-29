@@ -5,6 +5,8 @@ ifndef::env-kubernetes[]
 :data-archiving-link: manage:data-archiving.adoc
 endif::[]
 
+:env-kubernetes: true
+
 Tiered Storage helps to lower storage costs by offloading log segments to object storage. You can specify the amount of storage you want to retain in local storage. You don't need to specify which log segments you want to move, because Redpanda moves them automatically based on cluster-level configuration properties. Tiered Storage indexes where data is offloaded, so it can look up the data when you need it.
 
 The following image illustrates the Tiered Storage architecture: remote write uploads data from Redpanda to object storage, and remote read fetches data from object storage to Redpanda.
@@ -214,6 +216,43 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 Replace the following placeholders:
 +
 - `<access-key>`: The access key for your S3 bucket.
++
+[TIP]
+====
+To avoid exposing sensitive data in your configuration files, you can also use a Kubernetes Secret. For example:
+
+. Create the Secret:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: storage-secrets
+type: Opaque
+data:
+  access-key: <base64-encoded-access-key>
+  secret-key: <base64-encoded-secret-key>
+----
++
+- Replace `<base64-encoded-access-key>` with your base64-encoded access key.
+- Replace `<base64-encoded-secret-key>` with your base64-encoded secret key.
+
+. Update your Redpanda configuration to include the secret reference for the shared key:
++
+[source,yaml]
+----
+storage:
+  tiered:
+    credentialsSecretRef:
+      accessKey:
+        name: storage-secrets
+        key: access-key
+      secretKey:
+        name: storage-secrets
+        key: secret-key
+----
+====
 - `<secret-key>`: The secret key for your S3 bucket.
 - `<region>`: The region of your S3 bucket.
 - `<redpanda-bucket-name>`: The name of your S3 bucket.
@@ -387,6 +426,43 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 Replace the following placeholders:
 +
 - `<access-key>`: The access key for your bucket.
++
+[TIP]
+====
+To avoid exposing sensitive data in your configuration files, you can also use a Kubernetes Secret. For example:
+
+. Create the Secret:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: storage-secrets
+type: Opaque
+data:
+  access-key: <base64-encoded-access-key>
+  secret-key: <base64-encoded-secret-key>
+----
++
+- Replace `<base64-encoded-access-key>` with your base64-encoded access key.
+- Replace `<base64-encoded-secret-key>` with your base64-encoded secret key.
+
+. Update your Redpanda configuration to include the secret reference for the shared key:
++
+[source,yaml]
+----
+storage:
+  tiered:
+    credentialsSecretRef:
+      accessKey:
+        name: storage-secrets
+        key: access-key
+      secretKey:
+        name: storage-secrets
+        key: secret-key
+----
+====
 - `<secret-key>`: The secret key for your bucket.
 - `<region>`: The region of your bucket.
 - `<redpanda-bucket-name>`: The name of your bucket.
@@ -395,11 +471,115 @@ IMPORTANT: Do not set an object storage property to an empty string `""` or to `
 
 ==== Microsoft ABS/ADLS
 
-NOTE: Redpanda supports storage accounts configured for ADLS Gen2 with https://learn.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-namespace[hierarchical namespaces^] enabled. For hierarchical namespaces created with a custom endpoint, set the properties `cloud_storage_azure_adls_endpoint` and `cloud_storage_azure_adls_port` in the Helm chart through the command line (`--set storage.tiered.config`) or the YAML file. If you haven't configured custom endpoints in Azure, there's no need to edit these properties.
+You can configure access to Azure Blob Storage with either shared keys or Azure's managed identities system to securely interact with Azure Blob Storage. Shared keys, as static credentials, are simple to use but require manual management and vigilant security practices to prevent breaches due to their unchanging nature. In contrast, managed identities provide a more secure and maintenance-free solution by automating credential management and rotation, though they are exclusive to the Azure ecosystem.
 
-To configure access to ABS/ADLS, use shared keys:
+include::manage:partial$azure-blob-limitations.adoc[]
 
-. Get an account access key for the Azure container you want Redpanda. For information on how to view your account access keys, see the https://learn.microsoft.com/en-us/azure/storage/common/storage-account-keys-manage?toc=%2Fazure%2Fstorage%2Fblobs%2Ftoc.json&bc=%2Fazure%2Fstorage%2Fblobs%2Fbreadcrumb%2Ftoc.json&tabs=azure-portal#view-account-access-keys[Azure documentation^].
+AKS supports OpenID Connect (OIDC) federation. Once a cluster is set and registered as an OIDC provider, you can configure Redpanda to use this federated identity to securely access Azure Blob Storage without needing to manage static credentials.
+
+To configure access to an Azure container with a managed identity in AKS:
+
+. Configure an xref:manage:security/iam-roles.adoc#configuring-iam-roles[Azure managed identity].
+. Override the following required cluster properties in the Helm chart:
++
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    storage:
+      tiered:
+        config:
+          cloud_storage_enabled: true
+          cloud_storage_credentials_source: azure_aks_oidc_federation
+          cloud_storage_azure_managed_identity_id: <managed-identity-client-id>
+          cloud_storage_azure_storage_account: <account-name>
+          cloud_storage_azure_container: <container-name>
+    serviceAccount:
+      create: true
+      annotations:
+        "azure.workload.identity/client-id": <managed-identity-client-id>
+    statefulset:
+      podTemplate:
+        labels:
+          "azure.workload.identity/use": true
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`cloud-storage.yaml`
+[,yaml]
+----
+storage:
+  tiered:
+    config:
+      cloud_storage_enabled: true
+      cloud_storage_credentials_source: azure_aks_oidc_federation
+      cloud_storage_azure_managed_identity_id: <managed-identity-client-id>
+      cloud_storage_azure_storage_account: <account-name>
+      cloud_storage_azure_container: <container-name>
+serviceAccount:
+  create: true
+  annotations:
+    "azure.workload.identity/client-id": <managed-identity-client-id>
+statefulset:
+  podTemplate:
+    labels:
+      "azure.workload.identity/use": true
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+--values cloud-storage.yaml
+```
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set storage.tiered.config.cloud_storage_enabled=true \
+  --set storage.tiered.config.cloud_storage_credentials_source=azure_aks_oidc_federation \
+  --set storage.tiered.config.cloud_storage_azure_managed_identity_id=<managed-identity-client-id> \
+  --set storage.tiered.config.cloud_storage_azure_storage_account=<account-name> \
+  --set storage.tiered.config.cloud_storage_azure_container=<container-name>
+```
+====
+--
+======
++
+Replace the following placeholders:
++
+--
+- `<managed-identity-client-id>`: The access key for your Azure account.
+- `<account-name>`: The name of your Azure account.
+- `<container-name>`: The name of the Azure container in your Azure account.
+--
+
+NOTE: The `serviceAccount` annotations and the `statefulset` Pod labels are essential for the Azure webhook to inject the necessary Azure-specific environment variables and the projected service account token volume into the pods. For more information, visit https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview?tabs=dotnet[Microsoft Entra Workload ID with Azure Kubernetes Service (AKS)^].
+
+IMPORTANT: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value.
+
+To configure access to ABS/ADLS with shared keys:
+
+. Get an account access key for the Azure container that Redpanda will run on. For information on how to view your account access keys, see the https://learn.microsoft.com/en-us/azure/storage/common/storage-account-keys-manage?toc=%2Fazure%2Fstorage%2Fblobs%2Ftoc.json&bc=%2Fazure%2Fstorage%2Fblobs%2Fbreadcrumb%2Ftoc.json&tabs=azure-portal#view-account-access-keys[Azure documentation^].
 . Override the following required cluster properties in the Helm chart:
 +
 [tabs]
@@ -469,6 +649,39 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 Replace the following placeholders:
 +
 - `<access-key>`: The access key for your Azure account.
++
+[TIP]
+====
+To avoid exposing sensitive data in your configuration files, you can also use a Kubernetes Secret. For example:
+
+. Create the Secret:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: storage-secrets
+type: Opaque
+data:
+  secret-key: <base64-encoded-secret-key>
+----
++
+Replace `<base64-encoded-secret-key>` with your base64-encoded secret key.
+
+. Update your Redpanda configuration to include the secret reference for the secret key:
++
+[source,yaml]
+----
+storage:
+  tiered:
+    credentialsSecretRef:
+      secretKey:
+        configurationKey: cloud_storage_azure_shared_key
+        name: storage-secrets
+        key: secret-key
+----
+====
 - `<account-name>`: The name of your Azure account.
 - `<container-name>`: The name of the Azure container in your Azure account.
 +
