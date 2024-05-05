@@ -197,7 +197,7 @@ async function fetchRedpandaChartDetails(chartVersion) {
       const helmLink = response.data.links.find(link => link.name && link.name.startsWith('Helm (>='));
       if (helmLink) {
         helmVersionMatch = helmLink.name.match(/Helm \(>= ([0-9.]+)\)/);
-        helmVersion = helmVersionMatch ? helmVersionMatch[1] : '{supported-helm-version}'
+        helmVersion = helmVersionMatch ? helmVersionMatch[1] : '3.6.0'
       }
     }
 

@@ -37,29 +37,51 @@ helm get values <chart-name> --namespace <namespace> --all
 
 == View Redpanda logs
 
-Logs for each Redpanda broker running inside a Pod are sent to STDOUT. Use `kubectl logs` to get logs from STDOUT.
+Logs are crucial for monitoring and troubleshooting your Redpanda clusters. Redpanda brokers output logs to STDOUT, making them accessible via `kubectl`.
 
-To view logs for a particular Pod:
+To access logs for a specific Pod:
 
-```bash
+. List all Pods to find the names of those that are running Redpanda brokers:
++
+[source,bash]
+----
+kubectl get pods --namespace <namespace>
+----
+
+. View logs for a particular Pod by replacing `<pod-name>` with the name of your Pod:
++
+[source,bash]
+----
 kubectl logs <pod-name> --namespace <namespace>
-```
+----
++
+[TIP]
+====
+For a comprehensive overview, you can view aggregated logs from all Pods in the StatefulSet:
 
-To view logs for all Pods in the StatefulSet:
-
-```bash
+[source,bash]
+----
 kubectl logs --namespace <namespace> -l app.kubernetes.io/component=redpanda-statefulset
-```
+----
+====
 
-To change the log level of the Redpanda brokers to `debug`:
+=== Change the default log level
+
+To change the default log level for all Redpanda subsystems, use the `logging.logLevel` configuration. Valid values are `trace`, `debug`, `info`, `warn`, `error`.
+
+Changing the default log level to `debug` can provide more detailed logs for diagnostics. This logging level increases the volume of generated logs.
+
+NOTE: To set different log levels for individual subsystems, see <<Override the default log level for Redpanda subsystems>>.
 
 [tabs]
 ======
 Helm + Operator::
 +
 --
+Apply the new log level:
+
 .`redpanda-cluster.yaml`
-[,yaml]
+[source,yaml]
 ----
 apiVersion: cluster.redpanda.com/v1alpha1
 kind: Redpanda
@@ -72,39 +94,133 @@ spec:
       logLevel: debug
 ----
 
-```bash
+Then, apply this configuration:
+
+[source,bash]
+----
 kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
+----
 --
 
 Helm::
 +
 --
+Choose between using a custom values file or setting values directly:
 [tabs]
 ====
 --values::
 +
+Specify logging settings in `logging.yaml`, then upgrade:
++
 .`logging.yaml`
-[,yaml]
+[source,yaml]
 ----
 logging:
   logLevel: debug
 ----
 +
-```bash
+[source,bash]
+----
 helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
   --values logging.yaml --reuse-values
-```
-
+----
 --set::
 +
-```bash
+Directly set the log level during upgrade:
++
+[source,bash]
+----
 helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
   --set logging.logLevel=debug
-```
+----
 ====
 --
 ======
+
+After applying these changes, verify the log level by <<view-redpanda-logs, checking the initial output of the logs>> for the Redpanda Pods.
+
+=== Override the default log level for Redpanda subsystems
+
+You can override the log levels for individual subsystems, such as `rpc` and `kafka`, for more detailed logging control. Overrides exist for the entire length of the running Redpanda process.
+
+TIP: To temporarily override the log level for individual subsystems, you can use the xref:reference:rpk/rpk-redpanda/rpk-redpanda-admin-config-log-level-set.adoc[`rpk-redpanda-admin-config-log-level-set`] command.
+
+. List all available subsystem loggers:
++
+[source,bash]
+----
+kubectl exec -it --namespace <namespace> <pod-name> -c redpanda -- rpk redpanda start --help-loggers
+----
+
+. Set the log level for one or more subsystems. In this example, the `rpc` and `kafka` subsystem loggers are set to `debug`.
++
+[tabs]
+======
+Helm + Operator::
++
+--
+Apply the new log level:
+
+.`redpanda-cluster.yaml`
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    statefulset:
+      additionalRedpandaCmdFlags:
+        - '--logger-log-level=rpc=debug:kafka=debug'
+----
+
+Then, apply this configuration:
+
+[source,bash]
+----
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+----
+--
+
+Helm::
++
+--
+Choose between using a custom values file or setting values directly:
+[tabs]
+====
+--values::
++
+Specify logging settings in `logging.yaml`, then upgrade:
++
+.`logging.yaml`
+[source,yaml]
+----
+statefulset:
+  additionalRedpandaCmdFlags:
+    - '--logger-log-level=rpc=debug:kafka=debug'
+----
++
+[source,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values logging.yaml --reuse-values
+----
+--set::
++
+Directly set the log level during upgrade:
++
+[source,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set statefulset.additionalRedpandaCmdFlags="{--logger-log-level=rpc=debug:kafka=debug}"
+----
+====
+--
+======
+
+Overriding the log levels for specific subsystems provides enhanced visibility into Redpanda's internal operations, facilitating better debugging and monitoring.
 
 == View Redpanda Operator logs
 
@@ -316,7 +432,7 @@ To learn how to configure different storage volumes, see xref:manage:kubernetes/
 //tag::deployment-failed-to-pull-image[]
 === Failed to pull image
 
-When deploying the Redpanda Helm chart, you may encounter Docker rate limit issues because the the default registry URL is not recognized as a Docker Hub URL. The domain `docker.redpanda.com` is used for statistical purposes, such as tracking the number of downloads. It mirrors Docker Hub's content while providing specific analytics for Redpanda.
+When deploying the Redpanda Helm chart, you may encounter Docker rate limit issues because the default registry URL is not recognized as a Docker Hub URL. The domain `docker.redpanda.com` is used for statistical purposes, such as tracking the number of downloads. It mirrors Docker Hub's content while providing specific analytics for Redpanda.
 
 [.no-copy]
 ----
@@ -456,6 +572,44 @@ Error: UPGRADE FAILED: cannot patch "redpanda-console" with kind Deployment: Dep
 
 To fix this error, set `console.enabled` to `false` so that Helm doesn't try to deploy Redpanda Console again.
 //end::deployment-cannot-patch[]
+
+//tag::pending-rollback[]
+=== Helm is in a pending-rollback state
+
+An interrupted Helm upgrade process can leave your Helm release in a `pending-rollback` state. This state prevents further actions like upgrades, rollbacks, or deletions through standard Helm commands. To fix this:
+
+. Identify the Helm release that's in a `pending-rollback` state:
++
+[source,bash]
+----
+helm list --namespace <namespace> --all
+----
++
+Look for releases with a status of `pending-rollback`. These are the ones that need intervention.
+
+. Verify the Secret's status to avoid affecting the wrong resource:
++
+[source,bash]
+----
+kubectl --namespace <namespace> get secret --show-labels
+----
++
+Identify the Secret associated with your Helm release by its `pending-rollback` status in the labels.
++
+WARNING: Ensure you have correctly identified the Secret to avoid unintended consequences. Deleting the wrong Secret could impact other deployments or services.
+
+. Delete the Secret to clear the `pending-rollback` state:
++
+[source,bash]
+----
+kubectl --namespace <namespace> delete secret -l status=pending-rollback
+----
+
+After clearing the `pending-rollback` state:
+
+* *Retry the upgrade*: Restart the upgrade process. You should investigate the initial failure to avoid getting into the `pending-rollback` state again.
+* *Perform a rollback*: If you need to roll back to a previous release, use `helm rollback <release-name> <revision>` to revert to a specific, stable release version.
+//end::pending-rollback[]
 //end::deployment[]
 
 //tag::tls[]
