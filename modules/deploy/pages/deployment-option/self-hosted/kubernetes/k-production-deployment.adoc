@@ -111,14 +111,15 @@ deployment "redpanda-controller-operator" successfully rolled out
 . Install a xref:reference:k-crd.adoc[Redpanda custom resource] to deploy a Redpanda cluster and Redpanda Console.
 +
 .`redpanda-cluster.yaml`
-[,yaml,lines=4+6+7]
+[,yaml,subs="attributes+",lines=4+6+7+8]
 ----
 apiVersion: cluster.redpanda.com/v1alpha1
 kind: Redpanda
 metadata:
   name: redpanda
 spec:
-  chartRef: {}
+  chartRef:
+    chartVersion: {latest-redpanda-helm-chart-version}
   clusterSpec:
     statefulset:
       extraVolumes: |-
@@ -134,7 +135,8 @@ spec:
 +
 - `metadata.name`: Name to assign the Redpanda cluster. This name is also assigned to the Helm release.
 - xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-src-go-k8s-apis-redpanda-v1alpha1-chartref[`spec.chartRef`]: Information about the Helm chart that will be used to deploy Redpanda.
-- xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-src-go-k8s-apis-redpanda-v1alpha1-redpandaclusterspec[`spec.clusterSpec`]: This is where you can override default values in the Redpanda Helm chart. Here, you mount the <<prerequisites, I/O configuration file>> to the Pods that run Redpanda. For other configuration details, see <<Configuration advice>>.
+- `spec.chartRef.chartVersion`: This field specifies the exact version of the Redpanda Helm chart to use for deployment. By setting this value, you <<version-pinning, pin the chart to a specific version>>, which prevents automatic updates that might introduce breaking changes or new features that have not been tested in your environment.
+- xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-src-go-k8s-apis-redpanda-v1alpha1-redpandaclusterspec[`spec.clusterSpec`]: This is where you can override default values in the Redpanda Helm chart. Here, you mount the <<prerequisites, I/O configuration file>> to the Pods that run Redpanda. For other configuration details, see <<Production considerations>>.
 
 . Apply the Redpanda resource:
 +
@@ -220,17 +222,18 @@ Redpanda reads from this file at startup to optimize itself for the given I/O pa
 
 . Install the Redpanda Helm chart to deploy a Redpanda cluster and Redpanda Console.
 +
-Configure any additional Helm values that you want to override. See <<Configuration advice>> for details.
-+
-```bash
+[source,bash,subs="attributes+"]
+----
 helm repo add redpanda https://charts.redpanda.com
 helm install redpanda redpanda/redpanda \
-  --namespace <namespace> \
+  --version {latest-redpanda-helm-chart-version} \ <1>
+  --namespace <namespace> \ <2>
   --create-namespace \
   --values redpanda-values.yaml
-```
+----
 +
-NOTE: Each deployment of the Redpanda Helm chart requires a separate namespace. Ensure you choose a unique namespace for each deployment.
+<1> This flag specifies the exact version of the Redpanda Helm chart to use for deployment. By setting this value, you <<version-pinning, pin the chart to a specific version>>, which prevents automatic updates that might introduce breaking changes or new features that have not been tested in your environment.
+<2> Each deployment of the Redpanda Helm chart requires a separate namespace. Ensure you choose a unique namespace for each deployment.
 
 . Wait for the Redpanda cluster to be ready:
 +
@@ -291,14 +294,15 @@ helm upgrade --install redpanda-controller redpanda/operator \
 NOTE: Make sure to use unique node ports for the listeners in your Redpanda resource so that they don't conflict with any existing node ports in your other Redpanda clusters. See <<External access>>.
 +
 .`redpanda-cluster-two.yaml`
-[,yaml]
+[source,yaml,subs="attributes+"]
 ----
 apiVersion: cluster.redpanda.com/v1alpha1
 kind: Redpanda
 metadata:
   name: redpanda-two
 spec:
-  chartRef: {}
+  chartRef:
+    chartVersion: {latest-redpanda-helm-chart-version}
   clusterSpec:
     listeners:
       kafka:
@@ -328,9 +332,11 @@ Install the Redpanda Helm chart in a different namespace to your existing Redpan
 
 NOTE: Make sure to use unique node ports for the listeners in your Redpanda resource so that they don't conflict with any existing node ports in your other Redpanda clusters. See <<External access>>.
 
-```bash
+[source,bash,subs="attributes+"]
+----
 helm repo add redpanda https://charts.redpanda.com
 helm install redpanda-two redpanda/redpanda \
+  --version {latest-redpanda-helm-chart-version} \
   --namespace <anothernamespace> \
   --set listeners.kafka.external.default.advertisedPorts[0]=31093 \
   --set listeners.admin.external.default.advertisedPorts[0]=31645 \
@@ -338,14 +344,59 @@ helm install redpanda-two redpanda/redpanda \
   --set listeners.rpc.port=33146 \
   --set listeners.schemaRegistry.external.default.advertisedPorts[0]=30084
   --create-namespace
-```
+----
 --
 
 ====
 
+[[config]]
 == Production considerations
 
 This section provides advice for configuring the Redpanda Helm chart for production. For all available settings, see xref:reference:k-redpanda-helm-spec.adoc[]. To learn how to customize the Redpanda Helm chart, see xref:manage:kubernetes/k-configure-helm-chart.adoc[Customize the Helm Chart].
+
+[[version-pinning]]
+=== Version pinning
+
+The Redpanda application version, which is what the Helm chart deploys, can change even in patch versions of the Helm chart. This means that updates to the chart may potentially roll out new versions of Redpanda with significant changes that could impact your systems.
+
+To avoid unexpected changes to your deployments, pin the version of the Helm chart. Pinning refers to the practice of specifying an exact version to use during deployment, rather than using the latest or unspecified version. When you pin the Helm chart version, you maintain consistent, predictable environments, especially in production. Using a specific version helps to:
+
+- *Ensure compatibility*: Guarantee that the deployed application behaves as tested, regardless of new chart versions being released.
+- *Avoid unexpected updates*: Prevent automatic updates that may introduce changes incompatible with the current deployment or operational practices.
+
+[tabs]
+====
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[source,yaml,subs="attributes+"]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef:
+    chartVersion: {latest-redpanda-helm-chart-version}
+----
+--
+Helm::
++
+--
+
+[source,bash,subs="attributes+"]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm install redpanda redpanda/redpanda \
+  --version {latest-redpanda-helm-chart-version} \
+  --namespace <namespace> \
+  --create-namespace
+----
+--
+====
+
+xref:reference:releases/index.adoc[Review the release notes] to understand any significant changes, bug fixes, or potential disruptions that could affect your existing deployment.
 
 === Name overrides
 
