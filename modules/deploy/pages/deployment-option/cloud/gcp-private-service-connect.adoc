@@ -1,5 +1,5 @@
 = Configure GCP Private Service Connect for BYOC
-:description: Set up GCP Private Service Connect to securely access Redpanda Cloud. 
+:description: Set up GCP Private Service Connect to securely access Redpanda Cloud.
 :page-cloud: true
 
 include::shared:partial$feature-flag.adoc[]
@@ -15,10 +15,10 @@ After <<get-a-cloud-api-access-token,getting an access token>>, you can <<create
 
 == Requirements
 
-* You must use the Redpanda Cloud API to enable the Redpanda endpoint service for your clusters. Follow the steps on this page to <<get-a-cloud-api-access-token, get an access token>>. 
+* You must use the Redpanda Cloud API to enable the Redpanda endpoint service for your clusters. Follow the steps on this page to <<get-a-cloud-api-access-token, get an access token>>.
 * Use https://cloud.google.com/sdk/docs/install[gcloud^] to create the consumer-side resources, such as a VPC and forwarding rule, or modify an existing one to use the Private Service Connect service attachment created for your cluster.
 
-== Get a Cloud API access token 
+== Get a Cloud API access token
 
 . Save the base URL of the Redpanda Cloud API in an environment variable:
 +
@@ -27,13 +27,13 @@ After <<get-a-cloud-api-access-token,getting an access token>>, you can <<create
 export PUBLIC_API_ENDPOINT="https://api.cloud.redpanda.com"
 ----
 
-. In the https://cloud.redpanda.com/[Redpanda Cloud UI], go to **Namespaces** and select the namespace in which you want to create a cluster.
+. In the https://cloud.redpanda.com/[Redpanda Cloud UI], go to **Resource groups** and select the resource group in which you want to create a cluster.
 +
-Copy and store the namespace ID (UUID) from the URL in the browser.
+Copy and store the resource group ID (UUID) from the URL in the browser.
 +
 [,bash]
 ----
-export NAMESPACE_ID=<uuid>
+export RESOURCE_GROUP_ID=<uuid>
 ----
 
 . Go to the organization (org) level **Home** in the UI, and navigate to **Clients**. If you don't have an existing client, you can create a new one by clicking **Add client**.
@@ -85,7 +85,7 @@ Provide your values for the following placeholders:
 
 See the official GCP documentation for https://cloud.google.com/vpc/docs/configure-private-service-connect-producer#add-subnet-psc[creating a subnet for Private Service Connect^].
 
-== Create new BYOC cluster with Private Service Connect enabled 
+== Create new BYOC cluster with Private Service Connect enabled
 
 . Update the Redpanda Cloud Agent IAM role.
 +
@@ -102,7 +102,7 @@ compute.serviceAttachments.update
 compute.subnetworks.use
 ```
 
-. Make a request to the https://docs.api.redpanda.com/#post-/v1beta1/networks[`POST /v1beta1/networks`] endpoint to create a network
+. Make a request to the https://docs.api.redpanda.com/#post-/v1beta2/networks[`POST /v1beta2/networks`] endpoint to create a network
 +
 [,bash]
 ----
@@ -111,7 +111,7 @@ network_post_body=`cat << EOF
     "cloud_provider": "CLOUD_PROVIDER_GCP",
     "cluster_type": "TYPE_BYOC",
     "name": "<network-name>",
-    "namespace_id": "$NAMESPACE_ID",
+    "resource_group_id": "$RESOURCE_GROUP_ID",
     "region": "<region>",
     "customer_managed_resources": {
         "gcp": {
@@ -126,7 +126,7 @@ EOF`
 curl -vv -X POST \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer $AUTH_TOKEN" \
--d "$network_post_body" $PUBLIC_API_ENDPOINT/v1beta1/networks
+-d "$network_post_body" $PUBLIC_API_ENDPOINT/v1beta2/networks
 ----
 +
 Replace the following placeholder variables for the request body:
@@ -147,7 +147,7 @@ Replace the following placeholder variables for the request body:
 export NETWORK_ID=<metadata.network_id>
 ----
 
-. Make a request to the https://docs.api.redpanda.com/#post-/v1beta1/clusters[`POST /v1beta1/clusters`] endpoint to create a Redpanda Cloud cluster with Private Service Connect enabled:
+. Make a request to the https://docs.api.redpanda.com/#post-/v1beta2/clusters[`POST /v1beta2/clusters`] endpoint to create a Redpanda Cloud cluster with Private Service Connect enabled:
 +
 [,bash]
 ----
@@ -157,17 +157,15 @@ export CLUSTER_POST_BODY=`cat << EOF
     "connection_type": "CONNECTION_TYPE_PRIVATE",
     "type": "TYPE_BYOC",
     "name": "<cluster-name>",
-    "namespace_id": "$NAMESPACE_ID",
+    "resource_group_id": "$RESOURCE_GROUP_ID",
     "network_id": "$NETWORK_ID",
     "region": "<region>",
     "zones": <zones>,
     "throughput_tier": "<throughput-tier>",
     "redpanda_version": "<redpanda-version>",
-    "private_link": {
+    "gcp_private_service_connect": {
         "enabled": true,
-        "gcp": {
-            "consumer_accept_list": <consumer-accept-list>
-        }
+        "consumer_accept_list": <consumer-accept-list>
     },
     "customer_managed_resources": {
         "gcp": {
@@ -192,7 +190,7 @@ EOF`
 curl -vv -X POST \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer $AUTH_TOKEN" \
--d "$CLUSTER_POST_BODY" $PUBLIC_API_ENDPOINT/v1beta1/clusters
+-d "$CLUSTER_POST_BODY" $PUBLIC_API_ENDPOINT/v1beta2/clusters
 ----
 +
 Replace the following placeholders for the request body. Variables with a `byovpc_` prefix represent xref:./vpc-byo-gcp.adoc[customer-managed resources] that should have been created previously:
@@ -242,7 +240,7 @@ compute.serviceAttachments.update
 compute.subnetworks.use
 ----
 
-. Make a request to the https://docs.api.redpanda.com/#patch-/v1beta1/clusters/-cluster.id-[`PATCH /v1beta1/clusters/{cluster.id}`] endpoint to update the cluster to include the newly-created Private Service Connect NAT subnet.
+. Make a request to the https://docs.api.redpanda.com/#patch-/v1beta2/clusters/-cluster.id-[`PATCH /v1beta2/clusters/{cluster.id}`] endpoint to update the cluster to include the newly-created Private Service Connect NAT subnet.
 +
 [,bash]
 ----
@@ -260,31 +258,29 @@ EOF`
 curl -v -X PATCH \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer $AUTH_TOKEN" \
--d "$CLUSTER_PATCH_BODY" $PUBLIC_API_ENDPOINT/v1beta1/clusters/$CLUSTER_ID
+-d "$CLUSTER_PATCH_BODY" $PUBLIC_API_ENDPOINT/v1beta2/clusters/$CLUSTER_ID
 ----
 +
 Replace the following placeholder:
 +
 `<psc-nat-subnet-name>`: The name of the Private Service Connect NAT subnet. Use the fully-qualified name, for example `"projects/<project>/regions/<region>/subnetworks/<subnet-name>"`.
 
-. Make a https://docs.api.redpanda.com/#patch-/v1beta1/clusters/-cluster.id-[`PATCH /v1beta1/clusters/{cluster.id}`] request to update the cluster to enable Private Service Connect.
+. Make a https://docs.api.redpanda.com/#patch-/v1beta2/clusters/-cluster.id-[`PATCH /v1beta2/clusters/{cluster.id}`] request to update the cluster to enable Private Service Connect.
 +
 [,bash]
 ----
 CLUSTER_PATCH_BODY=`cat << EOF
 {
-    "private_link": {
+    "gcp_private_service_connect": {
         "enabled": true,
-        "gcp": {
-            "consumer_accept_list": <accept-list>
-        }
+         "consumer_accept_list": <accept-list>
     }
 }
 EOF`
 curl -v -X PATCH \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer $AUTH_TOKEN" \
--d "$CLUSTER_PATCH_BODY" $PUBLIC_API_ENDPOINT/v1beta1/clusters/$CLUSTER_ID
+-d "$CLUSTER_PATCH_BODY" $PUBLIC_API_ENDPOINT/v1beta2/clusters/$CLUSTER_ID
 ----
 +
 Replace the following placeholder:
@@ -300,7 +296,7 @@ gcloud compute service-attachments list --project '<service-project-id>'
 
 == Access Redpanda services through VPC endpoint
 
-After you have enabled Private Service Connect for your cluster, your connection URLs are available in the *How to Connect* section of the cluster overview in the Redpanda Cloud UI. 
+After you have enabled Private Service Connect for your cluster, your connection URLs are available in the *How to Connect* section of the cluster overview in the Redpanda Cloud UI.
 
 include::deploy:partial$cloud/private-links-access-rp-services-through-vpc.adoc[]
 
