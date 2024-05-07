@@ -15,8 +15,6 @@ include::partial$rolling-upgrades/upgrade-limitations.adoc[]
 
 * xref:deploy:deployment-option/self-hosted/kubernetes/index.adoc[A Redpanda cluster running in Kubernetes].
 * The default xref:reference:k-redpanda-helm-spec.adoc#statefulset-updatestrategy-type[RollingUpdate strategy] configured in the Helm values.
-* Review the xref:k-compatibility.adoc[] topic.
-* https://stedolan.github.io/jq/download/[jq^] for listing available versions.
 
 include::partial$rolling-upgrades/restart-impact.adoc[leveloffset=+1]
 
@@ -24,24 +22,18 @@ include::partial$rolling-upgrades/restart-impact.adoc[leveloffset=+1]
 
 Patch releases in https://github.com/redpanda-data/redpanda/discussions/9522[22.3.14^] and https://github.com/redpanda-data/redpanda/discussions/9523[23.1.2^] changed the behavior when remote read is disabled and the requested Raft term falls below the local log's beginning. In earlier versions, Redpanda returned an offset -1. With the patch, when you request a value older than the lowest offset, Redpanda returns the lowest offset, not -1.
 
-== Find a new version
+== Check your current Redpanda version
 
-Before you perform a rolling upgrade, you must find out:
+Before you perform a rolling upgrade:
 
---
-- Which Redpanda version you are currently running.
-- Whether you can upgrade directly to the new version.
-- What's changed since your original version.
---
-
-. Find your current version of Redpanda:
+- Find the Redpanda version that you are currently running.
++
+To find your current version of Redpanda, use xref:reference:rpk/rpk-redpanda/rpk-redpanda-admin-brokers-list.adoc[`rpk redpanda admin brokers list`]:
 +
 ```bash
 kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
   rpk redpanda admin brokers list
 ```
-+
-For all available flags, see the xref:reference:rpk/rpk-redpanda/rpk-redpanda-admin-brokers-list.adoc[`rpk redpanda admin brokers list` command reference].
 +
 .Expected output:
 [%collapsible]
@@ -55,79 +47,16 @@ NODE-ID  BROKER-VERSION
 2        v22.2.10
 ```
 ====
-
-. Find the Redpanda version that's used in the latest version of the Redpanda Helm chart:
+- xref:upgrade:k-compatibility.adoc[Review the Kubernetes compatibility matrix] to find out if you need to upgrade the Helm chart or the Redpanda Operator to use your chosen version of Redpanda.
 +
-[,bash]
-----
-helm repo update && \
-helm show chart redpanda/redpanda | grep appVersion
-----
+If your current version of Redpanda is more than one feature release behind the one to which you want to upgrade, you must first upgrade to an intermediate version of Redpanda.
+- Learn what's changed since your original version.
 +
-Example output:
-+
-[.no-copy]
-----
-appVersion:	v22.2.10
-----
-+
-[NOTE]
-====
-If your current version is more than one feature release behind the version in the latest Redpanda Helm chart, you must first upgrade to an intermediate version. To list all available versions:
+To find information about what has changed between Redpanda versions, check the https://github.com/redpanda-data/redpanda/releases[release notes^].
 
-```bash
-curl -s 's://hub.docker.com/v2/repositories/redpandadata/redpanda/tags/?ordering=last_updated&page=1&page_size=50' | jq -r '.results[].name'
-```
-====
+== Prepare your cluster
 
-. Check the https://github.com/redpanda-data/redpanda/releases[release notes^] to find information about what has changed between Redpanda versions.
-
-[[operator]]
-== Upgrade the Redpanda Operator
-
-This section provides guidance on upgrading the Redpanda Operator. If you do not use the Redpanda Operator to manage your clusters, you can <<upgrade, skip this section>>.
-
-When a new version of the Redpanda Helm chart is released, you must assess its compatibility with the current Redpanda Operator. Changes in the Redpanda Helm chart, especially modifications to the values file, may introduce new features or configuration options that the Redpanda Operator should be aware of.
-
-. https://github.com/redpanda-data/helm-charts/releases[Review the release notes] of the Redpanda Helm chart to understand the nature of the changes and their potential impact on your Redpanda clusters.
-. Determine if the current version of the Redpanda Operator is compatible with the new Redpanda Helm chart version. Not all changes in the Redpanda Helm chart require an upgrade of the Redpanda Operator. See xref:k-compatibility.adoc[].
-
-If the new Redpanda Helm chart version introduces significant changes that affect how the Redpanda Operator manages the Redpanda clusters:
-
-* Upgrade the CRDs to match the latest version of the Redpanda Operator.
-+
-include::deploy:partial$kubernetes/install-crds.adoc[]
-+
-This step ensures that the Redpanda Operator can correctly interpret and manage the configurations defined in the Redpanda resource.
-
-* Ensure you are using the latest version of the Redpanda Operator that supports the new Redpanda Helm chart version.
-+
-[,bash,subs="attributes+"]
-----
-helm repo add redpanda https://charts.redpanda.com
-helm upgrade --install redpanda-controller redpanda/operator \
-  --namespace <namespace> \
-  --set image.tag={latest-operator-version}
-----
-+
-CAUTION: Make sure to include all existing overrides, otherwise the upgrade may fail.
-
-[[upgrade]]
-== Perform a rolling upgrade
-
-A rolling upgrade involves updating the version of Redpanda in the Redpanda Helm chart, which triggers a rolling restart.
-
-[NOTE]
-====
-The Helm chart's `preStop` lifecycle hook puts each broker into maintenance mode before the Pod is terminated. If maintenance mode does not complete before the `terminationGracePeriod` the container is forcefully terminated using a `SIGKILL` command.
-
-The default `terminationGracePeriod` is 90 seconds, which should be long enough for large clusters.
-You can test different values in a development environment.
-To configure the `terminationGracePeriod`,
-use the xref:reference:k-redpanda-helm-spec.adoc#statefulsetterminationgraceperiodseconds[`statefulset.terminationGracePeriodSeconds`] setting.
-====
-
-To upgrade:
+Before you upgrade, you must make sure that your cluster is in a healthy state and that your topics are configured to limit outages during the upgrade process.
 
 . Check for topics that have a replication factor greater than one.
 +
@@ -163,36 +92,63 @@ Under-replicated partitions: [] <3>
 <3> These fields contain data only when the cluster is unhealthy.
 ====
 
-. If you're using the Redpanda Helm chart without the Redpanda Operator, list all your existing overrides of the Helm values:
-+
-[,bash]
-----
-helm get values redpanda --namespace <namespace>
-----
-+
-You'll need to apply these overrides in the next step.
+[[upgrade]]
+== Perform a rolling upgrade
 
-. Upgrade the Redpanda version by overriding the `image.tag` setting. Replace `<new-version>` with a valid version tag.
-+
+Performing a rolling upgrade allows you to update the version of Redpanda managed by the Redpanda Helm chart without downtime. This process ensures that each broker is sequentially updated and restarted, minimizing the impact on your environment.
+
+You can use two methods to upgrade a Redpanda cluster in Kubernetes. The first method is to upgrade the Helm release to a newer version of the Redpanda Helm chart that uses the desired Redpanda version as a default. The second method is to update the existing Helm release to use a newer Redpanda image. The first method is preferred because upgrading the entire chart ensures that any new parameters required to configure the cluster are defined.
+
+Upgrading a Redpanda cluster in Kubernetes triggers a sequential restart of the Pods managed by the StatefulSet. During each broker's restart, the following steps occur:
+
+- The `preStop` lifecycle hook is executed to place the broker into maintenance mode. This step ensures that the broker stops accepting new connections and finishes processing its current tasks.
+- Kubernetes then terminates the Pod. If the broker does not shut down within the allowed grace period (default 90 seconds), Kubernetes forcefully terminates it using a `SIGKILL` signal.
+- After the Pod is terminated, the `postStart` lifecycle hook is executed to take the broker out of maintenance mode, allowing it to rejoin the cluster once restarted.
+
 [tabs]
 ======
 Helm + Operator::
 +
 --
+
+. xref:upgrade:k-compatibility.adoc[Review the Kubernetes compatibility matrix] and determine the version of the Redpanda Operator that is compatible with the Helm chart version you plan to use. The Redpanda Operator must be able to understand and manage the Helm chart and the Redpanda version you are deploying. If you need to upgrade, see xref:upgrade:k-upgrade-operator.adoc[].
+
+. Check the default Redpanda version of a chart to make sure that it uses the version that you want to upgrade your cluster to.
++
+[source,bash]
+----
+helm show chart --version <chart-version> redpanda/redpanda | grep  "appVersion"
+----
++
+Replace `<chart-version>` with the version number of a newer chart.
+
+. Upgrade the Redpanda version by either updating the Helm chart version or the Redpanda image.
++
 .`redpanda-cluster.yaml`
-[,yaml,lines=9-15]
+[source,yaml]
 ----
 apiVersion: cluster.redpanda.com/v1alpha1
 kind: Redpanda
 metadata:
   name: redpanda
 spec:
-  chartRef: {}
+  chartRef:
+    chartVersion: <helm-chart-version> <1>
   clusterSpec:
     image:
-      tag: <new-version>
+      # Optional
+      tag: <new-version> <2>
+    statefulset:
+      # Optional
+      terminationGracePeriodSeconds: <grace-period> <3>
 ----
++
+<1> The version of the Redpanda Helm chart to deploy.
+<2> If you need to upgrade to an intermediate version of Redpanda, use this setting to specify the version of Redpanda to deploy. This version overrides the default one in the Helm chart. Replace `<new-version>` with a valid version tag.
+<3> The xref:reference:k-redpanda-helm-spec.adoc#statefulsetterminationgraceperiodseconds[`statefulset.terminationGracePeriodSeconds`] setting defines how long Kubernetes will wait for the broker to shut down gracefully before forcefully terminating it. The default value is 90 seconds, which is enough for most clusters, but might require adjustment based on your workload. Modify this setting in your Helm values file if your Redpanda brokers have high loads or hold large amounts of data, as they might need more time to shut down gracefully.
 
+. Apply the Redpanda resource to deploy the Redpanda cluster:
++
 ```bash
 kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
 ```
@@ -201,37 +157,60 @@ kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
 Helm::
 +
 --
-[tabs]
-====
---values::
+
+. xref:upgrade:k-compatibility.adoc[Review the Kubernetes compatibility matrix] and verify which version of the Redpanda Helm chart supports the Redpanda version you plan to upgrade to. The Helm chart version can dictate which configurations and Kubernetes resources are available or required for that specific version of Redpanda.
+
+. Check the default Redpanda version of a chart to make sure that it uses the version that you want to upgrade your cluster to.
++
+[source,bash]
+----
+helm show chart --version <chart-version> redpanda/redpanda | grep  "appVersion"
+----
++
+Replace `<chart-version>` with the version number of a newer chart.
+
+. Back up your current Helm values for the Redpanda Helm chart:
++
+[source,bash]
+----
+helm get values redpanda --namespace <namespace> > redpanda-values-backup.yaml
+----
++
+You'll need to apply these overrides in the next step.
+
+. Optional: Update the following settings:
 +
 .`redpanda-version.yaml`
 [,yaml]
 ----
 image:
-  tag: <new-version>
+  tag: <new-version> <1>
+statefulset:
+  terminationGracePeriodSeconds: <grace-period> <2>
 ----
++
+<1> If you need to upgrade to an intermediate version of Redpanda, use this setting to specify the version of Redpanda to deploy. This version overrides the default one in the Helm chart. Replace `<new-version>` with a valid version tag.
+<2> The xref:reference:k-redpanda-helm-spec.adoc#statefulsetterminationgraceperiodseconds[`statefulset.terminationGracePeriodSeconds`] setting defines how long Kubernetes will wait for the broker to shut down gracefully before forcefully terminating it. The default value is 90 seconds, which is enough for most clusters, but might require adjustment based on your workload. Modify this setting in your Helm values file if your Redpanda brokers have high loads or hold large amounts of data, as they might need more time to shut down gracefully.
+
+. Deploy Redpanda with the new Helm chart version:
 +
 ```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
---values redpanda-version.yaml --reuse-values
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> \
+  --create-namespace \
+  --version <helm-chart-version> \
+  --values redpanda-version.yaml
 ```
-
---set::
 +
-[,bash,lines=2-5]
-----
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set image.tag=<new-version>
-----
-
-====
+Make sure to include all existing overrides, otherwise the upgrade may fail.
+For example, if you already enabled SASL, include the same SASL overrides.
++
+CAUTION: Do not use the `--reuse-values` flag, otherwise Helm won't include any new values from the upgraded chart.
 --
 ======
-+
-CAUTION: Make sure to include all existing overrides, otherwise the upgrade may fail.
-For example, if you already enabled SASL, include the same SASL overrides.
-Do not use the `--reuse-values` flag, otherwise Helm won't include any new values from the upgraded chart.
+
+== Verify the upgrade
+
+After upgrading, verify that your Redpanda cluster is functioning correctly:
 
 . Wait for the Pods to be terminated and recreated with the new version of Redpanda.
 +
@@ -265,17 +244,23 @@ kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
   rpk redpanda admin brokers list
 ```
 
-== Rollbacks
+== Roll back
 
 If something does not go as planned during a rolling upgrade, you can roll back to the original version as long as you have not upgraded all brokers.
-
-NOTE: The Redpanda Operator rolls back automatically after three failed attempts to upgrade the cluster.
-
-If you are using the Redpanda Helm chart without the Redpanda Operator, you can roll back manually.
 
 The StatefulSet uses the `RollingUpdate` strategy by default in xref:reference:k-redpanda-helm-spec.adoc#statefulsetupdatestrategytype[`statefulset.updateStrategy.type`],
 which means all Pods in the StatefulSet are restarted in reverse-ordinal order. For details, see the https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#update-strategies[Kubernetes documentation^].
 
+[tabs]
+======
+Helm + Operator::
++
+--
+The Redpanda Operator rolls back automatically after three failed attempts to upgrade the cluster.
+--
+Helm::
++
+--
 . Find the previous revision:
 +
 ```bash
@@ -319,6 +304,8 @@ Nodes down:            []
 Leaderless partitions: []
 ```
 ====
+--
+======
 
 == Troubleshooting
 
