@@ -1,7 +1,7 @@
 ## Description
 
 Resolves https://github.com/redpanda-data/documentation-private/issues/<add-your-issue-number-here>
-Review deadline
+Review deadline:
 
 ## Page previews
 
