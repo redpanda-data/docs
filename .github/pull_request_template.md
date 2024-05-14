@@ -3,7 +3,7 @@
 Resolves <add-your-issue-number-here>
 Review deadline
 
-## Preview
+## Page previews
 
 ## Checks
 
