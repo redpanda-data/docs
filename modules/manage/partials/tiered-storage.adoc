@@ -13,7 +13,7 @@ image::shared:tiered_storage1.png[Tiered Storage architecture]
 
 [IMPORTANT]
 ====
-- When upgrading to Redpanda 23.2, uploads to object storage are paused until all brokers in the cluster are upgraded. If the cluster gets stuck while upgrading, roll it back to the original version. In a mixed-version state, the cluster could run out of disk space. If you need to force a mixed-version cluster to upload, move partition leadership to brokers running the original version.
+- When upgrading Redpanda, uploads to object storage are paused until all brokers in the cluster are upgraded. If the cluster gets stuck while upgrading, roll it back to the original version. In a mixed-version state, the cluster could run out of disk space. If you need to force a mixed-version cluster to upload, move partition leadership to brokers running the original version.
 ====
 
 == Prerequisites
@@ -27,6 +27,11 @@ To check if you already have a license key applied to your cluster:
 rpk cluster license info
 ----
 
+== Limitations
+
+- Migrating topics from one object storage provider to another is not supported.
+- Migrating topics from one bucket or container to another is not supported.
+
 == Set up Tiered Storage
 
 To set up Tiered Storage:
@@ -38,12 +43,6 @@ To set up Tiered Storage:
 === Configure object storage
 
 Redpanda natively supports Tiered Storage with Amazon Simple Storage Service (S3), Google Cloud Storage (GCS, which uses the Google Cloud Platform S3 API), and Microsoft Azure Blob Storage (ABS) and Azure Data Lake Storage (ADLS).
-
-[NOTE]
-====
-- Migrating topics from one object storage provider to another is not supported.
-- Migrating topics from one bucket or container to another is not supported.
-====
 
 ifdef::env-kubernetes[]
 ==== Amazon S3
@@ -76,7 +75,7 @@ spec:
     storage:
       tiered:
         config:
-          cloud_storage_enabled: true
+          cloud_storage_enabled: "true"
           cloud_storage_credentials_source: aws_instance_metadata
           cloud_storage_region: <region>
           cloud_storage_bucket: <redpanda-bucket-name>
@@ -160,7 +159,7 @@ spec:
     storage:
       tiered:
         config:
-          cloud_storage_enabled: true
+          cloud_storage_enabled: "true"
           cloud_storage_credentials_source: config_file
           cloud_storage_access_key: <access-key>
           cloud_storage_secret_key: <secret-key>
@@ -215,6 +214,44 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 Replace the following placeholders:
 +
 - `<access-key>`: The access key for your S3 bucket.
++
+.Manage sensitive data with Secrets
+[%collapsible]
+====
+To avoid exposing sensitive data in your configuration files, you can also use a Kubernetes Secret. For example:
+
+. Create the Secret:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: storage-secrets
+type: Opaque
+data:
+  access-key: <base64-encoded-access-key>
+  secret-key: <base64-encoded-secret-key>
+----
++
+- Replace `<base64-encoded-access-key>` with your base64-encoded access key.
+- Replace `<base64-encoded-secret-key>` with your base64-encoded secret key.
+
+. Update your Redpanda configuration to include the secret reference for the shared key:
++
+[source,yaml]
+----
+storage:
+  tiered:
+    credentialsSecretRef:
+      accessKey:
+        name: storage-secrets
+        key: access-key
+      secretKey:
+        name: storage-secrets
+        key: secret-key
+----
+====
 - `<secret-key>`: The secret key for your S3 bucket.
 - `<region>`: The region of your S3 bucket.
 - `<redpanda-bucket-name>`: The name of your S3 bucket.
@@ -248,7 +285,8 @@ spec:
     storage:
       tiered:
         config:
-          cloud_storage_enabled: true
+          cloud_storage_enabled: "true"
+          cloud_storage_api_endpoint: storage.googleapis.com
           cloud_storage_credentials_source: gcp_instance_metadata
           cloud_storage_region: <region>
           cloud_storage_bucket: <redpanda-bucket-name>
@@ -272,6 +310,7 @@ storage:
   tiered:
     config:
       cloud_storage_enabled: true
+      cloud_storage_api_endpoint: storage.googleapis.com
       cloud_storage_credentials_source: gcp_instance_metadata
       cloud_storage_region: <region>
       cloud_storage_bucket: <redpanda-bucket-name>
@@ -286,6 +325,7 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 ```bash
 helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
   --set storage.tiered.config.cloud_storage_enabled=true \
+  --set storage.tiered.config.cloud_storage_api_endpoint=storage.googleapis.com \
   --set storage.tiered.config.cloud_storage_credentials_source=aws_instance_metadata \
   --set storage.tiered.config.cloud_storage_region=<region> \
   --set storage.tiered.config.cloud_storage_bucket=<redpanda-bucket-name>
@@ -327,7 +367,7 @@ spec:
     storage:
       tiered:
         config:
-          cloud_storage_enabled: true
+          cloud_storage_enabled: "true"
           cloud_storage_credentials_source: config_file
           cloud_storage_api_endpoint: storage.googleapis.com
           cloud_storage_access_key: <access-key>
@@ -385,6 +425,44 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 Replace the following placeholders:
 +
 - `<access-key>`: The access key for your bucket.
++
+.Manage sensitive data with Secrets
+[%collapsible]
+====
+To avoid exposing sensitive data in your configuration files, you can also use a Kubernetes Secret. For example:
+
+. Create the Secret:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: storage-secrets
+type: Opaque
+data:
+  access-key: <base64-encoded-access-key>
+  secret-key: <base64-encoded-secret-key>
+----
++
+- Replace `<base64-encoded-access-key>` with your base64-encoded access key.
+- Replace `<base64-encoded-secret-key>` with your base64-encoded secret key.
+
+. Update your Redpanda configuration to include the secret reference for the shared key:
++
+[source,yaml]
+----
+storage:
+  tiered:
+    credentialsSecretRef:
+      accessKey:
+        name: storage-secrets
+        key: access-key
+      secretKey:
+        name: storage-secrets
+        key: secret-key
+----
+====
 - `<secret-key>`: The secret key for your bucket.
 - `<region>`: The region of your bucket.
 - `<redpanda-bucket-name>`: The name of your bucket.
@@ -393,12 +471,13 @@ IMPORTANT: Do not set an object storage property to an empty string `""` or to `
 
 ==== Microsoft ABS/ADLS
 
+You can configure access to Azure Blob Storage with either shared keys or Azure's managed identities system to securely interact with Azure Blob Storage. Shared keys, as static credentials, are simple to use but require manual management and vigilant security practices to prevent breaches due to their unchanging nature. In contrast, managed identities provide a more secure and maintenance-free solution by automating credential management and rotation, though they are exclusive to the Azure ecosystem.
 
-NOTE: Starting in release 23.2.8, Redpanda supports storage accounts configured for ADLS Gen2 with https://learn.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-namespace[hierarchical namespaces^] enabled. For hierarchical namespaces created with a custom endpoint, set the properties `cloud_storage_azure_adls_endpoint` and `cloud_storage_azure_adls_port` in the Helm chart through the command line (`--set storage.tiered.config`) or the YAML file. If you haven't configured custom endpoints in Azure, there's no need to edit these properties.
+include::manage:partial$azure-blob-limitations.adoc[]
 
-To configure access to ABS/ADLS, use shared keys:
+To configure access to an Azure container with a managed identity in AKS:
 
-. Get an account access key for the Azure container you want Redpanda. For information on how to view your account access keys, see the https://learn.microsoft.com/en-us/azure/storage/common/storage-account-keys-manage?toc=%2Fazure%2Fstorage%2Fblobs%2Ftoc.json&bc=%2Fazure%2Fstorage%2Fblobs%2Fbreadcrumb%2Ftoc.json&tabs=azure-portal#view-account-access-keys[Azure documentation^].
+. Configure an xref:manage:security/iam-roles.adoc#configuring-iam-roles[Azure managed identity].
 . Override the following required cluster properties in the Helm chart:
 +
 [tabs]
@@ -419,7 +498,107 @@ spec:
     storage:
       tiered:
         config:
-          cloud_storage_enabled: true
+          cloud_storage_enabled: "true"
+          cloud_storage_credentials_source: azure_aks_oidc_federation
+          cloud_storage_azure_storage_account: <account-name>
+          cloud_storage_azure_container: <container-name>
+    serviceAccount:
+      create: true
+      annotations:
+        "azure.workload.identity/client-id": <managed-identity-client-id>
+    statefulset:
+      podTemplate:
+        labels:
+          "azure.workload.identity/use": "true"
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`cloud-storage.yaml`
+[,yaml]
+----
+storage:
+  tiered:
+    config:
+      cloud_storage_enabled: true
+      cloud_storage_credentials_source: azure_aks_oidc_federation
+      cloud_storage_azure_storage_account: <account-name>
+      cloud_storage_azure_container: <container-name>
+serviceAccount:
+  create: true
+  annotations:
+    "azure.workload.identity/client-id": <managed-identity-client-id>
+statefulset:
+  podTemplate:
+    labels:
+      "azure.workload.identity/use": "true"
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+--values cloud-storage.yaml
+```
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set storage.tiered.config.cloud_storage_enabled=true \
+  --set storage.tiered.config.cloud_storage_credentials_source=azure_aks_oidc_federation \
+  --set storage.tiered.config.cloud_storage_azure_storage_account=<account-name> \
+  --set storage.tiered.config.cloud_storage_azure_container=<container-name> \
+  --set serviceAccount.create=true \
+  --set serviceAccount.annotations."azure\.workload\.identity/client-id"="<managed-identity-client-id>" \
+  --set statefulset.podTemplate.labels."azure\.workload\.identity/use"="true"
+```
+====
+--
+======
++
+Replace the following placeholders:
++
+--
+- `<account-name>`: The name of your Azure account.
+- `<container-name>`: The name of the Azure container in your Azure account.
+- `<managed-identity-client-id>`: The client ID for your Azure managed identity.
+--
+
+NOTE: The `serviceAccount` annotations and the `statefulset` Pod labels are essential for the Azure webhook to inject the necessary Azure-specific environment variables and the projected service account token volume into the pods. For more information, visit https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview?tabs=dotnet[Microsoft Entra Workload ID with Azure Kubernetes Service (AKS)^].
+
+IMPORTANT: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value.
+
+To configure access to ABS/ADLS with shared keys:
+
+. Get an account access key for the Azure container that Redpanda will run on. For information on how to view your account access keys, see the https://learn.microsoft.com/en-us/azure/storage/common/storage-account-keys-manage?toc=%2Fazure%2Fstorage%2Fblobs%2Ftoc.json&bc=%2Fazure%2Fstorage%2Fblobs%2Fbreadcrumb%2Ftoc.json&tabs=azure-portal#view-account-access-keys[Azure documentation^].
+. Override the following required cluster properties in the Helm chart:
++
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    storage:
+      tiered:
+        config:
+          cloud_storage_enabled: "true"
           cloud_storage_azure_shared_key: <access_key>
           cloud_storage_azure_storage_account: <account-name>
           cloud_storage_azure_container: <container-name>
@@ -468,6 +647,40 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 Replace the following placeholders:
 +
 - `<access-key>`: The access key for your Azure account.
++
+.Manage sensitive data with Secrets
+[%collapsible]
+====
+To avoid exposing sensitive data in your configuration files, you can also use a Kubernetes Secret. For example:
+
+. Create the Secret:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: storage-secrets
+type: Opaque
+data:
+  secret-key: <base64-encoded-secret-key>
+----
++
+Replace `<base64-encoded-secret-key>` with your base64-encoded secret key.
+
+. Update your Redpanda configuration to include the secret reference for the secret key:
++
+[source,yaml]
+----
+storage:
+  tiered:
+    credentialsSecretRef:
+      secretKey:
+        configurationKey: cloud_storage_azure_shared_key
+        name: storage-secrets
+        key: secret-key
+----
+====
 - `<account-name>`: The name of your Azure account.
 - `<container-name>`: The name of the Azure container in your Azure account.
 +
@@ -540,6 +753,7 @@ To configure access to Google Cloud Storage with an IAM role:
 [,properties]
 ----
 cloud_storage_enabled: true
+cloud_storage_api_endpoint: storage.googleapis.com
 cloud_storage_credentials_source: gcp_instance_metadata
 cloud_storage_region: <region>
 cloud_storage_bucket: <redpanda_bucket_name>
@@ -548,6 +762,7 @@ cloud_storage_bucket: <redpanda_bucket_name>
 Replace `<placeholders>` with your own values.
 +
 IMPORTANT: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value. To reset a property to its default value, run `rpk cluster config force-reset <config-name>` or remove that line from the cluster configuration with `rpk cluster config edit`.
+
 To configure access to Google Cloud Storage with access keys instead of an IAM role:
 
 . Choose a uniform access control when you create the bucket.
@@ -575,8 +790,23 @@ Microsoft ABS/ADLS::
 +
 --
 
-
 include::manage:partial$azure-blob-limitations.adoc[]
+
+To configure access to an Azure container with a managed identity:
+
+. Configure an xref:manage:security/iam-roles.adoc#configuring-iam-roles[Azure managed identity].
+. Run the `rpk cluster config edit` command, then edit the following required properties:
++
+[,properties]
+----
+cloud_storage_enabled: true
+cloud_storage_credentials_source: azure_vm_instance_metadata
+cloud_storage_azure_managed_identity_id: <managed-identity-client-id>
+cloud_storage_azure_storage_account: <storage-account-name>
+cloud_storage_azure_container: <container-name>
+----
++
+Replace `<placeholders>` with your own values.
 
 To configure access to Azure Blob Storage with shared keys:
 
@@ -1340,13 +1570,13 @@ Tiered Storage gives you the option to boost the speed and reduce the impact of 
 
 Tiered Storage can help make the cluster resize process faster and more cost-efficient by leveraging data that has already been uploaded to object storage. Instead of transferring all data from local storage to the reassigned replicas, the replicas can instead be initialized to rely more heavily on Tiered Storage for read requests.
 
-To accomplish this, Redpanda takes an on-demand snapshot at an offset that is already uploaded to object storage. This is a later offset compared to the default log start offset managed by glossterm:Raft[]. When an empty replica is initialized, the later offset uploaded to object storage can be used as the start offset source. Reads that access data before the uploaded offset can be executed as remote reads. Therefore, the only data that needs to be sent over the network to replicas is the data locally retained after the uploaded offset. This also results in less time taken overall to grow or shrink the cluster.    
+To accomplish this, Redpanda takes an on-demand snapshot at an offset that is already uploaded to object storage. This is a later offset compared to the default log start offset managed by glossterm:Raft[]. When an empty replica is initialized, the later offset uploaded to object storage can be used as the start offset source. Reads that access data before the uploaded offset can be executed as remote reads. Therefore, the only data that needs to be sent over the network to replicas is the data locally retained after the uploaded offset. This also results in less time taken overall to grow or shrink the cluster.
 
 === Configure fast commission and decommission
 
 To activate fast commission and decommission when brokers enter and leave the cluster:
 
-. Make sure to <<enable-tiered-storage,configure topics for Tiered Storage>>. 
+. Make sure to <<enable-tiered-storage,configure topics for Tiered Storage>>.
 . Configure at least one of the following cluster configuration properties. These properties limit the size of data replicated across brokers to local storage using Raft:
 +
 --
@@ -1456,7 +1686,7 @@ a|
 AWS or GCS API endpoint.
 
 - For AWS, this can be left blank. It's generated automatically using the region and bucket.
-- For GCS, use `storage.googleapis.com`.
+- For GCS, you must use `storage.googleapis.com`.
 
 | config_ref:cloud_storage_azure_container,true,cluster-properties[]
 | Azure container name.

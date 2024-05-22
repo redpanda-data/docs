@@ -5,20 +5,20 @@
 
 include::develop:partial$topic-defaults.adoc[]
 
-NOTE: For details about topic properties, refer to xref:reference:topic-properties.adoc[Topic Configuration Properties].
+NOTE: For details about topic properties, see xref:reference:topic-properties.adoc[Topic Configuration Properties].
 
 == Create a topic
 
-Creating a topic can be as simple as specifying a name for your topic on the command line. For example, to create a topic named `xyz`:
+Creating a topic can be as simple as specifying a name for your topic on the command line. For example, to create a topic named `xyz`, run:
 
 [,bash]
 ----
 rpk topic create xyz
 ----
 
-This command creates a topic named `xyz` with one partition and one replica, since these are the default values set in the cluster configuration file.
+This command creates a topic named `xyz` with one partition and one replica, because these are the default values set in the cluster configuration file.
 
-But suppose you want to create a topic with different values for these settings. The guidelines in this section show you how to choose the number of partitions and replicas for your use case.
+Suppose you want to create a topic with different values for these settings. The guidelines in this section show how to change default topic configurations.
 
 === Choose the number of partitions
 
@@ -26,7 +26,7 @@ A partition acts as a log file where topic data is written. Dividing topics into
 
 TIP: As a general rule, select a number of partitions that corresponds to the maximum number of consumers in any consumer group that will consume the data.
 
-For example, suppose you plan to create a consumer group with 10 consumers. To create topic `xyz` with 10 partitions:
+For example, suppose you plan to create a consumer group with 10 consumers. To create topic `xyz` with 10 partitions, run:
 
 [,bash]
 ----
@@ -39,14 +39,14 @@ Replicas are copies of partitions that are distributed across different brokers,
 
 By choosing a replication factor greater than 1, you ensure that each partition has a copy of its data on at least one other broker. One replica acts as the leader, and the other replicas are followers.
 
-To specify a replication factor of 3 for topic "`xyz`":
+To specify a replication factor of 3 for topic `xyz`, run:
 
 [,bash]
 ----
 rpk topic create xyz -r 3
 ----
 
-NOTE: The replication factor must be an odd number. Redpanda Data recommends a replication factor of 3 for most use cases. Administrators may set a minimum required replication factor for any new topic in the cluster through the cluster-level xref:reference:cluster-properties.adoc#minimum_topic_replication[`minimum_topic_replication`] property.
+NOTE: The replication factor must be an odd number. Redpanda Data recommends a replication factor of 3 for most use cases. Administrators may set a minimum required replication factor for any new topic in the cluster through the cluster-level xref:reference:cluster-properties.adoc#minimum_topic_replications[`minimum_topic_replications`] property.
 
 == Update topic configurations
 
@@ -82,18 +82,44 @@ The cleanup policy determines how to clean up the partition log files when they 
 * `compact` compacts the data by only keeping the latest values for each KEY. For details on compaction in Redpanda, see xref:manage:cluster-maintenance/compaction-settings.adoc[Compaction settings].
 * `compact,delete` combines both methods.
 
-Unlike compacted topics which keep only the most recent message for a given key, topics configured with a delete cleanup policy provide a running history of all changes for those topics. 
+Unlike compacted topics, which keep only the most recent message for a given key, topics configured with a `delete` cleanup policy provide a running history of all changes for those topics.
 
-Suppose you configure a topic using the default cleanup policy `delete`, and you want to change the policy to `compact`. Run the `rpk topic alter-config` command as shown:
+For example, to change a topic's policy to `compact`, run:
 
 [,bash]
 ----
 rpk topic alter-config [TOPICS…] —-set cleanup.policy=compact
 ----
 
+=== Configure write caching
+
+Write caching is a relaxed mode of xref:develop:produce-data/configure-producers.adoc#acksall[`acks=all`] that provides better performance at the expense of durability. It acknowledges a message as soon as it is received and acknowledged on a majority of brokers, without waiting for it to be written to disk. This provides lower latency while still ensuring that a majority of brokers acknowledge the write.
+
+Write caching applies to user topics. It does not apply to transactions or consumer offsets: data written in the context of a transaction and consumer offset commits is always written to disk and fsynced before being acknowledged to the client.
+
+NOTE: For clusters in xref:reference:rpk/rpk-redpanda/rpk-redpanda-mode.adoc#development-mode[development mode], write caching is enabled by default. For clusters in production mode, it is disabled by default.
+
+Only enable write caching on workloads that can tolerate some data loss in the case of multiple, simultaneous broker failures. Leaving write caching disabled safeguards your data against complete data center or availability zone failures.
+
+==== Configure at cluster level
+
+To enable write caching by default in all user topics, set the cluster-level property xref:reference:cluster-properties.adoc#write_caching_default[`write_caching_default`]:
+
+`rpk cluster config set write_caching_default=true`
+
+With `write_caching_default` set to true at the cluster level, Redpanda fsyncs to disk according to xref:reference:cluster-properties.adoc#raftreplicamaxpendingflushbytes[`raft_replica_max_pending_flush_bytes`] and xref:reference:cluster-properties.adoc#raftreplicamaxflushdelayms[`raft_replica_max_flush_delay_ms`], whichever is reached first.
+
+==== Configure at topic level
+
+To override the cluster-level setting at the topic level, set the topic-level property xref:reference:topic-properties.adoc#writecaching[`write.caching`]:
+
+`rpk topic alter-config my_topic --set write.caching=true`
+
+With `write.caching` enabled at the topic level, Redpanda fsyncs to disk according to xref:reference:topic-properties.adoc#flushms[`flush.ms`] and xref:reference:topic-properties.adoc#flushbytes[`flush.bytes`], whichever is reached first.
+
 === Remove a configuration setting
 
-You can remove a configuration that overrides the default setting, and the setting will use the default value again. For example, suppose you altered the cleanup policy to use `compact` instead of the default, `delete`. Now you want to return the policy setting to the default. To remove the configuration setting `cleanup.policy=compact`, run `rpk topic alter-config` with the `--delete` flag as shown:
+You can remove a configuration that overrides the default setting, and the setting will use the default value again. For example, suppose you altered the cleanup policy to use `compact` instead of the default, `delete`. Now you want to return the policy setting to the default. To remove the configuration setting `cleanup.policy=compact`, run `rpk topic alter-config` with the `--delete` flag:
 
 [,bash]
 ----
@@ -109,7 +135,7 @@ To display all the configuration settings for a topic, run:
 rpk topic describe <topic-name> -c
 ----
 
-The `-c` flag limits the command output to just the topic configurations. This command is useful for checking the default configuration settings before you make any changes, and for verifying changes after you make them.
+The `-c` flag limits the command output to just the topic configurations. This command is useful for checking the default configuration settings before you make any changes and for verifying changes after you make them.
 
 The following command output displays after running `rpk topic describe test-topic`, where `test-topic` was created with default settings:
 
@@ -140,7 +166,7 @@ retention.ms                  604800000                      DEFAULT_CONFIG
 segment.bytes                 1073741824                     DEFAULT_CONFIG
 ----
 
-Now suppose you add two partitions, and increase the number of replicas to 3. The new command output confirms the changes in the `SUMMARY` section:
+Suppose you add two partitions, and increase the number of replicas to 3. The new command output confirms the changes in the `SUMMARY` section:
 
 [.no-copy]
 ----
@@ -179,3 +205,7 @@ rpk topic  delete -r '^f.*' '.*r$'
 Note that the first regular expression must start with the `^` symbol, and the last expression must end with the `$` symbol. This requirement helps prevent accidental deletions.
 
 include::develop:partial$delete-topic-records.adoc[]
+
+== Next steps
+
+xref:develop:produce-data/configure-producers.adoc[]
