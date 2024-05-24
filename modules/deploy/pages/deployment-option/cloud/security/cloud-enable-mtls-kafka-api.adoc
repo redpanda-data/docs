@@ -1,0 +1,89 @@
+= Enable mTLS Authentication for Kafka API
+:description: Use the Cloud API to enable mTLS for Kafka API connections on your Redpanda cluster.
+:page-cloud: true
+
+Redpanda Cloud supports mTLS authentication for the Kafka API. 
+
+== Requirements
+
+* A service account in your Redpanda organization. You must have administrative privileges to create a service account.
+* Use the xref:deploy:deployment-option/cloud/api/cloud-api-overview.adoc[Cloud API] to enable mTLS. You use the service account to obtain an access token. You then make a request to the API to update an existing cluster to use mTLS, passing the access token in the authorization header.  
+
+== Use the Cloud API to enable mTLS
+
+. Create a service account in your organization, if you have not already done so. Go to the https://cloud.redpanda.com/clients[Clients^] page in the Redpanda Cloud UI and click *Add client* to create a service account. Enter a name and description.
+. Retrieve the client ID and secret by clicking *Copy ID* and *Copy Secret*. 
+. Obtain an access token by making a `POST` request to `https://auth.prd.cloud.redpanda.com/oauth/token` with the ID and secret in the request body. 
+. Make a xref:api:ROOT:cloud-api.adoc#patch-/v1beta2/clusters/-cluster.id-[`PATCH /v1beta2/clusters/\{cluster.id}`] request to enable mTLS for the Kafka API on a cluster.
+
+The following code block shows a request for an access token, followed by a request to enable mTLS:
+
+[,bash]
+----
+AUTH_TOKEN=`curl -s --request POST \
+    --url 'https://auth.prd.cloud.redpanda.com/oauth/token' \
+    --header 'content-type: application/x-www-form-urlencoded' \
+    --data grant_type=client_credentials \
+    --data client_id=<client-id> \
+    --data client_secret=<client-secret> \
+    --data audience=cloudv2-production.redpanda.cloud | jq .access_token | sed 's/"//g'`
+
+CLUSTER_PATCH_BODY=`cat << EOF
+{
+  "kafka_api": {
+     "mtls": {
+        "enabled": true,
+        "ca_certificates_pem": ["<ca-certificate-pem>"],
+        "principal_mapping_rules": ["<principal-mapping-rule>"]
+     }
+  }
+}
+EOF`
+curl -v -X PATCH \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer $AUTH_TOKEN" \
+-d "$CLUSTER_PATCH_BODY" https://api.redpanda.com/v1beta1/clusters/<cluster-id>`
+----
+
+Make sure to replace the following variables:
+
+* `<client-id>`: Client ID.
+* `<client-secret>`: Client secret.
+* `<cluster-id>`: ID of Redpanda cluster.
+* `<ca-certificate-pem>`: A trusted Kafka client CA certificate in PEM format. The `ca_certificates_pem` field accepts a list of certificates.
+* `<principal-mapping-rule>`: Configurable rule for mapping the Common Name of Kafka client certificates to Kafka principals.  
++
+For example, the mapping rule `RULE:.*CN=([^,]+).*/\\$1/` maps the following certificate subject to a principal named `test`:
++
+`Subject: C=US, ST=IL, L=Chicago, O=redpanda, OU=cloud, CN=test, emailAddress=test123@redpanda.com`
++
+See xref:manage:security/authentication.adoc#mtls[Configure Authentication] for more details on principal mapping rules. The `principal_mapping_rules` field accepts a list of rules.
+
+=== Verify that mTLS is enabled
+
+To verify that mTLS is enabled for the Kafka API, run the following `rpk` command, without providing a security certificate or key:
+
+[,bash]
+----
+rpk cluster info --tls-enabled
+----
+
+You should get an error like the following:
+
+```
+unable to request metadata: remote error: tls: certificate required
+```
+
+== Consume and produce with mTLS enabled
+
+When you consume, produce to, or manage topics using xref:reference:rpk/rpk-topic/rpk-topic.adoc[`rpk`], you must provide a client certificate and private key. You may use the use the `--tls-cert` and `--tls-key` options, or xref:reference:rpk/rpk-x-options.adoc[environment variables] with `rpk`.
+
+[,bash]
+----
+rpk topic create test-topic --tls-enabled --tls-cert=/path/to/tls.crt --tls-key=/path/to/tls.key
+----
+
+include::shared:partial$suggested-reading.adoc[]
+
+- xref:deploy:deployment-option/cloud/api/cloud-api-overview.adoc[]
+- xref:deploy:deployment-option/cloud/api/cloud-api-authentication.adoc[]
