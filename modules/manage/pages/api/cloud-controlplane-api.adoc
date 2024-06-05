@@ -1,0 +1,185 @@
+= Use the Control Plane API
+:description: Use the Control Plane API to manage resources in your Redpanda Cloud organization.
+:page-cloud: true
+:page-beta: true
+:tag-clusters: api:ROOT:cloud-api.adoc#tag--ClusterService
+:tag-networks: api:ROOT:cloud-api.adoc#tag--NetworkService
+:tag-operations: api:ROOT:cloud-api.adoc#tag--OperationService
+:tag-resource-groups: api:ROOT:cloud-api.adoc#tag--ResourceGroupService
+
+The Redpanda Cloud API is a collection of REST APIs that allow you to interact with different parts of Redpanda Cloud. The Control Plane API enables you to programmatically manage your organization's cloud environment outside of the Redpanda Cloud UI. You can call the API endpoints directly, or use tools like Terraform or Python scripts to automate cluster management.
+
+For the full Cloud API reference documentation, see xref:api:ROOT:cloud-api.adoc[Redpanda Cloud API Reference].
+
+== Control Plane API
+
+The Control Plane API is one central API that allows you to provision clusters, networks, and resource groups.
+
+The Control Plane API consists of the following endpoints:
+
+* pass:a,m[xref:{tag-clusters}[ClusterService\]]
+* pass:a,m[xref:{tag-networks}[NetworkService\]]
+* pass:a,m[xref:{tag-operations}[OperationService\]]
+* pass:a,m[xref:{tag-resource-groups}[ResourceGroupService\]]
+
+== Long-running operations
+
+Some endpoints do not directly return the resource itself, but instead return an operation. The following is an example response of xref:api:ROOT:cloud-api.adoc#post-/v1beta2/networks[Create Network] (`POST /networks`):
+
+[,bash,role=no-copy]
+----
+"operation": {
+  "id": "cl5nlt1c1scg01plkoe0",
+  "metadata": {
+    "@type": "type.googleapis.com/redpanda.api.controlplane.v1beta2.CreateNetworkMetadata",
+    "network_id": "cl5o0td1dafe70i7460g"
+  },
+  "state": "STATE_IN_PROGRESS",
+  "started_at": "2023-11-08T12:35:01.957Z",
+  "finished_at": null
+}
+----
+
+The response object represents the long-running operation of creating a network. Network creation is an example of an operation that can take a longer period of time to complete.
+
+=== Check operation state
+
+To check the progress of an operation, make a request to the xref:api:ROOT:cloud-api.adoc#get-/v1beta2/operations/-id-[`GET /operations/\{id}`] endpoint using the operation ID as a parameter: 
+
+```bash
+curl https://api.redpanda.com/v1beta2/operations/<operation-id>
+```
+
+The response contains the current state of the operation: `IN_PROGRESS`, `COMPLETED`, or `FAILED`.
+
+== Cluster tiers
+
+When you create a BYOC or Dedicated cluster, you select a usage tier. Each tier provides tested and guaranteed workload configurations for throughput, logical partitions, and connections. Availability depends on the region and the cluster type. See the full list of regions, zones, and tiers available with each provider in the xref:api:ROOT:cloud-api.adoc#api-description[API reference].
+
+== Create a cluster
+
+To create a new cluster, first create a resource group and network, if you have not already done so.
+
+=== Create a resource group 
+
+Create a resource group by making a POST request to the xref:api:ROOT:cloud-api.adoc#post-/v1beta2/resource-groups[`/v1beta2/resource-groups`] endpoint. Pass a name for your resource group in the request body.
+
+[,bash]
+----
+curl -H 'Content-Type: application/json' \
+-H 'Authorization: Bearer <token>' \
+-d '{
+  "name": "<resource-group-name>"
+}' -X POST https://api.redpanda.com/v1beta2/resource-groups
+----
+
+A resource group ID is returned. Pass this ID later when you call the Create Cluster endpoint.
+
+=== Create a network
+
+Create a network by making a request to xref:api:ROOT:cloud-api.adoc#post-/v1beta2/networks[`POST /v1beta2/networks`].
+
+Choose a xref:networking:cidr-ranges.adoc[CIDR range] that does not overlap with your existing VPCs or your Redpanda network.
+
+[,bash]
+----
+curl -d \
+'{
+  "cidr_block": "10.0.0.0/20",
+  "cloud_provider": "CLOUD_PROVIDER_GCP",
+  "cluster_type": "TYPE_DEDICATED",
+  "name": "<network-name>",
+  "resource_group_id": "<resource-group-id>",
+  "region": "us-west1"
+}' -X POST https://api.redpanda.com/v1beta2/networks 
+----
+
+This endpoint returns a <<long_running_operations,long-running operation>>. 
+
+=== Create a new cluster
+
+After the network is created, make a request to the xref:api:ROOT:cloud-api.adoc#post-/v1beta2/clusters[`POST /v1beta2/clusters`] with the resource group ID and network ID in the request body. 
+
+[,bash]
+----
+curl -d \
+'{
+  "cloud_provider": "CLOUD_PROVIDER_GCP",
+  "connection_type": "CONNECTION_TYPE_PUBLIC",
+  "name": "my-new-cluster",
+  "resource_group_id": "<resource-group-id>",
+  "network_id": "<network-id>",
+  "region": "us-west1",
+  "throughput_tier": "tier-1-gcp-um4g",
+  "type": "TYPE_DEDICATED",
+  "zones": [
+    "us-west1-a",
+    "us-west1-b",
+    "us-west1-c"
+    ]
+  }' -X POST https://api.redpanda.com/v1beta2/clusters
+----
+
+The Create Cluster endpoint returns a <<long_running_operations,long-running operation>>. When the operation is completed, you can retrieve cluster details by calling xref:api:ROOT:cloud-api.adoc#get-/v1beta2/clusters/-id-[`GET /v1beta2/clusters/\{id}`], passing the cluster ID as a parameter.
+
+=== Additional steps to create a BYOC cluster
+
+. Ensure that you have installed `rpk`.
+. After making a Create Cluster request, run `rpk cloud byoc`. Pass `metadata.cluster_id` from the Create Cluster response:
++
+[tabs]
+====
+GCP::
++
+--
+```bash
+rpk cloud byoc gcp apply --redpanda-id=<metadata.cluster_id> --project-id=<gcp-project-id>
+```
+--
+AWS::
++
+--
+```bash
+rpk cloud byoc aws apply --redpanda-id=<metadata.cluster_id>
+```
+--
+====
+
+== Delete a cluster
+
+To delete a cluster, make a request to the xref:api:ROOT:cloud-api.adoc#delete-/v1beta2/clusters/-id-[`DELETE /v1beta2/clusters/\{id}`] endpoint, passing the cluster ID as a parameter. This is a <<long_running_operations,long-running operation>>.
+
+```bash
+curl -X DELETE https://api.redpanda.com/v1beta2/clusters/<cluster_id>
+```
+
+=== Additional steps to delete a BYOC cluster
+
+. Make a request to xref:api:ROOT:cloud-api.adoc#get-/v1beta2/clusters/-id-[`GET /v1beta2/clusters/\{id}`] to check the state of the cluster. Wait until the state is `STATE_DELETING_AGENT`.
+. After the state changes to `STATE_DELETING_AGENT`, run `rpk cloud byoc` to destroy the agent.
++
+[tabs]
+====
+GCP::
++
+--
+```bash
+rpk cloud byoc gcp destroy --redpanda-id=<cluster-id> --project-id=<gcp-project-id>
+```
+--
+AWS::
++
+--
+```bash
+rpk cloud byoc aws destroy --redpanda-id=<cluster-id>
+```
+--
+====
+
+. When the cluster is deleted, the delete operation’s state changes to `STATE_COMPLETED`. At this point, you may make a DELETE request to the xref:api:ROOT:cloud-api.adoc#delete-/v1beta2/networks/-id-[`/v1beta2/networks/\{id}`] endpoint to delete the network. This is a long running operation.
+. Optional: After the network is deleted, make a request to xref:api:ROOT:cloud-api.adoc#delete-/v1beta2/resource-groups/-id-[`DELETE /v1beta2/resource-groups/\{id}`] to delete the resource group. 
+
+== Next steps
+
+- xref:./cloud-dataplane-api.adoc[]
+
