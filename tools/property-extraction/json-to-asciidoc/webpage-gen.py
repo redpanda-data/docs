@@ -1,16 +1,17 @@
 import json
 import os
 
-input_json_path = "gen/"
-input_json_file = "properties-output.json"
+up_directory="../"
+input_json_path = up_directory + "gen/"
+input_json_file = input_json_path + "properties-output.json"
 
-output_path = "output/pages/"
+output_path = up_directory + "output/pages/"
 output_file_broker = "broker-properties.adoc"
 output_file_cluster = "cluster-properties.adoc"
 output_file_cloud = "cloud-properties.adoc"
 output_file_deprecated ="deprecated/index.adoc"
 
-error_folder = "output/error"
+error_folder = up_directory + "output/error"
 error_file_description = "empty_description.txt"
 error_file_nullable = "empty_nullable.txt"
 error_file_type = "empty_type.txt"
@@ -74,7 +75,7 @@ total_cluster_properties=0
 total_cloud_properties=0
 
 try:
-    with open(os.path.join(input_json_path, input_json_file), 'r') as json_file:
+    with open(os.path.join(input_json_file), 'r') as json_file:
         data = json.load(json_file)
 except FileNotFoundError:
     print(f"Error: The file '{input_json_file}' does not exist.")
