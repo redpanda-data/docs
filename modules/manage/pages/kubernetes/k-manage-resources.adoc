@@ -20,8 +20,6 @@ kubectl describe nodes
 
 == Production considerations
 
-- <<cpu, Enable CPU pinning>>. This configuration allows Redpanda to maintain exclusive access to designated CPU cores, improving throughput and reducing latency caused by CPU context switches.
-
 - <<qos, Enable the `Guaranteed` quality of service class for Pods that run Redpanda>>. This setup ensures that the CPU and memory allocated to Redpanda are not subject to throttling or other contention issues, providing a stable and predictable performance environment.
 
 - <<memory, Enable memory locking>>. This configuration prevents the operating system from paging out Redpanda's memory to disk, which can significantly impact performance.
@@ -29,177 +27,6 @@ kubectl describe nodes
 == Limitations
 
 Redpanda does not support decreasing the CPU cores for brokers in an existing cluster.
-
-[[cpu]]
-== CPU pinning
-
-Redpanda is designed to maximize throughput by xref:get-started:architecture.adoc#tpc[pinning its threads to specific CPU cores] (CPU pinning). However, CPU pinning is unavailable by default in Kubernetes because it uses the https://www.kernel.org/doc/html/latest/scheduler/sched-design-CFS.html[Completely Fair Scheduler (CFS)] to dynamically manage CPU allocation. The CFS distributes CPU time among all processes based on their priority and resource requests, which can lead to frequent context switches and migration of processes across different cores. This behavior can degrade the performance of Redpanda due to:
-
-- **Loss of CPU cache affinity**: As processes move across cores, they lose the cache locality, leading to increased cache misses and higher latency.
-- **Scheduling latency**: Dynamic CPU allocation can introduce delays as the scheduler determines which core a process should run on, based on current load and availability.
-
-image::shared:cpu-pinning.png[Comparison of context switching between CFS and the static CPU Manager Policy]
-
-To enable CPU pinning in Kubernetes, you must enable the https://kubernetes.io/docs/tasks/administer-cluster/cpu-management-policies/#static-policy[`static` policy] for the CPU manager. With this policy enabled, the CPU Manager controls a shared pool of CPUs. Initially, this shared pool contains all the CPUs in the worker node. However, when a container is created with an integral CPU request in a https://kubernetes.io/docs/tasks/configure-pod-container/quality-service-pod/#create-a-pod-that-gets-assigned-a-qos-class-of-guaranteed[`Guaranteed` Pod], CPUs for that container are removed from the shared pool and assigned exclusively to that container for its lifetime. Other containers are migrated off these exclusively allocated CPUs.
-
-image::shared:guaranteed-pod.png[High-level view of Guaranteed Pods with exclusive CPUs]
-
-=== Enable CPU pinning
-
-To enable CPU pinning for Redpanda in Kubernetes:
-
-
-. Ensure your Kubernetes cluster is using the  https://kubernetes.io/docs/tasks/administer-cluster/cpu-management-policies/#static-policy[`static` CPU Manager]. With this policy enabled, a request for an integral CPU amount in a `Guaranteed` Pod will result in that container being allocated exclusive access to that number of CPUs through https://www.kernel.org/doc/Documentation/cgroup-v1/cpusets.txt[cgroup's cpuset].
-
-. Configure the Redpanda container to request an integral CPU amount:
-+
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    resources:
-      cpu:
-        cores: <number-of-cpu-cores> <1>
-        overprovisioned: false <2>
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
-.`cpu-cores.yaml`
-[,yaml]
-----
-resources:
-  cpu:
-    cores: <number-of-cpu-cores> <1>
-    overprovisioned: false <2>
-----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values cpu-cores.yaml --reuse-values
-```
-
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set resources.cpu.cores=<number-of-cpu-cores> \ <1>
-  --set resources.cpu.overprovisioned=false <2>
-```
-
-====
---
-======
-+
---
-<1> Set the number of cores to an integer such as `4`. The more cores that are allocated to Redpanda, the more throughput it can support. For a description of CPU resource units, see the https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#meaning-of-cpu[Kubernetes documentation^].
-+
-NOTE: If you use fractional values, <<pinning, CPU pinning is disabled>>.
-<2> This default setting allows each Redpanda thread to run on a dedicated core for maximum performance.
---
-
-. <<qos, Enable the `Guaranteed` QoS class for your Pods that run Redpanda>>.
-+
-Only containers that are both part of a `Guaranteed` Pod and have integer CPU requests are assigned exclusive CPUs.
-
-[[pinning]]
-=== Disable pinning in shared environments
-
-If you don't enable CPU pinning and Redpanda runs in a shared environment, you can make Redpanda less aggressive in CPU usage by enabling overprovisioning. This adjustment ensures a fairer distribution of CPU time among all processes, improving overall system efficiency at the cost of Redpanda's performance.
-
-You can enable overprovisioning by either setting the CPU request to a fractional value or setting `overprovisioned` to `true`. 
-
-CAUTION: When `resources.cpu.cores` is set to a fractional value, such as `1100m` or `1.1`, the Pod is not eligible for exclusive access to the cores which leads to performance bottlenecks.
-
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha1
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    resources:
-      cpu:
-        cores: <number-of-cpu-cores>
-        overprovisioned: true
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
-.`cpu-cores-overprovisioned.yaml`
-[,yaml]
-----
-resources:
-  cpu:
-    cores: <number-of-cpu-cores>
-    overprovisioned: true
-----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values cpu-cores-overprovisioned.yaml --reuse-values
-```
-
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set resources.cpu.cores=<number-of-cpu-cores> \
-  --set resources.cpu.overprovisioned=true
-```
-
-====
---
-======
-
-If you're experimenting with Redpanda in Kubernetes, you can also set the number of CPU cores to millicores to automatically enable overprovisioning.
-
-.`cpu-cores.yaml`
-[,yaml]
-----
-resources:
-  cpu:
-    cores: 200m
-----
 
 [[memory]]
 == Configure memory resources
@@ -454,6 +281,82 @@ kubectl --namespace=<namespace> get pod <pod-name> -o jsonpath='{ .status.qosCla
 Make sure to provision enough disk storage for your streaming workloads.
 
 If you use PersistentVolumes, you can set the storage capacity for each volume. For instructions, see xref:manage:kubernetes/storage/k-configure-storage.adoc[].
+
+[[pinning]]
+=== Run Redpanda in shared environments
+
+If Redpanda runs in a shared environment, where multiple applications run on the same worker node, you can make Redpanda less aggressive in CPU usage by enabling overprovisioning. This adjustment ensures a fairer distribution of CPU time among all processes, improving overall system efficiency at the cost of Redpanda's performance.
+
+You can enable overprovisioning by either setting the CPU request to a fractional value or setting `overprovisioned` to `true`.
+
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    resources:
+      cpu:
+        cores: <number-of-cpu-cores>
+        overprovisioned: true
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`cpu-cores-overprovisioned.yaml`
+[,yaml]
+----
+resources:
+  cpu:
+    cores: <number-of-cpu-cores>
+    overprovisioned: true
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values cpu-cores-overprovisioned.yaml --reuse-values
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set resources.cpu.cores=<number-of-cpu-cores> \
+  --set resources.cpu.overprovisioned=true
+```
+
+====
+--
+======
+
+If you're experimenting with Redpanda in Kubernetes, you can also set the number of CPU cores to millicores to automatically enable overprovisioning.
+
+.`cpu-cores.yaml`
+[,yaml]
+----
+resources:
+  cpu:
+    cores: 200m
+----
 
 include::shared:partial$suggested-reading.adoc[]
 
