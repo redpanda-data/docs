@@ -35,6 +35,15 @@ To check all the values that were set in the Redpanda Helm chart, including any 
 helm get values <chart-name> --namespace <namespace> --all
 ----
 
+== View recent events
+
+To understand the latest events that occurred in your Redpanda cluster's namespace, you can sort events by their creation timestamp:
+
+[,bash]
+----
+kubectl get events --namespace <namespace> --sort-by='.metadata.creationTimestamp'
+----
+
 == View Redpanda logs
 
 Logs are crucial for monitoring and troubleshooting your Redpanda clusters. Redpanda brokers output logs to STDOUT, making them accessible via `kubectl`.
@@ -231,15 +240,6 @@ To learn what's happening with the Redpanda Operator and the associated Redpanda
 kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
 ----
 
-=== View recent events
-
-To understand the latest events that occurred in your Redpanda cluster's namespace, you can sort events by their creation timestamp:
-
-[,bash]
-----
-kubectl get events --namespace <namespace> --sort-by='.metadata.creationTimestamp'
-----
-
 === Inspect Helm releases
 
 The Redpanda Operator uses Flux to deploy the Redpanda Helm chart. By inspecting the `helmreleases.helm.toolkit.fluxcd.io` resource, you can get detailed information about the Helm installation process for your Redpanda resource:
@@ -405,6 +405,82 @@ kubectl logs -f <pod-name> --namespace <namespace>
 
 You can use the output to debug your deployment.
 //end::deployment-pod-pending[]
+
+//tag::deployment-failed-scheduling[]
+=== Didn't match pod anti-affinity rules
+
+If you see this error, your cluster does not have enough nodes to satisfy the anti-affinity rules:
+
+[.no-copy]
+----
+Warning  FailedScheduling  18m  default-scheduler  0/1 nodes are available: 1 node(s) didn't match pod anti-affinity rules. preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod.
+----
+
+The Helm chart configures default `podAntiAffinity` rules to make sure that only one Pod running a Redpanda broker is scheduled on each worker node. To learn why, see xref:deploy:deployment-option/self-hosted/kubernetes/k-requirements.adoc#number-of-workers[Number of workers].
+
+To resolve this issue, do one of the following:
+
+- Create additional worker nodes.
+
+- Modify the anti-affinity rules (for development purposes only).
++
+If adding nodes is not an option, you can modify the `podAntiAffinity` rules in your StatefulSet to be less strict.
++
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    statefulset:
+      podAntiAffinity:
+        type: soft
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+--
+
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`docker-repo.yaml`
+[,yaml]
+----
+statefulset:
+  podAntiAffinity:
+    type: soft
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values docker-repo.yaml --reuse-values
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set statefulset.podAntiAffinity.type=soft
+```
+====
+--
+======
+//end::deployment-failed-scheduling[]
 
 //tag::deployment-unable-to-mount-volume[]
 === Unable to mount volume
