@@ -1,0 +1,55 @@
+= Remote Read Replicas
+:description: Learn how to create a remote read replica topic, which is a read-only topic that mirrors a topic on a different cluster.
+
+A remote read replica topic is a read-only topic that mirrors a topic on a different cluster. You can create a separate remote cluster just for consumers of this topic and populate its topics from object storage. A read-only topic on a remote cluster can serve any consumer, without increasing the load on the origin cluster. Because these read-only topics access data directly from object storage, there's no impact to the performance of the cluster.
+
+Redpanda Cloud supports remote read replicas with ephemeral clusters, which are temporary clusters created to handle specific, transient workloads or tasks. After processing, the cluster is terminated to free up resources and reduce costs. 
+
+== Prerequisites
+
+* A BYOC source cluster
+* A BYOC reader cluster in the same cloud provider account and region as the source cluster
+
+== Configure remote read replicas
+
+You can create remote read replica topics in Redpanda Cloud with the xref:api:ROOT:cloud-api.adoc[Cloud API]. For information on accessing the Cloud API see xref:deploy:deployment-option/cloud/api/cloud-api-authentication.adoc[].
+
+. To update your source cluster to add one or more reader cluster IDs, use the PATCH operation. The full list of clusters is expected on every call. If an ID is removed from the list, it will be removed as a reader cluster.
++
+```bash
+export SOURCE_CLUSTER_ID=.......
+export READER_CLUSTER_ID=.......
+
+curl -X PATCH $API_HOST/v1beta1/clusters/$SOURCE_CLUSTER_ID \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer $API_TOKEN" \
+-d @- << EOF 
+{
+  "read_replica_cluster_ids": ["$READER_CLUSTER_ID"] 
+}
+EOF
+```
+
+. To create a remote read replica topic, run:
++
+```bash
+rpk topic create my-topic -c redpanda.remote.readreplica=redpanda-cloud-storage-${SOURCE_CLUSTER_ID}
+```
+
+. To see the list of reader clusters on a given source cluster, use the GET operation:
++
+```bash
+export SOURCE_CLUSTER_ID=.......
+
+curl -X GET $API_HOST/v1beta1/clusters/$SOURCE_CLUSTER_ID \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer $API_TOKEN"
+```
+
+== Optional configuration
+
+For remote read replicas that are reading from a live topic (that is, a topic that's being actively written to by a source cluster), it may be advantageous to tune `cloud_storage_segment_max_upload_interval_sec` to control how often segments are flushed to object storage. By default, this is set to 60 minutes. To tune `cloud_storage_segment_max_upload_interval_sec` on the source cluster, contact https://support.redpanda.com/hc/en-us/requests/new[Redpanda support^].
+
+For cold topics, where segments are closed and already older than 60 minutes, this configuration is unnecessary: the data was already uploaded to object storage.
+
+
