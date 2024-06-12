@@ -1,0 +1,644 @@
+= Production Readiness Checklist 
+
+Before running a production workload on Redpanda, follow this readiness checklist to ensure that you're set up for success. Redpanda Data recommends using the xref:deploy:deployment-option/self-hosted/manual/production/production-deployment-automation.adoc[automated deployment instructions] with Ansible. If you cannot deploy with Ansible, use the xref:deploy:deployment-option/self-hosted/manual/production/production-deployment.adoc[manual deployment instructions].
+
+== Level 1 production readiness
+
+The Level 1 readiness checklist helps you to confirm that:
+
+- All required defaults and configuration items are specified.
+- You have the optimal hardware setup.
+- Security is enabled.
+- You are set up to run in production.
+
+[[redpanda-license]]
+=== Redpanda license
+
+Check that the xref:get-started:licenses.adoc[Redpanda License] has been loaded into the cluster configuration. This is required to enable xref:get-started:licenses.adoc#redpanda-enterprise-edition[Enterprise] features. 
+
+
+[.side-by-side]
+--
+.Input
+[source,bash]
+----
+rpk cluster license info
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+LICENSE INFORMATION
+===================
+Organization:      Redpanda Owlshop LLC
+Type:              enterprise
+Expires:           Mar 25 2025
+----
+--
+
+[[cluster-health]]
+=== Cluster health 
+
+Check that all brokers are connected and running. Run xref:reference:rpk/rpk-cluster/rpk-cluster-metadata.adoc[`rpk cluster info`] to check the health of the cluster. No nodes should be down, and there should be zero leaderless or under-replicated partitions. Then run xref:reference:rpk/rpk-cluster/rpk-cluster-health.adoc[`rpk cluster health`]. The cluster should be listed as healthy.
+
+.Input
+[source,bash]
+----
+rpk cluster info
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+CLUSTER
+=======
+redpanda.be267958-279d-49cd-ae86-98fc7ed2de48
+
+BROKERS
+=======
+ID    HOST            PORT  RACK
+0*    54.70.51.189    9092  us-west-2a
+1     35.93.178.18    9092  us-west-2b
+2     35.91.121.126   9092  us-west-2c
+----
+
+.Input
+[source,bash]
+----
+rpk cluster health
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:                          true
+Unhealthy reasons:                []
+Controller ID:                    0
+All nodes:                        [0 1 2]
+Nodes down:                       []
+Leaderless partitions (0):        []
+Under-replicated partitions (0):  []
+----
+
+[[production-mode]]
+=== Production mode enabled
+
+Check that Redpanda is running in production mode, which you can specify in the cluster configuration. To check the status of any node, run xref:reference:rpk/rpk-cluster/rpk-cluster-config-status.adoc[`rpk cluster config status`]. Both `developer_mode` and `overprovisioned` should be `false` (not present). If either configuration is set to `true`, then the cluster is not in full production mode and must be corrected.
+
+.Input
+[source,bash]
+----
+grep -E 'developer_mode|overprovisioned' /etc/redpanda/redpanda.yaml
+    developer_mode: false
+    overprovisioned: false
+----
+
+
+[[redpanda-reqs]]
+=== System meets Redpanda requirements
+
+Run xref:reference:rpk/rpk-redpanda/rpk-redpanda-check.adoc[`sudo rpk redpanda check`] to ensure that your system meets Redpanda's requirements.
+
+NOTE: This command requires sudo because it's looking in `/proc` or `/sys`, which may be read restricted.
+
+.Input
+[source,bash]
+----
+sudo rpk redpanda check
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+System check results
+CONDITION                                          REQUIRED      CURRENT          SEVERITY  PASSED
+Ballast file present                               true          true             Warning   true
+Clock Source                                       tsc           tsc              Warning   true
+Config file valid                                  true          true             Fatal     true
+Connections listen backlog size                    >= 4096       4096             Warning   true
+Data directory filesystem type                     xfs           xfs              Warning   true
+Data directory is writable                         true          true             Fatal     true
+Data partition free space [GB]                     >= 10         1755.29          Warning   true
+Dir '/var/lib/redpanda/data' IRQs affinity set     true          true             Warning   true
+Dir '/var/lib/redpanda/data' IRQs affinity static  true          true             Warning   true
+Dir '/var/lib/redpanda/data' nomerges tuned        true          true             Warning   true
+Dir '/var/lib/redpanda/data' scheduler tuned       true          true             Warning   true
+Free memory per CPU [MB]                           2048 per CPU  7659             Warning   true
+Fstrim systemd service and timer active            true          true             Warning   true
+I/O config file present                            true          true             Warning   true
+Kernel Version                                     3.19          5.15.0-1056-aws  Warning   true
+Max AIO Events                                     >= 1048576    1048576          Warning   true
+Max syn backlog size                               >= 4096       4096             Warning   true
+NIC IRQs affinity static                           true          true             Warning   true
+NTP Synced                                         true          true             Warning   true
+RFS Table entries                                  >= 32768      32768            Warning   true
+Swap enabled                                       true          true             Warning   true
+Swappiness                                         1             1                Warning   true
+Transparent huge pages active                      true          true             Warning   true
+----
+
+[[redpanda-lmr]]
+=== Latest Redpanda version
+
+Check that Redpanda is running the https://github.com/redpanda-data/redpanda/releases[latest point release^] on every node for the major version you're on.
+
+[.side-by-side]
+--
+.Input
+[source,bash]
+----
+/usr/bin/redpanda --version
+----
+
+.Output
+[,bash,role=no-copy,subs="attributes+"]
+----
+{full-version} - {latest-release-commit}
+----
+--
+
+[[cpu-memory]]
+=== Correct CPUs and memory configured
+
+Check that you have the  xref:deploy:deployment-option/self-hosted/manual/production/requirements.adoc#cpu-and-memory[correct number of CPUs and sufficient memory] to run Redpanda.
+
+.Input
+[source,bash]
+----
+journalctl -u redpanda | grep "System resources"
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+Mar 25 12:16:18 ip-172-31-10-199 rpk[3957]: INFO  2024-03-25 12:16:18,105 [shard 0:main] main - application.cc:350 - System resources: { cpus: 8, available memory: 55.578GiB, reserved memory: 3.890GiB}
+----
+
+[[mounted-disks]]
+=== Disks correctly mounted
+
+Check that the correct disks are mounted, and if multiple devices are used, they are configured as RAID-0. Other RAID configurations can have significantly worse latencies. The file system should be type XFS. If XFS is unavailable, ext4 is an appropriate alternative. 
+
+.Input
+[source,bash]
+----
+grep data_directory /etc/redpanda/redpanda.yaml
+    data_directory: /var/lib/redpanda/data
+df -khT /var/lib/redpanda/data
+----
+
+.Output for NVMe with XFS
+[source,bash,role=no-copy]
+----
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/nvme0n1   xfs   1.8T   14G  1.8T   1% /mnt/vectorized
+----
+
+.Output for madm RAID mount point
+[source,bash,role=no-copy]
+----
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/md0       xfs    14T   99G   14T   1% /mnt/vectorized
+----
+
+
+Example for how to get more details about the RAID array:
+
+.Input
+[source,bash]
+----
+mdadm --detail /dev/md0
+----
+
+.Output 
+[source,bash]
+----
+/dev/md0:
+           Version : 1.2
+     Creation Time : Thu Apr 18 11:03:46 2024
+        Raid Level : raid0
+        Array Size : 14648172544 (13969.59 GiB 14999.73 GB)
+      Raid Devices : 2
+     Total Devices : 2
+       Persistence : Superblock is persistent
+
+       Update Time : Thu Apr 18 11:03:46 2024
+             State : clean
+    Active Devices : 2
+   Working Devices : 2
+    Failed Devices : 0
+     Spare Devices : 0
+
+            Layout : -unknown-
+        Chunk Size : 512K
+
+Consistency Policy : none
+
+              Name : ip-172-31-24-82:0  (local to host ip-172-31-24-82)
+              UUID : e9574118:10d562bf:ed3ca2d9:68ccc3a6
+            Events : 0
+
+    Number   Major   Minor   RaidDevice State
+       0     259        2        0      active sync   /dev/nvme2n1
+       1     259        0        1      active sync   /dev/nvme1n1
+----
+
+Use these results to verify that the expected disks are present and the expected RAID level is set. (Typically, this would be `raid0` in a production system, as data resilience is provided by Raft across Redpanda brokers, rather than by RAID.)
+[[auth-enable]]
+=== Authentication enabled
+
+Check that xref:manage:security/authentication.adoc[authentication] is set up (or other mitigations are in place). Without SASL authentication enabled, anybody can potentially connect to the Redpanda brokers.
+
+[.side-by-side]
+--
+.Input
+[source,bash]
+----
+rpk cluster config get kafka_enable_authorization
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+true
+----
+--
+
+[[super-users]]
+=== Superusers configured
+
+Check that the xref:deploy:deployment-option/self-hosted/manual/production/production-deployment.adoc#secure-the-admin-api[Admin API is secured], and any users defined in the superusers configuration are appropriately protected with strong credentials.
+
+See also:
+xref:manage:security/authentication.adoc#create-superusers[Create superusers]
+
+[[tls-enabled]]
+=== TLS enabled 
+
+Check that all public interfaces have xref:manage:security/encryption.adoc[TLS enabled].
+
+.Input
+[source,bash]
+----
+journalctl -u redpanda.service | grep tls
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+Jun 06 12:41:35 ip-172-31-31-199 rpk[9673]: INFO  2024-06-06 12:41:35,513 [shard 0:main] main - application.cc:772 - redpanda.cloud_storage_disable_tls:0        - Disable TLS for all S3 connections
+Jun 06 12:41:35 ip-172-31-31-199 rpk[9673]: INFO  2024-06-06 12:41:35,514 [shard 0:main] main - application.cc:772 - redpanda.kafka_mtls_principal_mapping_rules:{nullopt}        - Principal Mapping Rules for mTLS Authentication on the Kafka API
+Jun 06 12:41:35 ip-172-31-31-199 rpk[9673]: INFO  2024-06-06 12:41:35,514 [shard 0:main] main - application.cc:772 - **redpanda.admin_api_tls:{{name: , tls_config: { enabled: 1** key/cert files: {{ key_file: /etc/redpanda/certs/node.key cert_file: /etc/redpanda/certs/node.crt }} ca file: {/etc/redpanda/certs/truststore.pem} client_auth_required: 0 }}}        - TLS configuration for admin HTTP server
+Jun 06 12:41:35 ip-172-31-31-199 rpk[9673]: INFO  2024-06-06 12:41:35,515 [shard 0:main] main - application.cc:772 - **redpanda.kafka_api_tls:{{name: , tls_config: { enabled: 1** key/cert files: {{ key_file: /etc/redpanda/certs/node.key cert_file: /etc/redpanda/certs/node.crt }} ca file: {/etc/redpanda/certs/truststore.pem} client_auth_required: 0 }}}        - TLS configuration for Kafka API endpoint
+Jun 06 12:41:35 ip-172-31-31-199 rpk[9673]: INFO  2024-06-06 12:41:35,515 [shard 0:main] main - application.cc:772 - **redpanda.rpc_server_tls:{ enabled: 1** key/cert files: {{ key_file: /etc/redpanda/certs/node.key cert_file: /etc/redpanda/certs/node.crt }} ca file: {/etc/redpanda/certs/truststore.pem} client_auth_required: 0 }        - TLS configuration for RPC server
+Jun 06 12:41:35 ip-172-31-31-199 rpk[9673]: INFO  2024-06-06 12:41:35,515 [shard 0:main] main - application.cc:772 - pandaproxy.pandaproxy_api_tls:{}        - TLS configuration for Pandaproxy api
+Jun 06 12:41:35 ip-172-31-31-199 rpk[9673]: INFO  2024-06-06 12:41:35,515 [shard 0:main] main - application.cc:772 - **pandaproxy_client.broker_tls:{ enabled: 1** key/cert files: {{ key_file: /etc/redpanda/certs/node.key cert_file: /etc/redpanda/certs/node.crt }} ca file: {/etc/redpanda/certs/truststore.pem} client_auth_required: 0 }        - TLS configuration for the brokers
+Jun 06 12:41:35 ip-172-31-31-199 rpk[9673]: INFO  2024-06-06 12:41:35,515 [shard 0:main] main - application.cc:772 - **schema_registry.schema_registry_api_tls:{{name: , tls_config: { enabled: 1** key/cert files: {{ key_file: /etc/redpanda/certs/node.key cert_file: /etc/redpanda/certs/node.crt }} ca file: {/etc/redpanda/certs/truststore.pem} client_auth_required: 0 }}}        - TLS configuration for Schema Registry API
+Jun 06 12:41:35 ip-172-31-31-199 rpk[9673]: INFO  2024-06-06 12:41:35,515 [shard 0:main] main - application.cc:772 - **schema_registry_client.broker_tls:{ enabled: 1** key/cert files: {{ key_file: /etc/redpanda/certs/node.key cert_file: /etc/redpanda/certs/node.crt }} ca file: {/etc/redpanda/certs/truststore.pem} client_auth_required: 0 }        - TLS configuration for the brokers
+Jun 06 12:41:35 ip-172-31-31-199 rpk[9673]: INFO  2024-06-06 12:41:35,515 [shard 0:main] main - application.cc:772 - audit_log_client.broker_tls:{ enabled: 1 key/cert files: {{ key_file: /etc/redpanda/certs/node.key cert_file: /etc/redpanda/certs/node.crt }} ca file: {/etc/redpanda/certs/truststore.pem} client_auth_required: 0 }        - TLS configuration for the brokers
+----
+
+Using the logs on each broker, check to verify that the following interfaces have TLS enabled:
+
+- Kafka API
+- Admin REST API
+- Internal RPC Server
+- Schema Registry
+- HTTP Proxy (Pandaproxy)
+
+In the logs, verify `enabled: 1`.
+
+See also: xref:manage:security/listener-configuration.adoc#multiple-listeners[Multiple listeners]
+
+[[redpanda-tuners]]
+=== Run Redpanda tuners
+
+Check that you have run tuners on all cluster hosts. This can have a significant impact on latency and throughput. xref:reference:rpk/rpk-redpanda/rpk-redpanda-tune.adoc[Redpanda tuners] ensure that the operating system is configured for optimal performance. In Kubernetes, you may need to run the tuners on the hosts themselves, rather than in containers.
+
+.Input
+[source,bash]
+----
+systemctl status redpanda-tuner
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+redpanda-tuner.service - Redpanda Tuner
+     Loaded: loaded (/lib/systemd/system/redpanda-tuner.service; enabled; vendor preset: enabled)
+     Active: active (exited) since Mon 2024-03-25 12:03:51 UTC; 48min ago
+    Process: 3795 ExecStart=/usr/bin/rpk redpanda tune all $CPUSET (code=exited, status=0/SUCCESS)
+   Main PID: 3795 (code=exited, status=0/SUCCESS)
+
+Mar 25 12:03:51 ip-172-31-10-199 rpk[3795]: cpu                    true     true     true
+Mar 25 12:03:51 ip-172-31-10-199 rpk[3795]: disk_irq               true     true     true
+Mar 25 12:03:51 ip-172-31-10-199 rpk[3795]: disk_nomerges          true     true     true
+Mar 25 12:03:51 ip-172-31-10-199 rpk[3795]: disk_scheduler         true     true     true
+Mar 25 12:03:51 ip-172-31-10-199 rpk[3795]: disk_write_cache       false    true     false      Disk write cache tuner is only supported in GCP
+Mar 25 12:03:51 ip-172-31-10-199 rpk[3795]: fstrim                 false    false    true
+Mar 25 12:03:51 ip-172-31-10-199 rpk[3795]: net                    true     true     true
+Mar 25 12:03:51 ip-172-31-10-199 rpk[3795]: swappiness             true     true     true
+Mar 25 12:03:51 ip-172-31-10-199 rpk[3795]: transparent_hugepages  false    false    true
+Mar 25 12:03:51 ip-172-31-10-199 systemd[1]: Finished Redpanda Tuner.
+----
+
+Check that xref:reference:rpk/rpk-iotune.adoc[`rpk iotune`] has been run on all hosts. Ensure that the mountpoint listed in this configuration file matches the mountpoint for Redpanda's data directory, usually `/var/lib/redpanda`. See xref:deploy:deployment-option/self-hosted/manual/production/production-deployment.adoc#generate-optimal-io-configuration-settings[Generate optimal I/O configuration settings].
+
+See also:
+
+* xref:deploy:deployment-option/self-hosted/manual/production/production-deployment.adoc/#tune-the-linux-kernel-for-production[Tune the Linux kernel for production]
+* xref:deploy:deployment-option/self-hosted/kubernetes/k-tune-workers/.adoc[Tune Kubernetes Worker Nodes for Production]
+
+
+.Input
+[source,bash]
+----
+cat /etc/redpanda/io-config.yaml
+disks:
+  - mountpoint: /mnt/vectorized
+    read_iops: 413115
+    read_bandwidth: 1882494592
+    write_iops: 182408
+    write_bandwidth: 788050688
+----
+
+[[disk-perf]]
+=== Check disk performance
+
+Run xref:reference:rpk/rpk-cluster/rpk-cluster-self-test-status.adoc[`rpk cluster self-test status`] to ensure that disk performance is within an acceptable range.
+
+See also: xref:manage:cluster-maintenance/cluster-diagnostics.adoc[Cluster Diagnostics]
+
+.Input
+[source,bash]
+----
+rpk cluster self-test status
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+NODE ID: 1 | STATUS: IDLE
+=========================
+NAME        512KB sequential r/w throughput disk test
+INFO        write run
+TYPE        disk
+TEST ID     e13b2c93-2417-458b-87be-fac409089513
+TIMEOUTS    0
+DURATION    30000ms
+IOPS        984 req/sec
+THROUGHPUT  492.1MiB/sec
+LATENCY     P50     P90     P99     P999    MAX
+            4095us  4095us  4351us  4607us  5119us
+----
+
+[[hostnames-interfaces]]
+=== Advertised hostnames use correct interfaces
+
+Check that the advertised hostnames are operating on the correct network interfaces. For clusters with multiple interfaces (for example, a public and private IP address), set `advertised_kafka_api` to the public interface and set `advertised_rpc_api` to the private interface. These should be hostnames, not IP addresses.
+
+.Example
+[source,bash]
+----
+grep -A2 advertised /etc/redpanda/redpanda.yaml
+    advertised_kafka_api:
+    -   address: myhostname.customdomain.com
+        port: '9092'
+    advertised_rpc_api:
+        address: myinternalhostname.customdomain.com
+        port: '33145'
+----
+
+[[continuous-db]]
+=== Confirm Continuous Data Balancing configuration
+
+Run xref:reference:rpk/rpk-cluster/rpk-cluster-config-get.adoc[`rpk cluster config get partition_autobalancing_mode`] to ensure that xref:manage:cluster-maintenance/continuous-data-balancing.adoc[Continuous Data Balancing] is configured and enabled.
+
+[.side-by-side]
+--
+.Input
+[source,bash]
+----
+rpk cluster config get partition_autobalancing_mode
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+continuous
+----
+--
+
+[[debug-bundle]]
+=== Generate debug bundle
+
+Check that you can generate a debug bundle from each host and upload it to https://support.redpanda.com/hc/en-us/requests/new[Redpanda support^]. This is how you can collect data and export it to Redpanda support.
+
+[.side-by-side]
+--
+.Input
+[source,bash]
+----
+sudo rpk debug bundle
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+Creating bundle file...
+Debug bundle saved to '1711372017-bundle.zip'
+----
+--
+
+See also:
+
+* xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[rpk debug bundle]
+* xref:manage:kubernetes/troubleshooting/k-diagnostics-bundle.adoc[Diagnostics Bundles in Kubernetes]
+
+[[topic-rf]]
+=== Topic replication factor
+
+Check that all topics have a replication factor greater than one.
+
+[.side-by-side]
+--
+.Input
+[source,bash]
+----
+rpk topic list
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+NAME   PARTITIONS  REPLICAS
+bad    1           1
+good   1           3
+----
+--
+
+Redpanda Data recommends that you set `minimum_topic_replications` and `default_topic_replications` to at least 3.
+
+[,bash]
+----
+rpk cluster config set minimum_topic_replications=3
+rpk cluster config set default_topic_replications=3
+----
+
+
+See also: xref:upgrade:migrate/data-migration.adoc#change-topic-replication-factor[Change topic replication factor]
+
+[[maintenance-mode]]
+=== No brokers in maintenance mode
+
+Check that no brokers are in maintenance mode.
+
+.Input
+[source,bash]
+----
+rpk cluster maintenance status
+----
+
+.Output
+[source,bash,role=no-copy]
+----
+NODE-ID  ENABLED  FINISHED  ERRORS  PARTITIONS  ELIGIBLE  TRANSFERRING  FAILED
+1        false    -         -       -           -         -             -
+2        false    -         -       -           -         -             -
+3        false    -         -       -           -         -             -
+----
+
+See also:
+xref:manage:node-management.adoc#place-a-broker-in-maintenance-mode[Remove a broker from maintenance mode]
+
+[[decom-state]]
+=== No brokers in decommissioned state
+
+Check that no brokers are in a decommissioned state.
+
+.Input
+[source,bash]
+---- 
+rpk redpanda admin brokers list
+----
+
+.Output
+[source,bash,role=no-copy]
+---- 
+NODE-ID  NUM-CORES  MEMBERSHIP-STATUS  IS-ALIVE  BROKER-VERSION
+0        1          active             true      v24.1.6 - 5e880f6fd1a610d0991b00e32c012a03b14888ca
+1        1          active             true      v24.1.6 - 5e880f6fd1a610d0991b00e32c012a03b14888ca
+2        1          active             true      v24.1.6 - 5e880f6fd1a610d0991b00e32c012a03b14888ca
+----
+
+See also: xref:manage:cluster-maintenance/decommission-brokers.adoc[Decommission Brokers]
+
+== Level 2 production readiness
+
+The Level 2 readiness checklist confirms that you can monitor and support your environment on a sustained basis. It includes the following checks:
+
+- You have adhered to 2-day operations best practices.
+- You can diagnose and recover from issues or failures.
+
+=== Environment configuration
+
+Check that you have a xref:deploy:deployment-option/self-hosted/manual/production/dev-deployment.adoc[development environment] or test environment configured to evaluate upgrades and new versions before rolling them straight to production.
+
+=== Monitoring
+
+Check that xref:manage:monitoring.adoc[monitoring] is configured with xref:manage:monitoring.adoc#configure-prometheus[Prometheus], xref:manage:monitoring.adoc#generate-grafana-dashboard[Grafana], or https://www.datadoghq.com/product/log-management/[Datadog^] to scrape metrics from all Redpanda brokers at a regular interval.
+
+
+=== System log retention
+
+Check that system logs are being captured and stored for an appropriate period of time (minimally, 7 days). On bare metal, this may be journald. On Kubernetes you may need to have fluentd or an equivalent configured, with logs sent to a central location.
+
+See also:
+xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[rpk debug bundle]
+
+=== Upgrade policy
+
+Check that you have an upgrade policy defined and implemented. Redpanda Enterprise supports xref:upgrade:rolling-upgrade.adoc#perform-a-rolling-upgrade[rolling upgrades], so upgrades do not require downtime. However, make sure that upgrades are scheduled on a regular basis, ideally using automation such as xref:deploy:deployment-option/self-hosted/manual/production/production-deployment-automation.adoc#use-ansible-to-install-redpanda[Ansible] or xref:manage:kubernetes/k-configure-helm-chart.adoc[Helm].
+
+=== High availability 
+
+If you have xref:deploy:deployment-option/self-hosted/manual/high-availability.adoc[high availability] requirements, check that the cluster is configured across multiple availability zones or fault domains.
+
+.Input
+[source,bash]
+---- 
+rpk cluster info
+----
+
+.Output
+[source,bash,role=no-copy]
+---- 
+CLUSTER
+=======
+redpanda.be267958-279d-49cd-ae86-98fc7ed2de48
+
+BROKERS
+=======
+ID    HOST            PORT  RACK
+0*    54.70.51.189    9092  us-west-2a
+1     35.93.178.18    9092  us-west-2b
+2     35.91.121.126   9092  us-west-2c
+----
+
+Check that xref:manage:rack-awareness.adoc#configure-rack-awareness[rack awareness] is configured correctly.
+
+[.side-by-side]
+--
+.Input
+[source,bash]
+----
+rpk cluster config get enable_rack_awareness
+----
+
+.Output
+[source,bash,role=no-copy]
+---- 
+true
+----
+--
+
+See also:
+
+* xref:deploy:deployment-option/self-hosted/manual/high-availability.adoc#multi-az-deployments[Multi-AZ deployments]
+* xref:manage:kubernetes/k-rack-awareness.adoc#configure-rack-awareness[Configure rack awareness in Kubernetes]
+
+== Level 3 production readiness
+
+The Level 3 readiness checklist ensures full enterprise readiness. This indicates that your system is operating at the highest level of availability and can prevent or recover from the most serious incidents. The Level 3 readiness  confirms the following:
+
+- You are proactively monitoring mission-critical workloads, business continuity solutions, and integration into enterprise security systems.
+- Your enterprise is ready to run mission-critical workloads.
+
+=== Configure alerts 
+A standard set of alerts for xref:manage:monitoring.adoc#generate-grafana-dashboard[Grafana] or xref:manage:monitoring.adoc#configure-prometheus[Prometheus] is provided in the https://github.com/redpanda-data/observability[GitHub Redpanda observability repo^]. However, you should customize these alerts for your specific needs. 
+
+See also: xref:reference:monitor-metrics.adoc[Monitoring Metrics]
+
+=== Backup and disaster recovery (DR) solution
+Check that you have a backup and disaster recovery (DR) solution in place. You can configure backup and restore using xref:manage:whole-cluster-restore.adoc[Tiered Storage Whole Cluster Recovery].
+
+Be sure to confirm that the backup and DR solution has been tested.
+
+For disaster recovery, confirm that a standby cluster is configured and running with replication (such as xref:upgrade:migrate/data-migration.adoc[MirrorMaker2]). Also verify that your monitoring ensures that MirrorMaker2 is running and checks replication traffic. See https://redpanda.com/blog/high-availability-software-deployment-patterns-part-1[High-availability deployment of Redpanda: Patterns and considerations^] for more details about HA and DR options.
+
+
+=== Deployment automation
+
+Review your deployment automation. Specifically, if you need to reprovision a cluster, ensure that cluster installation is managed using automation such as xref:deploy:deployment-option/self-hosted/manual/production/production-deployment-automation.adoc#use-terraform-to-set-up-infrastructure[Terraform], xref:deploy:deployment-option/self-hosted/manual/production/production-deployment-automation.adoc#use-ansible-to-install-redpanda[Ansible], or xref:manage:kubernetes/k-configure-helm-chart.adoc[Helm], and that the configuration is saved in source control.
+
+=== Audit logs
+
+Check that your xref:manage:audit-logging.adoc#audit-log-flow[audit logs] are forwarded to an enterprise security information and event management (SIEM) system. 
+
+
+== Suggested reading
+
+- xref:./production-deployment.adoc[Deploy for Production: Manual]
+- xref:./production-deployment-automation.adoc[Deploy for Production: Automated]
