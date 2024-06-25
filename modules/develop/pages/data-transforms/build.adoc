@@ -1,0 +1,654 @@
+= Develop Data Transforms
+:description: Learn how to initialize a data transforms project and write transform functions in your chosen language.
+:page-categories: Development, Stream Processing, Data Transforms
+
+{description}
+
+== Prerequisites
+
+You must have the following development tools installed on your host machine:
+
+* For Golang, you must have at least version 1.20 of https://go.dev/doc/install[Go^].
+* For Rust, you must have the latest stable version of https://rustup.rs/[Rust].
+* The xref:get-started:rpk-install.adoc[`rpk` command-line client] installed on your host machine and configured to connect to your Redpanda cluster.
+
+[[init]]
+== Initialize a data transforms project
+
+To initialize a data transforms project, use the following command to install the latest version of an xref:reference:data-transforms/sdks.adoc[SDK] and set up the relevant project files in your current directory:
+
+[source,bash]
+----
+rpk transform init --language=<language> --name=<name>
+----
+
+If you do not include the `--language` flag, the command will prompt you for the language. Supported languages include:
+
+* `tinygo-no-goroutines` (does not include https://golangdocs.com/goroutines-in-golang[Goroutines])
+* `tinygo-with-goroutines`
+* `rust`
+
+For example, if you choose `tinygo-no-goroutines`, the following project files are created:
+
+[.no-copy]
+----
+.
+├── go.mod
+├── go.sum
+├── README.md
+├── transform.go
+└── transform.yaml
+----
+
+The `transform.go` file contains an empty transform function.
+The `transform.yaml` file specifies the configuration settings for the transform function.
+
+See also: xref:develop:data-transforms/configure.adoc[].
+
+== Build transform functions
+
+You can develop your transform logic with one of the available xref:reference:data-transforms/sdks.adoc[software development kits (SDKs)] that allow you to run data transforms on a Redpanda cluster.
+
+All transform functions must register a callback with the `OnRecordWritten()` method.
+
+[tabs]
+======
+Go::
++
+--
+[source,go]
+----
+package main
+
+import (
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+)
+
+func main() {
+	transform.OnRecordWritten(handleRecord)
+}
+
+// Required callback, even if it does nothing
+func handleRecord(event transform.WriteEvent, writer transform.RecordWriter) error {
+	return nil
+}
+----
+--
+Rust::
++
+--
+[source,rust]
+----
+use redpanda_transform_sdk::*;
+
+fn main() {
+  on_record_written(handle_record);
+}
+
+// Required callback, even if it does nothing
+fn handle_record(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Result<()> {
+  Ok(())
+}
+----
+--
+======
+
+When creating a transform function, you should run any initialization steps in the `main()` function because it's only run once when the transform function is first deployed. If you're using Go, you can also use the standard predefined `init()` function.
+
+[[errors]]
+=== Error handling
+
+To ensure the reliability and continuous operation of your data transforms, handle errors gracefully within all transform functions. Allowing errors to escape from a transform function can cause significant disruptions. Unhandled errors can cause your transform functions to fail, leading to data processing interruptions.
+
+Redpanda tracks the offsets of the records processed by transform functions. If an error escapes the Wasm virtual machine (VM), the VM will fail. When the Wasm engine detects this failure and starts a new VM, the transform function will try to process the input topics from the last processed offset again, leading to the same error and causing the function to be stuck in an error loop.
+
+To prevent this behavior, log errors and take appropriate action without stopping the processing of records. This approach ensures that your transform function can continue to operate even when encountering problematic records.
+
+In this example, an error will be logged if a record does not contain a key and that record will not be processed. Subsequent records will continue to be processed.
+
+[tabs]
+======
+Go::
++
+--
+[source,go]
+----
+package main
+
+import (
+    "log"
+    "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+)
+
+func main() {
+    transform.OnRecordWritten(handleRecord)
+}
+
+func handleRecord(event transform.WriteEvent, writer transform.RecordWriter) error {
+  record := event.Record()
+  if record.Key == nil {
+    // Log the error and continue processing
+    log.Println("Error: Record key is nil")
+    // Do not return the error
+    return nil
+  }
+
+  err := writer.Write(record)
+  if err != nil {
+    // Log the error and continue processing
+    log.Println("Error writing record:", err)
+  }
+  // Ensure no error is returned
+  return nil
+}
+----
+--
+Rust::
++
+--
+[source,rust]
+----
+use redpanda_transform_sdk::*;
+use log::error;
+
+fn main() {
+  // Set up logging
+  env_logger::init();
+  on_record_written(handle_record);
+}
+
+fn handle_record(event: WriteEvent, writer: &mut RecordWriter) -> anyhow::Result<()> {
+  let record = event.record;
+  if record.key().is_none() {
+    // Log the error and continue processing
+    error!("Error: Record key is nil");
+    // Do not return the error
+    return Ok(());
+  }
+
+  if let Err(err) =  writer.write(record) {
+    // Log the error and continue processing
+    error!("Error writing record: {}", err);
+  }
+  // Ensure no error is returned
+  Ok(())
+}
+----
+--
+======
+
+When you deploy this transform function, and produce a message without a key, you'll get the following in the logs:
+
+[source,js,role="no-copy"]
+----
+{
+  "body": {
+    "stringValue": "2024/06/20 08:17:33 Error: Record key is nil\n"
+  },
+  "timeUnixNano": 1718871455235337000,
+  "severityNumber": 13,
+  "attributes": [
+    {
+      "key": "transform_name",
+      "value": {
+        "stringValue": "test"
+      }
+    },
+    {
+      "key": "node",
+      "value": {
+        "intValue": 0
+      }
+    }
+  ]
+}
+----
+
+To ensure that you are notified of any errors or issues in your data transforms, Redpanda provides metrics that you can use to monitor the state of your data transforms.
+
+See also:
+
+- xref:develop:data-transforms/configure.adoc#log[Configure transform logging]
+- xref:develop:data-transforms/monitor.adoc[Monitor data transforms]
+
+=== Avoid state management
+
+Relying on state within transform functions can lead to inconsistencies and unpredictable behavior. Data transforms operate with at-least-once semantics, meaning transform functions might be executed more than once. Redpanda may also restart a transform function at any point, which causes its state to be lost.
+
+=== Access environment variables
+
+You can access both xref:develop:data-transforms/configure.adoc#environment-variables[built-in and custom environment variables] in your transform function. In this example, the environment variables are checked once during initialization:
+
+[tabs]
+======
+Go::
++
+--
+[source,go]
+----
+package main
+
+import (
+  "fmt"
+  "os"
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+)
+
+func main() {
+	inputTopic, ok := os.LookupEnv("REDPANDA_INPUT_TOPIC")
+  if ok {
+    fmt.Printf("Input topic: %s\n", inputTopic)
+  } else {
+    fmt.Println("An input topic is not set")
+  }
+
+  outputTopic0, ok := os.LookupEnv("REDPANDA_OUTPUT_TOPIC_0")
+  if ok {
+    fmt.Printf("Output topic 0: %s\n", outputTopic0)
+  } else {
+    fmt.Println("An output topic is not set")
+  }
+
+  outputTopic1, ok := os.LookupEnv("REDPANDA_OUTPUT_TOPIC_1")
+  if ok {
+    fmt.Printf("Output topic 1: %s\n", outputTopic1)
+  } else {
+    fmt.Println("Only one output topic is set")
+  }
+
+	transform.OnRecordWritten(doNothing)
+}
+
+// Required callback, even if it does nothing
+func doNothing(event transform.WriteEvent, writer transform.RecordWriter) error {
+	return nil
+}
+----
+--
+Rust::
++
+--
+[source,rust]
+----
+use redpanda_transform_sdk::*;
+use std::env;
+use log::error;
+
+fn main() {
+  // Set up logging
+  env_logger::init();
+
+  // Access built-in environment variables
+  match env::var("REDPANDA_INPUT_TOPIC") {
+    Ok(input_topic) => println!("Input topic: {}", input_topic),
+    Err(_) => println!("An input topic is not set"),
+  }
+
+  match env::var("REDPANDA_OUTPUT_TOPIC_0") {
+    Ok(output_topic_0) => println!("Output topic 0: {}", output_topic_0),
+    Err(_) => println!("An output topic is not set"),
+  }
+
+  match env::var("REDPANDA_OUTPUT_TOPIC_1") {
+    Ok(output_topic_1) => println!("Output topic 1: {}", output_topic_1),
+    Err(_) => println!("Only one output topic is set"),
+  }
+
+  on_record_written(do_nothing);
+}
+
+// Required callback, even if it does nothing
+fn do_nothing(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Result<()> {
+  Ok(())
+}
+----
+--
+======
+
+=== Connect to the Schema Registry
+
+You can use the Schema Registry client library to read and write schemas as well as serialize and deserialize records. This client library is useful when working with schema-based topics in your data transforms.
+
+See also:
+
+- xref:manage:schema-reg/schema-reg-overview.adoc[].
+- xref:reference:data-transforms/golang-sdk.adoc[Go Schema Registry client reference]
+- xref:reference:data-transforms/rust-sdk.adoc[Rust Schema Registry client reference]
+
+==== Initialize the Schema Registry client
+
+First, initialize the Schema Registry client. This client will interact with the local Redpanda Schema Registry.
+
+[tabs]
+======
+Go::
++
+--
+[source,go]
+----
+package main
+
+import (
+  "context"
+  "fmt"
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr"
+)
+
+func main() {
+  client := sr.NewClient()
+	transform.OnRecordWritten(doNothing)
+
+  // Use the client...
+}
+
+// Required callback, even if it does nothing
+func doNothing(event transform.WriteEvent, writer transform.RecordWriter) error {
+	return nil
+}
+----
+--
+Rust::
++
+--
+[source,rust]
+----
+use redpanda_transform_sdk::*;
+use redpanda_transform_sdk_sr::{SchemaRegistryClient};
+
+fn main() {
+    // Initialize the Schema Registry client
+    let client = SchemaRegistryClient::new();
+    on_record_written(do_nothing);
+
+    // Use the client
+}
+
+// Required callback, even if it does nothing
+fn do_nothing(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Result<()> {
+  Ok(())
+}
+----
+--
+======
+
+==== Read schemas from the Schema Registry
+
+Use the client to read schemas from the Schema Registry. This example demonstrates how to look up a schema by its ID.
+
+NOTE: The Schema Registry client caches the results of schema lookups by both ID and version to avoid repeated requests to the cluster.
+
+[tabs]
+======
+Go::
++
+--
+[source,go]
+----
+package main
+
+import (
+  "context"
+  "fmt"
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr"
+)
+
+func main() {
+  // Initialize the Schema Registry client
+  client := sr.NewClient()
+
+  // Lookup schema by ID
+  schema, err := client.LookupSchemaById(1)
+  if err != nil {
+    panic(err)
+  }
+
+  fmt.Println("Schema:", schema.Schema)
+  transform.OnRecordWritten(doNothing)
+}
+
+// Required callback, even if it does nothing
+func doNothing(event transform.WriteEvent, writer transform.RecordWriter) error {
+	return nil
+}
+----
+--
+Rust::
++
+--
+[source,rust]
+----
+use redpanda_transform_sdk::*;
+use redpanda_transform_sdk_sr::{SchemaRegistryClient, SchemaId};
+use anyhow::Result;
+
+fn main() -> Result<()> {
+  // Initialize the Schema Registry client
+  let client = SchemaRegistryClient::new();
+
+  // Lookup schema by ID
+  match client.lookup_schema_by_id(SchemaId(1)) {
+    Ok(schema) => {
+      println!("Schema: {:?}", schema.schema());
+    },
+    Err(err) => {
+      panic!("Failed to lookup schema: {:?}", err);
+    },
+  }
+
+  on_record_written(do_nothing);
+}
+
+// Required callback, even if it does nothing
+fn do_nothing(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Result<()> {
+  Ok(())
+}
+----
+--
+======
+
+==== Write schemas to the Schema Registry
+
+You can also create new schemas and register them in the Schema Registry.
+
+[tabs]
+======
+Go::
++
+--
+[source,go]
+----
+package main
+
+import (
+  "fmt"
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr"
+)
+
+func main() {
+  client := sr.NewClient()
+
+  schema := sr.Schema{
+    Schema: `{"type":"record","name":"MyRecord","fields":[{"name":"name","type":"string"},{"name":"age","type":"int"}]}`,
+    Type:   sr.TypeAvro,
+  }
+
+  subjectSchema, err := client.CreateSchema("my_subject", schema)
+  if err != nil {
+    println("unable to register schema: ", err)
+  }
+
+  fmt.Println("Registered new schema ID:", subjectSchema.ID)
+  transform.OnRecordWritten(doNothing)
+}
+
+// Required callback, even if it does nothing
+func doNothing(event transform.WriteEvent, writer transform.RecordWriter) error {
+	return nil
+}
+----
+--
+Rust::
++
+--
+[source,rust]
+----
+use redpanda_transform_sdk::*;
+use redpanda_transform_sdk_sr::{SchemaRegistryClient, Schema};
+use anyhow::Result;
+
+fn main() -> Result<()> {
+  // Initialize the Schema Registry client
+  let mut client = SchemaRegistryClient::new();
+
+  // Define the schema
+  let schema = Schema::new_avro(
+    r#"{"type":"record","name":"MyRecord","fields":[{"name":"name","type":"string"},{"name":"age","type":"int"}]}"#.to_string(),
+    vec![],
+  );
+
+  // Register the schema
+  match client.create_schema("my_subject", schema) {
+    Ok(subject_schema) => {
+      println!("Registered new schema ID: {:?}", subject_schema.id());
+    },
+    Err(err) => {
+      println!("Unable to register schema: {:?}", err);
+    },
+  }
+
+  // Set up the transform function
+  on_record_written(do_nothing);
+}
+
+// Required callback, even if it does nothing
+fn do_nothing(_event: WriteEvent, _writer: &mut RecordWriter) -> Result<()> {
+  Ok(())
+}
+----
+--
+======
+
+==== Serialize records
+
+After obtaining a schema, use it to serialize records into binary format.
+
+[tabs]
+======
+Go::
++
+--
+[source,go]
+----
+package main
+
+import (
+  "fmt"
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr"
+  avro "github.com/linkedin/goavro/v2"
+)
+
+func main() {
+  // Define the Avro schema as a JSON string
+  schemaStr := `{"type":"record","name":"MyRecord","fields":[{"name":"name","type":"string"},{"name":"age","type":"int"}]}`
+
+  // Create a new Avro codec using the schema
+  codec, err := avro.NewCodec(schemaStr)
+  if err != nil {
+    panic(err) // If codec creation fails, panic
+  }
+
+  // Create a record that matches the Avro schema
+  record := map[string]interface{}{
+    "name": "Redpanda",
+    "age":  1,
+  }
+
+  // Serialize the record into Avro binary format
+  binary, err := codec.BinaryFromNative(nil, record)
+  if err != nil {
+    panic(err) // If serialization fails, panic
+  }
+
+  // Print the encoded binary data
+  fmt.Println("Encoded binary:", binary)
+
+  // Register a callback for handling records written to the input topic
+  transform.OnRecordWritten(doNothing)
+}
+
+// Required callback, even if it does nothing
+func doNothing(event transform.WriteEvent, writer transform.RecordWriter) error {
+  // This function is required by the transform framework but does nothing
+	return nil
+}
+
+----
+--
+Rust::
++
+--
+[source,rust]
+----
+use apache_avro::{Schema, Writer, types::Value};
+use redpanda_transform_sdk::*;
+use redpanda_transform_sdk_sr::{SchemaRegistryClient, Schema as RPDSchema};
+use std::collections::HashMap;
+use anyhow::Result;
+
+fn main() -> Result<()> {
+  // Define the schema as a string
+  let schema_str = r#"{"type":"record","name":"MyRecord","fields":[{"name":"name","type":"string"},{"name":"age","type":"int"}]}"#;
+
+  // Parse the schema string into an Avro schema
+  let avro_schema = Schema::parse_str(schema_str).expect("Failed to parse Avro schema");
+
+  // Create a record based on the schema
+  let mut record: HashMap<String, Value> = HashMap::new();
+  record.insert("name".to_string(), Value::String("Redpanda".to_string()));
+  record.insert("age".to_string(), Value::Int(1));
+
+  // Serialize the record into a binary format using the Avro schema
+  let mut writer = Writer::new(&avro_schema, Vec::new());
+  writer.append(Value::Record(vec![
+    ("name".to_string(), record["name"].clone()),
+    ("age".to_string(), record["age"].clone()),
+  ])).expect("Failed to write record");
+  let encoded_binary = writer.into_inner().expect("Failed to get binary data");
+
+  println!("Encoded binary: {:?}", encoded_binary);
+
+  // Initialize the Schema Registry client
+  let mut client = SchemaRegistryClient::new();
+
+  // Register the schema in the Schema Registry
+  let schema = RPDSchema::new_avro(schema_str.to_string(), vec![]);
+  let subject_schema = client.create_schema("my_subject", schema)?;
+  println!("Registered new schema ID: {:?}", subject_schema.id());
+
+  // Register the transform function
+  on_record_written(do_nothing);
+}
+
+// Required callback, even if it does nothing
+fn do_nothing(_event: WriteEvent, _writer: &mut RecordWriter) -> Result<()> {
+    Ok(())
+}
+
+----
+--
+======
+
+== Next steps
+
+xref:develop:data-transforms/configure.adoc[].
+
+== Suggested reading
+
+- xref:develop:data-transforms/how-transforms-work.adoc[]
+- xref:reference:data-transforms/golang-sdk.adoc[]
+- xref:reference:data-transforms/rust-sdk.adoc[]
+- xref:reference:rpk/rpk-transform/rpk-transform.adoc[`rpk transform` commands]
