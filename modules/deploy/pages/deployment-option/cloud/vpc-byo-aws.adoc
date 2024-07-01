@@ -1,0 +1,614 @@
+= Configure a Customer-Managed VPC on AWS
+:description: Connect Redpanda Cloud to your existing VPC for additional security.
+:page-cloud: true
+
+include::shared:partial$feature-flag.adoc[]
+
+With a standard BYOC cluster, Redpanda manages the VPC lifecycle. For additional security, you can deploy the Redpanda data plane into your existing shared VPC and manage the VPC lifecycle yourself. When you create a BYOC cluster, you specify your VPC and service account. The Redpanda Cloud agent doesn't create any new resources or alter any settings in your account. With a *customer-managed* VPC:
+
+* You provide your own VPC in your AWS account.
+* You maintain more control of your  account, because Redpanda requires fewer permissions than standard BYOC clusters.
+* You control your security resources and policies, including subnets, service accounts, IAM roles, firewall rules, and storage buckets.
+
+== Prerequisites
+
+* Familiarity with the xref:api:ROOT:cloud-api.adoc[Redpanda Cloud API]. For example, you use the Cloud API to authenticate and create a cluster.
+* Access to an AWS project in which you create your cluster.
+* Minimum permissions in that AWS project. For reference, the following actions are required for the user running `rpk byoc apply`: 
++
+.Show required actions
+[%collapsible]
+====
+```bash
+data "aws_iam_policy_document" "byovpc_rpk_user_1" {
+  statement {
+    actions = [
+      "autoscaling:DescribeAutoScalingGroups",
+      "autoscaling:DescribeScalingActivities",
+      "ec2:DescribeAvailabilityZones",
+      "ec2:DescribeImages",
+      "ec2:DescribeInternetGateways",
+      "ec2:DescribeLaunchTemplateVersions",
+      "ec2:DescribeLaunchTemplates",
+      "ec2:DescribeNatGateways",
+      "ec2:DescribeNetworkInterfaces",
+      "ec2:DescribePrefixLists",
+      "ec2:DescribeRouteTables",
+      "ec2:DescribeSecurityGroupRules",
+      "ec2:DescribeSecurityGroups",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeVpcs",
+      "ec2:DescribeVpcEndpointServices",
+      "ec2:DescribeVpcEndpoints",
+      "iam:ListAttachedRolePolicies",
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+    ]
+    resources = ["*"]
+    effect    = "Allow"
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "iam:PassRole",
+    ]
+    resources = [
+      aws_iam_role.redpanda_agent.arn
+    ]
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "ec2:CreateLaunchTemplate",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/redpanda-managed"
+      values = [
+        "true",
+      ]
+    }
+    dynamic "condition" {
+      for_each = var.organization_id != "" ? [var.organization_id] : []
+      content {
+        test     = "StringEquals"
+        values   = [condition.value]
+        variable = "aws:RequestTag/redpanda-org"
+      }
+    }
+
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ec2:DescribeVpcAttribute",
+    ]
+    resources = [
+      aws_vpc.redpanda.arn
+    ]
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "ec2:DescribeSubnets",
+    ]
+    resources = concat(tolist(aws_subnet.public.*.arn), tolist(aws_subnet.private.*.arn))
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+      "iam:ListPolicyVersions",
+    ]
+    resources = [
+      aws_iam_policy.connectors_secrets_manager.arn,
+      aws_iam_policy.console_secrets_manager.arn,
+      aws_iam_policy.redpanda_cloud_storage_manager.arn,
+      aws_iam_policy.cluster_autoscaler_policy.arn,
+      aws_iam_policy.redpanda_agent["1"].arn,
+      aws_iam_policy.redpanda_agent["2"].arn,
+      aws_iam_policy.aws_ebs_csi_driver_policy.arn,
+      aws_iam_policy.load_balancer_controller_policy.arn,
+      aws_iam_policy.external_dns_policy.arn,
+      aws_iam_policy.cert_manager.arn,
+    ]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "iam:GetInstanceProfile",
+    ]
+    resources = [
+      aws_iam_instance_profile.redpanda_agent.arn,
+      aws_iam_instance_profile.redpanda_node_group.arn,
+      aws_iam_instance_profile.utility.arn,
+      aws_iam_instance_profile.connectors_node_group.arn,
+    ]
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "iam:GetRole",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfilesForRole",
+      "iam:ListRolePolicies",
+    ]
+    resources = [
+      aws_iam_role.redpanda_node_group.arn,
+      aws_iam_role.redpanda_agent.arn,
+      aws_iam_role.redpanda_cloud_storage_manager.arn,
+      aws_iam_role.connectors_secrets_manager.arn,
+      aws_iam_role.console_secrets_manager_redpanda.arn,
+      aws_iam_role.k8s_cluster.arn,
+      aws_iam_role.redpanda_utility_node_group.arn,
+      aws_iam_role.connectors_node_group.arn,
+    ]
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "autoscaling:UpdateAutoScalingGroup",
+      "autoscaling:SetInstanceProtection",
+      "autoscaling:DeleteAutoScalingGroup",
+      "autoscaling:StartInstanceRefresh",
+      "autoscaling:CancelInstanceRefresh",
+      "autoscaling:CreateAutoScalingGroup",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "autoscaling:ResourceTag/redpanda-managed"
+      values = [
+        "true",
+      ]
+    }
+    dynamic "condition" {
+      for_each = var.organization_id != "" ? [var.organization_id] : []
+      content {
+        test     = "StringEquals"
+        values   = [condition.value]
+        variable = "autoscaling:ResourceTag/redpanda-org"
+      }
+    }
+
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ec2:CreateLaunchTemplateVersion",
+      "ec2:DeleteLaunchTemplate",
+      "ec2:DeleteTags",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/redpanda-managed"
+      values = [
+        "true",
+      ]
+    }
+    dynamic "condition" {
+      for_each = var.organization_id != "" ? [var.organization_id] : []
+      content {
+        test     = "StringEquals"
+        values   = [condition.value]
+        variable = "aws:ResourceTag/redpanda-org"
+      }
+    }
+
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ec2:CreateTags",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:CreateAction"
+      values = [
+        "CreateLaunchTemplate",
+        "RunInstances",
+      ]
+    }
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:DeleteObject",
+      "s3:DeleteObjects",
+      "s3:DeleteObjectTagging",
+      "s3:DeleteObjectVersion",
+      "s3:GetObject",
+      "s3:GetObjectTagging",
+      "s3:ListBucket",
+      "s3:PutObject",
+      "s3:PutObjectTagging",
+      "s3:GetObjectVersion",
+      "s3:ListBucketVersions",
+    ]
+    resources = [
+      aws_s3_bucket.management.arn,
+      "${aws_s3_bucket.management.arn}/*",
+    ]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:ListBucket",
+    ]
+    resources = [
+      aws_s3_bucket.redpanda_cloud_storage.arn,
+      "${aws_s3_bucket.redpanda_cloud_storage.arn}/*",
+    ]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeTable",
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem",
+    ]
+    resources = [
+      aws_dynamodb_table.terraform_locks.arn,
+      "${aws_dynamodb_table.terraform_locks.arn}/*",
+    ]
+  }
+}
+
+data "aws_iam_policy_document" "byovpc_rpk_user_2" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "ec2:RunInstances",
+    ]
+    resources = [
+      "arn:aws:ec2:*::image/*",
+    ]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ec2:RunInstances",
+    ]
+    resources = [
+      "arn:aws:ec2:*:${local.aws_account_id}:launch-template/*",
+    ]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/redpanda-managed"
+      values = [
+        "true",
+      ]
+    }
+    dynamic "condition" {
+      for_each = var.organization_id != "" ? [var.organization_id] : []
+      content {
+        test     = "StringEquals"
+        values   = [condition.value]
+        variable = "aws:ResourceTag/redpanda-org"
+      }
+    }
+
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ec2:RunInstances",
+    ]
+    resources = concat([aws_security_group.redpanda_agent.arn], tolist(aws_subnet.public.*.arn), tolist(aws_subnet.private.*.arn))
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ec2:RunInstances",
+    ]
+    resources = [
+      "arn:aws:ec2:*:${local.aws_account_id}:instance/*",
+      "arn:aws:ec2:*:${local.aws_account_id}:network-interface/*",
+      "arn:aws:ec2:*:${local.aws_account_id}:volume/*",
+    ]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/redpanda-managed"
+      values = [
+        "true",
+      ]
+    }
+    dynamic "condition" {
+      for_each = var.organization_id != "" ? [var.organization_id] : []
+      content {
+        test     = "StringEquals"
+        values   = [condition.value]
+        variable = "aws:RequestTag/redpanda-org"
+      }
+    }
+
+  }
+}
+
+resource "aws_iam_policy" "byovpc_rpk_user" {
+  for_each = {
+    "1" = data.aws_iam_policy_document.byovpc_rpk_user_1,
+    "2" = data.aws_iam_policy_document.byovpc_rpk_user_2,
+  }
+  name_prefix = "byovpc-rpk-user-${each.key}_"
+  path        = "/"
+  description = "Minimum permissions required for RPK user for BYO VPC"
+  policy      = each.value.json
+}
+```
+====
+
+== Limitations
+
+* Existing clusters cannot be moved to a customer-managed VPC.
+* After creating a cluster with a customer-managed VPC, you cannot change to a different VPC.
+
+== Configure your VPC
+
+The Terraform modules contains the specifications for the required resources. It creates the following resources and outputs ARN values necessary in later steps.
+
+* IAM roles
+* IAM instance profiles
+* IAM role policy attachments
+* IAM policies
+* Elastic IP
+* Internet gateway
+* Route
+* VPC
+* Subnets
+* VPC endpoint
+* Route tables
+* Route table associations
+* VPC endpoint route table associations
+* Security groups
+* Security group rules
+* S3 buckets
+* S3 bucket server-side encryption configurations
+* S3 bucket versioning
+* S3 bucket ownership controls
+* DynamoDB table
+
+If any of these resources already exists in your AWS project, you can update the Terraform to remove that item and modify references to use a data block instead of the resource.
+
+In particular, the resources in the `iam_rpk_user.tf` file are not intended to be created. They are only provided to show the minimum viable permissions for the user who will run `rpk byoc apply`.
+
+== Create network with the Cloud API
+
+After xref:deploy:deployment-option/cloud/api/cloud-api-authentication.adoc[authenticating] to the Cloud API, issue a create network request using the Terraform outputs.
+
+```bash
+curl -X POST "https://api.redpanda.com/v1beta2/networks" \
+ -H "accept: application/json"\
+ -H "content-type: application/json" \
+ -H "authorization: Bearer $PUBLIC_API_TOKEN" \
+-d @- << EOF
+{
+	 "name":"<name you choose for your network resource>",
+	 "resource_group_id": "<Resource group ID of the network>",
+	 "cloud_provider":"CLOUD_PROVIDER_AWS",
+	 "region":"<region>",
+	 "cluster_type":"TYPE_BYOC",
+	 "customer_managed_resources": {
+	   "aws": {
+	     "management_bucket": {
+	       "arn": "<management_bucket_arn from outputs>"
+	     },
+	     "dynamodb_table": {
+	       "arn": "<dynamodb_table_arn from outputs>"
+	     },
+	     "private_subnets": {
+	       "arns": [<private_subnet_ids from outputs>]
+	     },
+	     "public_subnets": {
+	       "arns": [<public_subnet_ids from outputs>]
+	     },
+	     "vpc": {
+	       "arn": "<vpc_arn from outputs>"
+	     }
+	   }
+	 }
+}
+EOF
+```
+
+The create network request returns a `resource_id`. For example:
+
+```
+{
+   "operation":{
+      "id":"cpas8k6r4up5li18auh0",
+      "metadata":{
+         "@type":"type.googleapis.com/redpanda.api.controlplane.v1beta2.CreateNetworkMetadata",
+         "network_id":"cpb338gekjj5i1cpj3t0"
+      },
+      "state":"STATE_IN_PROGRESS",
+      "started_at":"2024-05-28T19:33:54.631Z",
+      "type":"TYPE_CREATE_NETWORK",
+      "resource_id":"cpb338gekjj5i1cpj3t0"
+   }
+}
+```
+
+== Create a cluster with Cloud API
+
+To create a cluster, issue a create cluster request using the Terraform outputs. For example:
+
+```
+curl -X POST "https://api.redpanda.com/v1beta2/clusters" \
+ -H "accept: application/json"\
+ -H "content-type: application/json" \
+ -H "authorization: Bearer $PUBLIC_API_TOKEN" \
+-d @- << EOF
+{
+  "cloud_provider":"CLOUD_PROVIDER_AWS",
+  "connection_type":"CONNECTION_TYPE_PRIVATE",
+  "name":"<name of cluster>",
+  "resource_group_id":"<Resource group ID of the network>",
+  "network_id":"<resource_id of network from previous step>",
+  "region":"<region>",
+  "throughput_tier":"<throughput tier>",
+  "type":"TYPE_BYOC",
+  "zones":["use2-az1","use2-az2","use2-az3"],
+  "redpanda_version": "<redpanda version>",
+  "customer_managed_resources": {
+    "aws": {
+      "agent_instance_profile": {
+        "arn": "<agent_instance_profile_arn from outputs>"
+      },
+      "connectors_node_group_instance_profile": {
+        "<connectors_node_group_instance_profile_arn from outputs>"
+      },
+      "redpanda_node_group_instance_profile": {
+        "arn": "<redpanda_node_group_instance_profile_arn from outputs>"
+      },
+      "redpanda_cloud_storage_manager_policy": {
+        "arn": "<redpanda_cloud_storage_manager_policy_arn from outputs>"
+      },
+      "connectors_node_group_role": {
+        "arn": "<connectors_node_group_role_arn from outputs>"
+      },
+      "utility_node_group_instance_profile": {
+        "arn": "<utility_node_group_instance_profile_arn from outputs>"
+      },
+      "console_secrets_manager_role": {
+        "arn": "<console_secrets_manager_role_arn from outputs>"
+      },
+      "connectors_security_group": {
+        "arn": "<connectors_security_group_arn from outputs>"
+      },
+      "utility_node_group_role": {
+        "arn": "<utility_node_group_role_arn from outputs>"
+      },
+      "redpanda_node_group_role": {
+        "arn": "<redpanda_node_group_role_arn from outputs>"
+      },
+      "redpanda_cloud_storage_manager_role": {
+        "arn": "<redpanda_cloud_storage_manager_role_arn from outputs>"
+      },
+      "connectors_secrets_manager_role": {
+        "arn": "<connectors_secrets_manager_role_arn from outputs>"
+      },
+      "node_security_group": {
+        "arn": "<node_security_group_arn from outputs>"
+      },
+      "utility_security_group": {
+        "arn": "<utility_security_group_arn from outputs>"
+      },
+      "redpanda_agent_security_group": {
+        "arn": "<redpanda_agent_security_group_arn from outputs>"
+      },
+      "redpanda_node_group_security_group": {
+        "arn": "<redpanda_node_group_security_group_arn from outputs>"
+      },
+      "cluster_security_group": {
+        "arn": "<cluster_security_group_arn from outputs>"
+      },
+      "k8s_cluster_role": {
+        "arn": "<k8s_cluster_role_arn from outputs>"
+      },
+      "cloud_storage_bucket": {
+        "arn": "<cloud_storage_bucket_arn from outputs>"
+      }
+    }
+  },
+  # <This aws_private_link section is optional. See the https://docs.redpanda.com/current/deploy/deployment-option/cloud/aws-privatelink/[AWS documentation] for more information>
+  "aws_private_link": { 
+    "enabled": true, 
+    "allowed_principals": [<allowed principals>],
+    "connect_console": <true|false>
+  }
+}
+EOF
+```
+
+The create cluster request returns a `resource_id`, which is required in the next step. 
+
+Example:
+
+```bash
+{
+   "operation":{
+      "id":"cpas8k6r4up5li18auhg",
+      "metadata":{
+         "@type":"type.googleapis.com/redpanda.api.controlplane.v1beta2.CreateClusterMetadata",
+         "cluster_id":"cpb33c8ekjj5i1cpj3v0"
+      },
+      "state":"STATE_IN_PROGRESS",
+      "started_at":"2024-05-28T19:34:09.501Z",
+      "type":"TYPE_CREATE_CLUSTER",
+      "resource_id":"cpb33c8ekjj5i1cpj3v0"
+   }
+}
+```
+
+== Create cluster resources
+
+To create the initial cluster resources, run `rpk cloud byoc aws apply`. This creates an autoscaling group, an agent VM, and the following resources:
+
+* S3 objects
+* Launch template
+* Autoscaling group
+
+Note: You must have the `iam_rpk_user.tf` permissions described in the prerequisites. 
+
+```bash
+rpk cloud login \
+  --save \
+  --client-id='<client-id>’ \
+  --client-secret='<client-secret>' \
+  --no-profile
+
+rpk cloud byoc aws apply \
+  --redpanda-id='<resource_id of cluster from previous step>'
+```
+
+Output:
+
+```bash
+2024-05-28T20:38:34.020Z	INFO	.rpk.managed-byoc	aws/apply.go:112	Reconciling agent infrastructure...
+2024-05-28T20:38:34.200Z	INFO	.rpk.managed-byoc	cli/cli.go:194	Running apply	{"provisioner": "redpanda-bootstrap"}
+2024-05-28T20:39:09.104Z	INFO	.rpk.managed-byoc	cli/cli.go:204	Finished apply	{"provisioner": "redpanda-bootstrap"}
+2024-05-28T20:39:09.104Z	INFO	.rpk.managed-byoc	cli/cli.go:194	Running apply	{"provisioner": "redpanda-network"}
+2024-05-28T20:41:41.962Z	INFO	.rpk.managed-byoc	cli/cli.go:204	Finished apply	{"provisioner": "redpanda-network"}
+2024-05-28T20:41:41.962Z	INFO	.rpk.managed-byoc	cli/cli.go:194	Running apply	{"provisioner": "redpanda-agent"}
+2024-05-28T20:42:40.767Z	INFO	.rpk.managed-byoc	cli/cli.go:204	Finished apply	{"provisioner": "redpanda-agent"}
+2024-05-28T20:42:40.768Z	INFO	.rpk.managed-byoc	aws/apply.go:158	The Redpanda cluster is deploying. This can take up to 45 minutes. View status at https://cloud.redpanda.com/clusters/cpb4074p81130pqt8gjg/overview.
+```
+
+The agent VM now is running and handles the remaining provisioning steps. This can take up to 45 minutes. When it completes, the cluster status updates to `Running`. If the cluster status is still `Creating` status after 45, contact Redpanda support.
+
+You can check the cluster status with the API or the Redpanda Cloud UI.
+
+Example using the returned `operation_id`:
+
+```bash
+curl -X GET "https://api.redpanda.com/v1beta2/operations/<operation_id>" \
+ -H "accept: application/json"\
+ -H "content-type: application/json" \
+ -H "authorization: Bearer $PUBLIC_API_TOKEN"
+ ```
+
+Example retrieving cluster:
+
+```bash
+curl -X GET "https://api.redpanda.com/v1beta2/clusters/<cluster_id>" \
+ -H "accept: application/json"\
+ -H "content-type: application/json" \
+ -H "authorization: Bearer $PUBLIC_API_TOKEN"
+```
