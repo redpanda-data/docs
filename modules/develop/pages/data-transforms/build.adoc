@@ -40,22 +40,24 @@ For example, if you choose `tinygo-no-goroutines`, the following project files a
 └── transform.yaml
 ----
 
-The `transform.go` file contains an empty transform function.
+The `transform.go` file contains a boilerplate transform function.
 The `transform.yaml` file specifies the configuration settings for the transform function.
 
-See also: xref:develop:data-transforms/configure.adoc[].
+See also:
+
+- xref:develop:data-transforms/configure.adoc[]
 
 == Build transform functions
 
-You can develop your transform logic with one of the available SDKs that allow you to run data transforms on a Redpanda cluster.
-
-All transform functions must register a callback with the `OnRecordWritten()` method.
+You can develop your transform logic with one of the available SDKs that allow your transform code to interact with a Redpanda cluster.
 
 [tabs]
 ======
 Go::
 +
 --
+All transform functions must register a callback with the `OnRecordWritten()` method.
+
 [source,go]
 ----
 package main
@@ -65,46 +67,56 @@ import (
 )
 
 func main() {
-	transform.OnRecordWritten(handleRecord)
+  // Register your transform function.
+  // This is a good place to perform other setup too.
+  transform.OnRecordWritten(myTransform)
 }
-
-// Required callback, even if it does nothing
-func handleRecord(event transform.WriteEvent, writer transform.RecordWriter) error {
-	return nil
+// myTransform is where you read the record that was written, and then you can
+// output new records that will be written to the destination topic
+func myTransform(event transform.WriteEvent, writer transform.RecordWriter) error {
+  return writer.Write(event.Record())
 }
 ----
 --
 Rust::
 +
 --
+All transform functions must register a callback with the `on_record_written()` method.
+
 [source,rust]
 ----
 use redpanda_transform_sdk::*;
 
 fn main() {
-  on_record_written(handle_record);
+  // Register your transform function.
+  // This is a good place to perform other setup too.
+  on_record_written(my_transform);
 }
 
-// Required callback, even if it does nothing
-fn handle_record(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Result<()> {
+// my_transform is where you read the record that was written, and then you can
+// return new records that will be written to the output topic
+fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> Result<(), Box<dyn Error>> {
+  writer.write(event.record)?;
   Ok(())
 }
 ----
 --
 ======
 
-When creating a transform function, you should run any initialization steps in the `main()` function because it's only run once when the transform function is first deployed. If you're using Go, you can also use the standard predefined `init()` function.
+When creating a transform function, you should run any initialization steps in the `main()` function because it's only run once when the transform function is first deployed. If you're using Go, you can also use the standard predefined https://go.dev/doc/effective_go#init[`init()` function].
 
 [[errors]]
 === Error handling
 
-To ensure the reliability and continuous operation of your data transforms, handle errors gracefully within all transform functions. Allowing errors to escape from a transform function can cause significant disruptions. Unhandled errors can cause your transform functions to fail, leading to data processing interruptions.
+By distinguishing between recoverable and critical errors, you can ensure that your transform functions are both resilient and robust. Handling recoverable errors internally helps maintain continuous operation, while allowing critical errors to escape ensures that the system can address severe issues effectively.
 
-Redpanda tracks the offsets of the records processed by transform functions. If an error escapes the Wasm virtual machine (VM), the VM will fail. When the Wasm engine detects this failure and starts a new VM, the transform function will try to process the input topics from the last processed offset again, leading to the same error and causing the function to be stuck in an error loop.
+Redpanda tracks the offsets of records that have been processed by transform functions. If an error escapes the Wasm virtual machine (VM), the VM will fail. When the Wasm engine detects this failure and starts a new VM, the transform function will retry processing the input topics from the last processed offset, potentially leading to repeated failures if the underlying issue is not resolved.
 
-To prevent this behavior, log errors and take appropriate action without stopping the processing of records. This approach ensures that your transform function can continue to operate even when encountering problematic records.
+Handling errors internally by logging them and continuing to process subsequent records can help maintain continuous operation. However, this approach can result in silently discarding problematic records, which may lead to unnoticed data loss if the logs are not monitored closely.
 
-In this example, an error will be logged if a record does not contain a key and that record will not be processed. Subsequent records will continue to be processed.
+==== Allow errors to escape
+
+Allow errors to escape the Wasm VM only when they indicate a problem with the Redpanda infrastructure or the Wasm engine environment. Allowing the error to propagate ensures that the system can attempt to recover by restarting the VM and processing from the last committed offset.
 
 [tabs]
 ======
@@ -121,24 +133,17 @@ import (
 )
 
 func main() {
-    transform.OnRecordWritten(handleRecord)
+    transform.OnRecordWritten(myTransform)
 }
 
-func handleRecord(event transform.WriteEvent, writer transform.RecordWriter) error {
-  record := event.Record()
-  if record.Key == nil {
-    // Log the error and continue processing
-    log.Println("Error: Record key is nil")
-    // Do not return the error
-    return nil
-  }
-
-  err := writer.Write(record)
+func myTransform(event transform.WriteEvent, writer transform.RecordWriter) error {
+  err := writer.Write(event.Record())
   if err != nil {
     // Log the error and continue processing
     log.Println("Error writing record:", err)
+    return err
   }
-  // Ensure no error is returned
+  // Return nil if no error occurred
   return nil
 }
 ----
@@ -154,24 +159,86 @@ use log::error;
 fn main() {
   // Set up logging
   env_logger::init();
-  on_record_written(handle_record);
+  on_record_written(my_transform);
 }
 
-fn handle_record(event: WriteEvent, writer: &mut RecordWriter) -> anyhow::Result<()> {
+fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> anyhow::Result<()> {
+  let record = event.record;
+  if let Err(err) = writer.write(record) {
+    // Log the error
+    error!("Error writing record: {}", err);
+    // Return the error to propagate it
+    return Err(err.into());
+  }
+
+  // Return OK if no error occurred
+  Ok(())
+}
+----
+--
+======
+
+To ensure that you are notified of any errors or issues in your data transforms, Redpanda provides metrics that you can use to monitor the state of your data transforms. See xref:develop:data-transforms/monitor.adoc[Monitor data transforms].
+
+==== Handle errors internally
+
+Use this approach for recoverable errors that can be logged and skipped without stopping the entire transform process. This ensures that processing continues for subsequent records, but requires careful monitoring of logs to detect and address any issues.
+
+[tabs]
+======
+Go::
++
+--
+[source,go]
+----
+package main
+
+import (
+    "log"
+    "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+)
+
+func main() {
+    transform.OnRecordWritten(myTransform)
+}
+
+func myTransform(event transform.WriteEvent, writer transform.RecordWriter) error {
+  record := event.Record()
+  if record.Key == nil {
+    // Log the error and continue processing
+    log.Println("Error: Record key is nil")
+    // Skip this record
+    return nil
+  }
+
+  return writer.Write(record)
+}
+----
+--
+Rust::
++
+--
+[source,rust]
+----
+use redpanda_transform_sdk::*;
+use log::error;
+
+fn main() {
+  // Set up logging
+  env_logger::init();
+  on_record_written(my_transform);
+}
+
+fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> anyhow::Result<()> {
   let record = event.record;
   if record.key().is_none() {
     // Log the error and continue processing
     error!("Error: Record key is nil");
-    // Do not return the error
+    // Skip this record
     return Ok(());
   }
 
-  if let Err(err) =  writer.write(record) {
-    // Log the error and continue processing
-    error!("Error writing record: {}", err);
-  }
-  // Ensure no error is returned
-  Ok(())
+  return writer.write(record)
 }
 ----
 --
@@ -204,16 +271,17 @@ When you deploy this transform function, and produce a message without a key, yo
 }
 ----
 
-To ensure that you are notified of any errors or issues in your data transforms, Redpanda provides metrics that you can use to monitor the state of your data transforms.
+You can view logs for transform functions using the `rpk transform logs <transform-function-name>` command.
 
 See also:
 
+- xref:develop:data-transforms/monitor#logs[View logs for transform functions]
 - xref:develop:data-transforms/configure.adoc#log[Configure transform logging]
-- xref:develop:data-transforms/monitor.adoc[Monitor data transforms]
+- xref:reference:rpk/rpk-transform/rp-transform-logs[]
 
 === Avoid state management
 
-Relying on state within transform functions can lead to inconsistencies and unpredictable behavior. Data transforms operate with at-least-once semantics, meaning transform functions might be executed more than once. Redpanda may also restart a transform function at any point, which causes its state to be lost.
+Relying on in-memory state across transform invocations can lead to inconsistencies and unpredictable behavior. Data transforms operate with at-least-once semantics, meaning a transform function might be executed more than once for a given record. Redpanda may also restart a transform function at any point, which causes its state to be lost.
 
 [[env-vars]]
 === Access environment variables
@@ -236,7 +304,8 @@ import (
 )
 
 func main() {
-	inputTopic, ok := os.LookupEnv("REDPANDA_INPUT_TOPIC")
+  // Check environment variables before registering the transform function.
+  inputTopic, ok := os.LookupEnv("REDPANDA_INPUT_TOPIC")
   if ok {
     fmt.Printf("Input topic: %s\n", inputTopic)
   } else {
@@ -257,12 +326,12 @@ func main() {
     fmt.Println("Only one output topic is set")
   }
 
-	transform.OnRecordWritten(doNothing)
+  // Register your transform function.
+  transform.OnRecordWritten(myTransform)
 }
 
-// Required callback, even if it does nothing
-func doNothing(event transform.WriteEvent, writer transform.RecordWriter) error {
-	return nil
+func myTransform(event transform.WriteEvent, writer transform.RecordWriter) error {
+  return writer.Write(event.Record())
 }
 ----
 --
@@ -279,7 +348,7 @@ fn main() {
   // Set up logging
   env_logger::init();
 
-  // Access built-in environment variables
+  // Check environment variables before registering the transform function.
   match env::var("REDPANDA_INPUT_TOPIC") {
     Ok(input_topic) => println!("Input topic: {}", input_topic),
     Err(_) => println!("An input topic is not set"),
@@ -295,11 +364,11 @@ fn main() {
     Err(_) => println!("Only one output topic is set"),
   }
 
-  on_record_written(do_nothing);
+  // Register your transform function.
+  on_record_written(my_transform);
 }
 
-// Required callback, even if it does nothing
-fn do_nothing(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Result<()> {
+fn my_transform(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Result<()> {
   Ok(())
 }
 ----
@@ -312,7 +381,7 @@ You can use the Schema Registry client library to read and write schemas as well
 
 See also:
 
-- xref:manage:schema-reg/schema-reg-overview.adoc[].
+- xref:manage:schema-reg/schema-reg-overview.adoc[]
 - xref:reference:data-transforms/golang-sdk.adoc[Go Schema Registry client reference]
 - xref:reference:data-transforms/rust-sdk.adoc[Rust Schema Registry client reference]
 
@@ -338,14 +407,14 @@ import (
 
 func main() {
   client := sr.NewClient()
-	transform.OnRecordWritten(doNothing)
 
-  // Use the client...
+  // Register your transform function.
+  transform.OnRecordWritten(myTransform)
 }
 
-// Required callback, even if it does nothing
-func doNothing(event transform.WriteEvent, writer transform.RecordWriter) error {
-	return nil
+func myTransform(event transform.WriteEvent, writer transform.RecordWriter) error {
+  // Use the client...
+  return writer.Write(event.Record())
 }
 ----
 --
@@ -358,15 +427,15 @@ use redpanda_transform_sdk::*;
 use redpanda_transform_sdk_sr::{SchemaRegistryClient};
 
 fn main() {
-    // Initialize the Schema Registry client
-    let client = SchemaRegistryClient::new();
-    on_record_written(do_nothing);
+  // Initialize the Schema Registry client
+  let client = SchemaRegistryClient::new();
 
-    // Use the client
+  // Register your transform function.
+  on_record_written(my_transform);
 }
 
-// Required callback, even if it does nothing
-fn do_nothing(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Result<()> {
+fn my_transform(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Result<()> {
+  // Use the client
   Ok(())
 }
 ----
@@ -391,14 +460,19 @@ package main
 import (
   "context"
   "fmt"
-	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
-	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr"
+  "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+  "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr"
 )
 
 func main() {
   // Initialize the Schema Registry client
   client := sr.NewClient()
 
+  // Register your transform function.
+  transform.OnRecordWritten(myTransform)
+}
+
+func myTransform(event transform.WriteEvent, writer transform.RecordWriter) error {
   // Lookup schema by ID
   schema, err := client.LookupSchemaById(1)
   if err != nil {
@@ -406,12 +480,7 @@ func main() {
   }
 
   fmt.Println("Schema:", schema.Schema)
-  transform.OnRecordWritten(doNothing)
-}
-
-// Required callback, even if it does nothing
-func doNothing(event transform.WriteEvent, writer transform.RecordWriter) error {
-	return nil
+  return writer.Write(event.Record())
 }
 ----
 --
@@ -428,6 +497,15 @@ fn main() -> Result<()> {
   // Initialize the Schema Registry client
   let client = SchemaRegistryClient::new();
 
+  // Register your transform function.
+  on_record_written(|event, writer| my_transform(event, writer, &client));
+}
+
+fn my_transform(
+  _event: WriteEvent,
+  _writer: &mut RecordWriter,
+  client: &SchemaRegistryClient,
+) -> anyhow::Result<()> {
   // Lookup schema by ID
   match client.lookup_schema_by_id(SchemaId(1)) {
     Ok(schema) => {
@@ -437,14 +515,9 @@ fn main() -> Result<()> {
       panic!("Failed to lookup schema: {:?}", err);
     },
   }
-
-  on_record_written(do_nothing);
-}
-
-// Required callback, even if it does nothing
-fn do_nothing(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Result<()> {
   Ok(())
 }
+
 ----
 --
 ======
@@ -473,7 +546,7 @@ func main() {
 
   schema := sr.Schema{
     Schema: `{"type":"record","name":"MyRecord","fields":[{"name":"name","type":"string"},{"name":"age","type":"int"}]}`,
-    Type:   sr.TypeAvro,
+    Type: sr.TypeAvro,
   }
 
   subjectSchema, err := client.CreateSchema("my_subject", schema)
@@ -482,12 +555,12 @@ func main() {
   }
 
   fmt.Println("Registered new schema ID:", subjectSchema.ID)
-  transform.OnRecordWritten(doNothing)
+  transform.OnRecordWritten(myTransform)
 }
 
 // Required callback, even if it does nothing
-func doNothing(event transform.WriteEvent, writer transform.RecordWriter) error {
-	return nil
+func myTransform(event transform.WriteEvent, writer transform.RecordWriter) error {
+  return nil
 }
 ----
 --
@@ -521,11 +594,11 @@ fn main() -> Result<()> {
   }
 
   // Set up the transform function
-  on_record_written(do_nothing);
+  on_record_written(my_transform);
 }
 
 // Required callback, even if it does nothing
-fn do_nothing(_event: WriteEvent, _writer: &mut RecordWriter) -> Result<()> {
+fn my_transform(_event: WriteEvent, _writer: &mut RecordWriter) -> Result<()> {
   Ok(())
 }
 ----
@@ -547,8 +620,8 @@ package main
 
 import (
   "fmt"
-	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
-	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr"
+  "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+  "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr"
   avro "github.com/linkedin/goavro/v2"
 )
 
@@ -565,7 +638,7 @@ func main() {
   // Create a record that matches the Avro schema
   record := map[string]interface{}{
     "name": "Redpanda",
-    "age":  1,
+    "age":  5,
   }
 
   // Serialize the record into Avro binary format
@@ -578,13 +651,12 @@ func main() {
   fmt.Println("Encoded binary:", binary)
 
   // Register a callback for handling records written to the input topic
-  transform.OnRecordWritten(doNothing)
+  transform.OnRecordWritten(myTransform)
 }
 
 // Required callback, even if it does nothing
-func doNothing(event transform.WriteEvent, writer transform.RecordWriter) error {
-  // This function is required by the transform framework but does nothing
-	return nil
+func myTransform(event transform.WriteEvent, writer transform.RecordWriter) error {
+  return nil
 }
 
 ----
@@ -610,7 +682,7 @@ fn main() -> Result<()> {
   // Create a record based on the schema
   let mut record: HashMap<String, Value> = HashMap::new();
   record.insert("name".to_string(), Value::String("Redpanda".to_string()));
-  record.insert("age".to_string(), Value::Int(1));
+  record.insert("age".to_string(), Value::Int(5));
 
   // Serialize the record into a binary format using the Avro schema
   let mut writer = Writer::new(&avro_schema, Vec::new());
@@ -631,12 +703,12 @@ fn main() -> Result<()> {
   println!("Registered new schema ID: {:?}", subject_schema.id());
 
   // Register the transform function
-  on_record_written(do_nothing);
+  on_record_written(my_transform);
 }
 
 // Required callback, even if it does nothing
-fn do_nothing(_event: WriteEvent, _writer: &mut RecordWriter) -> Result<()> {
-    Ok(())
+fn my_transform(_event: WriteEvent, _writer: &mut RecordWriter) -> Result<()> {
+  Ok(())
 }
 
 ----
@@ -645,7 +717,7 @@ fn do_nothing(_event: WriteEvent, _writer: &mut RecordWriter) -> Result<()> {
 
 == Next steps
 
-xref:develop:data-transforms/configure.adoc[].
+xref:develop:data-transforms/configure.adoc[]
 
 == Suggested reading
 
