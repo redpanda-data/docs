@@ -114,74 +114,6 @@ Redpanda tracks the offsets of records that have been processed by transform fun
 
 Handling errors internally by logging them and continuing to process subsequent records can help maintain continuous operation. However, this approach can result in silently discarding problematic records, which may lead to unnoticed data loss if the logs are not monitored closely.
 
-==== Allow errors to escape
-
-Allow errors to escape the Wasm VM only when they indicate a problem with the Redpanda infrastructure or the Wasm engine environment. Allowing the error to propagate ensures that the system can attempt to recover by restarting the VM and processing from the last committed offset.
-
-[tabs]
-======
-Go::
-+
---
-[source,go]
-----
-package main
-
-import (
-    "log"
-    "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
-)
-
-func main() {
-    transform.OnRecordWritten(myTransform)
-}
-
-func myTransform(event transform.WriteEvent, writer transform.RecordWriter) error {
-  err := writer.Write(event.Record())
-  if err != nil {
-    log.Println("Error writing record:", err)
-  }
-  // If err is non-nil, it will fail the VM
-  return err
-}
-----
---
-Rust::
-+
---
-[source,rust]
-----
-use redpanda_transform_sdk::*;
-use log::error;
-
-fn main() {
-  // Set up logging
-  env_logger::init();
-  on_record_written(my_transform);
-}
-
-fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> anyhow::Result<()> {
-  let record = event.record;
-  if let Err(err) = writer.write(record) {
-    // Log the error
-    error!("Error writing record: {}", err);
-    // Return the error to propagate it
-    return Err(err.into());
-  }
-
-  // Return OK if no error occurred
-  Ok(())
-}
-----
---
-======
-
-To ensure that you are notified of any errors or issues in your data transforms, Redpanda provides metrics that you can use to monitor the state of your data transforms. See xref:develop:data-transforms/monitor.adoc[Monitor data transforms].
-
-==== Handle errors internally
-
-Use this approach for recoverable errors that can be logged and skipped without stopping the entire transform process. This ensures that processing continues for subsequent records, but requires careful monitoring of logs to detect and address any issues.
-
 [tabs]
 ======
 Go::
@@ -203,12 +135,12 @@ func main() {
 func myTransform(event transform.WriteEvent, writer transform.RecordWriter) error {
   record := event.Record()
   if record.Key == nil {
-    // Log the error and continue processing
+    // Handle the error internally by logging it
     log.Println("Error: Record key is nil")
-    // Skip this record
+    // Skip this record and continue to process other records
     return nil
   }
-
+  // Allow errors with writes to escape
   return writer.Write(record)
 }
 ----
@@ -230,12 +162,12 @@ fn main() {
 fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> anyhow::Result<()> {
   let record = event.record;
   if record.key().is_none() {
-    // Log the error and continue processing
+    // Handle the error internally by logging it
     error!("Error: Record key is nil");
-    // Skip this record
+    // Skip this record and continue to process other records
     return Ok(());
   }
-
+  // Allow errors with writes to escape
   return writer.write(record)
 }
 ----
@@ -271,9 +203,12 @@ When you deploy this transform function, and produce a message without a key, yo
 
 You can view logs for transform functions using the `rpk transform logs <transform-function-name>` command.
 
+To ensure that you are notified of any errors or issues in your data transforms, Redpanda provides metrics that you can use to monitor the state of your data transforms.
+
 See also:
 
 - xref:develop:data-transforms/monitor#logs[View logs for transform functions]
+- xref:develop:data-transforms/monitor.adoc[Monitor data transforms]
 - xref:develop:data-transforms/configure.adoc#log[Configure transform logging]
 - xref:reference:rpk/rpk-transform/rp-transform-logs[]
 
