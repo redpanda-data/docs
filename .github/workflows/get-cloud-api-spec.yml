@@ -1,48 +1,52 @@
+---
 name: Fetch and Save Cloud API Spec
-
 on:
-  workflow_dispatch: # Allows manual trigger of the workflow
-  repository_dispatch: # Allows other repositories to trigger this workflow
+  workflow_dispatch:  # Allows manual trigger of the workflow
+  repository_dispatch:  # Allows other repositories to trigger this workflow
     types: [trigger-cloud-api-docs]
-
 jobs:
   fetch-and-save-cloud-api-spec:
     runs-on: ubuntu-latest
-
     steps:
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_SM_READONLY_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SM_READONLY_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+      - name: get secrets from aws sm
+        uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            ,sdlc/prod/github/actions_bot_token
+          parse-json-secrets: true
       - name: Check out repository (main branch)
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: 'main'
           path: redpanda-docs
-          token: ${{ secrets.VBOT_GITHUB_API_TOKEN }}
-
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '18'
-
       - name: Install dependencies
         run: |
           cd ./redpanda-docs/scripts/get-api-specs
           npm install
-
       - name: Run the script and save the output
         run: node ./redpanda-docs/scripts/get-api-specs/get-cloud-api-spec.js > ./redpanda-docs/cloud-api.yaml
         env:
-          VBOT_GITHUB_API_TOKEN: ${{ secrets.ACTIONS_BOT_TOKEN }}
-
+          VBOT_GITHUB_API_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
       - name: Check out the api branch
         run: |
           cd ./redpanda-docs
           git fetch --all
           git checkout api
-
         # Copy the generated file to the api branch
       - name: Copy the file to the api branch
         run: |
           mv ./redpanda-docs/cloud-api.yaml ./redpanda-docs/modules/ROOT/attachments/cloud-api.yaml
-
       - name: Check if changes were made
         id: check_changes
         run: |
@@ -53,7 +57,6 @@ jobs:
           else
             echo "has_changes=false" >> $GITHUB_ENV
           fi
-
       - name: Commit changes to the api branch
         if: env.has_changes == 'true'
         run: |
@@ -64,4 +67,4 @@ jobs:
           git commit -m "auto-docs: Update Cloud API spec"
           git push origin api
         env:
-          ACCESS_TOKEN: ${{ secrets.VBOT_GITHUB_API_TOKEN }}
+          ACCESS_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
