@@ -8,7 +8,6 @@ To ensure compatibility with future versions of Redpanda and to benefit from new
 
 . <<Deploy the updated Redpanda Operator, Deploy at least version 23.2 of the updated Redpanda Operator>> in the same Kubernetes cluster as your deprecated Redpanda Operator.
 . <<Prepare existing Kubernetes resources>>.
-. <<install-the-cluster-to-redpanda-migration-cli,Install the `cluster-to-redpanda-migration` CLI>>
 . <<Migrate Cluster and Console resources to Redpanda resources>>.
 
 For a description of what's changed, see xref:23.2@upgrade:deprecated/cluster-resource.adoc[Deprecated Cluster and Console Custom Resources].
@@ -153,167 +152,46 @@ kubectl --namespace <namespace> label serviceaccount <cluster-name> app.kubernet
 kubectl --namespace <namespace> delete PodDisruptionBudget <cluster-name>
 ```
 
-== Install the cluster-to-redpanda-migration CLI
-
-The resource that the updated Redpanda Operator uses to represent a Redpanda cluster is the Redpanda resource. The `cluster-to-redpanda-migration` CLI is a single binary that migrates deprecated Cluster and Console resources to Redpanda resources.
-
-Install the `cluster-to-redpanda-migration` CLI:
-
-[tabs]
-======
-Linux::
-+
---
-. Download the `cluster-to-redpanda-migration` archive for Linux:
-+
-```bash
-curl -LO https://github.com/redpanda-data/redpanda/releases/latest/download/cluster-to-redpanda-migration-linux-amd64.zip
-```
-
-. Ensure that you have the folder `~/.local/bin`:
-+
-```bash
-mkdir -p ~/.local/bin
-```
-
-. Add it to your `$PATH`:
-+
-```bash
-export PATH="~/.local/bin:$PATH"
-```
-
-. Unzip the `cluster-to-redpanda-migration` files to your `~/.local/bin/` directory:
-+
-```bash
-unzip cluster-to-redpanda-migration-linux-amd64.zip -d ~/.local/bin/
-```
-
-. Ensure that the tool is correctly installed by checking the version:
-+
-```bash
-cluster-to-redpanda-migration version
-```
-+
-You should see a version.
---
-
-macOS::
-+
---
-To install `cluster-to-redpanda-migration` CLI on macOS, choose the option that corresponds to your system architecture. For example, if you have an M1 or M2 chip, use the **Apple Silicon** instructions.
-
-[tabs]
-====
-Intel macOS::
-+
-. Download the `cluster-to-redpanda-migration` archive for macOS:
-+
-```bash
-curl -LO https://github.com/redpanda-data/redpanda/releases/latest/download/cluster-to-redpanda-migration-darwin-amd64.zip
-```
-+
-. Ensure that you have the folder `~/.local/bin`:
-+
-```bash
-mkdir -p ~/.local/bin
-```
-+
-. Add it to your `$PATH`:
-+
-```bash
-export PATH=$PATH:~/.local/bin
-```
-+
-. Unzip the `cluster-to-redpanda-migration` files to your `~/.local/bin/` directory:
-+
-```bash
-unzip cluster-to-redpanda-migration-darwin-amd64.zip -d ~/.local/bin/
-```
-
-. Ensure that the tool is correctly installed by checking the version:
-+
-```bash
-cluster-to-redpanda-migration version
-```
-+
-You should see a version.
-
-Apple Silicon::
-+
-. Download the `cluster-to-redpanda-migration` archive for macOS:
-+
-```bash
-curl -LO https://github.com/redpanda-data/redpanda/releases/latest/download/cluster-to-redpanda-migration-darwin-arm64.zip
-```
-+
-. Ensure that you have the folder `~/.local/bin`:
-+
-```bash
-mkdir -p ~/.local/bin
-```
-+
-. Add it to your `$PATH`:
-+
-```bash
-export PATH=$PATH:~/.local/bin
-```
-+
-. Unzip the `cluster-to-redpanda-migration` files to your `~/.local/bin/` directory:
-+
-```bash
-unzip cluster-to-redpanda-migration-darwin-arm64.zip -d ~/.local/bin/
-```
-
-. Ensure that the tool is correctly installed by checking the version:
-+
-```bash
-cluster-to-redpanda-migration version
-```
-+
-You should see a version.
-====
---
-======
-
 == Migrate Cluster and Console resources to Redpanda resources
 
-You can convert your deprecated Cluster and Console resources to Redpanda resources using a combination of the `cluster-to-redpanda-migration` CLI and manual changes.
+You can now convert your deprecated Cluster and Console resources to a Redpanda resource.
 
-. Migrate your Cluster and Console manifests to a Redpanda resource:
+. Create a Redpanda resource:
 +
-```bash
-cluster-to-redpanda-migration \
-  --cluster <path-to-cluster-resource.yaml> \
-  --console <path-to-console-resource.yaml> \
-  --output=redpanda.yaml
-```
+.`redpanda-cluster.yaml`
+[source,yaml,lines=6-18]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: <cluster-name>
+  namespace: <namespace>
+  annotations:
+    cluster.redpanda.com/managed: "true"
+spec:
+  migration:
+    enabled: true
+    clusterRef:
+      name: <cluster-name>
+      namespace: <namespace>
+    consoleRef:
+      name: <console-name>
+      namespace: <namespace>
+----
 +
-Replace `path-to-cluster-resource.yaml` with the absolute path to your Cluster manifest.
-+
-Replace `path-to-console-resource.yaml` with the absolute path to your Console manifest.
-
-. Ensure that your migrated Redpanda resource is configured correctly. You can compare the xref:23.2@reference:redpanda-operator/crd.adoc[Cluster and Console CRD reference] to the xref:reference:k-crd.adoc[Redpanda CRD reference].
+With this configuration, the updated Redpanda Operator will try to migrate your Cluster and/or Console resources to the new Redpanda resource.
 +
 [NOTE]
 ====
-- The migration tool does not migrate all configurations. For example, if your cluster had SASL enabled, you must manually add any SASL configuration to the Redpanda resource.
+- The Redpanda Operator does not migrate all configurations. For example, if your cluster had SASL enabled, you must manually add any SASL configuration to the Redpanda resource. For help with configuration, see the xref:reference:k-crd.adoc[Redpanda CRD reference].
 - If the `additionalConfiguration` section of your Cluster resource includes `redpanda.empty_seed_starts_cluster: true`, make sure that this configuration is not present in the migrated `redpanda.yaml` file. The Redpanda Helm chart includes this configuration by default, so if your Redpanda resource also includes it, Redpanda will throw an error due to the duplicated configuration.
 - Make sure that `resources.memory.container.min` and `resources.memory.container.max` are both set to at least 2.5Gi. Otherwise, Redpanda will be unable to start.
 ====
 
-. Enable the Redpanda Operator to manage your Redpanda resource.
-+
-Edit your `redpanda.yaml` file to include the following:
-+
-```yaml
-annotations:
-  cluster.redpanda.com/managed: "true"
-```
-
 . Deploy the Redpanda resource:
 +
 ```bash
-kubectl apply -f redpanda.yaml --namespace <namespace>
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
 ```
 +
 The updated Redpanda Operator will delete the Pods sequentially causing them to be redeployed using Helm and your Redpanda resource.
@@ -336,75 +214,7 @@ redpanda   True    Redpanda reconciliation succeeded
 
 While the deployment process can sometimes take a few minutes, a prolonged 'not ready' status may indicate an issue.
 
-=== HelmRelease is not ready
-
-If you are using the Redpanda Operator with Helm, you may see the following message while waiting for a Redpanda custom resource to be deployed:
-
-[.no-copy]
-----
-NAME       READY   STATUS
-redpanda   False   HelmRepository 'redpanda/redpanda-repository' is not ready
-redpanda   False   HelmRelease 'redpanda/redpanda' is not ready
-----
-
-While the deployment process can sometimes take a few minutes, a prolonged 'not ready' status may indicate an issue. Follow the steps below to investigate:
-
-. Check the status of the HelmRelease:
-+
-```bash
-kubectl describe helmrelease <cluster-name> --namespace <namespace>
-```
-
-. Review the Redpanda Operator logs:
-+
-```bash
-kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
-```
-
-Replace `<namespace>` with the namespace in which you deployed the Redpanda Operator.
-
-=== HelmRelease retries exhausted
-
-The `HelmRelease retries exhausted` error occurs when the Helm Controller has tried to reconcile the HelmRelease a number of times, but these attempts have failed consistently.
-
-The Helm Controller watches for changes in HelmRelease objects. When changes are detected, it tries to reconcile the state defined in the HelmRelease with the actual state in the cluster. The process of reconciliation includes installation, upgrade, testing, rollback or uninstallation of Helm releases.
-
-You may see this error due to:
-
-- Incorrect configuration in the HelmRelease.
-- Issues with the chart, such as a non-existent chart version or the chart repository not being accessible.
-- Missing dependencies or prerequisites required by the chart.
-- Issues with the underlying Kubernetes cluster, such as insufficient resources or connectivity issues.
-
-To debug this error do the following:
-
-. Check the status of the HelmRelease:
-+
-```bash
-kubectl describe helmrelease <cluster-name> --namespace <namespace>
-```
-
-. Review the Redpanda Operator logs:
-+
-```bash
-kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
-```
-
-When you find and fix the error, you must use the Flux CLI to suspend and resume the reconciliation process:
-
-. https://fluxcd.io/flux/installation/#install-the-flux-cli[Install the Flux CLI^].
-
-. Suspend the HelmRelease:
-+
-```bash
-flux suspend helmrelease <cluster-name> --namespace <namespace>
-```
-
-. Resume the HelmRelease:
-+
-```bash
-flux resume helmrelease <cluster-name> --namespace <namespace>
-```
+include::manage:kubernetes/troubleshooting/k-troubleshoot.adoc[tags=deployment]
 
 === Resources aren't being updated
 

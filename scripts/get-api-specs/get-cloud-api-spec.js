@@ -35,6 +35,7 @@ async function fetchYamlFile() {
     console.log(content);
   } catch (error) {
     console.error('Error fetching file: ' + error.message);
+    process.exit(1)
   }
 }
 
