@@ -10,7 +10,15 @@ By default, Redpanda data is sent unencrypted. A security best practice is to en
 * Transport Layer Security (TLS), previously SSL, provides encryption for client-server communication. A server certificate prevents third parties from accessing data transferred between the client and server.
 * mTLS, or 2-way TLS, is a protocol that authenticates both the server and the client. In addition to the server certificate required in TLS, mTLS also requires the client to give a certificate. This involves more overhead to implement, but it can be useful for environments that require additional security and only have a small number of verified clients.
 
-For each Redpanda broker, specify the key file (`broker.key`), the certificate file (`broker.crt`), and the truststore file (`ca.crt`). Each broker has its own `broker.key` and `broker.crt`, but all brokers can have the same `ca.crt`.
+For each Redpanda broker, you must specify the:
+
+* key file (`broker.key`)
+* certificate file (`broker.crt`)
+* truststore file (`ca.crt`). 
+
+You can also specify a certificate revocation list (`ca.crl`) to block connections from entities using certifications that have expired or been revoked by a certificate authority (CA). 
+
+Each broker has its own `broker.key` and `broker.crt`, but all brokers can have the same `ca.crt` and `ca.crl`. The `ca.crl` must contain a certificate revocation list (CRL) for each issuing certificate in the truststore file concatenated into a single list. 
 
 == Prerequisites
 
@@ -260,6 +268,7 @@ redpanda:
       key_file: broker.key
       cert_file: broker.crt
       truststore_file: ca.crt
+      crl_file: ca.crl # Optional
       enabled: true
       require_client_auth: false
   admin_api_tls: []
@@ -277,6 +286,7 @@ or `chown` to Redpanda with 400 permissions:
 * `broker.crt`
 * `broker.key`
 * `ca.crt`
+* `ca.crl`
 
 Because the keys and certificates are only read at startup, you must restart
 Redpanda services after updating `redpanda.yaml`. TLS-related changes to `redpanda.yaml`
@@ -285,6 +295,14 @@ will not be known to Redpanda until after this restart:
 ----
 systemctl restart redpanda
 ----
+====
+
+[NOTE]
+==== 
+If you replace a working `ca.crl` file with a file that contains an invalid certificate revocation list, such as an unsigned list, Redpanda will reject all connections until you either:
+
+* Replace the file.
+* Remove the `crl_file: ca.crl` line from `redpanda.yaml` and restart Redpanda.
 
 ====
 
@@ -300,6 +318,7 @@ redpanda:
     key_file: broker.key
     cert_file: broker.crt
     truststore_file: ca.crt
+    crl_file: ca.crl # Optional
 ----
 
 Schema Registry and HTTP Proxy connect to Redpanda over the Kafka API. If you configure a TLS listener for the Kafka API, you must add `schema_registry_client::broker_tls` and `pandaproxy_client::broker_tls`. All APIs, except the internal RPC port, support multiple listeners. See:
@@ -326,6 +345,7 @@ redpanda:
       key_file: mtls_broker.key
       cert_file: mtls_broker.crt
       truststore_file: mtls_ca.crt
+      crl_file: mtls_ca.crl # Optional 
       enabled: true
       require_client_auth: true
 ----
@@ -357,6 +377,7 @@ redpanda:
     cert_file: <path-to-PEM-formatted-cert-file>
     key_file: <path-to-PEM-formatted-key-file>
     truststore_file: <path-to-PEM-formatted-CA-file>
+    crl_file: <path-to-PEM-formatted-CRL-file> # Optional
 ----
 
 [NOTE]
@@ -371,16 +392,17 @@ See also: xref:./listener-configuration.adoc[Configure Listeners]
 
 == Use rpk with TLS
 
-If you're using `rpk` to interact with the Kafka API using mTLS identity (for example, to manage topics or messages), pass the `--tls-key`, `--tls-cert`, and `--tls-truststore` flags to authenticate.
+If you're using `rpk` to interact with the Kafka API using mTLS identity (for example, to manage topics or messages), pass the `--tls-key`, `--tls-cert`, and `--tls-truststore` flags to authenticate. If you have specified a certificate revocation list (`crl_file`) in your configuration, you can also use --crl-key`.
 
-To interact with the Admin API (for example, to manage users), pass the `--admin-api-tls-key`, `--admin-api-tls-cert`, and `--admin-api-tls-truststore` flags.
+To interact with the Admin API (for example, to manage users), pass the `--admin-api-tls-key`, `--admin-api-tls-cert`, `--admin-api-tls-truststore` and `--admin-api-tls-crl` flags.
 
 [,bash]
 ----
  rpk topic create test-topic \
 --tls-key <path-to-PEM-formatted-key-file> \
 --tls-cert <path-to-PEM-formatted-cert-file> \
---tls-truststore <path-to-PEM-formatted-CA-file>
+--tls-truststore <path-to-PEM-formatted-CA-file>\
+--tls-crl <path-to-PEM-formatted-CA-file>\
 ----
 
 Replace placeholders in brackets.
@@ -399,6 +421,8 @@ By default, `rpk` connects to `localhost:9092` for Kafka protocol commands. If y
 Redpanda exposes several metrics to help administrators manage their installed certificates. When queried, these metrics list details for all resources that have an installed certificate. This may include APIs, storage, or other assets. These metrics also support labels so that you can more readily report statistics on single resources.
 
 Configuring alerts on these metrics is a critical tool for managing certificate expiration and avoiding surprise outages. The xref:reference:public-metrics-reference.adoc#tls_metrics[public metrics reference] contains a full list of available TLS metrics. You can refer to the xref:monitoring.adoc[monitor Redpanda] guide for full details on configuring Prometheus to monitor these metrics. This guide also explains how to create a Grafana dashboard for visualizations and alerting.
+
+Alternatively, you can choose to <<configure-tls,specify a certificate revocation list>> to block connections from entities using certifications that have expired or been revoked by a certificate authority (CA). 
 
 include::shared:partial$suggested-reading.adoc[]
 
