@@ -8,9 +8,10 @@
 
 You must have the following development tools installed on your host machine:
 
-* For Golang, you must have at least version 1.20 of https://go.dev/doc/install[Go^].
-* For Rust, you must have the latest stable version of https://rustup.rs/[Rust].
 * The xref:get-started:rpk-install.adoc[`rpk` command-line client] installed on your host machine and configured to connect to your Redpanda cluster.
+* For Golang projects, you must have at least version 1.20 of https://go.dev/doc/install[Go^].
+* For Rust projects, you must have the latest stable version of https://rustup.rs/[Rust].
+* For JavaScript and TypeScript projects, you must have the https://nodejs.org/en/download/package-manager[latest long-term-support release of Node.js].
 
 [[init]]
 == Initialize a data transforms project
@@ -27,6 +28,8 @@ If you do not include the `--language` flag, the command will prompt you for the
 * `tinygo-no-goroutines` (does not include https://golangdocs.com/goroutines-in-golang[Goroutines])
 * `tinygo-with-goroutines`
 * `rust`
+* `javascript`
+* `typescript`
 
 For example, if you choose `tinygo-no-goroutines`, the following project files are created:
 
@@ -58,6 +61,8 @@ Go::
 --
 All transform functions must register a callback with the `OnRecordWritten()` method.
 
+You should run any initialization steps in the `main()` function because it's only run once when the transform function is first deployed. You can also use the standard predefined https://go.dev/doc/effective_go#init[`init()` function].
+
 [source,go]
 ----
 package main
@@ -83,6 +88,8 @@ Rust::
 --
 All transform functions must register a callback with the `on_record_written()` method.
 
+You should run any initialization steps in the `main()` function because it's only run once when the transform function is first deployed.
+
 [source,rust]
 ----
 use redpanda_transform_sdk::*;
@@ -101,9 +108,54 @@ fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> Result<(), Box<
 }
 ----
 --
-======
+JavaScript::
++
+--
+All transform functions must register a callback with the `onRecordWritten()` method.
 
-When creating a transform function, you should run any initialization steps in the `main()` function because it's only run once when the transform function is first deployed. If you're using Go, you can also use the standard predefined https://go.dev/doc/effective_go#init[`init()` function].
+You should run any initialization steps outside of the callback so that they are only run once when the transform function is first deployed.
+
+[source,js]
+----
+// src/index.js
+import { onRecordWritten } from "@redpanda-data/transform-sdk";
+
+// This is a good place to perform setup steps.
+
+// Register your transform function.
+onRecordWritten((event, writer) => {
+  //This is where you read the record that was written, and then you can
+  // return new records that will be written to the output topic
+  writer.write(event.record);
+});
+----
+
+If you need to use Node.js standard modules in your transform function, you must configure the https://github.com/cyco130/esbuild-plugin-polyfill-node[`polyfillNode` plugin] for https://esbuild.github.io/[esbuild]. This plugin allows you to polyfill Node.js APIs that are not natively available in the Redpanda JavaScript runtime environment.
+
+.`esbuild.js`
+[source,js]
+----
+import * as esbuild from 'esbuild';
+import { polyfillNode } from 'esbuild-plugin-polyfill-node';
+
+await esbuild.build({
+  plugins: [
+    polyfillNode({
+      globals: {
+        buffer: true, // Allow a global Buffer variable if referenced.
+        process: false, // Don't inject the process global, the Redpanda JavaScript runtime does that.
+      },
+      polyfills: {
+        console: true, // Enable console polyfill
+        crypto: true, // Enable crypto polyfill
+        // Add other polyfills as needed
+      },
+    }),
+  ],
+});
+----
+--
+======
 
 [[errors]]
 === Error handling
@@ -170,6 +222,29 @@ fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> anyhow::Result<
   // Allow errors with writes to escape
   return writer.write(record)
 }
+----
+--
+JavaScript::
++
+--
+
+[source,js]
+----
+import { onRecordWritten } from "@redpanda-data/transform-sdk";
+
+// Register your transform function.
+onRecordWritten((event, writer) => {
+  const record = event.record;
+  if (!record.key) {
+    // Handle the error internally by logging it
+    console.error("Error: Record key is nil");
+    // Skip this record and continue to process other records
+    return null
+  }
+  // Allow errors with writes to escape
+  return writer.write(record);
+});
+
 ----
 --
 ======
@@ -306,6 +381,42 @@ fn my_transform(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Resul
 }
 ----
 --
+JavaScript::
++
+--
+
+[source,js]
+----
+import { onRecordWritten } from "@redpanda-data/transform-sdk";
+
+// Check environment variables before registering the transform function.
+const inputTopic = process.env.REDPANDA_INPUT_TOPIC;
+if (inputTopic) {
+  console.log(`Input topic: ${inputTopic}`);
+} else {
+  console.log("An input topic is not set");
+}
+
+const outputTopic0 = process.env.REDPANDA_OUTPUT_TOPIC_0;
+if (outputTopic0) {
+  console.log(`Output topic 0: ${outputTopic0}`);
+} else {
+  console.log("An output topic is not set");
+}
+
+const outputTopic1 = process.env.REDPANDA_OUTPUT_TOPIC_1;
+if (outputTopic1) {
+  console.log(`Output topic 1: ${outputTopic1}`);
+} else {
+  console.log("Only one output topic is set");
+}
+
+// Register your transform function.
+onRecordWritten((event, writer) => {
+  return writer.write(event.record);
+});
+----
+--
 ======
 
 === Connect to the Schema Registry
@@ -317,6 +428,7 @@ See also:
 - xref:manage:schema-reg/schema-reg-overview.adoc[]
 - xref:reference:data-transforms/golang-sdk.adoc[Go Schema Registry client reference]
 - xref:reference:data-transforms/rust-sdk.adoc[Rust Schema Registry client reference]
+- xref:reference:data-transforms/js-sdk.adoc[JavaScript Schema Registry client reference]
 
 == Next steps
 
@@ -325,6 +437,5 @@ xref:develop:data-transforms/configure.adoc[]
 == Suggested reading
 
 - xref:develop:data-transforms/how-transforms-work.adoc[]
-- xref:reference:data-transforms/golang-sdk.adoc[]
-- xref:reference:data-transforms/rust-sdk.adoc[]
+- xref:reference:data-transforms/sdks.adoc[]
 - xref:reference:rpk/rpk-transform/rpk-transform.adoc[`rpk transform` commands]
