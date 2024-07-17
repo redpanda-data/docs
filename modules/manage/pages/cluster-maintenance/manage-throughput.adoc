@@ -65,19 +65,17 @@ Redpanda supports the following Kafka API-based quota types on clients:
 
 |===
 
-You can also apply a default quota for all other client requests that don't have a specific quota configured based on the exact or prefix match on `client_id`. 
+You can also apply a default quota for all other client requests that don't have a specific quota based on an exact match or `client_id` prefix. 
 
 It is possible to create conflicting quotas if you configure the same quotas through both the Kafka API and a cluster configuration. Redpanda resolves these conflicts by following an order of preference in finding a matching quota for a request:
 
 . Quota configured through the Kafka API for an exact match on `client_id`
 . Quota configured through the Kafka API for a prefix match on `client_id`
-. Quota configured through cluster configuration properties (xref:reference:cluster-properties.adoc#kafka_client_group_byte_rate_quota[`kafka_client_group_byte_rate_quota`], xref:reference:cluster-properties.adoc#kafka_client_group_fetch_byte_rate_quota[`kafka_client_group_fetch_byte_rate_quota`]) for a prefix match on `client_id`
+. Quota configured through cluster configuration properties (`kafka_client_group_byte_rate_quota`, `kafka_client_group_fetch_byte_rate_quota`, xref:upgrade:deprecated/index.adoc[deprecated starting in v24.2]) for a prefix match on `client_id`
 . Default quota configured through the Kafka API on `client_id`
-. Default quota configured through cluster configuration properties on `client_id`
+. Default quota configured through cluster configuration properties (`target_quota_byte_rate`, `target_fetch_quota_byte_rate`, `kafka_admin_topic_api_rate`, xref:upgrade:deprecated/index.adoc[deprecated starting in v24.2]) on `client_id`
 
-Redpanda Data recommends <<migrate,migrating>> over from cluster configuration-managed quotas to managing the quotas through the Kafka API. You can recreate the configuration-based quotas through the Kafka API using `rpk`, and then remove the quota cluster configs.
-
-You can also use Redpanda Console to view client quotas that are enforced.
+Redpanda recommends <<migrate,migrating>> over from cluster configuration-managed quotas to Kafka-compatible quotas. You can recreate the configuration-based quotas with `rpk`, and then remove the quota cluster configs.
 
 === Individual client throughput limit
 
@@ -90,23 +88,35 @@ For example, to see the quotas for client ID `consumer-1`:
 rpk cluster quotas describe --name client-id=consumer-1
 ----
 
+[,bash,role=no-copy]
+----
+ENTITY                QUOTA-TYPE          QUOTA-VALUE
+client-id=consumer-1  producer_byte_rate  140000
+----
+
 To set a throughput quota for a single client, use the `rpk cluster quotas alter` command. 
 
 [,bash]
 ----
 rpk cluster quotas alter --add consumer_byte_rate=200000 --name client-id=consumer-1
 ----
++
+[,bash,role=no-copy]
+----
+ENTITY                STATUS
+client-id=consumer-1  OK
+----
 
 === Group of clients throughput limit
 
-Alternatively, you can view or configure throughput quotas for a group of clients based on a match on client ID prefix. The following example sets the `consumer_byte_rate` quota to a group of clients that have IDs starting with `consumer-`:
+Alternatively, you can view or configure throughput quotas for a group of clients based on a match on client ID prefix. The following example sets the `consumer_byte_rate` quota to client IDs prefixed with `consumer-`:
 
 [,bash]
 ----
 rpk cluster quotas alter --add consumer_byte_rate=200000 --name client-id-prefix=consumer-
 ----
 
-NOTE: The client group that matches on `client-id-prefix` does not denote a Kafka consumer group. Instead, it matches all requests with a `client_id` field that has the configured prefix. The `client_id` field is typically a configurable parameter in Kafka libraries when you create a client.
+NOTE: A client group specified with `client-id-prefix` is not the equivalent of a Kafka consumer group. It is used only to match requests based on the `client_id` prefix. The `client_id` field is typically a configurable parameter when you create a client with Kafka libraries.
 
 === Default client throughput limit
 
@@ -117,6 +127,24 @@ To specify a produce quota of 1GBps through the Kafka API, which means a 1GBps l
 [,bash]
 ----
 rpk cluster quotas alter --default client-id --add producer_byte_rate=1000000000
+----
+
+=== Bulk manage client throughput limits
+
+To more easily manage multiple quotas, you can use the `cluster quotas describe` and `cluster quotas import` commands to do a bulk export and update.
+
+For example, to export all client quotas in JSON format:
+
+[,bash]
+----
+rpk cluster quotas describe --format json
+----
+
+`rpk cluster quotas import` accepts the output from `rpk cluster quotas describe --format <json/yaml>`. :
+
+[,bash]
+----
+rpk cluster quotas import --source <path-to-output-file>
 ----
 
 [[migrate]]
@@ -185,6 +213,10 @@ Replace the placeholder values with the new quota values, accounting for the con
 ----
 rpk cluster config kafka_client_group_byte_rate_quota=
 ----
+
+=== View throughput limits in Redpanda Console
+
+You can also use Redpanda Console to view enforced limits. In the menu, go to **Quotas**.
 
 === Monitor client throughput
 
