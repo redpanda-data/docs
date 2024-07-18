@@ -25,6 +25,10 @@ Redpanda prioritizes balancing a topic's partition replica count evenly across a
 
 Redpanda provides partition replica balancing when brokers are added or decommissioned.
 
+| <<Intra-broker partition balancing>>
+
+| This balancer moves partition replicas across cores in an individual broker. Redpanda maintains balanced partition replica assignments between cores to avoid topic hotspots on one or a few specific cores within a broker.
+
 | xref:manage:cluster-maintenance/continuous-data-balancing.adoc[Continuous Data Balancing]
 
 | This balancer monitors broker and rack availability, as well as disk usage, to avoid topic hotspots when moving data off brokers with fuller disks. Continuous Data Balancing enables self-healing clusters that dynamically balance partitions. It also ensures adherence to rack-aware replica placement policy and self-heals after rack (or availability zone) failure or replacement. This balancer does not keep the relative fullness of each broker within a defined range, it just prevents hitting the fullness threshold of each individual broker. 
@@ -111,6 +115,34 @@ This requires an Enterprise license.
  +
 This mode is not recommended for production clusters. Only set to `off` if you need to move partitions manually.
 |===
+
+== Intra-broker partition balancing
+
+In Redpanda, every partition replica is assigned to a core on a broker. While Redpanda's default <<partition-replica-balancing,partition balancing>> monitors cluster-level events such as the addition of new brokers or broker failure to balance partition assignments, it does not account for the distribution of partitions _within_ an individual broker. That means that some cores on a broker may inadvertently host many partitions of heavily used topics and cause the CPU to be xref:manage:monitoring.adoc#cpu-usage[overburdened].
+
+Additionally, when the partition rebalance moves some partitions away from a broker, the remaining partitions do not necessarily rebalance across the broker's cores. Or, if a broker's core count is increased, Redpanda does not assign any partitions to the new cores until new partitions are created or old partitions are moved out.
+
+Intra-broker partition balancing allows for dynamically reassigning partitions within a broker. If a broker's core counts increases, when the broker starts back up, Redpanda can check partition assignments across the broker's cores, and reassign partitions so that a balanced assignment is maintained across all cores. Redpanda can also check partition assignments when partitions are removed from a broker, and rebalance the remaining partitions between cores.
+
+To enable intra-broker partition balancing, configure the following broker properties:
+
+* `core_balancing_on_core_count_change` - Set to `true` to rebalance partition assignments across cores after startup, if core count increases. Default: `true`.
+* `core_balancing_continuous` - Set to `true` to rebalance partition assignments across cores in runtime. Default: `true`. 
+** `core_balancing_debounce_timeout` - If balancing partition assignments across cores in runtime, set a window in which Redpanda will wait to balance assignments after core balancing is triggered. Default: 10000 ms (10 seconds).
+
+You can also manually trigger intra-broker partition balancing with the Admin API:
+
+[,bash]
+----
+curl -X POST http://localhost:9644/v1/partitions/rebalance_cores
+----
+
+To check the new partition assignments, run:
+
+[,bash]
+----
+
+----
 
 == Manually move partitions
 
