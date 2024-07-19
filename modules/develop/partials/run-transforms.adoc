@@ -22,6 +22,7 @@ endif::[]
 ** For Golang, you must have at least version 1.20 of https://go.dev/doc/install[Go^].
 ** For Rust, you must have the latest stable version of https://rustup.rs/[Rust].
 - The xref:get-started:rpk-install.adoc[`rpk` command-line client] installed on your host machine and configured to connect to your Redpanda cluster.
+** For JavaScript and TypeScript projects, you must have the https://nodejs.org/en/download/package-manager[latest long-term-support release of Node.js].
 ifdef::env-kubernetes[]
 +
 You can use a xref:manage:kubernetes/networking/k-connect-to-redpanda.adoc#rpk-profile[pre-configured `rpk` profile]:
@@ -242,6 +243,23 @@ fn copy_records_to_output(event: WriteEvent, writer: &mut RecordWriter) -> Resul
 }
 ```
 --
+
+JavaScript::
++
+--
+```js
+import { onRecordWritten } from "@redpanda-data/transform-sdk";
+
+// Register your callback function in the entry point of your script.
+onRecordWritten(copyRecordsToOutput);
+
+// This function will be called for each record in the input topic.
+// The records returned will be written to the output topic.
+function copyRecordsToOutput(event, writer) {
+  writer.write(event.record);
+}
+```
+--
 ======
 
 . Build the transform into a Wasm binary:
@@ -411,12 +429,63 @@ fn csv_to_json_transform(event: WriteEvent, writer: &mut RecordWriter) -> Result
 }
 ```
 --
+JavaScript::
++
+--
+
+Paste this transform function into your source file:
+
+```js
+import { onRecordWritten, Record } from "@redpanda-data/transform-sdk";
+
+onRecordWritten(csvToJsonTransform);
+
+function csvToJsonTransform(event, writer) {
+  // The input data is a CSV (without a header row) that is structured as:
+  // key, item, quantity
+  const input = event.record.value.toString('utf-8');
+  const rows = input.split('\n');
+
+  for (const row of rows) {
+    const columns = row.split(',');
+    if (columns.length !== 3) {
+      throw new Error('unexpected number of columns');
+    }
+
+    const quantity = parseInt(columns[2], 10);
+    if (isNaN(quantity)) {
+      throw new Error('invalid quantity');
+    }
+
+    const itemQuantity = {
+      item: columns[1],
+      quantity: quantity,
+    };
+
+    const value = JSON.stringify(itemQuantity);
+
+    const record = new Record({
+      key: Buffer.from(columns[0], 'utf-8'),
+      value: Buffer.from(value, 'utf-8'),
+    });
+
+    writer.write(record);
+  }
+}
+```
+--
 ======
 
 . Build the transform into a Wasm binary:
 +
 ```bash
 rpk transform build
+```
+
+. Create topics to apply the transform function to:
++
+```bash
+rpk topic create input-topic output-topic
 ```
 
 . Deploy the Wasm binary to your cluster.
@@ -510,6 +579,35 @@ fn filter_valid_json(event: WriteEvent, writer: &mut RecordWriter) -> Result<()>
 }
 ```
 --
+JavaScript::
++
+--
+```js
+import { onRecordWritten, Record } from "@redpanda-data/transform-sdk";
+
+onRecordWritten(filterValidJson);
+
+function filterValidJson(event, writer) {
+  const recordValue = event.record.value;
+
+  if (isValidJson(recordValue)) {
+    writer.write(event.record);
+  } else {
+    writer.write(event.record, ??toTopic("invalid-json"));
+  }
+}
+
+function isValidJson(value) {
+  try {
+    JSON.parse(value.toString('utf-8'));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+```
+--
 ======
 
 . Build the transform into a Wasm binary:
@@ -518,12 +616,18 @@ fn filter_valid_json(event: WriteEvent, writer: &mut RecordWriter) -> Result<()>
 rpk transform build
 ```
 
+. Create topics to apply the transform function to:
++
+```bash
+rpk topic create input-topic invalid-json
+```
+
 . Deploy the Wasm binary to your cluster.
 +
 If you have already deployed another example, this new transform function will replace it.
 +
 ```bash
-rpk transform deploy --input-topic=input-topic --output-topic=output-topic
+rpk transform deploy --input-topic=input-topic --output-topic=invalid-json
 ```
 
 . Produce an invalid JSON record a one valid one to the input topic.
