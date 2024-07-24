@@ -1,7 +1,8 @@
 = Transactions
-:description: Learn how to use transactions; for example, you can fetch messages starting from the last consumed offset and transactionally process them one by one, updating the last consumed offset and producing events at the same time.
 :page-aliases: development:transactions.adoc
 :page-categories: Clients, Development
+// tag::single-source[]
+:description: Learn how to use transactions; for example, you can fetch messages starting from the last consumed offset and transactionally process them one by one, updating the last consumed offset and producing events at the same time.
 
 Redpanda supports Apache Kafka®-compatible transaction semantics and APIs. For example, you can fetch messages starting from the last consumed offset and transactionally process them one by one, updating the last consumed offset and producing events at the same time.
 
@@ -12,7 +13,13 @@ Transactions guarantee both exactly-once semantics (EOS) and atomicity.
 * EOS helps developers avoid the anomalies of at-most-once processing (with potential lost events) and at-least-once processing (with potential duplicated events). Redpanda supports EOS when transactions are used in combination with xref:develop:produce-data/idempotent-producers.adoc[idempotent producers].
 * Atomicity additionally commits a set of messages across partitions as a unit: either all messages are committed or none. Encapsulated data received or sent across multiple topics in a single operation can only succeed or fail globally.
 
+////
+Is remote recovery enabled in cloud?
+If so, we should add this info to the cloud docs too.
+////
+ifndef::env-cloud[]
 NOTE: Atomicity of transactions is not guaranteed when xref:manage:tiered-storage.adoc#remote-recovery[remote recovery] is used.
+endif::[]
 
 == Use transactions
 
@@ -29,9 +36,12 @@ The two primary use cases for transactions are:
 
 * A transaction can span partitions from different topics, and a topic can be deleted while there are active transactions on one or more of its partitions. In-flight transactions can detect deletion events, remove the deleted partitions (and related messages) from the transaction scope, and commit changes to the remaining partitions.
 * Ongoing transactions can prevent consumers from advancing. To avoid this, don't set transaction timeout (`transaction.timeout.ms` in Java client) to high values: the higher the timeout, the longer consumers may be blocked. By default, it's about a minute, but it's a client setting that depends on the client.
-* When upgrading, make sure to use maintenance mode with a glossterm:rolling upgrade[].
+ifndef::env-cloud[]
 * When running transactional workloads from clients, tune xref:reference:cluster-properties#max_transactions_per_coordinator[`max_transactions_per_coordinator`] to the number of active transactions that you expect your clients to run at any given time (if your client transaction IDs are not reused). The total number of transactions in the cluster at any one time is `max_transactions_per_coordinator * transaction_coordinator_partitions` (default is 50). When the threshold is exceeded, Redpanda terminates old sessions. If an idle producer corresponding to the terminated session wakes up and produces, its batches are rejected with the message `invalid producer epoch` or `invalid_producer_id_mapping`, depending on where it is in the transaction execution phase.
 Be aware that if you keep the default as 50 and your clients create a new ID for every transaction, the total continues to accumulate, which bloats memory.
+* When upgrading a self-hosted deployment, make sure to use maintenance mode with a glossterm:rolling upgrade[].
+
+endif::[]
 
 === Atomic publishing of multiple messages
 
@@ -266,8 +276,15 @@ The default configuration of Redpanda supports exactly-once processing. Preservi
 
 == Transactions with compacted segments
 
-Transactions are supported on topics with compaction configured. When xref:reference:cluster-properties.adoc#log_cleanup_policy[`log_cleanup_policy`] or xref:reference:topic-properties.adoc#cleanuppolicy[`cleanup.policy`] are set to either `compact` or `compact,delete`, the compaction process removes the aborted transaction's data and all transactional control markers from the log. The resulting compacted segment contains only committed data batches (and potentially harmless gaps in the offsets due to skipped batches).
+Transactions are supported on topics with compaction configured. The compaction process removes the aborted transaction's data and all transactional control markers from the log. The resulting compacted segment contains only committed data batches (and potentially harmless gaps in the offsets due to skipped batches).
+
+ifndef::env-cloud[]
+At a cluster-level, compaction is set when xref:reference:cluster-properties.adoc#log_cleanup_policy[`log_cleanup_policy`] or xref:reference:topic-properties.adoc#cleanuppolicy[`cleanup.policy`] are set to either `compact` or `compact,delete`.
+
+endif::[]
 
 include::shared:partial$suggested-reading.adoc[]
 
 * https://redpanda.com/blog/fast-transactions[Kafka-compatible fast distributed transactions^]
+
+// end::single-source[]
