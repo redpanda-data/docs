@@ -343,7 +343,7 @@ def build_ascii(ascii_result, executed_command, explanation, usage, it_flags, fl
         os.remove(filename)
 
     # Write to the file
-    with open(filename, "w") as filetowrite:
+    with open(filename, "w", encoding="utf-8") as filetowrite:
         ascii_result = escape_chars(ascii_result)
         filetowrite.write(ascii_result)
 
