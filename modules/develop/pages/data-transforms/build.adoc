@@ -8,9 +8,10 @@
 
 You must have the following development tools installed on your host machine:
 
-* For Golang, you must have at least version 1.20 of https://go.dev/doc/install[Go^].
-* For Rust, you must have the latest stable version of https://rustup.rs/[Rust].
 * The xref:get-started:rpk-install.adoc[`rpk` command-line client] installed on your host machine and configured to connect to your Redpanda cluster.
+* For Golang projects, you must have at least version 1.20 of https://go.dev/doc/install[Go^].
+* For Rust projects, you must have the latest stable version of https://rustup.rs/[Rust^].
+* For JavaScript and TypeScript projects, you must have the https://nodejs.org/en/download/package-manager[latest long-term-support release of Node.js^].
 
 [[init]]
 == Initialize a data transforms project
@@ -27,6 +28,8 @@ If you do not include the `--language` flag, the command will prompt you for the
 * `tinygo-no-goroutines` (does not include https://golangdocs.com/goroutines-in-golang[Goroutines])
 * `tinygo-with-goroutines`
 * `rust`
+* `javascript`
+* `typescript`
 
 For example, if you choose `tinygo-no-goroutines`, the following project files are created:
 
@@ -58,6 +61,8 @@ Go::
 --
 All transform functions must register a callback with the `OnRecordWritten()` method.
 
+You should run any initialization steps in the `main()` function because it's only run once when the transform function is first deployed. You can also use the standard predefined https://go.dev/doc/effective_go#init[`init()` function].
+
 [source,go]
 ----
 package main
@@ -83,6 +88,8 @@ Rust::
 --
 All transform functions must register a callback with the `on_record_written()` method.
 
+You should run any initialization steps in the `main()` function because it's only run once when the transform function is first deployed.
+
 [source,rust]
 ----
 use redpanda_transform_sdk::*;
@@ -101,9 +108,53 @@ fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> Result<(), Box<
 }
 ----
 --
-======
+JavaScript::
++
+--
+All transform functions must register a callback with the `onRecordWritten()` method.
 
-When creating a transform function, you should run any initialization steps in the `main()` function because it's only run once when the transform function is first deployed. If you're using Go, you can also use the standard predefined https://go.dev/doc/effective_go#init[`init()` function].
+You should run any initialization steps outside of the callback so that they are only run once when the transform function is first deployed.
+
+[source,js]
+----
+// src/index.js
+import { onRecordWritten } from "@redpanda-data/transform-sdk";
+
+// This is a good place to perform setup steps.
+
+// Register your transform function.
+onRecordWritten((event, writer) => {
+  // This is where you read the record that was written, and then you can
+  // output new records that will be written to the destination topic
+  writer.write(event.record);
+});
+----
+
+If you need to use Node.js standard modules in your transform function, you must configure the https://github.com/cyco130/esbuild-plugin-polyfill-node[`polyfillNode` plugin] for https://esbuild.github.io/[esbuild^]. This plugin allows you to polyfill Node.js APIs that are not natively available in the Redpanda JavaScript runtime environment.
+
+.`esbuild.js`
+[source,js]
+----
+import * as esbuild from 'esbuild';
+import { polyfillNode } from 'esbuild-plugin-polyfill-node';
+
+await esbuild.build({
+  plugins: [
+    polyfillNode({
+      globals: {
+        buffer: true, // Allow a global Buffer variable if referenced.
+        process: false, // Don't inject the process global, the Redpanda JavaScript runtime does that.
+      },
+      polyfills: {
+=        crypto: true, // Enable crypto polyfill
+        // Add other polyfills as needed
+      },
+    }),
+  ],
+});
+----
+--
+======
 
 [[errors]]
 === Error handling
@@ -172,6 +223,29 @@ fn my_transform(event: WriteEvent, writer: &mut RecordWriter) -> anyhow::Result<
 }
 ----
 --
+JavaScript::
++
+--
+
+[source,js]
+----
+import { onRecordWritten } from "@redpanda-data/transform-sdk";
+
+// Register your transform function.
+onRecordWritten((event, writer) => {
+  const record = event.record;
+  if (!record.key) {
+    // Handle the error internally by logging it
+    console.error("Error: Record key is nil");
+    // Skip this record and continue to process other records
+    return;
+  }
+  // Allow errors with writes to escape
+  writer.write(record);
+});
+
+----
+--
 ======
 
 When you deploy this transform function, and produce a message without a key, you'll get the following in the logs:
@@ -219,7 +293,7 @@ Relying on in-memory state across transform invocations can lead to inconsistenc
 [[env-vars]]
 === Access environment variables
 
-You can access both xref:develop:data-transforms/configure.adoc#environment-variables[built-in and custom environment variables] in your transform function. In this example, the environment variables are checked once during initialization:
+You can access both xref:develop:data-transforms/configure.adoc#environment-variables[built-in and custom environment variables] in your transform function. In this example, environment variables are checked once during initialization:
 
 [tabs]
 ======
@@ -238,20 +312,6 @@ import (
 
 func main() {
   // Check environment variables before registering the transform function.
-  inputTopic, ok := os.LookupEnv("REDPANDA_INPUT_TOPIC")
-  if ok {
-    fmt.Printf("Input topic: %s\n", inputTopic)
-  } else {
-    fmt.Println("An input topic is not set")
-  }
-
-  outputTopic0, ok := os.LookupEnv("REDPANDA_OUTPUT_TOPIC_0")
-  if ok {
-    fmt.Printf("Output topic 0: %s\n", outputTopic0)
-  } else {
-    fmt.Println("An output topic is not set")
-  }
-
   outputTopic1, ok := os.LookupEnv("REDPANDA_OUTPUT_TOPIC_1")
   if ok {
     fmt.Printf("Output topic 1: %s\n", outputTopic1)
@@ -282,16 +342,6 @@ fn main() {
   env_logger::init();
 
   // Check environment variables before registering the transform function.
-  match env::var("REDPANDA_INPUT_TOPIC") {
-    Ok(input_topic) => println!("Input topic: {}", input_topic),
-    Err(_) => println!("An input topic is not set"),
-  }
-
-  match env::var("REDPANDA_OUTPUT_TOPIC_0") {
-    Ok(output_topic_0) => println!("Output topic 0: {}", output_topic_0),
-    Err(_) => println!("An output topic is not set"),
-  }
-
   match env::var("REDPANDA_OUTPUT_TOPIC_1") {
     Ok(output_topic_1) => println!("Output topic 1: {}", output_topic_1),
     Err(_) => println!("Only one output topic is set"),
@@ -306,6 +356,86 @@ fn my_transform(_event: WriteEvent, _writer: &mut RecordWriter) -> anyhow::Resul
 }
 ----
 --
+JavaScript::
++
+--
+
+[source,js]
+----
+import { onRecordWritten } from "@redpanda-data/transform-sdk";
+
+// Check environment variables before registering the transform function.
+const outputTopic1 = process.env.REDPANDA_OUTPUT_TOPIC_1;
+if (outputTopic1) {
+  console.log(`Output topic 1: ${outputTopic1}`);
+} else {
+  console.log("Only one output topic is set");
+}
+
+// Register your transform function.
+onRecordWritten((event, writer) => {
+  return writer.write(event.record);
+});
+----
+--
+======
+
+=== Write to specific output topics
+
+You can configure your transform function to write records to specific output topics. This is useful for filtering or routing messages based on certain criteria. The following example shows a filter that outputs only valid JSON from the input topic into the output topic. Invalid JSON is written to a different output topic.
+
+[tabs]
+======
+Go::
++
+--
+```go
+import (
+	"encoding/json"
+	"github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+)
+
+func main() {
+	transform.OnRecordWritten(filterValidJson)
+}
+
+func filterValidJson(event transform.WriteEvent, writer transform.RecordWriter) error {
+	if json.Valid(event.Record().Value) {
+		return w.Write(e.Record())
+	}
+	// Send invalid records to separate topic
+	return writer.Write(e.Record(), transform.ToTopic("invalid-json"))
+}
+```
+--
+Rust::
++
+--
+```rust
+use anyhow::Result;
+use redpanda_transform_sdk::*;
+
+fn main() {
+	on_record_written(filter_valid_json);
+}
+
+fn filter_valid_json(event: WriteEvent, writer: &mut RecordWriter) -> Result<()> {
+	let value = event.record.value().unwrap_or_default();
+	if serde_json::from_slice::<serde_json::Value>(value).is_ok() {
+		writer.write(event.record)?;
+	} else {
+		// Send invalid records to separate topic
+		writer.write_with_options(event.record, WriteOptions::to_topic("invalid-json"))?;
+	}
+	Ok(())
+}
+```
+--
+JavaScript::
++
+--
+The JavaScript SDK does not support writing records to a specific output topic.
+--
 ======
 
 === Connect to the Schema Registry
@@ -317,6 +447,7 @@ See also:
 - xref:manage:schema-reg/schema-reg-overview.adoc[]
 - xref:reference:data-transforms/golang-sdk.adoc[Go Schema Registry client reference]
 - xref:reference:data-transforms/rust-sdk.adoc[Rust Schema Registry client reference]
+- xref:reference:data-transforms/js/js-sdk-sr.adoc[JavaScript Schema Registry client reference]
 
 == Next steps
 
@@ -325,6 +456,5 @@ xref:develop:data-transforms/configure.adoc[]
 == Suggested reading
 
 - xref:develop:data-transforms/how-transforms-work.adoc[]
-- xref:reference:data-transforms/golang-sdk.adoc[]
-- xref:reference:data-transforms/rust-sdk.adoc[]
+- xref:reference:data-transforms/sdks.adoc[]
 - xref:reference:rpk/rpk-transform/rpk-transform.adoc[`rpk transform` commands]
