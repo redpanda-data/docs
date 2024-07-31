@@ -1321,112 +1321,6 @@ CAUTION: Do not set an object storage property to an empty string `""` or to `nu
 
 endif::[]
 
-[[max-cache]]
-=== Set a maximum cache size
-
-To ensure that the cache does not grow uncontrollably, which could lead to performance issues or disk space exhaustion, you can control the maximum size of the cache.
-
-Redpanda checks the cache periodically according to the interval set in config_ref:cloud_storage_cache_check_interval_ms,true,properties/object-storage-properties[]. If the size of the stored data exceeds the configured limit, the eviction process starts. This process removes segments that haven't been accessed recently until the cache size drops to the target level.
-
-*Related properties*:
-
-- config_ref:cloud_storage_cache_size_percent,true,properties/object-storage-properties[]
-- config_ref:cloud_storage_cache_max_objects,true,properties/object-storage-properties[]
-- config_ref:cloud_storage_cache_size,true,properties/object-storage-properties[]
-
-*Recommendation*: By default, `cloud_storage_cache_size_percent` is tuned for a shared disk configuration. If you are using a dedicated cache disk, consider increasing this value.
-
-==== Cache trimming
-
-Cache trimming helps to balance optimal cache use with the need to avoid blocking reads due to a full cache. The trimming process is triggered when the cache exceeds certain thresholds relative to the <<max-cache, maximum cache size>>.
-
-*Related properties*:
-
-- config_ref:cloud_storage_cache_trim_threshold_percent_objects,true,properties/object-storage-properties[]
-- config_ref:cloud_storage_cache_trim_threshold_percent_size,true,properties/object-storage-properties[]
-- config_ref:cloud_storage_cache_trim_carryover_bytes,true,properties/object-storage-properties[]
-- config_ref:cloud_storage_cache_trim_walk_concurrency,true,properties/object-storage-properties[]
-
-*Recommendations*:
-
-- A threshold of 70% is recommended for most use cases. This percentage helps balance optimal cache use and ensures the cache has enough free space to handle sudden spikes in data without blocking reads. For example, setting `cloud_storage_cache_trim_threshold_percent_size` to 80% means that the cache trimming process starts when the cache takes up 80% of the maximum cache size.
-
-- Monitor the behavior of your cache and the performance of your Redpanda cluster. If reads are taking longer than expected or if you encounter timeout errors, your cache may be filling up too quickly. In these cases, consider lowering the thresholds to trigger trimming sooner.
-
-NOTE: The lower you set the threshold, the earlier the trimming starts, but it can also waste cache space. A higher threshold uses more cache space efficiently, but it risks blocking reads if the cache fills up too quickly. Adjust the settings based on your workload and monitor the cache performance to find the right balance for your environment.
-
-=== Chunk remote segments
-
-To support more concurrent consumers of historical data with less local storage, Redpanda can download small chunks of remote segments to the cache directory. For example, when a client fetch request spans a subsection of a 1 GiB segment, instead of downloading the entire 1 GiB segment, Redpanda can download 16 MiB chunks that contain just enough data required to fulfill the fetch request. Use the config_ref:cloud_storage_cache_chunk_size,true,properties/object-storage-properties[] property to define the size of the chunks.
-
-The paths on disk to a chunk are structured as `p_chunks/\{chunk_start_offset}`, where `p` is the original path to the segment in the object storage cache. The `_chunks/` subdirectory holds chunk files identified by the chunk start offset. These files can be reclaimed by the cache eviction process during the normal eviction path.
-
-=== Chunk eviction strategies
-
-Selecting an appropriate chunk eviction strategy helps manage cache space effectively. A chunk that isn't shared with any data source can be evicted from the cache, so space is returned to disk. Use the config_ref:cloud_storage_chunk_eviction_strategy,true,properties/object-storage-properties[] property to change the eviction strategy. The strategies are:
-
-- `eager` (default): Evicts chunks that aren't shared with other data sources. Eviction is fast, because no sorting is involved.
-- `capped`: Evicts chunks until the number of hydrated chunks is below or equal to the maximum hydrated chunks at a time. This limit is for each segment and calculated using `cloud_storage_hydrated_chunks_per_segment_ratio` by the remote segment. Eviction is fastest, because no sorting is involved, and the process stops after the cap is reached.
-- `predictive`: Uses statistics from readers to determine which chunks to evict. Chunks that aren't in use are sorted by the count of readers that will use the chunk in the future. The counts are populated by readers using the chunk data source. The chunks that are least expensive to re-hydrate are then evicted, taking into account the maximum hydrated chunk count. Eviction is slowest, because chunks are sorted before evicting them.
-
-*Recommendation*: For general use, the `eager` strategy is recommended due to its speed. For workloads with specific access patterns, the `predictive` strategy may offer better cache efficiency.
-
-=== Caching and chunking properties
-
-Use the following cluster-level properties to set the maximum cache size, the cache check interval, and chunking qualities.
-ifndef::env-kubernetes[Edit them with the `rpk cluster config edit` command.]
-
-|===
-| Property      | Description
-
-| config_ref:cloud_storage_cache_check_interval_ms,true,properties/object-storage-properties[]
-| The time, in milliseconds, between cache checks. The size of the cache can grow quickly, so it's important to have a small interval between checks. However, if the checks are too frequent, they consume a lot of resources. Default is 30000 ms (30 sec).
-
-| config_ref:cloud_storage_cache_chunk_size,true,properties/object-storage-properties[]
-| The size of a chunk downloaded into object storage cache. Default is 16 MiB.
-
-| config_ref:cloud_storage_cache_directory,true,properties/object-storage-properties[]
-| The directory where the cache archive is stored.
-
-| config_ref:cloud_storage_cache_max_objects,true,properties/object-storage-properties[]
-| Maximum number of objects that may be held in the Tiered Storage cache. This applies simultaneously with `cloud_storage_cache_size`, and whichever limit is hit first will trigger trimming of the cache.
-
-| config_ref:cloud_storage_cache_num_buckets,true,properties/object-storage-properties[]
-| Divide the object storage cache across the specified number of buckets. This only works for objects with randomized prefixes. The names are not changed when the value is set to zero.
-
-| config_ref:cloud_storage_cache_size_percent,true,properties/object-storage-properties[]
-| Maximum size (as a percentage) of the disk cache used by Tiered Storage. +
-If both this property and `cloud_storage_cache_size` are set, Redpanda uses the minimum of the two.
-
-| config_ref:cloud_storage_cache_size,true,properties/object-storage-properties[]
-| Maximum size (in bytes) of the disk cache used by Tiered Storage. +
-If both this property and `cloud_storage_cache_size_percent` are set, Redpanda uses the minimum of the two.
-
-| config_ref:cloud_storage_cache_trim_carryover_bytes,true,properties/object-storage-properties[]
-| The cache performs a recursive directory inspection during the cache trim. The information obtained during the inspection can be carried over to the next trim operation. This property sets a limit on the memory occupied by objects that can be carried over from one trim to next, and it allows the cache to quickly unblock readers before starting the directory inspection.
-
-| config_ref:cloud_storage_cache_trim_threshold_percent_objects,true,properties/object-storage-properties[]
-| Trigger cache trimming when the number of objects in the cache reaches this percentage relative to its maximum object count. If unset, the default behavior is to start trimming when the cache is full.
-
-| config_ref:cloud_storage_cache_trim_threshold_percent_size,true,properties/object-storage-properties[]
-| Trigger cache trimming when the cache size reaches this percentage relative to its maximum capacity. If unset, the default behavior is to start trimming when the cache is full.
-
-| config_ref:cloud_storage_cache_trim_walk_concurrency,true,properties/object-storage-properties[]
-| The maximum number of concurrent tasks launched for traversing the directory structure during cache trimming. A higher number allows cache trimming to run faster but can cause latency spikes due to increased pressure on I/O subsystem and syscall threads.
-
-| config_ref:cloud_storage_chunk_eviction_strategy,true,properties/object-storage-properties[]
-| Strategy for evicting unused cache chunks, either `eager` (default), `capped`, or `predictive`.
-
-| config_ref:cloud_storage_disable_chunk_reads,true,properties/object-storage-properties[]
-| Flag to turn off chunk-based reads and enable full-segment downloads. Default is false.
-
-| config_ref:cloud_storage_hydrated_chunks_per_segment_ratio,true,properties/object-storage-properties[]
-| The ratio of hydrated to non-hydrated chunks for each segment, where a current ratio above this value results in unused chunks being evicted. Default is 0.7.
-
-| config_ref:cloud_storage_min_chunks_per_segment_threshold,true,properties/object-storage-properties[]
-| The threshold below which all chunks of a segment can be hydrated without eviction. If the number of chunks in a segment is below this threshold, the segment is small enough that all chunks in it can be hydrated at any given time. Default is 5.
-|===
-
 == Remote recovery
 
 When you create a topic, you can use remote recovery to download the topic data from object storage. This is useful when you need to restore a single topic that was accidentally deleted from a cluster.
@@ -1668,7 +1562,7 @@ In addition, you might want to change the following property for each broker:
 |===
 | Property | Description
 
-| config_ref:cloud_storage_cache_directory,true,properties/object-storage-properties[]
+| config_ref:cloud_storage_cache_directory,true,node-properties[]
 | The directory for the Tiered Storage cache. You must specify the full path. Default is: `<redpanda-data-directory>/cloud_storage_cache.`
 |===
 
