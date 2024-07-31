@@ -1,13 +1,11 @@
-= Use the Control Plane API
-:description: Use the Control Plane API to manage resources in your Redpanda Cloud organization.
-:page-cloud: true
-:page-beta: true
 :tag-clusters: api:ROOT:cloud-api.adoc#tag--ClusterService
 :tag-networks: api:ROOT:cloud-api.adoc#tag--NetworkService
 :tag-operations: api:ROOT:cloud-api.adoc#tag--OperationService
 :tag-resource-groups: api:ROOT:cloud-api.adoc#tag--ResourceGroupService
+:tag-serverless-regions: api:ROOT:cloud-api.adoc#tag--ServerlessRegionService
+:tag-serverless-clusters: api:ROOT:cloud-api.adoc#tag--ServerlessClusterService
 
-The Redpanda Cloud API is a collection of REST APIs that allow you to interact with different parts of Redpanda Cloud. The Control Plane API enables you to programmatically manage your organization's cloud environment outside of the Redpanda Cloud UI. You can call the API endpoints directly, or use tools like Terraform or Python scripts to automate cluster management.
+The Redpanda Cloud API is a collection of REST APIs that allow you to interact with different parts of Redpanda Cloud. The Control Plane API enables you to programmatically manage your organization's Redpanda infrastructure outside of the Cloud UI. You can call the API endpoints directly, or use tools like Terraform or Python scripts to automate cluster management.
 
 For the full Cloud API reference documentation, see xref:api:ROOT:cloud-api.adoc[Redpanda Cloud API Reference].
 
@@ -17,30 +15,43 @@ The Control Plane API is one central API that allows you to provision clusters, 
 
 The Control Plane API consists of the following endpoints:
 
+ifndef::env-serverless[]
 * pass:a,m[xref:{tag-clusters}[ClusterService\]]
 * pass:a,m[xref:{tag-networks}[NetworkService\]]
+endif::[]
 * pass:a,m[xref:{tag-operations}[OperationService\]]
 * pass:a,m[xref:{tag-resource-groups}[ResourceGroupService\]]
+ifdef::env-serverless[]
+* ServerlessClusterService
+* ServerlessRegionService
+// TODO: Update xref when prod spec contains serverless endpoints
+// * pass:a,m[xref:{tag-serverless-clusters}[ServerlessClusterService\]]
+// * pass:a,m[xref:{tag-serverless-regions}[ServerlessRegionService\]]
+endif::[]
+
 
 == Long-running operations
 
-Some endpoints do not directly return the resource itself, but instead return an operation. The following is an example response of xref:api:ROOT:cloud-api.adoc#post-/v1beta2/networks[Create Network] (`POST /networks`):
+Some endpoints do not directly return the resource itself, but instead return an operation. The following is an example response of xref:api:ROOT:cloud-api.adoc#post-/v1beta2/clusters[Create Cluster] (`POST /clusters`):
 
 [,bash,role=no-copy]
 ----
-"operation": {
-  "id": "cl5nlt1c1scg01plkoe0",
-  "metadata": {
-    "@type": "type.googleapis.com/redpanda.api.controlplane.v1beta2.CreateNetworkMetadata",
-    "network_id": "cl5o0td1dafe70i7460g"
-  },
-  "state": "STATE_IN_PROGRESS",
-  "started_at": "2023-11-08T12:35:01.957Z",
-  "finished_at": null
+{
+    "operation": {
+        "id": "cqfc6vdmvio001r4vu4",
+        "metadata": {
+            "@type": "type.googleapis.com/redpanda.api.controlplane.v1beta2.CreateClusterMetadata",
+            "cluster_id": "cqg168balf4e4pm8ptu"
+        },
+        "state": "STATE_IN_PROGRESS",
+        "started_at": "2024-07-23T20:31:29.948Z",
+        "type": "TYPE_CREATE_CLUSTER",
+        "resource_id": "cqg168balf4e4pm8ptu"
+    }
 }
 ----
 
-The response object represents the long-running operation of creating a network. Network creation is an example of an operation that can take a longer period of time to complete.
+The response object represents the long-running operation of creating a cluster. Cluster creation is an example of an operation that can take a longer period of time to complete.
 
 === Check operation state
 
@@ -52,12 +63,17 @@ curl https://api.redpanda.com/v1beta2/operations/<operation-id>
 
 The response contains the current state of the operation: `IN_PROGRESS`, `COMPLETED`, or `FAILED`.
 
+ifndef::env-serverless[]
+
 == Cluster tiers
 
 When you create a BYOC or Dedicated cluster, you select a usage tier. Each tier provides tested and guaranteed workload configurations for throughput, logical partitions, and connections. Availability depends on the region and the cluster type. See the full list of regions, zones, and tiers available with each provider in the xref:api:ROOT:cloud-api.adoc#api-description[API reference].
 
+endif::[]
+
 == Create a cluster
 
+ifndef::env-serverless[]
 To create a new cluster, first create a resource group and network, if you have not already done so.
 
 === Create a resource group 
@@ -122,7 +138,8 @@ curl -d \
 
 The Create Cluster endpoint returns a <<long_running_operations,long-running operation>>. When the operation is completed, you can retrieve cluster details by calling xref:api:ROOT:cloud-api.adoc#get-/v1beta2/clusters/-id-[`GET /v1beta2/clusters/\{id}`], passing the cluster ID as a parameter.
 
-=== Additional steps to create a BYOC cluster
+ifdef::env-byoc[]
+==== Additional steps to create a BYOC cluster
 
 . Ensure that you have installed `rpk`.
 . After making a Create Cluster request, run `rpk cloud byoc`. Pass `metadata.cluster_id` from the Create Cluster response:
@@ -144,8 +161,92 @@ rpk cloud byoc aws apply --redpanda-id=<metadata.cluster_id>
 ```
 --
 ====
+endif::[]
+endif::[]
+
+ifdef::env-serverless[]
+To create a new serverless cluster, you can use the default resource group, or create a new resource group if you like. You need to choose a region where your cluster is hosted.
+
+=== Create a resource group 
+
+NOTE: This step is optional. Serverless includes a default resource group. Skip this step to use the default.
+
+Create a resource group by making a POST request to the xref:api:ROOT:cloud-api.adoc#post-/v1beta2/resource-groups[`/v1beta2/resource-groups`] endpoint. Pass a name for your resource group in the request body.
+
+[,bash]
+----
+curl -H 'Content-Type: application/json' \
+-H 'Authorization: Bearer <token>' \
+-d '{
+  "name": "<serverless-resource-group-name>"
+}' -X POST https://api.redpanda.com/v1beta2/resource-groups
+----
+
+A resource group ID is returned. Pass this ID later when you call the Create Serverless Cluster endpoint.
+
+=== Choose a region
+
+// TODO: Update xref when prod spec contains serverless endpoints
+To see the available regions for Redpanda Serverless, make a GET request to the `/v1beta2/serverless/regions` endpoint. You can specify a cloud provider in your request. Serverless currently only supports AWS.
+
+[,bash]
+----
+curl -H 'Authorization: Bearer <token>' https://api.redpanda.com/v1beta2/serverless/regions/
+----
+
+[,json,role=no-copy]
+----
+{
+    "serverless_regions": [
+        {
+            "name": "pro-eu-central-1",
+            "display_name": "eu-central-1",
+            "default_timezone": {
+                "id": "Europe/Berlin",
+                "version": ""
+            },
+            "cloud_provider": "CLOUD_PROVIDER_AWS"
+        },
+        {
+            "name": "pro-us-east-1",
+            "display_name": "us-east-1",
+            "default_timezone": {
+                "id": "America/New_York",
+                "version": ""
+            },
+            "cloud_provider": "CLOUD_PROVIDER_AWS"
+        }
+    ],
+    "next_page_token": ""
+}
+----
+
+
+=== Create a new serverless cluster
+
+// TODO: Update xref when prod spec contains serverless endpoints
+Create a Serverless cluster by making a request to `POST /v1beta2/serverless/clusters` with the resource group ID and serverless region name in the request body. 
+
+[,bash]
+----
+curl -H 'Content-Type: application/json' \
+-H 'Authorization: Bearer <token>' \
+-d '{
+  "serverless_cluster": {
+    "name": <serverless-cluster-name>,
+    "resource_group_id": <resource-group-id>,
+    "serverless_region": "pro-us-east-1"
+  }
+}' -X POST https://api.redpanda.com/v1beta2/serverless/clusters
+----
+
+The Create Serverless Cluster endpoint returns a <<long_running_operations,long-running operation>>. When the operation is completed, you can retrieve cluster details by calling `GET /v1beta2/serverless/clusters/\{id}`, passing the cluster ID as a parameter.
+
+endif::[]
 
 == Delete a cluster
+
+ifndef::env-serverless[]
 
 To delete a cluster, make a request to the xref:api:ROOT:cloud-api.adoc#delete-/v1beta2/clusters/-id-[`DELETE /v1beta2/clusters/\{id}`] endpoint, passing the cluster ID as a parameter. This is a <<long_running_operations,long-running operation>>.
 
@@ -153,6 +254,7 @@ To delete a cluster, make a request to the xref:api:ROOT:cloud-api.adoc#delete-/
 curl -X DELETE https://api.redpanda.com/v1beta2/clusters/<cluster_id>
 ```
 
+ifdef::env-byoc[]
 === Additional steps to delete a BYOC cluster
 
 . Make a request to xref:api:ROOT:cloud-api.adoc#get-/v1beta2/clusters/-id-[`GET /v1beta2/clusters/\{id}`] to check the state of the cluster. Wait until the state is `STATE_DELETING_AGENT`.
@@ -178,6 +280,22 @@ rpk cloud byoc aws destroy --redpanda-id=<cluster-id>
 
 . When the cluster is deleted, the delete operation’s state changes to `STATE_COMPLETED`. At this point, you may make a DELETE request to the xref:api:ROOT:cloud-api.adoc#delete-/v1beta2/networks/-id-[`/v1beta2/networks/\{id}`] endpoint to delete the network. This is a long running operation.
 . Optional: After the network is deleted, make a request to xref:api:ROOT:cloud-api.adoc#delete-/v1beta2/resource-groups/-id-[`DELETE /v1beta2/resource-groups/\{id}`] to delete the resource group. 
+
+endif::[]
+endif::[]
+
+ifdef::env-serverless[]
+
+// TODO: Update xref when prod spec contains serverless endpoints
+To delete a cluster, make a request to the `DELETE /v1beta2/serverless/clusters/\{id}` endpoint, passing the cluster ID as a parameter. This is a <<long_running_operations,long-running operation>>.
+
+```bash
+curl -X DELETE https://api.redpanda.com/v1beta2/serverless/clusters/<cluster-id>
+```
+
+Optional: When the cluster is deleted, the delete operation’s state changes to `STATE_COMPLETED`. At this point, you may make a DELETE request to the xref:api:ROOT:cloud-api.adoc#delete-/v1beta2/resource-groups/-id-[`/v1beta2/resource-groups/\{id}`] endpoint to delete the resource group. 
+
+endif::[]
 
 == Next steps
 
