@@ -1,5 +1,5 @@
 [[mtls]]
-= Configure mTLS
+== Configure mTLS encryption
 
 Mutual TLS (mTLS), is an enhanced security protocol that extends the standard TLS encryption protocol. While standard TLS involves a server presenting a certificate to the client to prove its identity, mTLS adds an additional layer of security by requiring the client to also present a certificate to the server.
 
@@ -7,7 +7,7 @@ To enable mTLS, set the `requireClientAuth` setting for a listener to `true`.
 
 For example, for the Kafka API:
 
-[source,yaml,lines=6+8]
+[source,yaml]
 ----
 listeners:
   kafka:
@@ -22,4 +22,117 @@ listeners:
 When you enable mTLS, the Helm chart generates a TLS Secret resource called `redpanda-client` that contains the client's `tls.crt` and `tls.key` files.
 
 See also: xref:manage:kubernetes/security/k-authentication.adoc#mtls[mTLS authentication]
+
+=== Configure a truststore
+
+To ensure that mTLS functions correctly, it is important to properly configure the truststore.
+
+The truststore contains the CA certificates that the server uses to validate the client certificates. By explicitly setting the truststore, you ensure that mTLS will use the correct CA certificates to validate client certificates, enhancing the security and reliability of your Redpanda cluster.
+
+To set a truststore for a listener, you can use a Secret or a ConfigMap reference:
+
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha1
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    tls:
+      enabled: true
+      certs:
+        default:
+          caEnabled: true
+        external:
+          caEnabled: true
+    listeners:
+      admin:
+        external:
+          my-admin:
+            port: 9646
+            tls:
+              cert: default
+              trustStore:
+                configMapKeyRef:
+                  key: my-admin.crt
+                  name: admin-cm
+        tls:
+          trustStore:
+            SecretKeyRef:
+              key: other.crt
+              name: admin-cm
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+--
+Helm::
++
+--
+
+[tabs]
+====
+--values::
++
+.`redpanda-tls.yaml`
+[source,yaml]
+----
+tls:
+  enabled: true
+  certs:
+    default:
+      caEnabled: true
+    external:
+      caEnabled: true
+listeners:
+  admin:
+    external:
+      my-admin:
+        port: 9646
+        tls:
+          cert: default
+          trustStore:
+            configMapKeyRef:
+              key: my-admin.crt
+              name: admin-cm
+    tls:
+      trustStore:
+        SecretKeyRef:
+          key: other.crt
+          name: admin-cm
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values redpanda-tls.yaml --reuse-values
+```
+
+--set::
++
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set tls.enabled=true \
+  --set tls.certs.default.caEnabled=true \
+  --set tls.certs.external.caEnabled=true \
+  --set listeners.admin.external.my-admin.port=9646 \
+  --set listeners.admin.external.my-admin.tls.cert=default \
+  --set listeners.admin.external.my-admin.tls.trustStore.configMapKeyRef.key=my-admin.crt \
+  --set listeners.admin.external.my-admin.tls.trustStore.configMapKeyRef.name=admin-cm \
+  --set listeners.admin.tls.trustStore.configMapKeyRef.key=other.crt \
+  --set listeners.admin.tls.trustStore.configMapKeyRef.name=admin-cm
+
+----
+====
+--
+======
 
