@@ -16,7 +16,7 @@ kubectl auth can-i create CustomResourceDefinition --all-namespaces
 +
 You should see `yes` in the output.
 +
-You need these cluster-level permissions to install glossterm:cert-manager[^] and Redpanda Operator CRDs in the next steps.
+You need these cluster-level permissions to install glossterm:cert-manager[] and Redpanda Operator CRDs in the next steps.
 
 . Install https://cert-manager.io/docs/installation/helm/[cert-manager^] using Helm:
 +
@@ -24,7 +24,7 @@ You need these cluster-level permissions to install glossterm:cert-manager[^] an
 helm repo add jetstack https://charts.jetstack.io
 helm repo update
 helm install cert-manager jetstack/cert-manager \
-  --set installCRDs=true \
+  --set crds.enabled=true \
   --namespace cert-manager  \
   --create-namespace
 ```
@@ -33,9 +33,7 @@ The Redpanda Helm chart uses cert-manager to enable TLS and manage TLS certifica
 
 . Install the Redpanda Operator custom resource definitions (CRDs):
 +
-```bash
-kubectl kustomize https://github.com/redpanda-data/redpanda-operator//src/go/k8s/config/crd | kubectl apply -f -
-```
+include::deploy:partial$kubernetes/install-crds.adoc[]
 
 . Deploy the Redpanda Operator:
 +
@@ -44,11 +42,12 @@ kubectl kustomize https://github.com/redpanda-data/redpanda-operator//src/go/k8s
 helm repo add redpanda https://charts.redpanda.com
 helm upgrade --install redpanda-controller redpanda/operator \
   --namespace <namespace> \
-  --set image.repository=docker.redpanda.com/redpandadata/redpanda-operator \
-  --set image.tag=v{full-version} \
+  --set image.tag={latest-operator-version} \
   --create-namespace \
   --timeout 1h
 ----
++
+NOTE: If you already have Flux installed and you want it to continue managing resources across the entire cluster, use the `--set additionalCmdFlags="{--enable-helm-controllers=false}"` flag. This flag prevents the Redpanda Operator from deploying its own set of Helm controllers that may conflict with those installed with Flux.
 
 . Ensure that the Deployment is successfully rolled out:
 +
@@ -61,17 +60,18 @@ kubectl --namespace <namespace> rollout status --watch deployment/redpanda-contr
 deployment "redpanda-controller-operator" successfully rolled out
 ----
 
-. Install a xref:reference:crd.adoc[Redpanda custom resource] in the same namespace as the Redpanda Operator:
+. Install a xref:reference:k-crd.adoc[Redpanda custom resource] in the same namespace as the Redpanda Operator:
 +
 .`redpanda-cluster.yaml`
-[,yaml,lines=9+14+18]
+[,yaml,subs="attributes+",lines=10+15+20]
 ----
 apiVersion: cluster.redpanda.com/v1alpha1
 kind: Redpanda
 metadata:
   name: redpanda
 spec:
-  chartRef: {}
+  chartRef:
+    chartVersion: {latest-redpanda-helm-chart-version}
   clusterSpec:
     external:
       domain: customredpandadomain.local
@@ -127,7 +127,7 @@ Helm::
 helm repo add jetstack https://charts.jetstack.io
 helm repo update
 helm install cert-manager jetstack/cert-manager \
-  --set installCRDs=true \
+  --set crds.enabled=true \
   --namespace cert-manager \
   --create-namespace
 ```
@@ -136,16 +136,16 @@ TLS is enabled by default. The Redpanda Helm chart uses cert-manager to manage T
 
 . Install Redpanda with SASL enabled:
 +
-[,bash,lines=6+8+9]
+[source,bash,subs="attributes+",lines=3+5-9]
 ----
-helm repo add redpanda https://charts.redpanda.com
-export DOMAIN=customredpandadomain.local && \
+helm repo add redpanda https://charts.redpanda.com \
 helm install redpanda redpanda/redpanda \
+  --version {latest-redpanda-helm-chart-version} \
   --namespace <namespace> --create-namespace \
   --set auth.sasl.enabled=true \
   --set "auth.sasl.users[0].name=superuser" \
   --set "auth.sasl.users[0].password=secretpassword" \
-  --set external.domain=${DOMAIN} \
+  --set external.domain=customredpandadomain.local \
   --set "storage.persistentVolume.storageClass=csi-driver-lvm-striped-xfs" \
   --wait \
   --timeout 1h

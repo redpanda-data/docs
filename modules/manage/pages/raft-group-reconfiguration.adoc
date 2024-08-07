@@ -1,0 +1,72 @@
+= Raft Group Reconfiguration
+:description: Learn how the Redpanda Raft group protocol provides consistency and availability during reconfiguration.
+
+Raft group reconfiguration in Redpanda involves dynamically changing the membership of a Raft group to ensure consistent and available distributed system operations. This process uses learners, new members that do not affect quorum, to maintain service continuity during additions, removals, or replacements in the group.
+
+== How Redpanda uses Raft
+
+Redpanda uses the glossterm:Raft[] consensus algorithm to replicate cluster metadata and application data across the brokers. This replication provides strong guarantees for data safety and fault tolerance.
+
+Redpanda stores cluster metadata as messages in a special topic in a Raft cluster instance, also known as a Raft group. In a Raft group, one member is the leader and the others are followers. A Raft group that stores cluster metadata is called a controller, and the leader of this group is the controller broker. The messages in the metadata topic contain the current set of brokers that are members of the group. 
+
+Unlike Kafka with Raft (KRaft), Redpanda uses Raft not only for cluster metadata but also for the application data. Each topic glossterm:partition[] in Redpanda forms a Raft group comprised of its leader and follower brokers. Redpanda simplifies Kafka architecture because Raft handles both metadata management as well as data replication. See xref:get-started:architecture.adoc#raft-consensus-algorithm[How Redpanda Works] for a further explanation of how Raft manages data replication in Redpanda.
+
+== About Raft group reconfiguration
+
+A Raft group’s member set changes during operations like cluster resize or xref:manage:cluster-maintenance/continuous-data-balancing.adoc[Continuous Data Balancing]. This change, also referred to as Raft group reconfiguration, includes adding, removing, or replacing Raft group members. When the group configuration changes, the current leader replicates a new configuration message and sends it to the followers. 
+
+Raft uses joint consensus to maintain consistency during reconfiguration. Joint consensus involves both the old member set and the proposed new member set reaching an agreement, either on accepting writes or electing a new leader. The new leader can be elected from either the old or new member set. 
+
+Redpanda’s implementation of Raft includes changes to the reconfiguration protocol to ensure high availability even as group membership changes.
+
+== Redpanda’s approach to Raft reconfiguration
+
+Redpanda’s Raft implementation adds the following behavior when reconfiguring Raft groups:
+
+- In addition to leader and follower, a broker can also be in learner status. Learners are followers that do not count towards quorum (the majority) and cannot be elected to leader. Learners do not trigger leader elections. New Raft group members start as learners. Brokers can be promoted or demoted between learner and voter. 
++
+This means that when new members join the Raft group member set, the group continues to operate without interruption since members that can form quorum still accept writes, even if the majority has technically changed due to the additional members. As soon as a learner is synced with the current leader, the learner is promoted to voter. Learners are promoted one at a time. 
+
+- Because all new brokers joining a Raft group start in learner status, the group does not yet have to enter the joint consensus phase as soon as new members join.
+
+- The Raft group only adds new members first. When all learners have been promoted to voters, the group can enter joint consensus. At this point, this is also a new group configuration that contains both the old as well as requested new member set. The current leader replicates this configuration to all brokers. 
++
+Members that are not in the new configuration are demoted to learners before removal. When the Raft group leaves the joint consensus phase, a new leader may be elected if the old one was removed from the configuration.
+
+The following diagrams illustrate the reconfiguration steps in Redpanda. In this example, one member joins the three-broker member set of a Raft group. The box labeled "new" represents the new or current configuration, and "old" represents the old or previous configuration. Each configuration includes the member brokers as indicated by their IDs. Brokers in green are voters, whereas brokers in yellow are learners. If the old configuration is grayed out, it means that only the new configuration is active.
+
+
+. Start with a configuration containing brokers 1, 2, and 3:
++
+image::shared:raft_reconfiguration_initial_state.png[]
+
+. Replace broker 1 with a new member (broker 4). Broker 4 is added to the current configuration as a learner:
++
+image::shared:raft_reconfiguration_new_learner.png[]
+
+. The learner catches up with the leader and is promoted to voter:
++
+image::shared:raft_reconfiguration_learner_promote_to_voter.png[]
+
+. The group enters the joint consensus phase, where the new configuration contains the requested member set:
++
+image::shared:raft_reconfiguration_joint_consensus_all_voters.png[]
+
+. Broker 1 is demoted to learner:
++
+image::shared:raft_reconfiguration_voter_demote_to_learner.png[]
+
+. Broker 1 is removed. The leader replicates the new configuration:
++
+image::shared:raft_reconfiguration_final_state.png[]
+
+A Raft group that can tolerate _F_ broker failures needs to have at least 2__F__ + 1 members. The number of members is typically equal to the glossterm:replication factor[]. In this example, the group can tolerate a single-broker failure. The two remaining healthy group members can still reach quorum.
+
+In Redpanda, the number of voters in a member set is never smaller than the requested replication factor, even during joint consensus. The group can still tolerate failure as it goes through the reconfiguration steps, where not all members are voters. While Raft group reconfiguration in Redpanda requires more steps, this approach guarantees availability throughout the lifecycle of a partition.
+
+include::shared:partial$suggested-reading.adoc[]
+
+- https://redpanda.com/guides/kafka-alternatives/kafka-raft[Kafka Raft vs. ZooKeeper vs. Redpanda]
+- https://redpanda.com/blog/simplifying-raft-replication-in-redpanda[Simplifying Redpanda Raft implementation]
+- https://redpanda.com/blog/raft-protocol-reconfiguration-solution[Engineering a more robust Raft group reconfiguration]
+- xref:manage:cluster-maintenance/cluster-balancing.adoc[]

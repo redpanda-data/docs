@@ -1,46 +1,49 @@
 = Manage Disk Space
-:description: Redpanda provides several ways to manage disk space to ensure the production stability of the cluster.
+:description: Redpanda provides several ways to manage disk space to ensure the stability of a cluster.
 :page-aliases: deployment:well-known-io.adoc, \
 deployment:performance-storage-tuning.adoc, \
 reference:well-known-io.adoc, \
 deployment:disk-utilization.adoc
+:page-categories: Management
 
-Redpanda provides several ways to manage disk space to ensure the production stability of the cluster. You can:
 
-* Configure message retention and a log cleanup policy.
-* Configure storage threshold properties, and set up alerts to notify you when free disk space reaches a certain threshold.
-* Use xref:./continuous-data-balancing.adoc[Continuous Data Balancing] to automatically distribute partitions across nodes for more balanced disk usage.
-* Create a ballast file to act as a buffer against an out-of-disk outage.
+It is important to manage the local disk space in Redpanda to ensure the stability of a cluster. If a node's disk space reaches a critically-low level, then Redpanda blocks clients from writing new data. If a node runs out of disk space, then the Redpanda process terminates. This has a significant impact on performance, as client connections and topic data concentrates on fewer nodes.
 
-If free disk space reaches a critically low level, Redpanda blocks clients from producing.
+Redpanda provides several ways to manage disk space, with varying degrees of flexibility and control over what data is removed from local disk and when.
 
-When a Redpanda node runs out of disk space, it terminates. This causes leader reassignment and then replication and rebalancing, impacting performance. If more nodes in the cluster fill up and terminate, traffic concentrates in fewer nodes, also impacting performance.
+* Redpanda space management, when used with xref:../tiered-storage.adoc[Tiered Storage], treats local disks as a cache.
+* For more granularity, you can configure topic-level retention policies to manage log cleanup based on partition size or age.
+* You can configure storage thresholds to alert you when disk space is running low.
+* You can enable xref:./continuous-data-balancing.adoc[Continuous Data Balancing] to ensure well-balanced disk usage across the cluster.
+* You can create a ballast file to allow fast recovery from a full disk.
 
 == Configure message retention
 
-By default, all topics on self-hosted Redpanda clusters keep the last 24 hours of data on local disk. Redpanda Cloud keeps the last 12 hours of data. However, if data is written fast enough to consume all disk space within the local retention time period, it's possible to exhaust local disk space, even when using Tiered Storage. You can adjust the default local storage size or time period, if required.
+By default, all topics on self-hosted Redpanda clusters retain 24 hours of data on local disk, while Redpanda Cloud topics retain 6 hours of data. Redpanda makes use of dynamic xref:#space_management[space management] strategies to save on disk space. If data is written fast enough, however, it's possible to exhaust local disk space even when using Tiered Storage. Proper configuration of message retention properties for your use case can prevent this from happening.
 
-Retention properties control how long messages are kept on disk before they're deleted or compacted. Setting message retention properties is the best way to prevent old messages from accumulating on disk to the point that the disk becomes full. You can configure retention properties to delete messages based on the following conditions:
+Retention properties control the minimum length of time messages are kept on disk before they're deleted or compacted. Setting message retention properties is the best way to prevent old messages from accumulating on disk to the point that the disk becomes full. You can configure retention properties to delete messages based on the following conditions:
 
 * Message age is exceeded.
 * Aggregate message size in the topic is exceeded.
-* Either message age or aggregate message size in the topic is exceeded.
+* A combination of message age and aggregate size, triggered when either is exceeded.
 
-Set retention properties at the topic level or the cluster level. If a value isn't specified for the topic, then the topic uses the value for the cluster. Note that cluster-level property names use snake-case, while topic-level properties use dots.
+You may set retention properties at the topic level or the cluster level. If a value isn't specified for the topic, then the topic uses the value for the cluster. Note that cluster-level property names use snake-case, while topic-level properties use dots.
+
+NOTE: Although retention policy is set at a cluster or topic level, it applies to each partition in a topic independently. Within a partition, only closed segments are eligible for deletion or compaction. When a time-based policy is set, all messages within the segment must exceed the set limit. For example, assume the `retention.ms` for a topic is 300,000 ms (5 minutes). If the `segment.ms` is 1,800,000ms (30 minutes) then messages will remain for a minimum of 30 minutes while the segment containing them remains open. In this scenario, five minutes after a new segment begins, the retention policy would trigger deletion of the closed segment.
 
 |===
 | Retention property | Cluster level | Topic level +
 (overrides cluster configuration)
 
 | Time-based
-| `delete_retention_ms` +
+| `log_retention_ms` +
 Default - `604800000`
 | `retention.ms` +
 No default
 
 | Size-based
 | `retention_bytes`  +
-Default - `null`
+No default
 | `retention.bytes`  +
 No default
 
@@ -56,6 +59,12 @@ Default - `null`
 | `retention.local.target.bytes`  +
 No default
 
+| Segment lifetime
+| `log_segment_ms`  +
+No default
+| `segment.ms`  +
+No default
+
 | Segment size
 | `log_segment_size`  +
 Default - `1073741824`
@@ -63,48 +72,55 @@ Default - `1073741824`
 No default
 |===
 
-Data expires from object storage following `retention.ms` or `retention.bytes`. For example, if `retention.bytes` is set to 10 GiB, then every partition in the topic has a limit of 10 GiB storage in the cloud. When `retention.bytes` is exceeded by data in object storage, the data in object storage is trimmed. With Tiered Storage enabled, data expires from local storage following `retention.local.target.ms` or `retention.local.target.bytes`.
+Data expires from object storage following both `retention.ms` and `retention.bytes`. For example, if `retention.bytes` is set to 10 GiB, then every partition in the topic has a limit of 10 GiB storage. When `retention.bytes` is exceeded by data in object storage, the data in object storage is trimmed, even if `retention.ms` is not yet exceeded. With Tiered Storage enabled, data expires from local storage following `retention.local.target.ms` or `retention.local.target.bytes`.
 
-NOTE: Both size-based and time-based retention policies are applied simultaneously, so it's possible for your size-based property to override your time-based property, or vice versa. For example, if your size-based property requires removing one segment, and your time-based property requires removing three segments, then three segments are removed. Size-based properties reclaim disk space as close as possible to the maximum size, without exceeding the limit.
+image:shared:segment-rolling-size-and-time.png[Time-based segment rolling]
 
-Based on these properties, Redpanda runs a log cleanup process in the background. If you start to run out of disk space, adjust your retention properties to reduce the amount of disk space used.
+Retention policy functions by deleting or compacting closed segments. The segment lifetime and segment size configurations help ensure new segments are created regularly within each partition. This illustration shows how Redpanda creates new segments based on size and time. After the limit for a segment is reached, whether it's size- or time-based, Redpanda closes the segment and begins filling a new segment. If the limits are set too high, the segment may fill available disk space before closing and therefore never become eligible for deletion or compaction. If the values are set too low, your partitions will have a large number of segments that must be checked each time deletion or compaction processes execute, having a potential adverse impact on system resource utilization.
+
+NOTE: Both size-based and time-based retention policies are applied simultaneously. It's possible for your size-based property to override your time-based property, or vice versa. For example, if your size-based property requires removing one segment, and your time-based property requires removing three segments, then three segments are removed. Size-based properties reclaim disk space as close as possible to the maximum size, without exceeding the limit.
+
+Redpanda runs a log cleanup process in the background to apply these policy settings. If you start to run out of disk space, adjusting your retention properties is an excellent way to reduce the amount of disk space used.
 
 See also:
 
 * xref:manage:tiered-storage.adoc#manage-local-capacity-for-tiered-storage-topics[Manage local capacity for Tiered Storage topics]
 * xref:develop:config-topics.adoc#delete-records-from-a-topic[Delete records from a topic]
 
+[[set-time-based-retention]]
 === Set time-based retention
 
-A message is deleted if its age exceeds the value specified in `delete_retention_ms` (the cluster-level property) or `retention.ms` (the topic-level property). If `retention.ms` is not set at the topic level, the topic inherits the `delete_retention_ms` setting.
+Messages are eligible for deletion when their age exceeds the value specified in `log_retention_ms` (the cluster-level property) or `retention.ms` (the topic-level property). Only closed segments are eligible for deletion and all messages in a closed segment must exceed the age limit before Redpanda considers the segment for cleanup. If `retention.ms` is not set at the topic level, the topic inherits the `log_retention_ms` setting.
 
-NOTE: Time-based retention is calculated from the batch timestamp in a segment. Each segment index stores the timestamp. The timestamp policy can be either `CreateTime` (client timestamp set by producer) or `AppendTime` (server timestamp set by Redpanda). Segments are closed when partition leadership changes or when the segment size limit is reached.
+NOTE: By default, time-based retention is based on the xref:develop:produce-data/configure-producers.adoc#broker-timestamps[`broker_timestamp` field] of each message. This timestamp is populated by the broker when initially receiving the message. Each segment tracks the max broker timestamp contained in that segment as the batch timestamp in the segment index. Segments are closed when partition leadership changes or when the segment size limit is reached. Closed segments are deleted when the difference between the system time and the batch timestamp exceeds the configured retention time.
 
-To set retention time for a single topic, use `retention.ms`, which overrides `delete_retention_ms`.
+
+To set retention time for a single topic, use `retention.ms`, which overrides `log_retention_ms`.
 
 * `retention.ms` - Topic-level property that specifies how long a message stays on disk before it's deleted.
 +
 To minimize the likelihood of out-of-disk outages, set `retention.ms` to `86400000`, which is one day. There is no default.
 +
-To set `retention.ms`:
+To set `retention.ms` on an individual topic:
 +
 [,bash]
 ----
 rpk topic alter-config <topic> --set retention.ms=<retention_time>
 ----
 
-* `delete_retention_ms` - Cluster-level property that specifies how long a message stays on disk before it's deleted.
+* `log_retention_ms` - Cluster-level property that specifies how long a message stays on disk before it's deleted.
 +
-To minimize the likelihood of out-of-disk outages, set `delete_retention_ms` to `86400000`, which is one day. The default is `604800000`, which is one week.
+To minimize the likelihood of out-of-disk outages, set `log_retention_ms` to `86400000`, which is one day. The default is `604800000`, which is one week.
 
-CAUTION: Do not set `delete_retention_ms` to `-1` unless you're using xref:manage:tiered-storage.adoc#remote-write[remote write with Tiered Storage] to upload segments to object storage. Setting it to `-1` configures indefinite retention, which can fill disk space.
+CAUTION: Do not set `log_retention_ms` to `-1` unless you're using xref:manage:tiered-storage.adoc#remote-write[remote write with Tiered Storage] to upload segments to object storage. Setting it to `-1` configures indefinite retention, which can fill disk space.
+
+See also:
+
+* xref:develop:produce-data/configure-producers.adoc#broker-timestamps[Broker timestamps]
 
 === Set size-based retention
 
-A message is deleted if the size of the partition in which it is contained reaches the value specified in
-`retention_bytes` or `retention.bytes`. When a partition reaches that value, the oldest messages in the partition are deleted.
-
-To set retention size for a single topic, use `retention.bytes`, which overrides the cluster property `retention_bytes`. If `retention.bytes` is not set at the topic-level, the topic inherits the cluster-level setting.
+Messages are eligible for deletion after the storage size of the partition containing them exceeds the value specified in `retention_bytes` (the cluster-level property) or `retention.bytes` (the topic-level property). If `retention.bytes` is not set at the topic level, the topic inherits the `retention_bytes` setting. Segments are deleted in chronological order until the partition is back under the specified size limit.
 
 * `retention.bytes` - Topic-level property that specifies the maximum size of a partition. There is no default.
 +
@@ -142,14 +158,14 @@ For periodic offset expiration, set the retention duration of consumer group off
 | Retention duration of consumer group offsets.
 
 | xref:reference:tunable-properties.adoc#legacy_group_offset_retention_enabled[`legacy_group_offset_retention_enabled`]
-| Enable group offset retention for Redpanda versions earlier than v23.1.
+| Enable group offset retention for Redpanda clusters upgraded from versions prior to v23.1.
 |===
 
-Redpanda supports group offset deletion with the Kafka OffsetDelete API through rpk with the xref:reference:rpk/rpk-group/rpk-group-offset-delete.adoc[`rpk group offset-delete`] command. The offset delete API provides finer control over culling consumer offsets. For example, it enables the manual removal of offsets that are tracked by Redpanda within the `__consumer_groups` topic. The offsets requested to be removed will be removed only if either the group in question is in a dead state, or the partitions being deleted have no active subscriptions.
+Redpanda supports group offset deletion with the Kafka OffsetDelete API through rpk with the xref:reference:rpk/rpk-group/rpk-group-offset-delete.adoc[`rpk group offset-delete`] command. The offset delete API provides finer control over culling consumer offsets. For example, it enables the manual removal of offsets that are tracked by Redpanda within the `__consumer_offsets` topic. The offsets requested to be removed will be removed only if either the group in question is in a dead state, or the partitions being deleted have no active subscriptions.
 
 == Configure segment size
 
-The `log_segment_size` property specifies the size of each log segment.
+The `log_segment_size` property specifies the size of each log segment within the partition. Redpanda closes segments after they exceed this size and messages begin filling a new segment.
 
 To set `log_segment_size`:
 
@@ -173,7 +189,7 @@ Compaction, or key-based retention, saves space by retaining at least the most r
 
 When compaction is configured, topics take their size from `compacted_log_segment_size`. The `log_segment_size` property does not apply to compacted topics.
 
-Setting a `segment.bytes` size on a topic applies whether the topic is compacted or not, and the `max_compacted_log_segment_size` property applies to compacted topics regardless of any other properties. The `max_compacted_log_segment_size` property controls how many segments are merged together. For example, if you set `segment.bytes` to 128 MB, but leave `max_compacted_log_segment_size` at 5 GB, then you get 128 MB segments when they're written, but up to 5 GB segments after compaction.
+When compaction executes, one or more segments are merged into one new compacted segment. The old segments are deleted. The size of the initial segments are controlled by `segment.bytes`.  The `max_compacted_log_segment_size` property controls how many segments are merged together. For example, if you set `segment.bytes` to 128 MB, but leave `max_compacted_log_segment_size` at 5 GB, fresh segments are 128 MB but merged segments may grow up to 5 GB after compaction.
 
 Redpanda periodically performs compaction in the background. The compaction period is configured by the cluster property xref:reference:cluster-properties.adoc#log_compaction_interval_ms[log_compaction_interval_ms].
 
@@ -181,11 +197,13 @@ Keep in mind that very large segments delay, or possibly prevent, compaction. A 
 
 For details about how to modify cluster configuration properties, see xref:./cluster-property-configuration.adoc[Cluster configuration].
 
+For further information on how compaction works, see xref:./compaction-settings.adoc[Compaction tuning].
+
 === Log rolling
 
-Writing data for a topic usually spans multiple log segments. An *active segment* of a topic is a log segment that is being written to. As data of a topic is written and an active segment becomes full (reaches `log_segment_size`), it's closed and changed to read-only mode, and a new segment is created, set to read-write mode, and becomes the active segment. *Log rolling* is the rotation between segments to create a new active segment.
+Writing data for a topic usually spans multiple log segments. An *active segment* of a topic is a log segment that is being written to. As data of a topic is written and an active segment becomes full (reaches `log_segment_size`), it's closed and changed to read-only mode. A new segment is created and set to read-write mode, and it becomes the active segment. *Log rolling* is the rotation between segments to create a new active segment.
 
-Log rolling can also be triggered by configurable timeouts. This is useful when topic retention limits need to be applied within a known fixed duration. A log rolling timeout starts from the first write to an active segment. When a timeout elapses before the segment is full, the segment is rolled. The timeouts are configured with cluster-level and topic-level properties:
+Configurable timeouts can also trigger log rolling. This is useful when applying topic retention limits within a known fixed duration. A log rolling timeout starts from the first write to an active segment. When a timeout elapses before the segment is full, the segment is rolled. The timeouts are configured with cluster-level and topic-level properties:
 
 * xref:reference:cluster-properties.adoc#log_segment_ms[log_segment_ms] (or `log.roll.ms`) is a cluster property that configures the default segment rolling timeout for all topics of a cluster.
 +
@@ -207,55 +225,60 @@ rpk topic alter-config <topic> --set segment.ms=<segment_ms_duration>
 
 * xref:reference:tunable-properties.adoc#log_segment_ms_min[log_segment_ms_min] and xref:reference:tunable-properties.adoc#log_segment_ms_max[log_segment_ms_max] are cluster-level properties that configure the lower and upper limits, respectively, of log rolling timeouts.
 
+[[space_management]]
 == Space management
 
-Redpanda divides disk storage into different categories to provide a flexible configuration of space:
+NOTE: Space management only works when xref:../tiered-storage.adoc[Tiered Storage] is enabled on all topics. Space management and the housekeeping process only considers removing data that is safely stored in Tiered Storage.
 
-* Reserved disk space (`disk_reservation_percent`): This overhead reservation is disk space that Redpanda does not use.
- ** As disk space used by cache storage and log storage expand to their target sizes, this provides buffer space to avoid free disk space alerts.
- ** Because SSDs that run near capacity can experience performance degradation, this provides buffer space to prevent running a device at capacity.
-* Cache storage (`cloud_storage_cache_size_percent` or `cloud_storage_cache_size`): This is the maximum size of the xref:manage:tiered-storage.adoc#caching[disk cache] used if Tiered Storage is enabled. As the cache reaches its limit, new data added to the cache removes old data from the cache.
-* Log storage (`retention_local_target_capacity_percent` or `retention_local_target_capacity_bytes`): This log data reservation is the disk space used as the target maximum size for user data, as well as Redpanda internal topics, like the control log. It's generally about 70-80% of total disk space.
+The goal of space management is to utilize the local disk space as a cache. It works alongside xref:../tiered-storage.adoc[Tiered Storage] to provide faster access to recent data, while making sure that local disk space is managed in accordance with retention policies and other processes, such as xref:./continuous-data-balancing.adoc[Continuous Data Balancing] and xref:./decommission-brokers.adoc[decommissioning]. 
+
+Space management divides the disk space into different areas that can be managed separately:
+
+* Reserved disk space (`disk_reservation_percent`) is the area of disk space that Redpanda does not use.
+** As the disk space used by the other areas grows to their target sizes, the reserved space provides buffer space to avoid free disk space alerts.
+** SSDs that run near capacity can experience performance degradation, so this buffer space prevents the disks from running at capacity.
+* Cache storage (the minimum of `cloud_storage_cache_size_percent` or `cloud_storage_cache_size`) is the maximum size of the xref:../tiered-storage.adoc#caching[disk cache] used by Tiered Storage. As the cache reaches its limit, new data added to the cache removes old data from the cache.
+* Log storage (the minimum of `retention_local_target_capacity_percent` or `retention_local_target_capacity_bytes`) is the area of disk space used for topic data. This is typically 70-80% of total disk space.
 
 image::shared:disk_storage.png[Redpanda disk storage categories]
 
-When log data usage begins to approach the target size of log storage, data is removed from local disk according to an eviction policy that follows cluster-level and topic-level retention settings. When log data usage exceeds its configured target size, Redpanda selects data to remove to bring usage back under the target size. Redpanda attempts to be fair with one round-robin removal at a time of a segment across partitions that are eligible to have segments removed. Data removal occurs in each phase. As soon as storage usage falls below the target, the data removal process ends.
+Log segment eviction occurs in each of the following phases. As soon as log storage usage falls below the target, the eviction process ends.
+
+IMPORTANT: Redpanda's space management features are enabled with the xref:reference:cluster-properties.adoc#space_management_enable[`space_management_enable`] parameter. As of Redpanda *v23.3.2*, all new clusters default this value to `true`. When upgrading from older versions, ensure this parameter is set to `true` if you wish to make use of space management as described here. Alternatively, if you wish to explicitly disable these features, set this property to `false`.
 
 See also: xref:manage:tiered-storage.adoc#object-storage-housekeeping[Object storage housekeeping]
 
 === Phases of data removal
 
-==== 1: Follow retention policy
+==== Phase 1: Follow retention policy
 
-A periodic housekeeping task in Redpanda performs compaction and removes data that has expired according to your retention policy. This process applies to both Tiered Storage and non-Tiered Storage topics. When the target size is reached, Redpanda prefers removal of expired data over compaction, and attempts to apply retention to partitions in the order that removes the largest amount of data.
+A housekeeping process in Redpanda periodically performs compaction and removes partition data that has expired according to your retention policy. This applies to both Tiered Storage and non-Tiered Storage topics. Space management attempts to apply retention to partitions in the order that removes the largest amount of data.
 
-* When `retention_local_strict` is false (default), the housekeeping process removes data above the configured consumable retention. This means that data usage is allowed to expand to occupy more of the log data reservation.
+* When `retention_local_strict` is false (default), the housekeeping process removes data above the configured log storage reservation.
 * When `retention_local_strict` is true, the housekeeping process uses local retention settings to select what data to remove.
 +
-NOTE: The `retention_local_strict` property is set to true in clusters upgraded from release 23.1 and earlier.
+NOTE: The `retention_local_strict` property is set to true in clusters upgraded from release `23.1` and earlier.
 
-==== 2: Trim to local retention
+==== Phase 2: Trim to local retention
 
-This phase removes data that has exceeded the effective local retention policy, including explicit local retention settings applied to a topic, as well as the default local retention settings applied to Tiered Storage topics. Default local retention is the local retention assigned to any partition that does not have an explicit topic-level override.
+This phase removes partition data that exceeds the effective local retention policy. This includes the explicit retention settings applied to a topic, as well as the cluster-level defaults, which are assigned to any topic that does not have explicit topic-level overrides.
 
-* When `retention_local_strict` is false (default), Redpanda does not remove any additional data: the local retention policy was met in the previous phase.
-* When `retention_local_strict` is true, Redpanda removes data fairly across all topics until each topic has reached its local retention.
+* When `retention_local_strict` is false (default), the retention policy was met in the previous phase, so no more data is removed.
+* When `retention_local_strict` is true, the housekeeping process removes data fairly across all topics until each topic reaches its local retention target.
 
-After this phase, all partitions should be operating at a size that reflects their effective local retention. The next phase starts to override local retention settings to remove more data.
+After this phase completes, all partitions are operating at a size that reflects their effective local retention target. The next phase starts to override the local retention settings to remove more data.
 
-==== 3: Trim data with default local retention settings
+==== Phase 3: Trim data with default local retention settings
 
-For topics with default local retention settings, this phase removes data down to a low-space level.
+For topics with the default local retention settings, this phase removes partition data to a _low-space_ level, which is a configured size of two log segments that provide minimal space for partition operation. The housekeeping process only considers removing data that is safely stored in Tiered Storage.
 
-The low-space level is a configured size (two segments) that provides minimal space for partition operation. Redpanda only considers trimming data that is safely in the cloud.
+==== Phase 4: Trim data with explicitly-configured retention settings
 
-==== 4: Trim data with explicitly-configured retention settings
+For topics with explicitly-configured retention settings, this phase removes data down to the _low-space_ level of two log segments.
 
-For topics with explicitly-configured retention settings, this phase removes data down to a low-space level.
+==== Phase 5: Trim to active (latest) segment
 
-==== 5: Trim to active (latest) segment
-
-This phase trims all topics down to their last active segment. (Data in the active segment cannot be removed.) Data is not available for reclaim from the active segment until it is rolled, which occurs when it reaches its max size or when the `segment.ms` time expires.
+The final phase trims all topics down to their last active segment. Data in the active log segment cannot be removed, and it is not available for reclaim until it is rolled, which occurs when it reaches `segment.bytes` or when `segment.ms` time expires.
 
 == Monitor disk space
 
@@ -270,23 +293,35 @@ Redpanda monitors disk space and updates these metrics and the `storage_space_al
 * 1 = Low free space alert
 * 2 = Out of space (degraded, external writes are rejected)
 
-== Set free disk space alert
+== Set free disk space thresholds
 
-You can set a soft limit for a minimum free disk space alert. This soft limit generates an error message and affects the value of the xref:reference:public-metrics-reference.adoc#redpanda_storage_disk_free_space_alert[`redpanda_storage_disk_free_space_alert`] metric. The alert works with the following configuration properties, which you can set on any data disk (one drive per node):
+You can set a soft limit for a minimum free disk space alert. This soft limit generates an error message and affects the value of the xref:reference:public-metrics-reference.adoc#redpanda_storage_disk_free_space_alert[`redpanda_storage_disk_free_space_alert`] metric. You can also set a hard limit for minimum disk space, after which Redpanda enters a degraded performance state. You set the thresholds for these values by configuring the following properties, which you can set on any data disk (one drive per node):
 
 |===
 | Property | Description
 
 | `storage_space_alert_free_threshold_bytes`
-| Minimum free disk space allowed, in bytes.
+| Minimum free disk space threshold, in bytes, for generating a low disk space alert.
 
 | `storage_space_alert_free_threshold_percent`
-| Minimum free disk space allowed, in percentage of total available space for that drive.
+| Minimum free disk space allowed, in percentage of total available space for that drive, for generating a low disk space alert.
+
+| `storage_min_free_bytes`
+| Disk space threshold beyond which a degraded performance state is entered.
 |===
 
 NOTE: The alert threshold can be set in either bytes or percentage of total space. To disable one threshold in favor of the other, set it to zero.
 
-When a disk exceeds the set threshold, `redpanda_storage_disk_free_space_alert` updates, and an error message is written to the Redpanda service log.
+When a disk exceeds the configured alert threshold, Redpanda updates the xref:reference:public-metrics-reference.adoc#redpanda_storage_disk_free_space_alert[`redpanda_storage_disk_free_space_alert`] metric to `1`, indicating low free space, and writes an error level `storage space alert` message to the service log. The message looks like the following:
+
+[,bash]
+----
+ERROR 2023-12-08 15:07:45,716 [shard  0] cluster - storage space alert: free space at 25.574% on /var/lib/redpanda/data: 96.732GiB total, 24.739GiB free, min. free 0.000bytes. Be sure to adjust retention policies as needed to avoid running out of space.
+----
+
+If you continue to exhaust disk space and reach the `storage_min_free_bytes` value, the `redpanda_storage_disk_free_space_alert` metric changes to `2`, indicating Redpanda is in a degraded performance state. See <<Handle full disks>> for more information on addressing this situation.
+
+Once disk space is freed, Redpanda updates the `redpanda_storage_disk_free_space_alert` metric accordingly.
 
 == Handle full disks
 

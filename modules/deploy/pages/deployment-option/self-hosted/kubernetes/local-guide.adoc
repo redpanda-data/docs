@@ -1,5 +1,8 @@
 = Deploy a Local Development Cluster with kind or minikube
 :description: Deploy a local Redpanda cluster with Redpanda Console using the Helm chart.
+:page-aliases: getting-started:kubernetes-qs-local-access.adoc, quickstart:kubernetes-qs-local-access.adoc, quickstart:kubernetes-qs-minikube.adoc, getting-started:kubernetes-qs-minikube.adoc
+:env-kubernetes: true
+:page-categories: Deployment
 
 Deploy a local Redpanda cluster with Redpanda Console using the Helm chart. Explore the essentials of how Redpanda works in Kubernetes and what components are deployed by default. Then, use `rpk` both as an internal client and an external client to interact with your Redpanda cluster from the command line.
 
@@ -26,7 +29,7 @@ kind::
 * https://kubernetes.io/docs/tasks/tools/[Install `kubectl`^]. Minimum required Kubernetes version: {supported-kubernetes-version}
 +
 ```bash
-kubectl version --short --client
+kubectl version --client
 ```
 
 * https://helm.sh/docs/intro/install/[Install Helm^]. Minimum required Helm version: {supported-helm-version}
@@ -113,6 +116,9 @@ kubectl taint node \
 --
 ======
 
+NOTE: The Helm chart configures default `podAntiAffinity` rules to make sure that only one Pod running a Redpanda broker is scheduled on each worker node. To learn why, see xref:deploy:deployment-option/self-hosted/kubernetes/k-requirements.adoc#number-of-workers[Number of workers].
+
+
 == Deploy Redpanda and Redpanda Console
 
 In this step, you deploy Redpanda with self-signed TLS certificates. Redpanda Console is included as a subchart in the Redpanda Helm chart.
@@ -138,16 +144,14 @@ You need these cluster-level permissions to install glossterm:cert-manager[] and
 ```bash
 helm repo add jetstack https://charts.jetstack.io
 helm repo update
-helm install cert-manager jetstack/cert-manager --set installCRDs=true --namespace cert-manager --create-namespace
+helm install cert-manager jetstack/cert-manager --set crds.enabled=true --namespace cert-manager --create-namespace
 ```
 +
 TLS is enabled by default. The Redpanda Helm chart uses cert-manager to manage TLS certificates by default.
 
 . Install the Redpanda Operator custom resource definitions (CRDs):
 +
-```bash
-kubectl kustomize https://github.com/redpanda-data/redpanda-operator//src/go/k8s/config/crd | kubectl apply -f -
-```
+include::deploy:partial$kubernetes/install-crds.adoc[]
 
 . Deploy the Redpanda Operator:
 +
@@ -156,10 +160,11 @@ kubectl kustomize https://github.com/redpanda-data/redpanda-operator//src/go/k8s
 helm repo add redpanda https://charts.redpanda.com
 helm upgrade --install redpanda-controller redpanda/operator \
   --namespace <namespace> \
-  --set image.repository=docker.redpanda.com/redpandadata/redpanda-operator \
-  --set image.tag=v{full-version} \
+  --set image.tag={latest-operator-version} \
   --create-namespace
 ----
++
+NOTE: If you already have Flux installed and you want it to continue managing resources across the entire cluster, use the `--set additionalCmdFlags="{--enable-helm-controllers=false}"` flag. This flag prevents the Redpanda Operator from deploying its own set of Helm controllers that may conflict with those installed with Flux.
 
 . Ensure that the Deployment is successfully rolled out:
 +
@@ -172,17 +177,18 @@ kubectl --namespace <namespace> rollout status --watch deployment/redpanda-contr
 deployment "redpanda-controller-operator" successfully rolled out
 ----
 
-. Install a xref:reference:crd.adoc[Redpanda custom resource] in the same namespace as the Redpanda Operator:
+. Install a xref:reference:k-crd.adoc[Redpanda custom resource] in the same namespace as the Redpanda Operator:
 +
 .`redpanda-cluster.yaml`
-[,yaml]
+[,yaml,subs="attributes+"]
 ----
 apiVersion: cluster.redpanda.com/v1alpha1
 kind: Redpanda
 metadata:
   name: redpanda
 spec:
-  chartRef: {}
+  chartRef:
+    chartVersion: {latest-redpanda-helm-chart-version}
   clusterSpec:
     external:
       domain: customredpandadomain.local
@@ -227,23 +233,24 @@ Helm::
 helm repo add redpanda https://charts.redpanda.com
 helm repo add jetstack https://charts.jetstack.io
 helm repo update
-helm install cert-manager jetstack/cert-manager  --set installCRDs=true --namespace cert-manager  --create-namespace
+helm install cert-manager jetstack/cert-manager  --set crds.enabled=true --namespace cert-manager  --create-namespace
 ```
 +
 The Redpanda Helm chart uses cert-manager to manage TLS certificates.
 
 . Install Redpanda using Helm:
 +
-```bash
-export DOMAIN=customredpandadomain.local && \
+[source,bash,subs="attributes+"]
+----
 helm repo add redpanda https://charts.redpanda.com/
 helm repo update
 helm install redpanda redpanda/redpanda \
+  --version {latest-redpanda-helm-chart-version} \
   --namespace <namespace> \
   --create-namespace \
-  --set external.domain=${DOMAIN} \
+  --set external.domain=customredpandadomain.local \
   --set statefulset.initContainers.setDataDirOwnership.enabled=true
-```
+----
 +
 The installation displays some tips for getting started.
 
@@ -283,7 +290,7 @@ Helm + Operator::
 +
 --
 
-.. Create a xref:manage:kubernetes/manage-topics.adoc[Topic resource]:
+.. Create a xref:manage:kubernetes/k-manage-topics.adoc[Topic resource]:
 +
 .`topic.yaml`
 [,yaml]
@@ -473,7 +480,7 @@ NOTE: These steps work only on Linux operating systems.
 . Add mappings in your `/etc/hosts` file between your worker nodes' IP addresses and their custom domain names:
 +
 ```bash
-sudo true && kubectl --namespace <namespace> get endpoints,node -A -o go-template='{{ range $_ := .items }}{{ if and (eq .kind "Endpoints") (eq .metadata.name "redpanda-external") }}{{ range $_ := (index .subsets 0).addresses }}{{ $nodeName := .nodeName }}{{ $podName := .targetRef.name }}{{ range $node := $.items }}{{ if and (eq .kind "Node") (eq .metadata.name $nodeName) }}{{ range $_ := .status.addresses }}{{ if eq .type "InternalIP" }}{{ .address }} {{ $podName }}.${DOMAIN}{{ "\n" }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}' | envsubst | sudo tee -a /etc/hosts
+sudo true && kubectl --namespace <namespace> get endpoints,node -A -o go-template='{{ range $_ := .items }}{{ if and (eq .kind "Endpoints") (eq .metadata.name "redpanda-external") }}{{ range $_ := (index .subsets 0).addresses }}{{ $nodeName := .nodeName }}{{ $podName := .targetRef.name }}{{ range $node := $.items }}{{ if and (eq .kind "Node") (eq .metadata.name $nodeName) }}{{ range $_ := .status.addresses }}{{ if eq .type "InternalIP" }}{{ .address }} {{ $podName }}.customredpandadomain.local{{ "\n" }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}' | envsubst | sudo tee -a /etc/hosts
 ```
 +
 .`/etc/hosts`
@@ -497,7 +504,7 @@ kubectl --namespace <namespace> get secret redpanda-external-root-certificate -o
 include::get-started:partial$install-rpk-linux.adoc[]
 --
 
-. Configure `rpk` to connect to your cluster using the xref:manage:kubernetes/networking/connect-to-redpanda.adoc#rpk-profile[pre-configured profile]:
+. Configure `rpk` to connect to your cluster using the xref:manage:kubernetes/networking/k-connect-to-redpanda.adoc#rpk-profile[pre-configured profile]:
 +
 [source,bash]
 ----
@@ -513,6 +520,35 @@ rpk cluster info
 ```
 
 include::deploy:partial$kubernetes/default-components.adoc[leveloffset=+1]
+
+include::deploy:partial$kubernetes/guides/uninstall.adoc[leveloffset=+1]
+
+== Delete the cluster
+
+To delete your Kubernetes cluster:
+
+[tabs]
+======
+kind::
++
+--
+
+[,bash]
+----
+kind delete cluster
+----
+
+--
+minikube::
++
+--
+[,bash]
+----
+minikube delete
+----
+--
+======
+
 
 include::deploy:partial$kubernetes/guides/troubleshoot.adoc[leveloffset=+1]
 

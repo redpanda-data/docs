@@ -1,0 +1,40 @@
+= Node-wise Partition Recovery
+:description: Feature to recover partitions that have lost a majority of replicas.
+
+Multi-node or entire-AZ failures (especially in cloud environments), and some forms of human error may result in ‘stuck’ partitions with fewer replicas than required to make a quorum. In such failure scenarios, some data loss may be unavoidable. This description of node-wise partition recovery helps admins understand what they can or cannot recover.
+
+IMPORTANT: This is a last-ditch measure when all other recovery options have failed. In some cases, no remaining replicas may exist for the partitions on the dead nodes. This recovery method is intended for scenarios where you are already experiencing data loss - the goal is to stop the loss of additional data.
+
+Node-wise partition recovery allows you to unsafely recover at least a portion of your data using whatever replicas are remaining. All replicas are moved off the target nodes and allocated to healthy nodes. In one step, this process repairs partitions while draining the target nodes.
+
+== Perform the recovery operation
+
+You perform node-wise partition recovery using the `rpk` command `rpk cluster partitions unsafe-recover`. This command includes an interactive prompt to confirm execution of the generated recovery plan as it is a destructive operation. When you trigger node-wise partition recovery, the partitions on the node are rebuilt in a best-effort basis. As a result of executing this operation, you may lose some data that has not yet been replicated to the surviving partition replicas.
+
+The syntax for this command is as follows:
+
+ rpk cluster partitions unsafe-recover --from-nodes 1,3,5
+
+The `--from-nodes` parameter accepts a comma-delineated list of dead node IDs you wish to recover the data from. The above example would perform recovery operations on nodes 1, 3, and 5. Redpanda will assess these nodes to identify which partitions lack majority. It will then create a plan to recover the impacted partitions and prompt you to confirm it. You must respond `yes` to continue with recovery.
+
+You may also optionally add the `--dry` parameter to this command. This will perform a dry run and allow viewing the recovery plan with no risk to your cluster.
+
+Once the recovery operation is started, you may monitor the status of its execution using the `rpk cluster partitions balancer-status` command. The recovery operation can take some time to complete, especially when a lot of data is involved. This command allows you to monitor progress in real-time.
+
+== Example recovery operation
+Here's an example of the recovery process in action.
+
+----
+$ rpk cluster partitions unsafe-recover --from-nodes 1
+NAMESPACE  TOPIC  PARTITION  REPLICA-CORE  DEAD-NODES
+kafka      bar    0          [1-1]         [1]
+? Confirm recovery from these nodes? Yes
+Executing recovery plan...
+Successfully queued the recovery plan, you may check the status by running 'rpk cluster partitions balancer-status'
+
+$ rpk cluster partitions balancer-status
+Status:                               ready
+Seconds Since Last Tick:              26
+Current Reassignment Count:           0
+Partitions Pending Recovery (1):      [kafka/bar/0]
+----

@@ -8,7 +8,7 @@
 {{ $type.Doc }}
 
 {{ if eq $type.Name "RedpandaClusterSpec" }}
-For descriptions and default values, see xref:redpanda-helm-spec.adoc[].
+For descriptions and default values, see xref:k-redpanda-helm-spec.adoc[].
 {{ end }}
 
 {{ if $type.References -}}

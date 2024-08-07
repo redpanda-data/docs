@@ -1,5 +1,6 @@
-= Internal Metrics Reference
-:description: Reference of Redpanda internal metrics for detailed analysis, debugging, and troubleshooting.
+= Internal Metrics
+:description: Redpanda internal metrics for detailed analysis, debugging, and troubleshooting.
+:page-aliases: reference:internal-metrics.adoc
 
 This section provides reference descriptions about the internal metrics exported from Redpanda's `/metrics` endpoint.
 
@@ -29,6 +30,12 @@ Redpanda uptime in milliseconds.
 
 ---
 
+=== vectorized_cloud_storage_read_bytes
+
+Number of bytes Redpanda has read from cloud storage. This is tracked on a per-topic and per-partition basis, and increments each time a cloud storage read operation successfully completes.
+
+---
+
 === vectorized_cluster_partition_last_stable_offset
 
 Last stable offset.
@@ -40,6 +47,12 @@ If this is the last record received by the cluster, then the cluster is up-to-da
 === vectorized_cluster_partition_schema_id_validation_records_failed
 
 Number of records that failed schema ID validation.
+
+---
+
+=== vectorized_cluster_partition_start_offset
+
+Raft snapshot start offset.
 
 ---
 
@@ -59,6 +72,72 @@ Can indicate latency caused by disk operations.
 
 ---
 
+=== vectorized_kafka_quotas_balancer_runs
+
+Number of times the throughput quota balancer has executed.
+
+*Type*: counter
+
+---
+
+=== vectorized_kafka_quotas_quota_effective
+
+Current effective quota for the quota balancer, in bytes per second.
+
+*Type*: counter
+
+---
+
+=== vectorized_kafka_quotas_client_quota_throttle_time
+
+Client quota throttling delay, in seconds, per rule and quota type based on xref:manage:cluster-maintenance/manage-throughput.adoc#client-throughput-limits[client throughput limits].
+
+*Type*: histogram
+
+*Labels*:
+
+* `quota_rule=("not_applicable" | "kafka_client_default" | "cluster_client_default" | "kafka_client_prefix" | "cluster_client_prefix" | "kafka_client_id")`
+* `quota_type=("produce_quota" | "fetch_quota" | "partition_mutation_quota")`
+
+---
+
+=== vectorized_kafka_quotas_client_quota_throughput
+
+Client quota throughput per rule and quota type.
+
+*Type*: histogram
+
+*Labels*:
+
+* `quota_rule=("not_applicable" | "kafka_client_default" | "cluster_client_default" | "kafka_client_prefix" | "cluster_client_prefix" | "kafka_client_id")`
+* `quota_type=("produce_quota" | "fetch_quota" | "partition_mutation_quota")`
+
+---
+
+=== vectorized_kafka_quotas_throttle_time
+
+Histogram of throttle times, in seconds, based on xref:manage:cluster-maintenance/manage-throughput.adoc#broker-wide-throughput-limits[broker-wide throughput limits].
+
+*Type*: histogram
+
+---
+
+=== vectorized_kafka_quotas_traffic_intake
+
+Total amount of Kafka traffic (in bytes) taken in from clients for processing that was considered by the throttler.
+
+*Type*: counter
+
+---
+
+=== vectorized_kafka_quotas_traffic_egress
+
+Total amount of Kafka traffic (in bytes) published to clients that was considered by the throttler.
+
+*Type*: counter
+
+---
+
 === vectorized_kafka_rpc_active_connections
 
 Number of currently active Kafka RPC connections, or clients.
@@ -70,6 +149,16 @@ Number of currently active Kafka RPC connections, or clients.
 Number of accepted Kafka RPC connections.
 
 Compare to the value at a previous time to derive the rate of accepted connections.
+
+---
+
+[[vectorized_kafka_rpc_produce_bad_create_time]]
+=== vectorized_kafka_rpc_produce_bad_create_time
+
+An incrementing counter for the number of times a producer created a message with a timestamp skewed from the broker's date and time. This metric is related to the following properties:
+
+* `log_message_timestamp_alert_before_ms`: Increment this gauge when the `create_timestamp` on a message is too far in the past as compared to the broker's time.
+* `log_message_timestamp_alert_after_ms`: Increment this gauge when the `create_timestamp` on a message is too far in the future as compared to the broker's time.
 
 ---
 
@@ -107,6 +196,46 @@ Number of Kafka RPC service errors.
 
 ---
 
+=== vectorized_ntp_archiver_compacted_replaced_bytes
+
+Number of bytes removed from cloud storage by compaction operations. This is tracked on a per-topic and per-partition basis.
+
+This metric resets every time partition leadership changes. It tracks whether or not compaction is performing operations on cloud storage.
+
+The `namespace` label supports the following options for this metric:
+
+* `kafka` - User topics
+* `kafka_internal` - Internal Kafka topic, such as consumer groups
+* `redpanda` - Redpanda-only internal data
+
+*Labels*:
+
+* `namespace=("kafka" | "kafka_internal" | "redpanda")`
+* `topic`
+* `partition`
+
+---
+
+=== vectorized_ntp_archiver_pending
+
+The difference between the last committed offset and the last offset uploaded to Tiered Storage for each partition. A value of zero for this metric indicates that all data for a partition is uploaded to Tiered Storage.
+
+This metric is impacted by the xref:reference:tunable-properties.adoc#cloud_storage_segment_max_upload_interval_sec[`cloud_storage_segment_max_upload_interval_sec`] tunable property. If this interval is set to 5 minutes, the archiver will upload committed segments to Tiered Storage every 5 minutes or less. If this metric continues growing for longer than the configured interval, it can indicate a potential network issue with the upload path for that partition.
+
+The `namespace` label supports the following options for this metric:
+
+* `kafka` - User topics
+* `kafka_internal` - Internal Kafka topic, such as consumer groups
+* `redpanda` - Redpanda-only internal data
+
+*Labels*:
+
+* `namespace=("kafka" | "kafka_internal" | "redpanda")`
+* `topic`
+* `partition`
+
+---
+
 === vectorized_raft_leadership_changes
 
 Number of leadership changes.
@@ -119,13 +248,31 @@ High value can indicate nodes failing and causing leadership changes.
 
 Redpanda process utilization.
 
-Shows the true utilization of the CPU by a Redpanda process.
+Shows the true utilization of the CPU by a Redpanda process. This metric has per-broker and per-shard granularity. If a shard (CPU core) is at 100% utilization for a continuous period of real-time processing, for example more than a few seconds, you will likely observe high latency for partitions assigned to that shard. Use topic-aware xref:manage:cluster-maintenance/cluster-balancing.adoc#intra-broker-partition-balancing[intra-broker partition balancing] to balance partition assignments and alleviate load on individual shards.  
 
 ---
 
 === vectorized_storage_log_compacted_segment
 
 Number of compacted segments.
+
+---
+
+=== vectorized_storage_log_compaction_removed_bytes
+
+Number of bytes removed from local storage by compaction operations. This is tracked on a per-topic and per-partition basis. It tracks whether compaction is performing operations on local storage.
+
+The `namespace` label supports the following options for this metric:
+
+* `kafka` - User topics
+* `kafka_internal` - Internal Kafka topic, such as consumer groups
+* `redpanda` - Redpanda-only internal data
+
+*Labels*:
+
+* `namespace=("kafka" | "kafka_internal" | "redpanda")`
+* `topic`
+* `partition`
 
 ---
 
