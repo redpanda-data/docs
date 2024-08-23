@@ -1,0 +1,67 @@
+name: Update @redpanda-data/docs-extensions-and-macros
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [trigger-npm-update]
+
+jobs:
+  update-dependency:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        branch: [main, v/24.1, v/23.3, api]
+
+    steps:
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_SM_READONLY_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SM_READONLY_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+      - name: get secrets from aws sm
+        uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            ,sdlc/prod/github/actions_bot_token
+          parse-json-secrets: true
+      - name: Checkout the repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Update @redpanda-data/docs-extensions-and-macros
+        run: npm update @redpanda-data/docs-extensions-and-macros
+
+      - name: Commit changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b update-branch-${{ matrix.branch }}
+          git add package.json package-lock.json
+          git commit -m "Update @redpanda-data/docs-extensions-and-macros"
+          git push origin update-branch-${{ matrix.branch }}
+        env:
+          ACCESS_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "auto-docs: update @redpanda-data/docs-extensions-and-macros"
+          git-token: ${{ env.ACTIONS_BOT_TOKEN }}
+          branch: update-branch-${{ matrix.branch }}
+          base: ${{ matrix.branch }}
+          title: "auto-docs: Update extensions on ${{ matrix.branch }}"
+          body: "This PR updates the @redpanda-data/docs-extensions-and-macros package on the ${{ matrix.branch }} branch."
+          labels: auto-docs
+          reviewers: JakeSCahill, Deflaimun
