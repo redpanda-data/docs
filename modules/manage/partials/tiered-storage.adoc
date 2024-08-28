@@ -1,9 +1,14 @@
 ifdef::env-kubernetes[]
-:data-archiving-link: manage:kubernetes/storage/tiered-storage/k-data-archiving.adoc
+:topic-recovery-link: manage:kubernetes/storage/tiered-storage/k-topic-recovery.adoc
 endif::[]
 ifndef::env-kubernetes[]
-:data-archiving-link: manage:data-archiving.adoc
+:topic-recovery-link: manage:topic-recovery.adoc
 endif::[]
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
 
 Tiered Storage helps to lower storage costs by offloading log segments to object storage. You can specify the amount of storage you want to retain in local storage. You don't need to specify which log segments you want to move, because Redpanda moves them automatically based on cluster-level configuration properties. Tiered Storage indexes where data is offloaded, so it can look up the data when you need it.
 
@@ -976,7 +981,7 @@ Data becomes eligible for deletion from object storage following `retention.ms` 
 - Both size-based and time-based retention policies are applied simultaneously, so it's possible for your size-based property to override your time-based property, or vice versa. For example, if your size-based property requires removing one segment, and your time-based property requires removing three segments, then three segments are removed. Size-based properties reclaim disk space as close as possible to the maximum size, without exceeding the limit.
 ====
 
-See also: xref:manage:cluster-maintenance/disk-utilization.adoc#configure-message-retention'[Configure message retention] and xref:manage:cluster-maintenance/disk-utilization.adoc#local-storage-housekeeping[Local storage housekeeping]
+See also: xref:manage:cluster-maintenance/disk-utilization.adoc#configure-message-retention'[Configure message retention] and xref:manage:cluster-maintenance/disk-utilization.adoc#space-management[Space management]
 
 ==== Compacted topics in Tiered Storage
 
@@ -1003,7 +1008,7 @@ At topic creation with Tiered Storage enabled:
 After topic configuration, if Tiered Storage was disabled and must be enabled, or was enabled and must be disabled, Redpanda uses the local retention properties set for the topic. It is strongly recommended that you do not re-enable Tiered Storage after previously enabling and disabling it. Re-enabling Tiered Storage can result in inconsistent data and data gaps in Tiered Storage for a topic.
 
 
-See also: xref:manage:cluster-maintenance/disk-utilization.adoc#local-storage-housekeeping[Local storage housekeeping]
+See also: xref:manage:cluster-maintenance/disk-utilization.adoc#space-management[Space management]
 
 == View space usage
 
@@ -1032,8 +1037,6 @@ Remote write is the process that constantly uploads log segments to object stora
 To ensure all data is uploaded, you must enable remote write before any data is produced to the topic. If you enable remote write after data has been written to the topic, only the data that currently exists on disk based on local retention settings will be scheduled for uploading. Redpanda strongly recommends that you avoid repeatedly toggling remote write on and off, because this can result in inconsistent data and data gaps in Tiered Storage for a topic.
 
 To enable Tiered Storage, use both remote write and remote read.
-
-NOTE: If you only enable remote write on a topic, you have a simple backup that you can use for recovery. See xref:{data-archiving-link}[Data Archiving].
 
 To create a topic with remote write enabled:
 
@@ -1084,6 +1087,22 @@ Remote write uses a proportional derivative (PD) controller to minimize the back
 
 The upload backlog controller prevents Redpanda from running out of disk space. If `remote.write` is set to `true`, Redpanda cannot evict log segments that have not been uploaded to object storage. If the remote write process cannot keep up with the amount of data that needs to be uploaded to object storage, the upload backlog controller increases priority for the upload process. The upload backlog controller measures the size of the upload periodically and tunes the priority of the remote write process.
 
+=== Data archiving
+
+If you only enable remote write on a topic, you have a simple backup to cloud storage that you can use for recovery. In the event of a data center failure, data corruption, or cluster migration, you can recover your archived data from the cloud back to your cluster.
+
+==== Configure data archiving
+
+Data archiving requires a <<set-up-tiered-storage,Tiered Storage configuration>>.
+
+To recover a topic from object storage, use xref:{topic-recovery-link}[single topic recovery].
+
+==== Stop data archiving
+
+To cancel archiving jobs, disable remote write.
+
+To delete archival data, adjust `retention.ms` or `retention.bytes`.
+
 == Remote read
 
 Remote read fetches data from object storage using the Kafka API.
@@ -1106,7 +1125,7 @@ To enable remote read on an existing topic:
 rpk topic alter-config <topic_name> --set redpanda.remote.read=true
 ----
 
-See also: xref:manage:kubernetes/k-remote-read-replicas.adoc[Remote Read Replicas]
+See also: xref:{topic-recovery-link}[Topic Recovery], xref:manage:kubernetes/k-remote-read-replicas.adoc[Remote Read Replicas]
 
 == Caching
 
@@ -1567,31 +1586,6 @@ If both this property and `cloud_storage_cache_size_percent` are set, Redpanda u
 | The threshold below which all chunks of a segment can be hydrated without eviction. If the number of chunks in a segment is below this threshold, the segment is small enough that all chunks in it can be hydrated at any given time. Default is 5.
 |===
 
-== Remote recovery
-
-When you create a topic, you can use remote recovery to download the topic data from object storage. This is useful when you need to restore a single topic that was accidentally deleted from a cluster.
-
-[IMPORTANT]
-====
-* Remote recovery is only safe when no other clusters are writing to the specified bucket or container.
-* You must enable `redpanda.remote.read` when using remote recovery.
-* If you later disable `redpanda.remote.read` on the remote recovery topic, previously hydrated (downloaded) data will not be used to serve requests.
-====
-
-To create a new topic using remote recovery (the recovered topic can read and write in the cloud):
-
-[,bash]
-----
-rpk topic create <topic_name> -c redpanda.remote.recovery=true -c redpanda.remote.write=true -c redpanda.remote.read=true
-----
-
-To create a new topic using remote recovery (while also disabling the `redpanda.remote.write` property):
-
-[,bash]
-----
-rpk topic create <topic_name> -c redpanda.remote.recovery=true -c redpanda.remote.write=false -c redpanda.remote.read=true
-----
-
 == Retries and backoff
 
 If the object storage provider replies with an error message that the server is busy, Redpanda retries the request. Redpanda may retry on other errors, depending on the object storage provider.
@@ -1629,53 +1623,6 @@ ifndef::env-kubernetes[Edit them with the `rpk cluster config edit` command.]
 | config_ref:cloud_storage_trust_file,true,properties/object-storage-properties[]
 | The public certificate used to validate the TLS connection to object storage. If this is empty, Redpanda uses your operating system's CA cert pool.
 |===
-
-== Fast commission and decommission
-
-Tiered Storage gives you the option to boost the speed and reduce the impact of broker operations, particularly when resizing a cluster. For instance, adding a new broker to increase capacity for an overburdened cluster could introduce additional stress as partition replicas are transferred to the new broker. For cloud deployments, commissioning or decommissioning a broker can be a slow and expensive process, especially across multiple availability zones (AZs).
-
-Tiered Storage can help make the cluster resize process faster and more cost-efficient by leveraging data that has already been uploaded to object storage. Instead of transferring all data from local storage to the reassigned replicas, the replicas can instead be initialized to rely more heavily on Tiered Storage for read requests.
-
-To accomplish this, Redpanda takes an on-demand snapshot at an offset that is already uploaded to object storage. This is a later offset compared to the default log start offset managed by glossterm:Raft[]. When an empty replica is initialized, the later offset uploaded to object storage can be used as the start offset source. Reads that access data before the uploaded offset can be executed as remote reads. Therefore, the only data that needs to be sent over the network to replicas is the data locally retained after the uploaded offset. This also results in less time taken overall to grow or shrink the cluster.
-
-=== Configure fast commission and decommission
-
-To activate fast commission and decommission when brokers enter and leave the cluster:
-
-. Make sure to <<enable-tiered-storage,configure topics for Tiered Storage>>.
-. Configure at least one of the following cluster configuration properties. These properties limit the size of data replicated across brokers to local storage using Raft:
-+
---
-* `initial_retention_local_target_bytes_default`: Initial local retention size target for partitions of topics with Tiered Storage enabled. The default is null.
-** Use the `initial.retention.local.target.bytes` topic configuration property to override on the topic level.
-* `initial_retention_local_target_ms_default`: Initial local retention time target for partitions of topics with Tiered Storage enabled. The default is null.
-** Use the `initial.retention.local.target.ms` topic configuration property to override on the topic level.
---
-+
-If no values are set for the cluster configuration properties, all locally-retained data is delivered by default to the new 
-broker (learner) when joining a partition replica set.
-
-IMPORTANT: Because topics become more reliant on object storage to serve data, you may experience higher latency reads for data beyond the range of the configured local <<set-retention-limits,retention target>>. Carefully weigh the tradeoffs between faster broker commission/decommission and the increased read latency due to less data being available in local storage.
-
-=== Monitor fast commission and decommission
-
-Use the following to monitor fast commission and decommission:
-
-* The `vectorized_cluster_partition_start_offset` metric on newly-joined brokers should be greater than on existing brokers.
-* Raft protocol logs taking an on-demand snapshot are logged at the `debug` level, for example:
-+
-[,bash]
-----
-DEBUG 2023-11-20 09:19:21,287 [shard 0:raft] raft - [follower: {id: {5}, revision: {51}}] [group_id:33, {kafka/topic-epohgytrdz/32}] - recovery_stm.cc:460 - creating on demand snapshot with last included offset: 2447
-----
-+
-A snapshot request is also logged at the `trace` level on followers:
-+
-[,bash]
-----
-TRACE 2023-11-20 09:19:21,225 [shard 1:raft] raft - [group_id:8, {kafka/topic-epohgytrdz/7}] consensus.cc:2260 - received install_snapshot request: {term: 1, group: 8, target_node_id: {id: {5}, revision: {42}}, node_id: {id: {2}, revision: {30}}, last_included_index: 2269, file_offset: 0, chunk_size: 211, done: true, dirty_offset: 2523}
-----
-* Depending on retention settings, disk usage on a newly-joined broker should generally be much lower than on existing brokers.
 
 == Object storage housekeeping
 
