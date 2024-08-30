@@ -1,5 +1,7 @@
 For topics with Tiered Storage enabled, you can mount and unmount topics to transfer the topic data between your cluster and object storage. This effectively frees up unused partition space that can be reclaimed, enables you to migrate a topic to a different cluster, and allows the topic or even the entire cluster to hibernate or be decommissioned.
 
+An unmounted topic in object storage is detached from all clusters. The original cluster releases ownership of the topic.
+
 You can mount a topic from object storage that has been previously flushed from a source cluster to a different destination cluster, or back to the same source cluster.
 
 The following data is moved to object storage when unmounting a topic from a cluster:
@@ -12,51 +14,190 @@ The following data is moved to object storage when unmounting a topic from a clu
 . Enable Tiered Storage for specific topics, or for the entire cluster (all topics).
 . Install `rpk`, or ensure that you have access to the Admin API.
 
+== Unmount a topic from a cluster to object storage
+
+When you unmount a topic, all incoming writes to the topic are blocked as Redpanda migrates the topic from the cluster to object storage. Producers and consumers of the topic receive an error message indicating that the topic is no longer available. The unmounted topic is deleted in the source cluster.
+
+[tabs]
+======
+rpk::
++
+--
+In your cluster, run this command to unmount a topic to object storage:
+
+```
+rpk topic unmount <namespace>/<topic-name>
+```
+--
+Admin API::
++
+--
+To unmount a topic from a cluster using the Admin API, you must first create an outbound topic migration. The API returns the migration ID upon creation. Then, you make an API request with the migration ID to carry out the migration in steps: prepare, execute, and cut over.
+
+[[unmount-create-migration]]
+=== Create migration
+
+Make a PUT request to the `/migrations` endpoint to create a topic migration. Specify the names of the desired topics in the request body:
+
+```
+curl -X PUT http://localhost:9644/v1/migrations -d {
+  "migration_type":"outbound", 
+  "topics": [
+    {
+      "ns": "kafka", 
+      "topic": "<topic-1-name>"
+    }, 
+    {
+      "ns": "kafka", 
+      "topic": "<topic-2-name>"
+    }, 
+    {
+      "ns": "kafka", 
+      "topic": "<topic-3-name>"
+    }
+  ], "consumer_groups": []
+}
+```
+
+* `ns` is the topic namespace. This field is optional. Default: `kafka`
+* `consumer_groups` is required.
+
+If successful, the response returns the ID of the newly-created migration. Use the ID in subsequent API calls to run the migration.
+
+[[unmount-prepare-migration]]
+=== Prepare migration
+
+When preparing topics for migration, Redpanda copies all possible topic data, including topic manifest,s to the destination bucket or container in object storage. In this state, the cluster still accepts client reads and writes. 
+
+Make a `POST /v1/migrations/\{id}/?action=prepare` request:
+
+```
+curl -X POST http://localhost:9644/v1/<migration-id>/?action=prepare
+```
+
+[[unmount-execute-migration]]
+=== Execute migration
+
+When you execute the migration, the cluster rejects client reads and writes. Redpanda uploads any remaining topic data that has not yet been copied to object storage. 
+
+Make a `POST /v1/migrations/\{id}/?action=execute` request to execute the migration:
+
+```
+curl -X POST http://localhost:9644/v1/<migration-id>/?action=execute
+```
+
+[[unmount-cut-over]]
+=== Cut over
+
+Finally, the migration can be deleted. Redpanda deletes the unmounted topics from the cluster.
+
+To cut over after executing the migration:
+
+```
+curl -X POST http://localhost:9644/v1/<migration-id>/?action=finish
+```
+
+--
+======
+
 
 == Mount a topic to a cluster
 
+[tabs]
+======
+rpk::
++
+--
 In your target cluster, run this command to mount a topic from object storage:
 
-[tabs]
-====
-rpk::
-+
---
 ```
-rpk topic mount <topic-name> -u <cloud-storage-url>
+rpk topic mount <source-topic-name>
+```
+
+You can also rename the topic as you mount it to the target cluster:
+
+```
+rpk topic mount <namespace>/<source-topic-name> --to <namespace>/<new-topic-name>
 ```
 --
 Admin API::
 +
 --
-```
+To mount a topic to a target cluster using the Admin API, you must first create an inbound topic migration. The API returns the migration ID upon creation. Then, you make an API request with the migration ID to carry out the migration in steps: prepare, execute, and cut over.
+
+[[mount-create-migration]]
+=== Create migration
+
+Make a PUT request to the `/migrations` endpoint to create a topic migration. Specify the names of the topics in the request body:
 
 ```
+curl -X PUT http://localhost:9644/v1/migrations -d {
+  "migration_type":"inbound", 
+  "topics": [
+    {
+      "source_topic": {"ns": "kafka", "topic": "<source-topic-1-name>"}, 
+      "alias": {"ns": "kafka", "topic": "<new-topic-1-name>"}
+    }, 
+    {
+      "source_topic": {"ns": "kafka", "topic": "<source-topic-2-name>"}
+    }, 
+    {
+      "source_topic": {"ns": "kafka", "topic": "source-topic-3-name"}, 
+      "alias": {"ns": "kafka", "topic": "<new-topic-3-name>"}
+    }
+  ], 
+  "consumer_groups": []
+}
+```
+
+* `ns` is the topic namespace. This field is optional. Default: `kafka`
+* To rename the topic in the target cluster, use the optional `alias` object in the request body. In the example, topics 1 and 3 are given new names in the target cluster, while topic 2 retains its original name.
+* `consumer_groups` is required.
+
+If successful, the response returns the ID of the newly-created migration. Use the ID in subsequent API calls to run the migration.
+
+[[mount-prepare-migration]]
+=== Prepare migration
+
+When preparing a topic for migration, Redpanda recreates the topic in a disabled state in the target cluster. The cluster allocates partitions but does not add log segments yet. Topic metadata is populated from the topic manifest found in object storage.
+
+Make a `POST /v1/migrations/\{id}/?action=prepare` request to prepare the migration:
+
+```
+curl -X POST http://localhost:9644/v1/<migration-id>/?action=prepare
+```
+
+[[mount-execute-migration]]
+=== Execute migration
+
+When you execute the migration, the target cluster starts the partitions with log segments downloaded from object storage.
+
+Make a `POST /v1/migrations/\{id}/?action=execute` request to execute the migration:
+
+```
+curl -X POST http://localhost:9644/v1/<migration-id>/?action=execute
+```
+
+[[mount-cut-over]]
+=== Cut over
+
+Finally, the migration can be deleted. The target cluster starts to handle produce and consume workloads.
+
+To cut over after executing the migration:
+
+```
+curl -X POST http://localhost:9644/v1/<migration-id>/?action=finish
+```
+
 --
 
-====
-
-== Unmount a topic from a cluster to object storage
-
-Run this command to flush a topic from the source cluster to object storage. This deletes the topic from the cluster. Once you initiate this process, all incoming writes to the topic are blocked. Producers and consumers of the topic receive an error message indicating that the topic is no longer available. 
-
-[tabs]
-====
-rpk::
-+
---
-```
-rpk topic unmount <topic-name>
-```
---
-Admin API::
-+
---
-```
-
-```
---
-
-====
+======
 
 == Monitor progress
+
+Issue a GET request to the `/migrations` endpoint to view the status of topic migrations:
+
+```
+curl http://localhost:9644/v1/migrations 
+```
+
