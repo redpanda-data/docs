@@ -1,21 +1,18 @@
-const { Octokit } = require("@octokit/rest");
 const semver = require("semver");
 const owner = 'redpanda-data';
 const repo = 'console';
 
-let githubOptions = {
-  userAgent: 'Redpanda Docs',
-  baseUrl: 'https://api.github.com',
-};
-
-if (process.env.REDPANDA_GITHUB_TOKEN) {
-  githubOptions.auth = process.env.REDPANDA_GITHUB_TOKEN;
+async function loadOctokit() {
+  const { Octokit } = await import('@octokit/rest');
+  if (!process.env.REDPANDA_GITHUB_TOKEN) return new Octokit()
+  return new Octokit({
+    auth: process.env.REDPANDA_GITHUB_TOKEN,
+  });
 }
-
-const github = new Octokit(githubOptions);
 
 (async () => {
   try {
+    const github = await loadOctokit();
     // Fetch the latest 10 releases
     const releases = await github.rest.repos.listReleases({
       owner,
