@@ -1,0 +1,188 @@
+= Manage Users with the Redpanda Operator
+:description: Use the User resource to declaratively create and manage Kafka users as part of a Redpanda deployment. Each User resource is mapped to a user in your Redpanda cluster. The user controller keeps the corresponding Kafka user in sync with the User resource.
+:page-categories: Management, Development
+:env-kubernetes: true
+
+The Redpanda Operator allows you to declaratively create and manage Kafka users using xref:reference.adoc[User custom resources] in Kubernetes. Each User resource is mapped to a user in your Redpanda cluster. The user controller, a component of the Redpanda Operator, keeps the corresponding Kafka user in sync with the User resource. This resource allows you to create users as part of a Redpanda deployment.
+
+== Prerequisites
+
+You must have the following:
+
+* *Kubernetes cluster*: Ensure you have a running Kubernetes cluster, either locally (e.g., minikube or kind) or remotely.
+* *Kubectl*: Ensure you have the https://kubernetes.io/docs/tasks/tools/#kubectl[kubectl^] command-line tool installed and configured to communicate with your cluster.
+* *Redpanda*: Ensure you have the xref:deploy:deployment-option/self-hosted/kubernetes/k-production-deployment.adoc[Redpanda Operator and a Redpanda resource deployed] in your Kubernetes cluster.
+
+== Limitations
+
+You cannot create access control lists (ACLs) directly in the User resource. To create ACLs for your users, use `rpk` or another Kafka client. For details about ACLs, see xref:manage:security/authorization/acl.adoc[].
+
+== Create a user
+
+You can create a user using a User resource:
+
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: User
+metadata:
+  name: my-user
+spec:
+  cluster:
+    clusterRef:
+      name: redpanda-cluster
+  authentication:
+    type: scram-sha-512
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: user-secret
+          key: password
+----
+
+- `metadata.name` (*required*): The name of the User resource, which will map to the corresponding user in the Redpanda cluster.
+- `spec.cluster.clusterRef.name` (*required*): The reference to the Redpanda cluster where the user should be created.
+- `spec.authentication` (*optional*): Defines the user authentication method. It supports SCRAM-SHA-256 and SCRAM-SHA-512.
+- `spec.password.valueFrom.secretKeyRef`: Specifies where the password for the user is stored.
+
+=== Example User resource
+
+This example creates a user named `my-user` with SCRAM-SHA-512 authentication:
+
+.example-user.yaml
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: User
+metadata:
+  name: my-user
+spec:
+  cluster:
+    clusterRef:
+      name: redpanda-cluster
+  authentication:
+    type: scram-sha-512
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: user-secret
+          key: password
+----
+
+[bash]
+----
+kubectl apply -f example-user.yaml --namespace <namespace>
+----
+
+Replace `<namespace>` with the namespace in which you deployed Redpanda.
+
+=== Specify authentication type
+
+You can specify the authentication type for a user using the `spec.authentication.type` field. Supported values include `scram-sha-256`, `scram-sha-512`, and their uppercase variants.
+
+If no authentication credentials are provided, no user will be created, but ACLs can still be managed for existing users.
+
+=== Manage user secrets
+
+Redpanda users require a password, which can be provided directly, using the `spec.password.value` field, or through a Kubernetes Secret, using the `spec.password.valueFrom.secretKeyRef`.
+
+For example, to use a Kubernetes Secret for the password, ensure the secret exists and reference it like so:
+
+[source,yaml]
+----
+password:
+  valueFrom:
+    secretKeyRef:
+      name: user-secret
+      key: password
+----
+
+.Example Kubernetes Secret for the user password
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: user-secret
+type: Opaque
+data:
+  # base64-encoded password
+  password: cGFzc3dvcmQ=
+----
+
+== Verify a user
+
+After deploying a User resource, verify that the Redpanda Operator reconciled it:
+
+[bash]
+----
+kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
+----
+
+Example output:
+
+[source,json]
+----
+{
+  "level": "info",
+  "ts": "2024-09-25T16:20:09.538Z",
+  "logger": "UserReconciler.Reconcile",
+  "msg": "Starting reconcile loop",
+  "controller": "user",
+  "User": {
+    "name": "my-user",
+    "namespace": "<namespace>"
+  },
+  "reconcileID": "c0cf9abc-a553-48b7-9b6e-2de3cdfb4432"
+}
+{
+  "level": "info",
+  "ts": "2024-09-25T16:20:09.581Z",
+  "logger": "UserReconciler.Reconcile",
+  "msg": "Reconciliation finished in 43.436125ms, next run in 3s",
+}
+----
+
+== Update a user
+
+To update a user, edit the User resource configuration and apply the changes.
+
+For example, to change the authentication method:
+
+.`updated-user.yaml`
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: User
+metadata:
+  name: my-user
+spec:
+  authentication:
+    type: scram-sha-256
+  cluster:
+    clusterRef:
+      name: redpanda-cluster
+----
+
+Apply the changes:
+
+[bash]
+----
+kubectl apply -f updated-user.yaml --namespace <namespace>
+----
+
+== Delete a user
+
+To delete a user, delete the User resource:
+
+[bash]
+----
+kubectl delete -f example-user.yaml --namespace <namespace>
+----
+
+When a user is deleted, its underlying data is removed as well. If the user has ACLs, those ACLs are also removed.
+
+== Suggested reading
+
+* xref:reference:k-user-crd.adoc[]
+* xref:manage:kubernetes/security/authentication/k-authentication.adoc[]
