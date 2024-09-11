@@ -1,0 +1,364 @@
+= Authorization
+:description: Redpanda Console uses role-based access control (RBAC) to restrict system access to authorized users.
+:page-aliases: console:single-sign-on/authorization.adoc, manage:security/console/authorization.adoc, console:features/role-bindings.adoc, console:reference/role-bindings.adoc, reference:console/role-bindings.adoc
+:page-categories: Management, Security, Redpanda Console
+
+Redpanda Console uses role-based access control (RBAC) to manage and restrict access to various system resources. This document covers how to configure and use RBAC in Redpanda Console, including setting up predefined and custom roles, binding roles to users, and leveraging advanced options such as regex-based resource inclusion.
+
+[NOTE]
+====
+include::shared:partial$enterprise-and-console.adoc[]
+====
+
+== RBAC concepts
+
+RBAC in Redpanda Console allows you to control access to different resources by binding specific roles to users or groups. These roles determine the permissions that users have when interacting with Redpanda Console.
+
+You can assign existing roles (admin, editor, viewer) to individual users or groups from your configured identity providers. Users with multiple roles receive the union of all permissions defined in those roles.
+
+== Default roles
+
+Redpanda Console comes with three primitive roles:
+
+=== Viewer
+
+The `viewer` role grants permissions to view all resources within Redpanda Console. This includes:
+
+* Viewing all topic data (messages, configs, partitions, using search filters).
+* Viewing all cluster data (node configs, ACLs, service accounts, quotas).
+* Viewing all consumer group data (consumer groups, group offsets and lags).
+* Viewing all Schema Registry data (registered schemas with their contents).
+* Viewing all Kafka Connect data (list configured clusters and their connectors, including the status and connector configs).
+
+It does not include permissions to view the list of Console users that are allowed to use Redpanda Console.
+
+=== Editor
+
+The `editor` role grants all permissions that come with the `viewer` role and additionally includes:
+
+* Managing all topic aspects, such as creating topics, editing topic configurations, deleting topics, and publishing and deleting topic records.
+* Managing all cluster configuration aspects, such as editing node or cluster configs.
+* Managing all consumer group aspects, such as editing group offsets or deleting group offsets.
+* Managing all Kafka connect aspects, such as creating/updating/deleting or starting/pausing/stopping connectors.
+
+It does not include the permission to create/remove ACLs or to create or remove a service account.
+
+=== Admin
+
+The `admin` role grants all permissions that come with the `editor` role and additionally includes:
+
+* Managing all service account aspects (create/remove service accounts)
+* Managing all ACL aspects (create/remove ACLs)
+
+== Custom roles
+
+Redpanda Console allows you to define custom roles by specifying a set of permissions and actions that determine what resources a role can access and how it can interact with them. This section provides an overview of the available resource IDs, predefined actions, and the `includes` option, which can be used to configure custom roles.
+
+=== Predefined actions
+
+When defining roles in Redpanda Console, you can use predefined actions (`admin`, `edit`, `view`) to grant a group of related permissions to a resource. These predefined actions simplify the configuration process by grouping multiple granular permissions under a single label.
+
+* `admin`: Provides full control over the resource, including all possible permissions such as creation, editing, deletion, and viewing.
+* `edit`: Allows modifications, including creating, updating, and deleting records or configurations, but not full administrative control.
+* `view`: Grants read-only access to view the resource without making changes.
+
+When you assign these actions to roles, Redpanda Console automatically expands them into the relevant permissions set.
+
+The `includes` and `excludes` options in the role configuration allow you to specify which resources or parts of a resource the permissions apply to, using regular expressions (regex). These options give you fine-grained control over which resources a role can access.
+
+* **`includes`**: Specifies the resources to which the permissions should apply. Only the resources that match the regex patterns provided in `includes` will be affected.
+* **`excludes`**: Specifies the resources to be excluded from the permissions. Even if a resource matches the `includes` pattern, it will be excluded if it also matches a pattern in `excludes`.
+
+By using `includes` and `excludes` together, you can precisely control access to subsets of resources. For example, you might want to grant permissions to all topics that start with `team1-` but exclude those that contain the word `test`.
+
+NOTE: Ensure your regex patterns are valid. Invalid regex patterns will cause the configuration to fail. If no `includes` option is specified, the permissions apply to all resources of the specified type. If no `excludes` option is specified, no resources are excluded.
+
+=== Example custom role definition
+
+Here is an example of defining custom roles that grant different access levels to various resources:
+
+[,yaml]
+----
+roles:
+  - name: team1-admin
+    permissions:
+      - resource: consumerGroups
+        includes: ["team-.*"]   # Applies to consumer groups with names starting with 'team-'
+        allowedActions: ["admin"]  # Grants full administrative control
+      - resource: topics
+        includes: ["team1-.*"]   # Applies to topics with names starting with 'team1-'
+        allowedActions: ["admin"]  # Grants full administrative control
+      - resource: cluster
+        includes: ["team1-.*"]   # Applies to cluster resources related to 'team1'
+        allowedActions: ["admin"]  # Grants full administrative control
+
+  - name: team1-user
+    permissions:
+      - resource: consumerGroups
+        includes: ["team-.*"]
+        allowedActions: ["view"]  # Grants read-only access
+      - resource: topics
+        includes: ["team1-.*"]
+        excludes: [".*test.*"]    # Excludes any topic with 'test' in its name
+        allowedActions: ["view", "edit"]  # Grants view and edit access, but not delete or admin privileges
+----
+
+In this example:
+
+* The `team1-admin` role is granted full administrative access (`admin`) to consumer groups, topics, and cluster resources that match the regex patterns provided in `includes`.
+* The `team1-user` role is granted read-only access (`view`) and some editing capabilities (`edit`) to topics and consumer groups, with more limited access to cluster resources.
+
+This configuration demonstrates how to effectively use predefined actions and the `includes` option to control access to specific resources within Redpanda Console.
+
+=== Resource IDs
+
+Each resource in Redpanda Console is identified by a `resourceID`, which specifies the type of resource that a role can interact with. The following `resourceIDs` are available:
+
+* `application` - Refers to Console login and user management.
+* `topics` - Refers to Kafka Topics.
+* `consumerGroups` - Refers to Kafka consumer groups.
+* `cluster` - Refers to cluster-wide resources such as ACLs, partition reassignment, and more.
+* `kafkaConnect` - Refers to Kafka Connect clusters managed by the Console.
+* `secrets` - Refers to managing secrets in a secret store.
+* `schemaRegistry` - Refers to the Schema Registry API that Console connects to.
+
+You can use these `resourceIDs` to define which parts of the system a role should have access to.
+
+=== Permissions (actions)
+
+Each resource has associated actions that define which operations a role can perform. Here are the available actions grouped by resource:
+
+* *Topic actions*
+** `seeTopic` - View the topic.
+** `viewPartitions` - View the partitions of a topic.
+** `viewConfig` - View the configuration of a topic.
+** `editConfig` - Edit the configuration of a topic.
+** `viewMessages` - View messages within a topic.
+** `useSearchFilter` - Use search filters on a topic.
+** `viewConsumers` - View consumers of a topic.
+** `createTopic` - Create a new topic.
+** `deleteTopic` - Delete a topic.
+** `publishTopicRecords` - Publish records to a topic.
+** `deleteTopicRecords` - Delete records from a topic.
+
+* *Application actions*
+** `viewConsoleUsers` - View Console users.
+
+* *Cluster actions*
+** `viewAcl` - View ACLs in the cluster.
+** `createAcl` - Create a new ACL.
+** `deleteAcl` - Delete an ACL.
+** `reassignPartitions` - Reassign partitions within the cluster.
+** `patchConfigs` - Apply configuration changes to the cluster.
+** `viewQuotas` - View quotas within the cluster.
+** `viewKafkaUser` - View Kafka users.
+** `createKafkaUser` - Create a new Kafka user.
+** `deleteKafkaUser` - Delete a Kafka user.
+** `viewRedpandaRole` - View Redpanda roles.
+** `createRedpandaRole` - Create a new Redpanda role.
+** `deleteRedpandaRole` - Delete a Redpanda role.
+** `viewTransform` - View data transforms.
+** `createTransform` - Create a new data transform.
+** `deleteTransform` - Delete a data transform.
+** `viewPipeline` - View data pipelines.
+** `createPipeline` - Create a new data pipeline.
+** `updatePipeline` - Update an existing data pipeline.
+** `deletePipeline` - Delete a data pipeline.
+
+* *Consumer Group actions*
+** `seeConsumerGroup` - View consumer groups.
+** `editConsumerGroup` - Edit consumer groups.
+** `deleteConsumerGroup` - Delete consumer groups.
+
+* *Kafka Connect actions*
+** `viewConnectCluster` - View Kafka Connect clusters.
+** `editConnectCluster` - Edit Kafka Connect clusters.
+** `deleteConnectCluster` - Delete Kafka Connect clusters.
+
+* *Secrets actions*
+** `listSecrets` - List secrets in the secret store.
+** `createSecret` - Create a new secret.
+** `updateSecret` - Update an existing secret.
+** `deleteSecret` - Delete a secret.
+
+* *Schema Registry actions*
+** `viewSchemas` - View schemas in the Schema Registry.
+** `createSchema` - Create a new schema.
+** `deleteSchema` - Delete a schema.
+** `manageSchemaRegistry` - Manage the Schema Registry.
+
+When defining a custom role, you can specify any combination of these actions for the relevant resources. For example, to create a role that can only view topics and consumer groups, you would specify `seeTopic` and `seeConsumerGroup` actions in the role's permissions.
+
+== Configure roles and role bindings
+
+Both roles and role binding configurations are applied through separate YAML files that Redpanda Console loads at startup. You need to specify the file paths to the roles configuration file and the role bindings configuration file in the main Redpanda Console configuration file. These file paths are set using the `rolesFilepath` and `roleBindingsFilepath` options under the `enterprise.rbac` configuration block.
+
+Here is an example of how to configure these file paths in your Redpanda Console configuration file:
+
+[,yaml]
+----
+# Path to your redpanda.license file
+licenseFilepath: "/etc/redpanda/redpanda.license"
+enterprise:
+  rbac:
+    enabled: true
+    rolesFilepath: "/etc/redpanda/roles.yaml"
+    roleBindingsFilepath: "/etc/redpanda/role-bindings.yaml"
+----
+
+- `rolesFilepath` specifies the path to your custom roles definition file. This file should contain the definition of all roles and their permissions.
+- `roleBindingsFilepath` specifies the path to your role bindings file. This file should contain the role bindings that associate the roles with specific users or groups.
+
+Ensure that the paths provided are correct and that the Redpanda Console process has read access to these files.
+
+* The `roles.yaml` and `role-bindings.yaml` files should be stored in a secure location, with appropriate file permissions to prevent unauthorized access or modification.
+* Regularly review and update the `roles.yaml` and `role-bindings.yaml` files to ensure that they reflect your organization's current access control policies.
+* After making changes to these files, restart Redpanda Console to apply the updates.
+
+== Role bindings
+
+To grant users the permissions defined in a role, you must bind the role to a user or a group. Each role binding holds a list of subjects (users or groups) and a reference to the role being granted. Optionally, you can add metadata (key-value pairs) which may help you to manage your role bindings. Redpanda Console shows the metadata in the UI, so that it helps you to understand how a specific user received their permissions.
+
+For example, this role binding binds Google account `john.doe@redpanda.com` to the role named `admin`:
+
+[,yaml]
+----
+roleBindings:
+  - roleName: admin
+    metadata:
+      # Metadata properties will be shown in the UI. You can omit it if you want to
+      name: Developers
+      creator: John Doe
+    subjects:
+      - kind: user
+        provider: Google
+        name: john.doe@redpanda.com
+----
+
+=== Bind roles to groups
+
+If you want to bind roles to a set of users (for example, GitHub teams or Google Groups), you need to configure your identity provider to grant Redpanda Console additional permissions so that it can resolve the memberships of these user sets. For more information about this setup, see the respective xref:console:config/security/authentication.adoc[identity provider] documentation.
+
+All group memberships that are used in role bindings are resolved at startup. Group memberships are cached for 15 minutes. Resolving group memberships proactively is required in order to support nested groups.
+
+This role binding binds all Google accounts which are a member of Google group `dev-team-console@redpanda.com` to the role named `admin`. Group memberships are resolved recursively, so that members from nested groups are also considered.
+
+[,yaml]
+----
+roleBindings:
+  - roleName: admin
+    metadata:
+      # Metadata properties will be shown in the UI. You can omit it if you want to
+      name: Developers
+      creator: John Doe
+    subjects:
+      - kind: group
+        provider: Google
+        name: dev-team-console@redpanda.com
+----
+
+Users who have multiple roles assigned through role bindings will <<union, inherit all these roles' permissions>>.
+
+=== Subjects
+
+Each subject has three properties that are configurable to bind a role to one or more users:
+
+* `kind`: Supported kinds are `group` and `user`.
+* `provider`: One of `Google`, `GitHub`, `Okta`, `OIDC`, or `Plain`.
+* `name`: Depending on your `kind` and `provider`, the `name` property may refer to different things. Here is an overview:
+
+|===
+| Kind | Provider | Name Reference
+
+| `user`
+| Google
+| Google email address
+
+| `group`
+| Google
+| Google Group Name (which is an email address)
+
+| `user`
+| GitHub
+| Login handle / GitHub username
+
+| `group`
+| GitHub
+| GitHub team name within your GitHub organization
+
+| `user`
+| Okta
+| Login handle / email
+
+| `group`
+| Okta
+| Okta Group ID (not name), for example "00gra1ajmZa1G1ks04x9"
+
+| `user`
+| OIDC
+| Configurable via `login.oidc.userIdentifyingClaimKey` (by default, it uses the `sub` claim from the issued access token)
+
+| `user`
+| Plain
+| Username as defined in the `login.plain.credentials` configuration
+|===
+
+[[union]]
+=== Multiple roles and duplicate role bindings
+
+Redpanda Console allows you to assign multiple roles to users through role bindings. When a user is associated with more than one role, the user is granted all the permissions defined in each role they are assigned.
+
+For example, if a user is assigned both the `viewer` and `editor` roles, they will have all the permissions of a `viewer` as well as the additional permissions of an `editor`.
+
+Duplicate role bindings do not cause errors or conflicts. If a user is assigned the same role multiple times through role bindings, the duplicate role bindings do not affect the user's final set of permissions, which are the same as if the role was assigned once.
+
+=== Example role bindings
+
+The following `role-bindings.yaml` configuration file includes a complete list of all `roleBindings` configuration properties and their descriptions.
+
+[,yaml]
+----
+roleBindings:
+  - roleName: admin
+    metadata:
+      name: Admin Users
+    subjects:
+      - kind: user
+        provider: OIDC
+        name: jane@mycompany.com # Matches the value from the claim key
+      - kind: user
+        provider: Google
+        name: joe@mycompany.com
+      - kind: user
+        provider: Plain
+        name: jane
+      - kind: group
+        provider: Google
+        name: global-admins@mycompany.com # Google workspace group
+  - roleName: editor
+    metadata:
+      name: Editors
+    subjects:
+      - kind: group
+        provider: Okta
+        name: 00gcgwvqiwitcrgge696 # Okta Group ID
+      - kind: group
+        provider: GitHub
+        name: engineers # GitHub Team ID
+        organization: redpanda-data # GitHub organization name
+  - roleName: viewer
+    metadata:
+      name: Viewers
+    subjects:
+      - kind: group
+        provider: Okta
+        name: 00gcgwvqiwitcrgge696 # Okta Group ID
+      - kind: user
+        provider: GitHub
+        name: nat # Refers to the GitHub handle
+----
+
+== Suggested reading
+
+* xref:console:config/configure-console.adoc[Redpanda Console configuration guide]
+* xref:manage:security/authorization/rbac.adoc[Redpanda RBAC]
