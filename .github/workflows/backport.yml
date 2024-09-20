@@ -15,20 +15,10 @@ jobs:
       user: ${{ steps.get-labels.outputs.user }}
       valid: ${{ steps.get-labels.outputs.valid }}
     steps:
-      - name: configure aws credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_SM_READONLY_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SM_READONLY_SECRET_ACCESS_KEY }}
-          aws-region: us-west-2
-      - name: get secrets from aws sm
-        uses: aws-actions/aws-secretsmanager-get-secrets@v2
-        with:
-          secret-ids: |
-            ,sdlc/prod/github/actions_bot_token
-          parse-json-secrets: true
       - name: Determine branches to cherry-pick to
         id: get-labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # concat labels into comman-separated string, e.g. "bug,backport to all versions,remediation"
           PR_LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
@@ -41,21 +31,9 @@ jobs:
 
           BRANCHES=""
           if [[ $PR_LABELS =~ "backport to all versions" ]]; then
-            PAGE=1
-            ALL_BRANCHES=""
-
-            # Loop to fetch all branches with 'v/' prefix from the GitHub API
-            while : ; do
-              RAW_RESPONSE=$(curl -s -H "Authorization: token ${{ env.ACTIONS_BOT_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/branches?per_page=100&page=$PAGE")
-
-              if [[ $(echo "$RAW_RESPONSE" | jq '. | length') -eq 0 ]]; then
-                  break
-              fi
-
-              PAGE_BRANCHES=$(echo "$RAW_RESPONSE" | jq -r '.[].name' | grep '^v/')
-              ALL_BRANCHES+=$PAGE_BRANCHES$'\n'
-              ((PAGE++))
-            done
+            # fetch all branches with 'v/' prefix from the GitHub API
+            RAW_RESPONSE=$(gh api --paginate --jq '.[].name' /repos/${{ github.repository }}/branches)
+            ALL_BRANCHES=$(echo "$RAW_RESPONSE" | grep '^v/')
 
             # Prepare the BRANCHES variable, remove trailing comma and newline
             BRANCHES=$(echo "$ALL_BRANCHES" | tr '\n' ',')
