@@ -30,17 +30,9 @@ jobs:
       - name: Determine branches to cherry-pick to
         id: get-labels
         run: |
-          set -e
-          RESPONSE=$(curl -s -H "Authorization: token ${{ env.ACTIONS_BOT_TOKEN }}" https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }})
-          LABELS_JSON=$(echo "$RESPONSE" | jq .labels[])
-
-          if [[ $? -ne 0 ]]; then
-            echo "Failed to fetch labels from GitHub API."
-            exit 1
-          fi
-
-          BACKPORT_LABELS=$(echo "$LABELS_JSON" | jq -r 'if type == "object" then [.] else . end | map(select(.name | startswith("backport to")))[] | .name')
-          if [[ -z "$BACKPORT_LABELS" ]]; then
+          # concat labels into comman-separated string, e.g. "bug,backport to all versions,remediation"
+          PR_LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
+          if [[ -z "$PR_LABELS" ]]; then
             echo "valid=false" >> $GITHUB_OUTPUT
             exit 0
           else
@@ -48,7 +40,7 @@ jobs:
           fi
 
           BRANCHES=""
-          if [[ $BACKPORT_LABELS == "backport to all versions" ]]; then
+          if [[ $PR_LABELS =~ "backport to all versions" ]]; then
             PAGE=1
             ALL_BRANCHES=""
 
@@ -69,7 +61,7 @@ jobs:
             BRANCHES=$(echo "$ALL_BRANCHES" | tr '\n' ',')
             BRANCHES=${BRANCHES%,}  # Removing the trailing comma and newline
           else
-            BRANCH_NAMES=$(echo "$BACKPORT_LABELS" | grep -o 'backport to v/[0-9]\+\.[0-9]\+' | sed -e 's/backport to //')
+            BRANCH_NAMES=$(echo "$PR_LABELS" | grep -o 'backport to v/[0-9]\+\.[0-9]\+' | sed -e 's/backport to //')
             BRANCHES=$(echo "$BRANCH_NAMES" | tr '\n' ',')
             BRANCHES=${BRANCHES::-1}  # Removing the trailing comma
           fi
