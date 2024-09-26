@@ -1,42 +1,95 @@
-const { Octokit } = require("@octokit/rest");
-const { retry } = require("@octokit/plugin-retry");
-const yaml = require('js-yaml');
-const OctokitWithRetries = Octokit.plugin(retry);
 const fs = require('fs');
+const path = require('path');
 
-const owner = 'redpanda-data';
-const repo = 'cloudv2';
-const path = 'proto/gen/openapi/openapi.prod.yaml';
+// Function to load Octokit once
+let octokitInstance = null;
 
-let githubOptions = {
-  userAgent: 'Redpanda Docs',
-  baseUrl: 'https://api.github.com',
-};
+async function loadOctokit() {
+  if (!octokitInstance) {
+    const { Octokit } = await import('@octokit/rest');
+    octokitInstance = process.env.VBOT_GITHUB_API_TOKEN
+      ? new Octokit({
+          auth: process.env.VBOT_GITHUB_API_TOKEN,
+        })
+      : new Octokit();
+  }
+  return octokitInstance;
+}
 
-if (process.env.VBOT_GITHUB_API_TOKEN) {
-  githubOptions.auth = process.env.VBOT_GITHUB_API_TOKEN;
-} else {
-  console.error('GitHub API token is not set in environment variables');
+const args = process.argv.slice(2);
+
+function printHelp() {
+  console.log(`
+Usage: node script.js <owner> <repo> <path> <save-directory> [custom-filename]
+
+Arguments:
+  <owner>           The GitHub repository owner or organization.
+  <repo>            The GitHub repository name.
+  <path>            The file or directory path within the repository to fetch.
+  <save-directory>  The local directory where files will be saved.
+  [custom-filename] Optional. If provided, the fetched file will be saved with this name.
+
+Options:
+  -h, --help        Show this help message.
+
+Example:
+  node fetch.js redpanda-data cloudv2 proto/gen/openapi/openapi.prod.yaml ./modules/ROOT/attachments cloud-api.yaml
+
+Note: Ensure that you have set the 'VBOT_GITHUB_API_TOKEN' environment variable for authentication.
+  `);
+}
+
+if (args.includes('--help') || args.includes('-h')) {
+  printHelp();
+  process.exit(0);
+}
+
+if (args.length < 4) {
+  console.error('Error: Missing arguments.');
+  printHelp();
   process.exit(1);
 }
 
-const octokit = new OctokitWithRetries(githubOptions);
+const [owner, repo, filePath, saveDir, customFilename] = args;
 
-async function fetchYamlFile() {
+// Create the save directory if it doesn't exist
+if (!fs.existsSync(saveDir)) {
+  fs.mkdirSync(saveDir, { recursive: true });
+}
+
+async function saveFile(content, filename) {
+  const filePath = path.join(saveDir, filename);
+  fs.writeFileSync(filePath, content);
+  console.log(`Saved: ${filePath}`);
+}
+
+async function fetchFile(owner, repo, filePath) {
+  const octokit = await loadOctokit();
   try {
     const response = await octokit.repos.getContent({
       owner,
       repo,
-      path
+      path: filePath,
     });
 
-    const content = Buffer.from(response.data.content, 'base64').toString();
-
-    console.log(content);
+    if (Array.isArray(response.data)) {
+      // Path is a directory, fetch each file in the directory
+      for (const file of response.data) {
+        if (file.type === 'file') {
+          await fetchFile(owner, repo, file.path);
+        }
+      }
+    } else {
+      // Path is a file, save its content
+      const content = Buffer.from(response.data.content, 'base64').toString();
+      // Use custom filename if provided, else use the default one from the repo
+      const filename = customFilename || path.basename(response.data.path);
+      await saveFile(content, filename);
+    }
   } catch (error) {
-    console.error('Error fetching file: ' + error.message);
-    process.exit(1)
+    console.error('Error fetching file or directory: ' + error.message);
+    process.exit(1);
   }
 }
 
-fetchYamlFile();
+fetchFile(owner, repo, filePath);
