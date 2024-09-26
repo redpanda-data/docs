@@ -46,7 +46,6 @@ Feature: User CRDs
               key: password
 # end::manage-auth-only-manifest[]
     """
-# end::scenario[]
     And user "jason" is successfully synced
     And I delete the CRD user "jason"
     Then there should be ACLs in the cluster "sasl" for user "jason"
