@@ -28,6 +28,7 @@ Feature: User CRDs
 # tag::manage-authn-only-manifest[]
 # In this example manifest, a user called "jason" is created in a cluster called "sasl".
 # The user's password is defined in a Secret called "jason-password".
+# This example assumes that you will create ACLs for this user separately.
     ---
     apiVersion: cluster.redpanda.com/v1alpha2
     kind: User
@@ -60,6 +61,7 @@ Feature: User CRDs
 # tag::manage-authz-only-manifest[]
 # In this example manifest, an ACL called "travis" is created in a cluster called "sasl".
 # The ACL give an existing user called "travis" permissions to read from all topics whose names start with some-topic.
+# This example assumes that you already have a user called "travis" in your cluster.
     ---
     apiVersion: cluster.redpanda.com/v1alpha2
     kind: User
