@@ -1,0 +1,55 @@
+---
+  name: Fetch and Save K8s Acceptance Tests
+  on:
+    workflow_dispatch:  # Allows manual trigger of the workflow
+    repository_dispatch:  # Allows other repositories to trigger this workflow
+      types: [trigger-acceptance-test-pull]
+  jobs:
+    fetch-and-save:
+      runs-on: ubuntu-latest
+      steps:
+        - name: configure aws credentials
+          uses: aws-actions/configure-aws-credentials@v4
+          with:
+            aws-access-key-id: ${{ secrets.AWS_SM_READONLY_ACCESS_KEY_ID }}
+            aws-secret-access-key: ${{ secrets.AWS_SM_READONLY_SECRET_ACCESS_KEY }}
+            aws-region: us-west-2
+        - name: get secrets from aws sm
+          uses: aws-actions/aws-secretsmanager-get-secrets@v2
+          with:
+            secret-ids: |
+              ,sdlc/prod/github/actions_bot_token
+            parse-json-secrets: true
+
+        - name: Checkout the repository
+          uses: actions/checkout@v4
+          with:
+            ref: api
+            token: ${{ env.ACTIONS_BOT_TOKEN }}
+            path: redpanda-docs
+
+        - name: Set up Node.js
+          uses: actions/setup-node@v4
+          with:
+            node-version: '18'
+
+        - name: Install dependencies
+          run: |
+            cd ./redpanda-docs/scripts/fetch-from-github
+            npm install
+
+        - name: Run the script and save the output
+          run: node ./redpanda-docs/scripts/fetch-from-github/fetch.js redpanda-data redpanda-operator acceptance/features ../../modules/manage/examples/kubernetes
+          env:
+            VBOT_GITHUB_API_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
+
+        - name: Create pull request
+          uses: peter-evans/create-pull-request@v6
+          with:
+            commit-message: "auto-docs: Update K8s acceptance tests"
+            token: ${{ env.ACTIONS_BOT_TOKEN }}
+            branch: update-acceptance-tests
+            title: "auto-docs: Update K8s acceptance tests"
+            body: "This PR auto-updates the acceptance tests that we use as examples in our Kubernetes docs."
+            labels: auto-docs
+            reviewers: JakeSCahill
