@@ -8,7 +8,7 @@ info:
     ---
 
 servers:
-- url: http://localhost:9644/
+- url: http://localhost:9644
 paths:
   # /config:
   #   get:
@@ -809,6 +809,145 @@ paths:
         200:
           description: Stop maintenance success
           content: {}
+  /v1/migrations:
+    get: 
+      summary: List all available migrations
+      operationId: list_migrations
+      responses: 
+        200:
+          description: OK
+          content: 
+            application/json:
+              {}
+      tags: 
+        - Migrations
+    put: 
+      summary: Create migration
+      operationId: add_migration
+      tags: 
+        - Migrations
+      requestBody: 
+        description: Migration configuration
+        required: true
+        content: 
+          application/json:
+            schema:                 
+              oneOf: 
+              - $ref: "#/components/schemas/inbound_migration"
+              - $ref: "#/components/schemas/outbound_migration"
+              discriminator: 
+                propertyName: migration_type
+                mapping: 
+                  inbound: '#/components/schemas/inbound_migration'
+                  outbound: '#/components/schemas/outbound_migration'        
+      responses: 
+        200:
+          description: OK
+          content: {}
+  /v1/migrations/{id}:
+    get:
+      summary: Get migration state
+      operationId: get_migration
+      tags: 
+        - Migrations
+      parameters: 
+        - name: id
+          in: path 
+          required: true
+          schema: 
+            type: integer
+            format: int32  
+      responses: 
+        200:
+          description: OK
+          content: {}
+    post: 
+      summary: Execute migration action
+      operationId: execute_migration_action
+      tags: 
+        - Migrations
+      parameters: 
+        - name: id 
+          in: path
+          required: true
+          schema: 
+            type: integer
+            format: int32
+        - name: action
+          in: query
+          required: true
+          description: Action to execute for migration
+          schema: 
+            type: string
+            enum: 
+            - prepare
+            - execute
+            - finish
+            - cancel  
+      responses: 
+        200:
+          description: OK
+          content: {}
+    delete:
+      summary: Delete migration
+      operationId: delete_migration
+      tags: 
+        - Migrations
+      parameters: 
+        - name: id
+          in: path 
+          required: true
+          schema: 
+            type: integer
+            format: int32 
+      responses: 
+        200:
+          description: OK
+          content: {}    
+  /v1/topics/mount:
+    post:
+      operationId: mount_topics 
+      tags: 
+        - Migrations
+      summary: Mount a topic to a cluster
+      description: Mount a topic in object storage to a cluster according to the specified configuration.
+      requestBody: 
+        description: Mount topic configuration
+        content: 
+          application/json:
+            schema:              
+              $ref: '#/components/schemas/mount_configuration'
+        required: true    
+      responses: 
+        200:
+          description: Underlying migration information
+          content: 
+            application/json:
+              schema: 
+                $ref: '#/components/schemas/migration_info'
+  /v1/topics/unmount:
+    post:
+      operationId: unmount_topics 
+      tags: 
+        - Migrations
+      summary: Unmount topics from a cluster
+      description: Unmount provided list of topics from a cluster to object storage.
+      requestBody: 
+        description: List of topics to unmount
+        content: 
+          application/json:
+            schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/namespaced_topic'
+        required: true    
+      responses: 
+        200:
+          description: Underlying migration information
+          content: 
+            application/json:
+              schema: 
+                $ref: '#/components/schemas/migration_info'           
   /v1/partitions:
     get:
       tags:
@@ -5215,7 +5354,124 @@ components:
             $ref: '#/components/schemas/role_description'
           type: array
       type: object
-
+    namespaced_topic:
+      properties:
+        topic:
+          type: string
+          description: Topic name
+        ns:
+          type: string
+          description: "Topic namespace. If not present, assume that the topic is in the `kafka` namespace"
+      type: object
+    outbound_migration:
+      properties: 
+        migration_type:
+          type: string
+          enum: 
+            - outbound
+        topics:
+          type: array
+          items: 
+            $ref: "#/components/schemas/namespaced_topic"
+          description: List of migrated topics
+        consumer_groups:
+          type: array
+          items: 
+            type: string
+          description: List of migrated consumer groups
+        copy_to:
+          $ref: "#/components/schemas/bucket_configuration"
+        auto_advance:
+          description: If set, you do not need to take manual action for the migration to progress.
+          type: boolean
+    inbound_migration:
+      properties: 
+        migration_type:
+          enum:
+            - inbound
+        topics:
+          type: array
+          items: 
+            $ref: "#/components/schemas/inbound_topic"
+        consumer_groups:
+          type: array
+          items: 
+            type: string
+          description: List of migrated consumer groups 
+        auto_advance:
+          type: boolean
+          description: If set, you do not need to take manual action for the migration to progress.
+      required: 
+        -  migration_type
+    inbound_topic:
+      type: object
+      properties: 
+        source_topic:
+          description: Name of topic in source cluster
+          $ref: "#/components/schemas/namespaced_topic"
+        alias:
+          description: Name of topic in destination cluster
+          $ref: "#/components/schemas/namespaced_topic"
+    bucket_configuration:
+      type: object
+      required: 
+        -  bucket
+      properties: 
+        access_key:
+          type: string
+        secret_key:
+          type: string
+        region:
+          type: string
+        bucket:
+          type: string
+        credential_source:
+          enum: 
+            - config
+            - instance_metadata
+            - sts
+          type: string
+        topic_manifest_prefix:
+          description: Path where topic manifests are copied
+          type: string
+    outbound_migration_state:
+      type: object
+      properties: 
+        id:
+          type: integer
+          format: int32
+          description: Unique identifier of migration
+        state:
+          type: string
+        migration: 
+          $ref: "#/components/schemas/outbound_migration"
+    inbound_migration_state:
+      type: object
+      properties: 
+        id:
+          type: integer
+          format: int32
+          description: Unique identifier of migration
+        state:
+          type: string
+        migration: 
+          $ref: "#/components/schemas/inbound_migration"
+    mount_configuration:
+      type: object
+      required: 
+        -  topics
+      properties: 
+        topics:
+          type: array
+          items: 
+            $ref: "#/components/schemas/inbound_topic"
+          description: List of topics to mount
+    migration_info:
+      type: object
+      properties: 
+        id:
+          type: integer
+          format: int32
 tags:
   - name: Authentication
     description: |
@@ -5232,6 +5488,11 @@ tags:
 
       * Start and start broker maintenance
       * Decommission and recommision brokers
+
+  - name: Migrations
+    description: |
+        Mount and unmount topics in Redpanda clusters.
+
   - name: Partitions
     description: |
       Manage partitions of a Redpanda cluster.
