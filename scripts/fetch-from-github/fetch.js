@@ -16,10 +16,18 @@ async function loadOctokit() {
   return octokitInstance;
 }
 
+function logMessage(message, level = 'log') {
+  if (level === 'error') {
+    console.error(message);
+  } else {
+    console.log(message);
+  }
+}
+
 const args = process.argv.slice(2);
 
 function printHelp() {
-  console.log(`
+  logMessage(`
 Usage: node script.js <owner> <repo> <path> <save-directory> [custom-filename]
 
 Arguments:
@@ -45,7 +53,7 @@ if (args.includes('--help') || args.includes('-h')) {
 }
 
 if (args.length < 4) {
-  console.error('Error: Missing arguments.');
+  logMessage('Error: Missing arguments.', 'error');
   printHelp();
   process.exit(1);
 }
@@ -60,7 +68,7 @@ if (!fs.existsSync(saveDir)) {
 async function saveFile(content, filename) {
   const filePath = path.join(saveDir, filename);
   fs.writeFileSync(filePath, content);
-  console.log(`Saved: ${filePath}`);
+  logMessage(`Saved: ${filePath}`);
 }
 
 async function fetchFile(owner, repo, filePath) {
@@ -87,7 +95,7 @@ async function fetchFile(owner, repo, filePath) {
       await saveFile(content, filename);
     }
   } catch (error) {
-    console.error('Error fetching file or directory: ' + error.message);
+    logMessage('Error fetching file or directory: ' + error.message, 'error');
     process.exit(1);
   }
 }
