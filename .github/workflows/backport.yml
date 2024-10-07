@@ -15,33 +15,14 @@ jobs:
       user: ${{ steps.get-labels.outputs.user }}
       valid: ${{ steps.get-labels.outputs.valid }}
     steps:
-      - name: configure aws credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_SM_READONLY_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SM_READONLY_SECRET_ACCESS_KEY }}
-          aws-region: us-west-2
-      - name: get secrets from aws sm
-        uses: aws-actions/aws-secretsmanager-get-secrets@v2
-        with:
-          secret-ids: |
-            ,sdlc/prod/github/actions_bot_token
-          parse-json-secrets: true
       - name: Determine branches to cherry-pick to
         id: get-labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
-          RESPONSE=$(curl -s -H "Authorization: token ${{ env.ACTIONS_BOT_TOKEN }}" https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }})
-          LABELS_JSON=$(echo "$RESPONSE" | jq .labels[])
-          USER=$(echo $RESPONSE | jq -r '.user.login')
-
-          if [[ $? -ne 0 ]]; then
-            echo "Failed to fetch labels from GitHub API."
-            exit 1
-          fi
-
-          BACKPORT_LABELS=$(echo "$LABELS_JSON" | jq -r 'if type == "object" then [.] else . end | map(select(.name | startswith("backport to")))[] | .name')
-          if [[ -z "$BACKPORT_LABELS" ]]; then
+          # concat labels into comman-separated string, e.g. "bug,backport to all versions,remediation"
+          PR_LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
+          if [[ -z "$PR_LABELS" ]]; then
             echo "valid=false" >> $GITHUB_OUTPUT
             exit 0
           else
@@ -49,28 +30,16 @@ jobs:
           fi
 
           BRANCHES=""
-          if [[ $BACKPORT_LABELS == "backport to all versions" ]]; then
-            PAGE=1
-            ALL_BRANCHES=""
-
-            # Loop to fetch all branches with 'v/' prefix from the GitHub API
-            while : ; do
-              RAW_RESPONSE=$(curl -s -H "Authorization: token ${{ env.ACTIONS_BOT_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/branches?per_page=100&page=$PAGE")
-
-              if [[ $(echo "$RAW_RESPONSE" | jq '. | length') -eq 0 ]]; then
-                  break
-              fi
-
-              PAGE_BRANCHES=$(echo "$RAW_RESPONSE" | jq -r '.[].name' | grep '^v/')
-              ALL_BRANCHES+=$PAGE_BRANCHES$'\n'
-              ((PAGE++))
-            done
+          if [[ $PR_LABELS =~ "backport to all versions" ]]; then
+            # fetch all branches with 'v/' prefix from the GitHub API
+            RAW_RESPONSE=$(gh api --paginate --jq '.[].name' /repos/${{ github.repository }}/branches)
+            ALL_BRANCHES=$(echo "$RAW_RESPONSE" | grep '^v/')
 
             # Prepare the BRANCHES variable, remove trailing comma and newline
             BRANCHES=$(echo "$ALL_BRANCHES" | tr '\n' ',')
             BRANCHES=${BRANCHES%,}  # Removing the trailing comma and newline
           else
-            BRANCH_NAMES=$(echo "$BACKPORT_LABELS" | grep -o 'backport to v/[0-9]\+\.[0-9]\+' | sed -e 's/backport to //')
+            BRANCH_NAMES=$(echo "$PR_LABELS" | grep -o 'backport to v/[0-9]\+\.[0-9]\+' | sed -e 's/backport to //')
             BRANCHES=$(echo "$BRANCH_NAMES" | tr '\n' ',')
             BRANCHES=${BRANCHES::-1}  # Removing the trailing comma
           fi
@@ -80,7 +49,7 @@ jobs:
           BRANCHES_ARRAY="[$BRANCHES_ARRAY]"
 
           echo "branches=$BRANCHES_ARRAY" >> $GITHUB_OUTPUT
-          echo "user=$USER" >> $GITHUB_OUTPUT
+          echo "user=${{ github.actor }}" >> $GITHUB_OUTPUT
   backport:
     needs: get-labels
     if: needs.get-labels.outputs.branches != '' && needs.get-labels.outputs.valid == 'true'
@@ -88,15 +57,15 @@ jobs:
       matrix:
         branch: ${{fromJson(needs.get-labels.outputs.branches)}}
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
-      - name: configure aws credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_SM_READONLY_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SM_READONLY_SECRET_ACCESS_KEY }}
-          aws-region: us-west-2
-      - name: get secrets from aws sm
-        uses: aws-actions/aws-secretsmanager-get-secrets@v2
+          aws-region: ${{ vars.RP_AWS_CRED_REGION }}
+          role-to-assume: arn:aws:iam::${{ secrets.RP_AWS_CRED_ACCOUNT_ID }}:role/${{ vars.RP_AWS_CRED_BASE_ROLE_NAME }}${{ github.event.repository.name }}
+      - uses: aws-actions/aws-secretsmanager-get-secrets@v2
         with:
           secret-ids: |
             ,sdlc/prod/github/actions_bot_token

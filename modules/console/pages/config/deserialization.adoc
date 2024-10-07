@@ -1,0 +1,203 @@
+= Configure Message Deserialization in Redpanda Console
+:description: Configure Redpanda Console to use Schema Registry, Protobuf files, and other deserialization methods to ensure your data is correctly interpreted and displayed.
+
+Redpanda Console provides tools for deserializing and inspecting messages in Kafka topics. This topic explains how to configure Redpanda Console to use Schema Registry, Protobuf files, and other deserialization methods to ensure your data is correctly interpreted and displayed.
+
+[[sr]]
+== Use Schema Registry
+
+The Schema Registry allows Redpanda Console to dynamically retrieve schemas for deserializing Avro, Protobuf, and JSON messages. This setup is important to ensure that messages are correctly interpreted based on your schema definitions.
+
+To configure Redpanda Console to use the Schema Registry, include the following configuration in your configuration file:
+
+[,yaml]
+----
+kafka:
+  schemaRegistry:
+    enabled: false
+    urls: ["http://localhost:8081"]
+    username:
+    password:
+    bearerToken:
+    tls:
+      # Enable or disable TLS. If using commonly trusted certificates, you can enable TLS without specifying a CA.
+      enabled: false
+      # Path to the custom CA certificate file, if required.
+      caFilepath:
+      # Path to the client certificate file for mutual TLS.
+      certFilepath:
+      # Path to the client key file. The key should not be passphrase-protected.
+      keyFilepath:
+      # If true, the server's certificate will not be verified. Use with caution.
+      insecureSkipTlsVerify: false
+----
+
+- `enabled`: Set to `true` to enable the use of a Schema Registry.
+- `urls`: Provide the URLs to your Schema Registry endpoints. Multiple URLs can be specified for redundancy. To set up the Schema Registry in {ui} with Redpanda Self-Managed, see xref:console:ui/schema-reg.adoc[].
+- `username/password`: Use these fields for basic authentication. For security, it's recommended to use xref:console:config/configure-console.adoc#environment-variables[environment variables] or command-line flags for sensitive information.
+- `bearerToken`: Optionally, use bearer token authentication instead of basic auth.
+- `tls`: If your Schema Registry is secured with TLS, configure the necessary certificates and options.
+
+== Protobuf configuration
+
+Redpanda Console supports several methods for providing Protobuf schemas, including the Schema Registry, local file system, and GitHub repositories.
+
+NOTE: You don't need to provide standard types, such as Google's timestamp, in your schemas. These standard types are included by default.
+
+Most Kafka clients that serialize Protobuf messages put the serialized byte array into a binary wrapper that contains meta information, like the schema ID or the used prototypes, so the application that deserializes the Kafka records must recognize the format. The deserialization process requires {ui} to be aware of the used Protobuf files as well as a mapping of what prototype should be used for each topic. This information can either be sourced from the Schema Registry or it can be provided with additional configuration so the files can be pulled from the local file system or a GitHub repository.
+
+[[sr-protobuf]]
+=== Use Schema Registry for Protobuf
+
+If you use a Schema Registry for Protobuf deserialization, Redpanda Console can automatically fetch and use the required schemas without the need for <<topic-mapping, manual topic mappings>>. Because the schema information (including which Protobuf message type to use) is embedded in the messages, you do not need to manually configure mappings for each topic. The Schema Registry provides the necessary schema information to deserialize the messages.
+
+To configure Protobuf deserialization using Schema Registry, add the following to your configuration file in addition to the <<sr, `kafka.schemaRegistry` configuration>>:
+
+[,yaml]
+----
+kafka:
+  protobuf:
+    enabled: true
+    schemaRegistry:
+      # Enable Schema Registry for Protobuf deserialization.
+      enabled: true
+      # Interval to refresh schemas from the Schema Registry.
+      refreshInterval: 5m
+----
+
+- `enabled`: Set to `true` to enable Protobuf deserialization.
+- `schemaRegistry.enabled`: Set to `true` to enable the use of Schema Registry for Protobuf schemas.
+- `schemaRegistry.refreshInterval`: Specifies how often to refresh schemas from the Schema Registry.
+
+When using Schema Registry for Protobuf, you do not need to provide specific topic mappings, as the schemas will be fetched dynamically.
+
+=== Topic mapping
+
+If you're not <<sr-protobuf, using a Schema Registry for Protobuf deserialization>>, you must manually provide mappings between Kafka topics and their corresponding Protobuf types. This is necessary to inform Redpanda Console of the correct types to use for deserialization.
+
+Consider a Kafka topic called `address-v1` and a corresponding `address.proto` file with the following structure:
+
+.`address.proto`
+[,proto]
+----
+syntax = "proto3";
+package fake_models;
+
+option go_package = "pkg/protobuf";
+
+message Address {
+  int32 version = 1;
+  string id = 2;
+  message Customer {
+    string customer_id = 1;
+    string customer_type = 2;
+  }
+}
+----
+
+To map this topic to the Protobuf schema, use the following configuration:
+
+[,yaml]
+----
+kafka:
+  protobuf:
+    enabled: true
+    mappings:
+    - topicName: address-v1
+      valueProtoType: fake_models.Address # The full Protobuf type name
+      # keyProtoType: Not specified because the key is a plain string
+----
+
+* `mappings.topicName`: The name of the Kafka topic.
+* `mappings.valueProtoType`: The fully-qualified Protobuf type for the message value.
+* `mappings.keyProtoType`: Specify the key Protobuf type if the key is not a plain string.
+
+=== Local file system
+
+You can mount Protobuf files directly from your local file system. Redpanda Console will search the specified paths for Protobuf files and build a registry with all the available types.
+
+Configuration example:
+
+[,yaml]
+----
+kafka:
+  protobuf:
+    enabled: true
+    mappings:
+      - topicName: orders
+        valueProtoType: fake_models.Order
+        keyProtoType: fake_models.OrderKey
+    fileSystem:
+      enabled: true
+      # How often to refresh the Protobuf files from the filesystem
+      refreshInterval: 5m
+      # Directories containing the Protobuf files
+      paths:
+        - /etc/protos
+----
+
+* `fileSystem.paths`: Paths to directories where Protobuf files are stored.
+* `fileSystem.refreshInterval`: The frequency at which Redpanda Console checks for updates to these files.
+
+=== GitHub repository
+
+If your Protobuf files are stored in a GitHub repository, Redpanda Console can fetch and use them directly. This is particularly useful if your organization maintains Protobuf definitions in version control.
+
+Configuration example:
+
+[,yaml]
+----
+kafka:
+  protobuf:
+    enabled: true
+    mappings:
+      - topicName: orders
+        valueProtoType: fake_models.Order
+        keyProtoType: fake_models.OrderKey
+    importPaths: []
+    git:
+      enabled: true
+      refreshInterval: 5m
+      repository:
+        url: https://github.com/your-org/protos.git
+      basicAuth:
+        enabled: true
+        username: token
+        password: redacted
+----
+
+* `git.repository.url`: The URL of the GitHub repository containing your Protobuf files.
+* `git.basicAuth`: Basic authentication credentials, often an API token for private repositories.
+* `git.refreshInterval`: Frequency at which the repository is polled for updates.
+
+== MessagePack deserialization
+
+If your data is serialized using MessagePack, Redpanda Console can be configured to deserialize it.
+
+[,yaml]
+----
+kafka:
+  messagePack:
+    enabled: true
+    # Define which topics use MessagePack serialization
+    # Regex to match all topics by default
+    topicNames: ["/.*/"]
+----
+
+* `messagePack.enabled`: Enables MessagePack deserialization.
+* `messagePack.topicNames`: A list of topic name regex patterns that specify which topics use MessagePack serialization. The default pattern (`/.*/`) matches all topics.
+
+== Best practices
+
+- Use Schema Registry when possible: Schema Registry simplifies schema management and ensures that all messages are serialized and deserialized consistently across your Kafka ecosystem.
+- Organize Protobuf files: Whether using a local file system or a GitHub repository, keep your Protobuf files organized and use consistent naming conventions to avoid confusion.
+- Monitor deserialization performance: Regularly check the performance impact of deserialization, especially when using complex Protobuf schemas or large numbers of messages. Adjust refresh intervals and schema caching as needed.
+- Secure access: Ensure that credentials for accessing the Schema Registry or GitHub repositories are securely managed and rotated regularly.
+
+== Troubleshooting
+
+If you encounter issues with deserialization:
+
+- Check Schema Registry configuration: Ensure that the Schema Registry URL and credentials are correctly configured and accessible.
+- Verify Protobuf mappings: Check your topic mappings and Protobuf type names for accuracy.
+- Review logs: Redpanda Console logs can provide insights into any errors occurring during deserialization.
