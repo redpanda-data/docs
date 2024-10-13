@@ -1,13 +1,10 @@
 For topics with Tiered Storage enabled, you can mount and unmount topics to transfer the topic data between your cluster and object storage. This effectively frees up unused partition space that can be reclaimed, enables you to migrate a topic to a different cluster, and allows the topic or even the entire cluster to hibernate or be decommissioned.
 
+Redpanda also transfers topic definitions when mounting or unmounting a topic.
+
 An unmounted topic in object storage is detached from all clusters. The original cluster releases ownership of the topic.
 
 You can mount a topic from object storage that has been previously flushed from a source cluster to a different destination cluster, or back to the same source cluster.
-
-The following data is moved to object storage when unmounting a topic from a cluster:
-
-* Topic definitions. 
-* The consumer offsets topic. This allows the destination cluster to also restore consumer group state.
 
 == Prerequisites
 
@@ -50,7 +47,7 @@ curl -X POST http://localhost:9644/v1/topics/unmount -d {
 }
 ```
 
-You may optionally include the topic namespace (`ns`). Default value: `kafka`
+You may optionally include the topic namespace (`ns`). Only `kafka` is currently supported.
 --
 ======
 
@@ -97,7 +94,7 @@ curl -X POST http://localhost:9644/v1/topics/mount -d {
 }
 ```
 
-* `ns` is the topic namespace. This field is optional. Default value: `kafka`
+* `ns` is the topic namespace. This field is optional and only `kafka` is currently supported.
 * To rename a topic in the target cluster, use the optional `alias` object in the request body. In the example, topics 1 and 3 are given new names in the target cluster, while topic 2 retains its original name.
 
 --
@@ -108,11 +105,28 @@ When the migration is complete, the target cluster handles produce and consume w
 
 == Monitor progress
 
+[tabs]
+======
+rpk::
++
+--
+To list topic migrations, run the command:
+
+```
+rpk cluster storage list-mount
+```
+--
+
+Admin API::
++
+--
 Issue a GET request to the `/migrations` endpoint to view the state of topic migrations:
 
 ```
 curl http://localhost:9644/v1/migrations 
 ```
+--
+======
 
 The response returns the state of existing migrations:
 
@@ -120,7 +134,7 @@ The response returns the state of existing migrations:
 | Migration state | Outbound migration (unmount) | Inbound migration (mount)
 
 | `planned`
-| Redpanda has initialized a migration.
+| Redpanda validates the migration definition.
 |
 
 | `preparing`
@@ -129,23 +143,23 @@ The response returns the state of existing migrations:
 
 | `prepared` 
 | The migration is ready to execute. In this state, the cluster still accepts client reads and writes for the topics.
-| 
+| Topics exist in the cluster but cannot be consumed or produced to yet.
 
 | `executing` 
-| The cluster rejects client reads and writes for the topics. Redpanda uploads any remaining topic data that has not yet been copied to object storage.
-| The target cluster starts topic partitions with log segments downloaded from object storage.
+| The cluster rejects client reads and writes for the topics. Redpanda uploads any remaining topic data that has not yet been copied to object storage. Uncommitted transactions involving the topic are aborted.
+| The target cluster checks that the topic to be mounted has not already been mounted in any cluster.
 
 | `executed` 
 | All unmounted topic data from the cluster is available in object storage.
-| All mounted topic data is available in the target cluster.
+| 
 
 | `cut_over`
-| The migration is complete and can be deleted. Redpanda deletes the unmounted topics from the cluster.
-| The migration is complete and can be deleted.
+| Redpanda deletes topic metadata from the cluster, and marks the data in object storage as available for mount operations.
+| The topic data in object storage is no longer available to mount to any clusters.
 
 | `finished`
-| The migration is deleted. 
-| The migration is deleted. The target cluster starts to handle produce and consume workloads.
+| The migration is complete and then deleted. 
+| The migration is complete and then deleted. The target cluster starts to handle produce and consume workloads.
 
 | `canceling`
 | Redpanda is in the process of canceling the migration.
@@ -165,8 +179,11 @@ You can cancel a topic migration by running this command:
 curl -X POST http://localhost:9644/v1/<migration-id>/?action=cancel
 ```
 
-You can only cancel a migration that is not in the following final <<monitor-progress,states>>:
+You can only cancel a migration that is not in the following <<monitor-progress,states>>:
 
+- `planned` (but you may still xref:api:ROOT:admin-api.adoc#delete-/v1/migrations/-id-[delete] a planned migration)
 - `cut_over`
 - `finished`
+- `canceling`
+- `cancelled`
 
