@@ -27,7 +27,7 @@ rpk cluster license info
 * You can only enable the topic integration for new Redpanda topics. 
 * It is not possible to append or backfill data from Redpanda topics to an existing Iceberg table.
 * JSON schemas are not currently supported. For Avro schemas, records cannot contain fields greater than 128KB.
-* You can only use one schema per topic. Schema versioning as well as upcasting (where a message is cast into its more generic data type) are not supported. 
+* You can only use one schema per topic. Schema versioning as well as upcasting (where a value is cast into its more generic data type) are not supported. 
 
 == Architecture 
 
@@ -50,7 +50,7 @@ In the Redpanda Iceberg integration, the manifest files are in JSON format.
 
 image::shared:iceberg-integration.png[]
 
-When you enable the Iceberg integration for a Redpanda topic, Redpanda brokers store streaming data in the Iceberg-compatible format in Parquet files in object storage, in addition to writing Kafka messages stored in segment files on disk. Storing the streaming data in Iceberg tables in the cloud allows you to derive real-time insights through business intelligence and machine learning tools that work with Iceberg. 
+When you enable the Iceberg integration for a Redpanda topic, Redpanda brokers store streaming data in the Iceberg-compatible format in Parquet files in object storage, in addition to writing events stored in segment files on disk. Storing the streaming data in Iceberg tables in the cloud allows you to derive real-time insights through business intelligence and machine learning tools that work with Iceberg. 
 
 
 == Enable Iceberg integration
@@ -64,7 +64,7 @@ To use the Iceberg integration for a topic, you must set Redpanda cluster config
 rpk cluster config set enable_datalake true 
 ----
 +
-[,bash,.no-copy]
+[,bash,role=no-copy]
 ----
 Successfully updated configuration. New configuration version is 2.
 ----
@@ -73,50 +73,127 @@ Successfully updated configuration. New configuration version is 2.
 +
 [,bash,]
 ----
-rpk topic create <new-topic> --partitions 1 --replicas 1
+rpk topic create <new-topic-name> --partitions 1 --replicas 1
 ----
 +
-[,bash,.no-copy]
+[,bash,role=no-copy]
 ----
-TOPIC       STATUS
-new-topic   OK
+TOPIC            STATUS
+new-topic-name   OK
 ----
 
 . Enable the integration for the topic. 
 +
 [,bash]
 ----
-rpk topic alter-config <new-topic> --set iceberg_topic=true 
+rpk topic alter-config <new-topic-name> --set iceberg_topic=true 
 ----
 +
-[,bash,.no-copy]
+[,bash,role=no-copy]
 ----
-TOPIC       STATUS
-new-topic   OK
+TOPIC            STATUS
+new-topic-name   OK
 ----
 
-. Optional: Register a schema for the topic. Redpanda uses the schema to derive the Iceberg table format and write data files to object storage in this format. Protobuf schemas are supported.
+. Optional: Register a schema for the topic. Redpanda uses xref:manage:schema-reg/schema-id-validation.adoc#set-subject-name-strategy-per-topic[`TopicNameStrategy`] (`<topic-name>-value` or `<topic-name>-key`) to find the matching schema based on the subject name. Redpanda derives the Iceberg table format from the schema and writes data files to object storage in this format. Protobuf and Avro schemas are supported.
 +
-If you don't configure a schema for the topic, Redpanda by default uses a simple schema consisting of the record’s key, value, and the original message timestamp. If you don't have a need for a strict schema and can use the data in a more semi-structured format, consider the schemaless approach.
+If there is no registered schema for the topic, Redpanda by default uses a simple schema consisting of the record’s key, value, and the original event timestamp. If you don't have a need for a strict schema and can use the data in a more semi-structured format, consider the schemaless approach.
 +
 [,bash]
 ----
-rpk registry schema create <new-topic> --schema </path-to-schema> --type <format>
+rpk registry schema create <subject-name> --schema </path-to-schema> --type <format>
 ----
 +
-[,bash,.no-copy]
+[,bash,role=no-copy]
 ----
-SUBJECT     VERSION   ID   TYPE
-new-topic   1         1    PROTOBUF
+SUBJECT                VERSION   ID   TYPE
+new-topic-name-value   1         1    PROTOBUF
 ----
 
-As you produce messages to the topic, the data also becomes available to consume from object storage by Iceberg-compatible clients.
+As you produce records to the topic, the data also becomes available to consume from object storage by Iceberg-compatible clients. 
 
 == Consume data in Iceberg tables
 
-You can use the same analytical tools to access and manage data just like you would in a relational database. 
+You can use the same analytical tools to access table data just like you would in a relational database or data lake.
 
+For example, suppose you are producing the same stream of events to a topic `test_topic`, and another topic `test_topic_schemaless`. The topics have Tiered Storage configured to an AWS S3 bucket. A record looks like the following:
 
+[,bash,role=no-copy]
+----
 
+----
 
+When you point your Iceberg-compatible tool or framework to the object storage location of the Iceberg tables, how you consume the data depends on whether you've registered a schema on which to base the table format. In either approach, you do not need to rely on complex ETL jobs or pipelines to consume real-time data from Redpanda.
 
+=== Structured approach with schema
+
+If you register the following schema for `test_topic` under the `test_topic-value` subject:
+
+[,bash,role=no-copy]
+----
+syntax = "proto3";
+
+message twitter_record {
+  string Topic = 1;
+  string Sentiment = 2;
+  int64 TweetId = 3;
+  string TweetText = 4;
+  string TweetDate = 5;
+}
+----
+
+Many platforms such as Clickhouse provide Iceberg integrations that allow you to easily access existing Iceberg tables in object storage. This example reads the data from `test_topic` into Clickhouse: 
+
+[,bash]
+----
+CREATE TABLE test_topic ENGINE=IcebergS3('<s3-bucket-url>', <aws-access-key-id>', '<aws-secret-access-key>', 'Parquet')
+----
+
+The table structure is derived from the schema, and in this case, the `test-topic` table contains columns based on the  values:
+
+[,bash]
+----
+SELECT
+  Topic,
+  Sentiment,
+  TweetId,
+  left(TweetText, 30)
+FROM test_topic
+----
+
+[,bash,role=no-copy]
+----
+
+----
+
+=== Schemaless approach
+
+You can also forgo using a schema, which means the data in Iceberg will be semi-structured. 
+
+This example reads the semi-structured data in `test_topic_schemaless` into Clickhouse:
+
+[,bash]
+----
+CREATE TABLE test_topic_schemaless ENGINE=IcebergS3('<s3-bucket-url>', <aws-access-key-id>', '<aws-secret-access-key>', 'Parquet')
+----
+
+The table consists of columns containing the record key, value, and the original timestamp.
+
+[,bash]
+----
+SELECT
+  Timestamp,
+  Key,
+  left(Value, 30)
+FROM test_topic_schemaless
+----
+
+[,bash,role=no-copy]
+----
+
+----
+
+== Suggested reading
+
+* https://www.redpanda.com/blog/apache-iceberg-topics-streaming-data[Apache Iceberg Topics: Stream directly into your data lake
+^]
