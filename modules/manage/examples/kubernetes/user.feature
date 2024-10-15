@@ -45,7 +45,7 @@ Feature: User CRDs
             secretKeyRef:
               name: jason-password
               key: password
-  # end::manage-authn-only-manifest[]
+    # end::manage-authn-only-manifest[]
     """
     And user "jason" is successfully synced
     And I delete the CRD user "jason"
@@ -79,7 +79,7 @@ Feature: User CRDs
             name: some-topic
             patternType: prefixed
           operations: [Read]
-  # end::manage-authz-only-manifest[]
+    # end::manage-authz-only-manifest[]
     """
     And user "travis" is successfully synced
     And I delete the CRD user "travis"
