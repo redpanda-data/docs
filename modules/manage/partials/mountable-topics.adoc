@@ -1,8 +1,6 @@
-For topics with Tiered Storage enabled, you can unmount a topic to detach segment data that is still on disk to object storage, and unmount a topic from object storage to attach the topic data to either the same origin cluster, or a different one. This allows you to hibernate a topic and free up and reclaim system resources taken up by the topic, or migrate a topic to a different cluster.
+For topics with Tiered Storage enabled, you can unmount a topic to detach segment data that is still on disk to object storage, and mount that topic to either the same origin cluster, or a different one. This allows you to hibernate a topic and free up system resources taken up by the topic, or migrate a topic to a different cluster.
 
-Redpanda also transfers topic manifests when mounting or unmounting a topic, so the topic can quickly accept reads and writes again and you can resume cluster workloads with ease. 
-
-An unmounted topic in object storage is detached from all clusters. The original cluster releases ownership of the topic. You can mount a topic from object storage that has been previously unmounted from a source cluster to a different destination cluster, or back to the same source cluster.
+Redpanda also transfers topic manifests when mounting or unmounting a topic, making it possible to quickly resume operations after mounting to the destination cluster.
 
 == Prerequisites
 
@@ -11,7 +9,11 @@ An unmounted topic in object storage is detached from all clusters. The original
 
 == Unmount a topic from a cluster to object storage
 
-When you unmount a topic, all incoming writes to the topic are blocked as Redpanda unmounts the topic from the cluster to object storage. Producers and consumers of the topic receive an error message indicating that the topic is no longer available. The unmounted topic is deleted in the source cluster.
+When you unmount a topic, all incoming writes to the topic are blocked as Redpanda unmounts the topic from the cluster to object storage. Producers and consumers of the topic receive an error message indicating that the topic is no longer available. 
+
+An unmounted topic in object storage is detached from all clusters. The original cluster releases ownership of the topic.
+
+NOTE: The unmounted topic is deleted in the source cluster, but can be mounted back again from object storage.
 
 [tabs]
 ======
@@ -49,6 +51,7 @@ You may optionally include the topic namespace (`ns`). Only `kafka` is currently
 --
 ======
 
+You can use the ID returned by the command to <<monitor-progress,monitor the progress>> of the unmount operation using `rpk` or the Admin API.
 
 == Mount a topic to a cluster
 
@@ -99,38 +102,9 @@ curl -X POST http://localhost:9644/v1/topics/mount -d {
 
 ======
 
+You can use the ID returned by the command to <<monitor-progress,monitor the progress>> of the mount operation using `rpk` or the Admin API.
+
 When the mount operation is complete, the target cluster handles produce and consume workloads for the topics.
-
-== Cancel a mount or unmount operation
-
-You can cancel a topic mount or unmount by running the command:
-
-[tabs]
-======
-rpk::
-+
---
-```
-rpk cluster storage cancel-mount <migration-id>
-```
---
-
-Admin API::
-+
---
-```
-curl -X POST http://localhost:9644/v1/<migration-id>/?action=cancel
-```
---
-======
-
-You cannot cancel mount and unmount operations in the following <<monitor-progress,states>>:
-
-- `planned` (but you may still xref:api:ROOT:admin-api.adoc#delete-/v1/migrations/-id-[delete] a planned mount or unmount)
-- `cut_over`
-- `finished`
-- `canceling`
-- `cancelled`
 
 == Monitor progress
 
@@ -163,8 +137,7 @@ The response returns the IDs and state of existing mount and unmount operations 
 | State | Unmount operation (outbound) | Mount operation (inbound)
 
 | `planned`
-2+| Redpanda validates the operation definition.
-
+2+| Redpanda validates the mount or unmount operation definition.
 
 | `preparing`
 | Redpanda flushes topic data, including topic manifests, to the destination bucket or container in object storage.
@@ -187,20 +160,54 @@ The response returns the IDs and state of existing mount and unmount operations 
 | The topic data in object storage is no longer available to mount to any clusters.
 
 | `finished`
-| The operation is complete and then deleted. 
-| The operation is complete and then deleted. The target cluster starts to handle produce and consume workloads.
+| The operation is complete and deleted. 
+| The operation is complete and deleted. The target cluster starts to handle produce and consume workloads.
 
 | `canceling`
-2+| Redpanda is in the process of canceling the operation.
-
+2+| Redpanda is in the process of canceling the mount or unmount operation.
 
 | `cancelled`
-2+| The operation is canceled.
+2+| The mount or unmount operation is cancelled.
 
 |===
 
+== Cancel a mount or unmount operation
+
+You can cancel a topic mount or unmount by running the command:
+
+[tabs]
+======
+rpk::
++
+--
+```
+rpk cluster storage cancel-mount <migration-id>
+```
+--
+
+Admin API::
++
+--
+```
+curl -X POST http://localhost:9644/v1/<migration-id>/?action=cancel
+```
+--
+======
+
+`<migration-id>` is the unique identifier of the operation. Redpanda returns this ID when you start a mount or unmount. You can also retrieve the ID by listing <<monitor-progress,existing migrations>>.
+
+You cannot cancel mount and unmount operations in the following <<monitor-progress,states>>:
+
+- `planned` (but you may still xref:api:ROOT:admin-api.adoc#delete-/v1/migrations/-id-[delete] a planned mount or unmount)
+- `cut_over`
+- `finished`
+- `canceling`
+- `cancelled`
+
+== Additional considerations
+
 It is not currently possible to unmount a topic whose name matches multiple topics in the origin cluster.
 
-Redpanda prevents you from mounting a topic to multiple clusters at once. This ensures that multiple clusters don't write to the same location in object storage and corrupt the topic.
+Redpanda prevents you from mounting the same topic to multiple clusters at once. This ensures that multiple clusters don't write to the same location in object storage and corrupt the topic.
 
 If you attempt to mount a topic where the name matches a topic already in the target cluster, Redpanda fails the operation and emits a warning message in the logs.
