@@ -1,8 +1,8 @@
-For topics with Tiered Storage enabled, you can mount and unmount topics to transfer the topic data between your cluster and object storage. This allows you to free up and reclaim unused partition space, or migrate a topic to a different cluster and hibernate or decommission the topic or even the entire cluster.
+For topics with Tiered Storage enabled, you can unmount a topic to detach segment data that is still on disk to object storage, and unmount a topic from object storage to attach the topic data to either the same origin cluster, or a different one. This allows you to hibernate a topic and free up and reclaim system resources taken up by the topic, or migrate a topic to a different cluster.
 
-Redpanda also transfers topic definitions when mounting or unmounting a topic.
+Redpanda also transfers topic manifests when mounting or unmounting a topic, so the topic can quickly accept reads and writes again and you can resume cluster workloads with ease. 
 
-An unmounted topic in object storage is detached from all clusters. The original cluster releases ownership of the topic. You can mount a topic from object storage that has been previously flushed from a source cluster to a different destination cluster, or back to the same source cluster.
+An unmounted topic in object storage is detached from all clusters. The original cluster releases ownership of the topic. You can mount a topic from object storage that has been previously unmounted from a source cluster to a different destination cluster, or back to the same source cluster.
 
 == Prerequisites
 
@@ -11,7 +11,7 @@ An unmounted topic in object storage is detached from all clusters. The original
 
 == Unmount a topic from a cluster to object storage
 
-When you unmount a topic, all incoming writes to the topic are blocked as Redpanda migrates the topic from the cluster to object storage. Producers and consumers of the topic receive an error message indicating that the topic is no longer available. The unmounted topic is deleted in the source cluster.
+When you unmount a topic, all incoming writes to the topic are blocked as Redpanda unmounts the topic from the cluster to object storage. Producers and consumers of the topic receive an error message indicating that the topic is no longer available. The unmounted topic is deleted in the source cluster.
 
 [tabs]
 ======
@@ -99,11 +99,11 @@ curl -X POST http://localhost:9644/v1/topics/mount -d {
 
 ======
 
-When the migration is complete, the target cluster handles produce and consume workloads for the topics.
+When the mount operation is complete, the target cluster handles produce and consume workloads for the topics.
 
-== Cancel a migration
+== Cancel a mount or unmount operation
 
-You can cancel a topic migration by running the command:
+You can cancel a topic mount or unmount by running the command:
 
 [tabs]
 ======
@@ -124,9 +124,9 @@ curl -X POST http://localhost:9644/v1/<migration-id>/?action=cancel
 --
 ======
 
-You cannot cancel migrations in the following <<monitor-progress,states>>:
+You cannot cancel mount and unmount operations in the following <<monitor-progress,states>>:
 
-- `planned` (but you may still xref:api:ROOT:admin-api.adoc#delete-/v1/migrations/-id-[delete] a planned migration)
+- `planned` (but you may still xref:api:ROOT:admin-api.adoc#delete-/v1/migrations/-id-[delete] a planned mount or unmount)
 - `cut_over`
 - `finished`
 - `canceling`
@@ -139,7 +139,7 @@ You cannot cancel migrations in the following <<monitor-progress,states>>:
 rpk::
 +
 --
-To list topic migrations, run the command:
+To list active mount and unmount operations, run the command:
 
 ```
 rpk cluster storage list-mount
@@ -149,7 +149,7 @@ rpk cluster storage list-mount
 Admin API::
 +
 --
-Issue a GET request to the `/migrations` endpoint to view the state of topic migrations:
+Issue a GET request to the `/migrations` endpoint to view the status of topic mount and unmount operations:
 
 ```
 curl http://localhost:9644/v1/migrations 
@@ -157,21 +157,21 @@ curl http://localhost:9644/v1/migrations
 --
 ======
 
-The response returns the IDs and state of existing migrations:
+The response returns the IDs and state of existing mount and unmount operations ("migrations"):
 
 |===
-| Migration state | Outbound migration (unmount) | Inbound migration (mount)
+| State | Unmount operation (outbound) | Mount operation (inbound)
 
 | `planned`
-2+| Redpanda validates the migration definition.
+2+| Redpanda validates the operation definition.
 
 
 | `preparing`
-| Redpanda copies all possible topic data, including topic manifests, to the destination bucket or container in object storage.
+| Redpanda flushes topic data, including topic manifests, to the destination bucket or container in object storage.
 | Redpanda recreates the topics in a disabled state in the target cluster. The cluster allocates partitions but does not add log segments yet. Topic metadata is populated from the topic manifests found in object storage.
 
 | `prepared` 
-| The migration is ready to execute. In this state, the cluster still accepts client reads and writes for the topics.
+| The operation is ready to execute. In this state, the cluster still accepts client reads and writes for the topics.
 | Topics exist in the cluster but clients do not yet have access to consume or produce.
 
 | `executing` 
@@ -180,32 +180,32 @@ The response returns the IDs and state of existing migrations:
 
 | `executed` 
 | All unmounted topic data from the cluster is available in object storage.
-| 
+| The target cluster has verified that the topic has not already been mounted.
 
 | `cut_over`
 | Redpanda deletes topic metadata from the cluster, and marks the data in object storage as available for mount operations.
 | The topic data in object storage is no longer available to mount to any clusters.
 
 | `finished`
-| The migration is complete and then deleted. 
-| The migration is complete and then deleted. The target cluster starts to handle produce and consume workloads.
+| The operation is complete and then deleted. 
+| The operation is complete and then deleted. The target cluster starts to handle produce and consume workloads.
 
 | `canceling`
-2+| Redpanda is in the process of canceling the migration.
+2+| Redpanda is in the process of canceling the operation.
 
 
 | `cancelled`
-2+| The migration is canceled.
+2+| The operation is canceled.
 
 |===
 
-== Troubleshoot
+It is not currently possible to unmount a topic whose name matches multiple topics in the origin cluster.
 
-If Redpanda encounters errors during mounting and unmounting, it retries the operation indefinitely. If you experience issues, check this list:
+Redpanda prevents you from mounting a topic to multiple clusters at once. This ensures that multiple clusters don't write to the same location in object storage and corrupt the topic.
 
-* Do not attempt to mount a topic that does not exist in object storage.
-* Do not attempt to mount a topic that is already mounted to the current or a different cluster.
-* Make sure your Redpanda deployment is not experiencing failures, such as Tiered Storage becoming unavailable, or multiple brokers going down.
+If you attempt to mount a topic where the name matches a topic already in the target cluster, Redpanda fails the operation and emits a warning message in the logs.
+
+ 
 
 
 
