@@ -388,8 +388,11 @@ This section lists each rpk command in alphabetical order, along with a table of
 """
 
 executed_command = "rpk"
+quantity =0
 
 for command in it_commands:
+    quantity+=1
+    
     result = execute_process([command])
     executed_command = "rpk " + command
 
@@ -421,6 +424,9 @@ for command in it_commands:
     for new_command in new_commands:
         it_commands.insert(index, command + " " + new_command)
         index += 1
+
+    if(quantity%20==0):
+        print(f"{quantity}/{len(it_commands)} files written in disk.")
 
 cmd_dict['rpk_version'] = rpk_version
 json_object = json.dumps(cmd_dict, indent = 4) 
