@@ -1,0 +1,230 @@
+For topics with Tiered Storage enabled, you can unmount a topic to safely detach it from a cluster and keep the topic data in the cluster's object storage bucket or container. You can mount the detached topic to either the same origin cluster, or a different one. This allows you to hibernate a topic and free up system resources taken up by the topic, or migrate a topic to a different cluster.
+
+== Prerequisites
+
+. xref:get-started:rpk-install.adoc[Install `rpk`], or ensure that you have access to the Admin API.
+. Enable xref:manage:tiered-storage.adoc[Tiered Storage] for specific topics, or for the entire cluster (all topics).
+
+== Unmount a topic from a cluster to object storage
+
+When you unmount a topic, all incoming writes to the topic are blocked as Redpanda unmounts the topic from the cluster to object storage. Producers and consumers of the topic receive an error message indicating that the topic is no longer available. 
+
+An unmounted topic in object storage is detached from all clusters. The original cluster releases ownership of the topic.
+
+NOTE: The unmounted topic is deleted in the source cluster, but can be mounted back again from object storage.
+
+[tabs]
+======
+rpk::
++
+--
+In your cluster, run this command to unmount a topic to object storage:
+
+```
+rpk cluster storage unmount <namespace>/<topic-name>
+```
+--
+Admin API::
++
+--
+To unmount topics from a cluster using the Admin API, make a POST request to the `/v1/topics/unmount` endpoint.  Specify the names of the desired topics in the request body:
+
+```
+curl -X POST http://localhost:9644/v1/topics/unmount -d {
+  "topics": [
+    {
+      "topic": "<topic-1-name>"
+    }, 
+    {
+      "topic": "<topic-2-name>"
+    }, 
+    {
+      "topic": "<topic-3-name>"
+    }
+  ]
+}
+```
+
+You may optionally include the topic namespace (`ns`). Only `kafka` is supported.
+--
+======
+
+You can use the ID returned by the command to <<monitor-progress,monitor the progress>> of the unmount operation using `rpk` or the Admin API.
+
+== Mount a topic to a cluster
+
+[tabs]
+======
+rpk::
++
+--
+In your target cluster, run this command to mount a topic from object storage:
+
+```
+rpk cluster storage mount <source-topic-name>
+```
+
+You can also rename the topic as you mount it to the target cluster:
+
+```
+rpk cluster storage mount <namespace>/<source-topic-name> --to <namespace>/<new-topic-name>
+```
+--
+Admin API::
++
+--
+To mount topics to a target cluster using the Admin API, make a POST request to the `/v1/topics/mount` endpoint. Specify the names of the topics in the request body:
+
+```
+curl -X POST http://localhost:9644/v1/topics/mount -d {
+  "topics": [
+    {
+      "source_topic": {"ns": "kafka", "topic": "<source-topic-1-name>"}, 
+      "alias": {"ns": "kafka", "topic": "<new-topic-1-name>"}
+    }, 
+    {
+      "source_topic": {"ns": "kafka", "topic": "<source-topic-2-name>"}
+    }, 
+    {
+      "source_topic": {"ns": "kafka", "topic": "source-topic-3-name"}, 
+      "alias": {"ns": "kafka", "topic": "<new-topic-3-name>"}
+    }
+  ]
+}
+```
+
+* `ns` is the topic namespace. This field is optional and only `kafka` is supported.
+* To rename a topic in the target cluster, use the optional `alias` object in the request body. In the example, topics 1 and 3 are given new names in the target cluster, while topic 2 retains its original name.
+
+--
+
+======
+
+You can use the ID returned by the command to <<monitor-progress,monitor the progress>> of the mount operation using `rpk` or the Admin API.
+
+When the mount operation is complete, the target cluster handles produce and consume workloads for the topics.
+
+== Monitor progress
+
+[tabs]
+======
+rpk::
++
+--
+To list active mount and unmount operations, run the command:
+
+```
+rpk cluster storage list-mount
+```
+--
+
+Admin API::
++
+--
+Issue a GET request to the `/migrations` endpoint to view the status of topic mount and unmount operations:
+
+```
+curl http://localhost:9644/v1/migrations 
+```
+--
+======
+
+You can also retrieve the status of a specific operation by running the command:
+
+
+[tabs]
+======
+rpk::
++
+--
+```
+rpk cluster storage status-mount <migration-id>
+```
+--
+Admin API::
++
+--
+```
+curl http://localhost:9644/v1/migrations/<migration-id> 
+```
+--
+======
+
+The response returns the IDs and state of existing mount and unmount operations ("migrations"):
+
+|===
+| State | Unmount operation (outbound) | Mount operation (inbound)
+
+| `planned`
+2+| Redpanda validates the mount or unmount operation definition.
+
+| `preparing`
+| Redpanda flushes topic data, including topic manifests, to the destination bucket or container in object storage.
+| Redpanda recreates the topics in a disabled state in the target cluster. The cluster allocates partitions but does not add log segments yet. Topic metadata is populated from the topic manifests found in object storage.
+
+| `prepared` 
+| The operation is ready to execute. In this state, the cluster still accepts client reads and writes for the topics.
+| Topics exist in the cluster but clients do not yet have access to consume or produce.
+
+| `executing` 
+| The cluster rejects client reads and writes for the topics. Redpanda uploads any remaining topic data that has not yet been copied to object storage. Uncommitted transactions involving the topic are aborted.
+| The target cluster checks that the topic to be mounted has not already been mounted in any cluster.
+
+| `executed` 
+| All unmounted topic data from the cluster is available in object storage.
+| The target cluster has verified that the topic has not already been mounted.
+
+| `cut_over`
+| Redpanda deletes topic metadata from the cluster, and marks the data in object storage as available for mount operations.
+| The topic data in object storage is no longer available to mount to any clusters.
+
+| `finished`
+| The operation is complete. 
+| The operation is complete. The target cluster starts to handle produce and consume workloads.
+
+| `canceling`
+2+| Redpanda is in the process of canceling the mount or unmount operation.
+
+| `cancelled`
+2+| The mount or unmount operation is cancelled.
+
+|===
+
+== Cancel a mount or unmount operation
+
+You can cancel a topic mount or unmount by running the command:
+
+[tabs]
+======
+rpk::
++
+--
+```
+rpk cluster storage cancel-mount <migration-id>
+```
+--
+
+Admin API::
++
+--
+```
+curl -X POST http://localhost:9644/v1/<migration-id>/?action=cancel
+```
+--
+======
+
+`<migration-id>` is the unique identifier of the operation. Redpanda returns this ID when you start a mount or unmount. You can also retrieve the ID by listing <<monitor-progress,existing migrations>>.
+
+You cannot cancel mount and unmount operations in the following <<monitor-progress,states>>:
+
+- `planned` (but you may still xref:api:ROOT:admin-api.adoc#delete-/v1/migrations/-id-[delete] a planned mount or unmount)
+- `cut_over`
+- `finished`
+- `canceling`
+- `cancelled`
+
+== Additional considerations
+
+Redpanda prevents you from mounting the same topic to multiple clusters at once. This ensures that multiple clusters don't write to the same location in object storage and corrupt the topic.
+
+If you attempt to mount a topic where the name matches a topic already in the target cluster, Redpanda fails the operation and emits a warning message in the logs.
