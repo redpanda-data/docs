@@ -1,0 +1,274 @@
+= Manage Users and ACLs with the Redpanda Operator
+:description: Use the User resource to declaratively create and manage users and ACLs as part of a Redpanda deployment. Each User resource is mapped to a user in your Redpanda cluster. The user controller keeps the corresponding user in sync with the User resource.
+:page-categories: Management, Development
+:env-kubernetes: true
+
+With the Redpanda Operator, you can declaratively create and manage Redpanda users and glossterm:ACL[,access control lists (ACLs)] using xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-user[User custom resources] (resources) in Kubernetes. Each User resource is mapped to a user in your Redpanda cluster. The user controller, a component of the Redpanda Operator, keeps the corresponding user in sync with the User resource.
+
+== Prerequisites
+
+You must have the following:
+
+* *Kubectl*: Ensure you have the https://kubernetes.io/docs/tasks/tools/#kubectl[kubectl^] command-line tool installed and configured to communicate with your cluster.
+* *Redpanda Operator*: Ensure you have the xref:deploy:deployment-option/self-hosted/kubernetes/k-production-deployment.adoc[Redpanda Operator].
+* *Redpanda cluster with SASL enabled*: Ensure you have a Redpanda resource deployed with xref:manage:kubernetes/security/authentication/k-authentication.adoc#enable[SASL authentication enabled].
+
+== Create a user
+
+You can use the User resource to:
+
+- <<both, Create a new user and its ACLs>>
+- <<no-acl, Create a new user without any authorization (ACLs)>>
+- <<only-acl, Create only the ACLs for a user>>
+
+Each User instance is responsible for managing both the user credentials (authentication) and the user's ACLs within the Redpanda cluster. You cannot use one User resource to manage the user and another resource to manage the ACLs. Only one User instance is allowed per user in the Redpanda cluster.
+
+[[no-acl]]
+=== Create a new user without any ACLs
+
+- *Use case*: You want to create and manage user credentials (authentication) without managing ACLs. Use this option if you have a separate process to manage ACLs or if you're working in an environment where access control is handled externally.
+- *What happens when deleted*: The user is deleted, but ACLs for that user will remain in the cluster.
+
+This example shows how to manage the creation and authentication of a user without configuring ACLs.
+
+.`new-user.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/user-crds.feature[tags=manage-authn-only-manifest,indent=0]
+----
+
+[[only-acl]]
+=== Create only ACLs
+
+- *Use case*: You want to manage ACLs for an existing user in the Redpanda cluster, but not modify the user's credentials. Use this option if user credentials are managed by another process or tool, and you only want to control what resources the user can access (authorization).
+- *What happens when deleted*: The ACLs are removed, but the user remains. This is useful when you want to revoke access but retain the user's credentials for future use.
+
+When you create ACLs with the User resource, the specified ACLs are applied only to the user defined in the `metadata.name` field. For example, if you create ACLs for a user named `data-consumer`, those ACLs apply only to that user. Other users in the Redpanda cluster are not affected by these ACLs.
+
+This example shows how to manage only the ACLs for an existing user in the Redpanda cluster.
+
+.`new-acl.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/user-crds.feature[tags=manage-authz-only-manifest,indent=0]
+----
+
+[[both]]
+=== Create a new user and assign ACLs
+
+- *Use case*: You want to manage both user credentials and ACLs within the same resource.
+- *What happens when deleted*: Both the user and the associated ACLs are removed.
+
+This example shows how to manage both authentication and ACLs for a user within the same User resource.
+
+.`new-user-and-acl.yaml`
+[source,yaml,indent=0]
+----
+# In this example manifest, the user "full-user" is created and managed for both authentication and authorization.
+# The user is granted both read and write access to the topic critical-topic.
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: User
+metadata:
+  name: full-user
+spec:
+  cluster:
+    clusterRef:
+      name: sasl
+  authentication:
+    type: scram-sha-512
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: full-user-secret
+          key: password
+  authorization:
+    acls:
+      - type: allow
+        resource:
+          type: topic
+          name: critical-topic
+          patternType: literal
+        operations: [Read,Write]
+----
+
+== Configuration best practices
+
+The following sections provide guidance on setting up user authentication, managing secrets, and defining ACLs within your Kubernetes environment. These recommendations ensure proper user management while minimizing manual interventions and preventing potential security issues. By following these best practices, you can ensure that user access and permissions are correctly configured and maintained across your Redpanda cluster.
+
+You can find all configuration options for the User resource in the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-user[CRD reference].
+
+=== Choose a username
+
+The `metadata.name` field in the User resource is used to specify the username. Keep in mind the following best practices when choosing a username:
+
+- *Unique*: Ensure each user has a unique name to avoid conflicts. The username must be unique within the Redpanda cluster.
+- *Descriptive*: Choose a name that identifies the purpose or role of the user. For example, use names like `app-consumer` or `admin-user`.
+- *Stable*: Avoid changing usernames frequently. Usernames are tied to authentication and authorization rules (ACLs). Renaming a user involves deleting and recreating the user.
+
+[,yaml]
+----
+metadata:
+  name: full-user
+----
+
+In this example, `full-user` is the username, which will be referenced in both authentication and authorization rules.
+
+=== Configure authentication
+
+This section provides guidance on configuring authentication for users with the User resource.
+
+You can find all configuration options for authentication in the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-userauthenticationspec[UserAuthenticationSpec] of the CRD reference.
+
+==== Choose an authentication type
+
+You can specify the authentication type for a user using the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-userauthenticationspec[`spec.authentication.type`] field. Supported values include `scram-sha-256`, `scram-sha-512`, and their uppercase variants.
+
+[source,yaml]
+----
+spec:
+  authentication:
+    type: scram-sha-512
+----
+
+If no authentication credentials are provided, no user will be created, but ACLs can still be managed for existing users.
+
+==== Manage user secrets
+
+Redpanda users require a password, which you can provide directly, using the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-password[`spec.password.value`] field, or through a Kubernetes Secret, using the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-password[`spec.password.valueFrom.secretKeyRef`]. The Redpanda operator offers flexibility in how these secrets are handled:
+
+- If the Secret exists and the key exists within that Secret, the existing password will be used.
+- If the Secret exists but the key does not exist, the Secret will be updated with an autogenerated password.
+- If the Secret does not exist, a new Secret with the provided key will be created with an autogenerated password.
+
+This behavior ensures that you can manage user credentials securely and programmatically, while also automating password generation if necessary.
+
+To use an existing Kubernetes Secret, ensure that the Secret and key are both defined. For example:
+
+[source,yaml]
+----
+spec:
+  authentication:
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: user-secret
+          key: password
+----
+
+This example is based on the assumption that a Kubernetes Secret named `user-secret` with a key `password` exists. If the Secret does not exist or the key is missing, the Redpanda Operator will handle it by creating or updating the Secret with an autogenerated password. The autogenerated password will follow best practices for secure password generation.
+
+If you need to create a Secret, you can use the following command as an example:
+
+[source,bash]
+----
+kubectl --namespace <namespace> create secret generic user-secret --from-file=password.txt
+----
+
+In this example, the `password.txt` file contains the password you want to use.
+
+=== Define ACLs
+
+The xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-userauthorizationspec[`spec.authorization`] field allows you to manage ACLs for users. ACLs define the permissions users have over specific resources in Redpanda, such as topics, consumer groups, and clusters.
+
+You can define ACLs for a user by specifying which resources they can access and the operations they are permitted to perform. Here's an example configuration for managing ACLs:
+
+[source,yaml]
+----
+spec:
+  authorization:
+    acls:
+      - type: allow
+        resource:
+          type: topic
+          name: my-topic
+          patternType: literal
+        operations: [Read, Write]
+----
+
+- `type`: Defines whether the ACL is `allow` or `deny`.
+- `resource.type`: Specifies the resource type.
+- `patternType`: Specifies if the resource name is treated as a `literal` or a `prefixed` pattern. Default: `literal`.
++
+TIP: Use specific resource names where possible. Using `literal` names for resources ensures that only the exact resources you intend are accessible. Use `prefixed` patterns cautiously to avoid accidental permission grants.
+- `operations`: Lists the allowed operations, such as `Read`, `Write`, `Create`, and `Delete`.
+
+You can find all configuration options for authorization in the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-userauthorizationspec[UserAuthorizationSpec] of the CRD reference.
+
+For more details about ACLs, including supported operations and resources in Redpanda, see xref:manage:security/authorization/acl.adoc[].
+
+== Deploy a User resource
+
+To deploy a User resource, apply the manifest to the same namespace as your Redpanda cluster:
+
+[,bash]
+----
+kubectl apply -f <manifest-filename>.yaml --namespace <namespace>
+----
+
+- Replace `<manifest-filename>` with the filename of your manifest.
+- Replace `<namespace>` with the namespace in which you deployed Redpanda.
+
+== Verify a user
+
+After deploying a User resource, verify that the Redpanda Operator reconciled it:
+
+[,bash]
+----
+kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
+----
+
+Example output:
+
+[source,json]
+----
+{
+  "level": "info",
+  "ts": "2024-09-25T16:20:09.538Z",
+  "logger": "UserReconciler.Reconcile",
+  "msg": "Starting reconcile loop",
+  "controller": "user",
+  "User": {
+    "name": "my-user",
+    "namespace": "<namespace>"
+  },
+  "reconcileID": "c0cf9abc-a553-48b7-9b6e-2de3cdfb4432"
+}
+{
+  "level": "info",
+  "ts": "2024-09-25T16:20:09.581Z",
+  "logger": "UserReconciler.Reconcile",
+  "msg": "Reconciliation finished in 43.436125ms, next run in 3s",
+}
+----
+
+== Update a user
+
+To update a user, edit the User resource configuration and apply the changes.
+
+[,bash]
+----
+kubectl apply -f <manifest-filename>.yaml --namespace <namespace>
+----
+
+== Delete a user
+
+To delete a user, delete the User resource:
+
+[,bash]
+----
+kubectl delete -f example-user.yaml --namespace <namespace>
+----
+
+When a User resource is deleted, its underlying data is removed as well. If the user has ACLs, those ACLs are also removed.
+
+Deleting a User resource will have different impacts depending on how it is configured:
+
+- **Authentication-only**: When a User resource that manages only authentication is deleted, the user is removed from the cluster. However, any ACLs not managed by the same resource will remain in place.
+- **Authorization-only**: When a User resource that manages only ACLs is deleted, the ACLs are removed, but the user remains in the cluster.
+- **Full user management (both authentication and authorization)**: When the resource manages both users and ACLs, the user and its associated ACLs are removed.
+
+== Suggested reading
+
+* xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-user[User resource]
+* xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-userlist[UserList resource]
+* xref:manage:kubernetes/security/authentication/k-authentication.adoc[]
