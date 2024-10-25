@@ -1,20 +1,16 @@
-= Debug Bundles in Kubernetes
-:description: Use the debug bundle to resolve issues yourself, or send it to the Redpanda support team to help resolve your issue.
-:tags: ["Kubernetes"]
-:page-aliases: manage:kubernetes/troubleshooting/diagnostics-bundle.adoc, manage:kubernetes/troubleshooting/k-diagnostics-bundle.adoc
-:page-categories: Management, Troubleshooting
-:env-kubernetes: true
-
-A debug bundle is a ZIP file with data that can help debug and diagnose issues with a Redpanda cluster, a broker, or the machines on which the brokers are running. You can use this file to debug issues yourself, or you can send it to the Redpanda support team to help resolve your issue.
-
 == Prerequisites
+
+ifndef::env-kubernetes[]
+You must have xref:get-started:rpk-install.adoc[`rpk` installed] on your host machine.
+endif::[]
 
 Most files in the debug bundle are JSON files. To make it easier to read these files, this guide uses jq. To install jq, see the https://stedolan.github.io/jq/download/[jq downloads page^].
 
-These examples use the default values in Helm chart. If you've customized the Helm chart, you may need to provide custom values and/or flags.
+== Generate a debug bundle with `rpk`
 
-== Generate a debug bundle
+To generate a debug bundle with `rpk`, you can run the xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`] command on each broker in the cluster.
 
+ifdef::env-kubernetes[]
 . Create a ClusterRole to allow Redpanda to collect information from the Kubernetes API:
 +
 [tabs]
@@ -85,23 +81,37 @@ If you aren't using the Helm chart, you can create the ClusterRole manually:
 kubectl create clusterrolebinding redpanda --clusterrole=view --serviceaccount=redpanda:default
 ```
 ====
+endif::[]
 
-. Execute the xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`] command inside a Pod container that's running a Redpanda broker.
+
+. Execute the xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`] command on a broker:
 +
-In this example, the command is executed on a Pod called `redpanda-0`.
-+
-```bash
-kubectl exec -it --namespace <namespace> redpanda-0 -c redpanda -- rpk debug bundle
-```
+[,bash]
+----
+ifdef::env-kubernetes[]
+kubectl exec -it --namespace <namespace> redpanda-0 -c redpanda -- rpk debug bundle --namespace <namespace>
+endif::[]
+ifndef::env-kubernetes[]
+rpk debug bundle
+endif::[]
+----
 +
 If you have an upload URL from the Redpanda support team,
 provide it in the `--upload-url` flag to upload your debug bundle to Redpanda.
 +
-```bash
+[,bash]
+----
+ifdef::env-kubernetes[]
 kubectl exec -it --namespace <namespace> redpanda-0 -c redpanda -- rpk debug bundle \
   --upload-url <url> \
   --namespace <namespace>
-```
+endif::[]
+ifndef::env-kubernetes[]
+rpk debug bundle \
+  --upload-url <url>
+endif::[]
+
+----
 +
 Example output:
 +
@@ -112,43 +122,58 @@ Creating bundle file...
 Debug bundle saved to "/var/lib/redpanda/1675440652-bundle.zip"
 ----
 
+
 . On your host machine, make a directory in which to save the debug bundle:
 +
 ```bash
-mkdir diagnostics-bundle
+mkdir debug-bundle
 ```
 
-. Copy the debug bundle from the Pod to your host machine:
+. Copy the debug bundle ZIP file to the `debug-bundle` directory on your host machine.
+ifdef::env-kubernetes[]
 +
 Replace `<bundle-name>` with the name of your ZIP file.
 +
 ```bash
-kubectl cp redpanda/redpanda-0:/var/lib/redpanda/<bundle-name> diagnostics-bundle/<bundle-name>
+kubectl cp <namespace>/redpanda-0:/var/lib/redpanda/<bundle-name> debug-bundle/<bundle-name>.zip
 ```
+endif::[]
 
 . Unzip the file on your host machine.
 +
 ```bash
-cd diagnostics-bundle
-unzip <bundle-name>
+cd debug-bundle
+unzip <bundle-name>.zip
 ```
 
-. Remove the debug bundle from the Redpanda container:
+. Remove the debug bundle from the Redpanda broker:
 +
-```bash
-kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- rm /var/lib/redpanda/<bundle-name>
-```
-
+[,bash]
+----
+ifdef::env-kubernetes[]
+kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- rm /var/lib/redpanda/<bundle-name>.zip
+endif::[]
+ifndef::env-kubernetes[]
+rm /var/lib/redpanda/<bundle-name>.zip
+endif::[]
+----
 
 When you've finished troubleshooting, remove the debug bundle from your host machine:
 
 ```bash
-rm -r diagnostics-bundle
+rm -r debug-bundle
 ```
 
 For a description of the files and directories, see <<Contents of the debug bundle>>.
 
+== Generate a debug bundle with Redpanda Console
+
+See xref:console:ui/generate-bundle.adoc[].
+
+// tag::inspect[]
 == Inspect the debug bundle
+
+After downloading the debug bundle files, you can inspect the contents to debug your cluster.
 
 This section provides some useful data points to check while troubleshooting.
 
@@ -254,7 +279,7 @@ cat admin/cluster_config.json | jq
 ```
 ====
 
-=== Check Enterprise license keys
+=== Check Enterprise Edition license keys
 
 ```bash
 cat admin/license.json | jq
@@ -282,7 +307,7 @@ cat admin/license.json | jq
 To check the size of the directories and look for anomalies:
 
 ```bash
-cat du.txt
+cat utils/du.txt
 ```
 
 .Example output
@@ -627,14 +652,21 @@ cat kafka.json | jq '.[1:]'
 
 === View the Redpanda logs
 
+ifdef::env-kubernetes[]
 ```bash
 cat logs/redpanda-0.txt # logs/redpanda-1.txt logs/redpanda-2.txt
 ```
+endif::[]
+ifndef::env-kubernetes[]
+```bash
+cat redpanda.log
+```
+endif::[]
 
 === Check for clock drift
 
 ```bash
-cat ntp.txt | jq
+cat utils/ntp.txt | jq
 ```
 
 Use the output to check for clock drift. For details about how NTP works, see the http://www.ntp.org/ntpfaq/NTP-s-algo.htm[NTP documentation^].
@@ -654,6 +686,7 @@ Use the output to check for clock drift. For details about how NTP works, see th
 ```
 ====
 
+ifdef::env-kubernetes[]
 === View Kubernetes manifests
 
 ```bash
@@ -678,11 +711,15 @@ k8s
 ```
 ====
 
+endif::[]
+
+// end::inspect[]
+
 == Contents of the debug bundle
 
 The debug bundle includes the following files and directories:
 
-include::reference:partial$bundle-contents-k8s.adoc[]
+include::reference:partial$bundle-contents.adoc[]
 
 include::shared:partial$suggested-reading.adoc[]
 
