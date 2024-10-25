@@ -100,6 +100,7 @@ def transform_files_with_properties(files_with_properties):
         DurationBoundsTransformer(type_transformer),
         SimpleDefaultValuesTransformer(),
         ExperimentalTransformer(),
+        AliasTransformer(),
     ]
 
     all_properties = PropertyBag()

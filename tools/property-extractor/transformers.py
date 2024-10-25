@@ -266,3 +266,24 @@ class ExperimentalTransformer:
             return info["type"].startswith(("development_", "hidden_when_default_"))
     def parse(self, property, info, file_pair):
         property["is_experimental_property"] = True
+
+class AliasTransformer:
+    def accepts(self, info, file_pair):
+        if 'params' in info:
+            for param in info['params']:
+                if isinstance(param, dict) and 'value' in param:
+                    value = param['value']
+                    if isinstance(value, dict) and 'aliases' in value:
+                        return True
+        return False
+
+    def parse(self, property, info, file_pair):
+        aliases = []
+        for param in info['params']:
+            value = param.get('value', {})
+            if isinstance(value, dict) and 'aliases' in value:
+                aliases_dict = value['aliases']
+                # Extract each alias, removing any surrounding braces or quotes
+                aliases.extend(alias.strip('{}"') for alias in aliases_dict.values())
+
+        property['aliases'] = aliases
