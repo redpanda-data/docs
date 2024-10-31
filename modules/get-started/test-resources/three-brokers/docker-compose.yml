@@ -1,4 +1,4 @@
-name: redpanda-console-quickstart
+name: redpanda-quickstart
 networks:
   redpanda_network:
     driver: bridge
@@ -35,12 +35,8 @@ services:
       - --default-log-level=info
     image: docker.redpanda.com/redpandadata/${REDPANDA_DOCKER_REPO:-redpanda}:${REDPANDA_VERSION:-latest}
     container_name: redpanda-0
-    # Sets the username and password of the SCRAM superuser
-    environment:
-      RP_BOOTSTRAP_USER: "superuser:secretpassword"
     volumes:
       - redpanda-0:/var/lib/redpanda/data
-      - ./bootstrap.yml:/etc/redpanda/.bootstrap.yaml
     networks:
       - redpanda_network
     ports:
@@ -48,11 +44,6 @@ services:
       - 18082:18082
       - 19092:19092
       - 19644:9644
-    healthcheck:
-      test: ["CMD", "rpk", "cluster", "info", "-X", "user=superuser", "-X", "pass=secretpassword"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
   redpanda-1:
     command:
       - redpanda
@@ -70,11 +61,8 @@ services:
       - --seeds redpanda-0:33145
     image: docker.redpanda.com/redpandadata/${REDPANDA_DOCKER_REPO:-redpanda}:${REDPANDA_VERSION:-latest}
     container_name: redpanda-1
-    environment:
-      RP_BOOTSTRAP_USER: "superuser:secretpassword"
     volumes:
       - redpanda-1:/var/lib/redpanda/data
-      - ./bootstrap.yml:/etc/redpanda/.bootstrap.yaml
     networks:
       - redpanda_network
     ports:
@@ -101,11 +89,8 @@ services:
       - --seeds redpanda-0:33145
     image: docker.redpanda.com/redpandadata/${REDPANDA_DOCKER_REPO:-redpanda}:${REDPANDA_VERSION:?Set a Redpanda version}
     container_name: redpanda-2
-    environment:
-      RP_BOOTSTRAP_USER: "superuser:secretpassword"
     volumes:
       - redpanda-2:/var/lib/redpanda/data
-      - ./bootstrap.yml:/etc/redpanda/.bootstrap.yaml
     networks:
       - redpanda_network
     ports:
@@ -131,116 +116,17 @@ services:
       CONFIG_FILEPATH: ${CONFIG_FILEPATH:-/tmp/config.yml}
       CONSOLE_CONFIG_FILE: |
         kafka:
-          brokers: ["redpanda-0:9092"]
+          brokers: ["redpanda-0:9092", "redpanda-1:9092", "redpanda-2:9092"]
           schemaRegistry:
             enabled: true
-            urls: ["http://redpanda-0:8081"]
-          sasl:
-            enabled: true
-            username: superuser
-            password: secretpassword
-            mechanism: SCRAM-SHA-256
+            urls: ["http://redpanda-0:8081", "http://redpanda-1:8081", "http://redpanda-2:8081"]
         redpanda:
           adminApi:
             enabled: true
-            urls: ["http://redpanda-0:9644"]
-        console:
-          topicDocumentation:
-            enabled: true
-            git:
-              enabled: true
-              repository:
-                url: https://github.com/redpanda-data/docs
-                branch: main
-                baseDirectory: modules/console/test-resources
+            urls: ["http://redpanda-0:9644", "http://redpanda-1:9644", "http://redpanda-2:9644"]
     ports:
       - 8080:8080
     depends_on:
       - redpanda-0
-  ####################
-  # Redpanda Connect #
-  ####################
-  connect:
-    container_name: redpanda-connect
-    image: docker.redpanda.com/redpandadata/connect
-    networks:
-      - redpanda_network
-    entrypoint: /bin/sh
-    depends_on:
-      - redpanda-0
-    command: -c 'echo "$$CONNECT_CFG_FILE" > /tmp/connect.yml; /redpanda-connect -c /tmp/connect.yml'
-    environment:
-      # This is a Redpanda Connect configuration that creates fake data,
-      # process it, and it writes the output to a set of topics randomly.
-      #
-      # Input:
-      #  - Uses Redpanda Connect's generate input to generate fake data.
-      # Pipeline:
-      #  - Bloblang mapping to batch each input and map 1 message to 'logins'
-      #    topic, and a random number (1-3) of messages to 'transaction' topic
-      #  - Unarchive processor to parse the JSON array and extract each
-      #    element into its own message.
-      # Output:
-      #  - kafka_franz output to write the messages to the Redpanda brokers.
-      CONNECT_CFG_FILE: |
-        input:
-          generate:
-            interval: 1s
-            mapping: |
-              let first_name = fake("first_name")
-              let last_name  = fake("last_name")
-
-              root.user_id    = counter()
-              root.name       = $$first_name + " " + $$last_name
-              root.email      = ($$first_name.slice(0,1) + $$last_name + "@" + fake("domain_name")).lowercase()
-              root.login_time = now()
-        pipeline:
-          processors:
-            - mapping: |
-                root = range(0, random_int(min:2, max:4)).map_each(cust -> this)
-            - unarchive:
-                format: "json_array"
-            - mapping: |
-                if batch_index() == 0 {
-                  meta topic = "logins"
-                  root = this
-                } else {
-                  meta topic       = "transactions"
-                  root.user_id     = this.user_id
-                  root.email       = this.email
-                  root.index       = batch_index() - 1
-                  root.product_url = fake("url")
-                  root.price       = fake("amount_with_currency")
-                  root.timestamp   = now()
-                }
-        output:
-          kafka_franz:
-            seed_brokers: [ "redpanda-0:9092" ]
-            topic: $${! metadata("topic") }
-            sasl:
-              - mechanism: SCRAM-SHA-256
-                password: secretpassword
-                username: superuser
-  ####################
-  # rpk #
-  ####################
-  redpandarpk:
-    command:
-      - registry
-      - schema
-      - create
-      - transactions
-      - --schema
-      - /etc/redpanda/transactions-schema.json
-      - -X user=superuser
-      - -X pass=secretpassword
-      - -X registry.hosts=redpanda-0:8081
-    image: docker.redpanda.com/redpandadata/${REDPANDA_DOCKER_REPO:-redpanda}:${REDPANDA_VERSION:-latest}
-    # mount the local directory that contains your schema to the container.
-    volumes:
-      - ./transactions-schema.json:/etc/redpanda/transactions-schema.json
-    networks:
-      - redpanda_network
-    depends_on:
-      redpanda-0:
-        condition: service_healthy
+      - redpanda-1
+      - redpanda-2

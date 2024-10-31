@@ -1,6 +1,6 @@
 // Fetch the latest release version from GitHub
 const owner = 'redpanda-data';
-const beta = process.env.BETA === 'true' || false;
+const beta = process.env.BETA == 'true' || false;
 // Conditionally set DOCKER_REPO for subsequent test steps such as the Docker Compose file
 if (beta) {
   REDPANDA_DOCKER_REPO = 'redpanda-unstable';
@@ -38,8 +38,8 @@ async function loadOctokit() {
     const latestRedpandaReleaseVersion = beta
       ? (LatestRedpandaVersion.latestRcRelease && LatestRedpandaVersion.latestRcRelease.version
       ? LatestRedpandaVersion.latestRcRelease.version
-      : `v${LatestRedpandaVersion.latestRedpandaRelease.version}`)
-    : `v${LatestRedpandaVersion.latestRedpandaRelease.version}`;
+      : `${LatestRedpandaVersion.latestRedpandaRelease.version}`)
+    : `${LatestRedpandaVersion.latestRedpandaRelease.version}`;
 
     if (!LatestRedpandaVersion.latestRcRelease) REDPANDA_DOCKER_REPO = 'redpanda'
 
