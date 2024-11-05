@@ -1,0 +1,68 @@
+[discrete]
+= Configure access to data in GCP using a KMS key
+
+To configure the Google Cloud bucket used by Redpanda Tiered Storage to leverage a customer-managed key using the Cloud Key Management Service API instead of the default Google-managed key, you must:
+. Create a KMS key.
+. Configure the bucket to use the KMS key.
+. Optionally, re-encrypt existing data with the new KMS key.
+To manage Google Cloud KMS using the command line, first install or upgrade to the latest version of https://cloud.google.com/sdk/docs/install[Google Cloud CLI^].
+To create a KMS key:
+. In Google Cloud Console, search for "Cloud Key Managment Service API". Click **Enable** if the service is not already enabled.
+. Using the Google Cloud CLI, create a new keyring in the https://cloud.google.com/kms/docs/locations^[region] where the bucket used by Redpanda is located. Note that region is case-sensitive.
++
+[,bash, indent]
+----
+gcloud kms keyrings create "redpanda-keyring" --location="{REGION}"
+----
++
+. Create a new key for the keyring in the same region as the bucket:
++
+[,bash, indent]
+----
+gcloud kms keys create "redpanda-key" \
+  --location="{REGION}" \
+  --keyring="redpanda-keyring" \
+  --purpose="encryption"
+----
++
+. Get the key identifier:
++
+[,bash]
+----
+gcloud kms keys list \
+  --location="REGION" \
+  --keyring="redpanda-keyring"
+----
++
+The result should look like the following. Be sure to record the name, as this is used to assign and manage the key, and use this as the \{KEY_RESOURCE} placeholder in subsequent commands.
++
+[,bash]
+----
+NAME      PURPOSE      ALGORITHM      PROTECTION_LEVEL    LABELS    PRIMARY_ID    PRIMARY_STATE
+projects/{PROJECT_NAME}/locations/us/keyRings/redpanda-keyring/cryptoKeys/redpanda-key
+ENCRYPT_DECRYPT  GOOGLE_SYMMETRIC_ENCRYPTION  SOFTWARE          1           ENABLED
+----
+To configure the GCP bucket to use the KMS key:
+. Assign the key to a service agent:
++
+[,bash]
+----
+gcloud storage service-agent \
+  --project={PROJECT_ID_STORING_OBJECTS} \
+  --authorize-cmek={KEY_RESOURCE}
+----
++
+. Set the bucket default encryption key to the KMS key:
++
+[,bash]
+----
+gcloud storage buckets update gs://{BUCKET_NAME} \
+  --default-encryption-key={KEY_RESOURCE}
+----
+(Optional) To re-encrypt existing data using the new KMS key:
+Existing data in the bucket will continue to be read using the Google-managed key, while moving forward, new objects are encrypted using the new KMS key. If you wish to re-encrypt all data in the bucket to use the KMS key, run the following command:
+[,bash]
+----
+gcloud storage objects update gs://{BUCKET_NAME}/ --recursive \
+  --encryption-key={KEY_RESOURCE}
+----
