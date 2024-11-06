@@ -873,6 +873,35 @@ components:
         resource_group:
           $ref: '#/components/schemas/ResourceGroup'
       type: object
+    CreateSecretRequest:
+      description: CreateSecretRequest is the request of CreateSecret.
+      properties:
+        id:
+          description: Secret identifier.
+          type: string
+        labels:
+          additionalProperties:
+            type: string
+          description: Secret labels.
+          type: object
+        scopes:
+          items:
+            $ref: '#/components/schemas/Scope'
+          title: Secret scopes
+          type: array
+        secret_data:
+          description: The secret data.
+          format: byte
+          type: string
+      required:
+        - secret_data
+      type: object
+    CreateSecretResponse:
+      description: CreateSecretResponse is the response of CreateSecret.
+      properties:
+        secret:
+          $ref: '#/components/schemas/Secret'
+      type: object
     CreateServerlessClusterOperation:
       description: CreateServerlessClusterOperation is the response of the create serverless_cluster rpc.
       properties:
@@ -1098,6 +1127,9 @@ components:
       type: object
     DeleteResourceGroupResponse:
       description: DeleteResourceGroupResponse is the response of DeleteResourceGroup.
+      type: object
+    DeleteSecretResponse:
+      description: DeleteSecretResponse is the response of DeleteSecret.
       type: object
     DeleteServerlessClusterOperation:
       description: DeleteServerlessClusterOperation is the response of the delete serverless_cluster rpc.
@@ -1439,6 +1471,12 @@ components:
         resource_group:
           $ref: '#/components/schemas/ResourceGroup'
       type: object
+    GetSecretResponse:
+      description: GetSecretResponse is the response of GetSecret.
+      properties:
+        secret:
+          $ref: '#/components/schemas/Secret'
+      type: object
     GetServerlessClusterResponse:
       description: GetServerlessClusterResponse is the request of GetServerlessCluster.
       properties:
@@ -1707,7 +1745,7 @@ components:
     ListSecretsFilter:
       description: ListSecretsFilter are the filter options for listing secrets.
       properties:
-        labels[string]:
+        labels[string][string]:
           additionalProperties:
             type: string
           description: The secret labels to search for.
@@ -1715,6 +1753,11 @@ components:
         name_contains:
           description: Substring match on secret name. Case-sensitive.
           type: string
+        scopes:
+          items:
+            $ref: '#/components/schemas/Scope'
+          title: Secret scopes to search for
+          type: array
       type: object
     ListSecretsResponse:
       description: ListSecretsResponse is the response of ListSecrets.
@@ -2151,6 +2194,9 @@ components:
           type: string
         resources:
           $ref: '#/components/schemas/Resources'
+      required:
+        - display_name
+        - config_yaml
       type: object
     PlannedDeletion:
       description: Date after which this cluster can and should be deleted.
@@ -2574,6 +2620,11 @@ components:
         mtls:
           $ref: '#/components/schemas/v1beta2.MTLSSpec'
       type: object
+    Scope:
+      description: Defines the scope of a secret.
+      enum:
+        - SCOPE_REDPANDA_CONNECT
+      type: string
     Secret:
       description: Defines the secret resource.
       properties:
@@ -2586,6 +2637,11 @@ components:
             type: string
           description: Secret labels.
           type: object
+        scopes:
+          items:
+            $ref: '#/components/schemas/Scope'
+          title: Secret scopes
+          type: array
       type: object
     SecurityGroups:
       description: Azure security groups for Redpanda Cluster. All security groups shall be in the network resource group.
@@ -2765,12 +2821,14 @@ components:
          - STATE_STOPPING: The pipeline is in the process of stopping.
          - STATE_STOPPED: The pipeline is stopped and in paused state.
          - STATE_ERROR: The pipeline encountered an error. See [Error Handling](https://docs.redpanda.com/redpanda-cloud/develop/connect/configuration/error_handling/) for further guidance.
+         - STATE_COMPLETED: The pipeline has completed the job successfully.
       enum:
         - STATE_STARTING
         - STATE_RUNNING
         - STATE_STOPPING
         - STATE_STOPPED
         - STATE_ERROR
+        - STATE_COMPLETED
       type: string
     Status.ConnectedEndpoint:
       description: ConnectedEndpoint defines endpoint connection connected to Redpanda GCP PSC (Private Service Connect) service.
@@ -3038,6 +3096,12 @@ components:
         resource_group:
           $ref: '#/components/schemas/ResourceGroup'
       title: UpdateResourceGroupResponse is the response of UpdateResourceGroup
+      type: object
+    UpdateSecretResponse:
+      description: UpdateSecretResponse is the response of UpdateSecret.
+      properties:
+        secret:
+          $ref: '#/components/schemas/Secret'
       type: object
     UpdateTopicConfigurationsResponse:
       properties:
@@ -5365,9 +5429,18 @@ paths:
             type: string
         - description: This is a request variable of the map type. The query format is "map_name[key]=value", e.g. If the map name is Age, the key type is string, and the value type is integer, the query parameter is expressed as Age["bob"]=18
           in: query
-          name: filter.labels[string]
+          name: filter.labels[string][string]
           schema:
             type: string
+        - description: Secret scopes to search for
+          in: query
+          name: filter.scopes
+          schema:
+            items:
+              enum:
+                - SCOPE_REDPANDA_CONNECT
+              type: string
+            type: array
         - description: |-
             Value of the next_page_token field returned by the previous response.
             If not provided, the system assumes the first page is requested.
@@ -5985,6 +6058,267 @@ paths:
       summary: Stops a Redpanda Connect pipeline
       tags:
         - PipelineService
+  /v1alpha2/secrets:
+    get:
+      description: 'List secrets. Optional: filter based on secret name and labels.'
+      operationId: SecretService_ListSecrets
+      parameters:
+        - description: Substring match on secret name. Case-sensitive.
+          in: query
+          name: filter.name_contains
+          schema:
+            type: string
+        - description: This is a request variable of the map type. The query format is "map_name[key]=value", e.g. If the map name is Age, the key type is string, and the value type is integer, the query parameter is expressed as Age["bob"]=18
+          in: query
+          name: filter.labels[string]
+          schema:
+            type: string
+        - description: Secret scopes to search for
+          in: query
+          name: filter.scopes
+          schema:
+            items:
+              enum:
+                - SCOPE_REDPANDA_CONNECT
+              type: string
+            type: array
+        - description: |-
+            Value of the next_page_token field returned by the previous response.
+            If not provided, the system assumes the first page is requested.
+          in: query
+          name: page_token
+          schema:
+            type: string
+        - description: Limit the paginated response to a number of items.
+          in: query
+          name: page_size
+          schema:
+            format: int32
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSecretsResponse'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: List Secrets
+      tags:
+        - SecretService
+    post:
+      description: Create a secret.
+      operationId: SecretService_CreateSecret
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSecretRequest'
+        description: CreateSecretRequest is the request of CreateSecret.
+        required: true
+        x-originalParamName: body
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Secret'
+          description: Secret created
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Create Secret
+      tags:
+        - SecretService
+  /v1alpha2/secrets/{id}:
+    delete:
+      description: Delete a secret.
+      operationId: SecretService_DeleteSecret
+      parameters:
+        - description: The id of the secret to delete.
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          content:
+            application/json:
+              schema: {}
+          description: Secret deleted successfully
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Delete Secret
+      tags:
+        - SecretService
+    get:
+      description: Get a secret.
+      operationId: SecretService_GetSecret
+      parameters:
+        - description: The id of the secret to retrieve.
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Secret'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Get Secret
+      tags:
+        - SecretService
+    put:
+      description: Update a secret.
+      operationId: SecretService_UpdateSecret
+      parameters:
+        - description: Secret identifier.
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: UpdateSecretRequest is the request of UpdateSecret.
+              properties:
+                labels:
+                  additionalProperties:
+                    type: string
+                  description: Secret labels.
+                  type: object
+                scopes:
+                  items:
+                    $ref: '#/components/schemas/Scope'
+                  title: Secret scopes
+                  type: array
+                secret_data:
+                  description: The secret data.
+                  format: byte
+                  type: string
+              required:
+                - secret_data
+              type: object
+        required: true
+        x-originalParamName: body
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Secret'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Update Secret
+      tags:
+        - SecretService
   /v1alpha2/topics:
     get:
       description: 'List topics, with partition count and replication factor. Optional: filter based on topic name.'
