@@ -35,15 +35,28 @@ jobs:
         os: [ubuntu-latest]  # Only using Linux for now since macOS takes a long time
     runs-on: ${{ matrix.os }}
     steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.RP_AWS_CRED_REGION }}
+          role-to-assume: arn:aws:iam::${{ secrets.RP_AWS_CRED_ACCOUNT_ID }}:role/${{ vars.RP_AWS_CRED_BASE_ROLE_NAME }}${{ github.event.repository.name }}
+      - uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            ,sdlc/prod/github/actions_bot_token
+          parse-json-secrets: true
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
           path: redpanda-docs
       # Run tests on beta if the PR is targeting a branch that starts with 'v-WIP'
       - name: Check for beta branch
         if: startsWith(github.head_ref, 'v-WIP')
         run: |
           echo "BETA='true'" >> $GITHUB_ENV
+
+      - name: Set GitHub token
+        run: |
+          echo "REDPANDA_GITHUB_TOKEN=${{ env.ACTIONS_BOT_TOKEN }}" >> $GITHUB_ENV
 
       - name: Run all tests
         if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch' }}
@@ -55,6 +68,7 @@ jobs:
           # create a PR/issue only if the workflow wasn't already triggered by a PR
           create_pr_on_change: true
           create_issue_on_fail: true
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
 
       - name: Test Redpanda Console docs
         if: needs.setup.outputs.console == 'true'
