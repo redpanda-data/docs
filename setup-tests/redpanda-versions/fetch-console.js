@@ -11,7 +11,6 @@ function getPrereleaseFromAntora() {
   try {
     const fileContents = fs.readFileSync('../antora.yml', 'utf8');
     const antoraConfig = yaml.load(fileContents);
-    console.log(antoraConfig)
     return antoraConfig.prerelease === true;
   } catch (error) {
     console.error("Error reading antora.yml:", error);
