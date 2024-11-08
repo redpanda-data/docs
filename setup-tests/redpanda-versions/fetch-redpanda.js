@@ -1,6 +1,24 @@
+// Import the version fetcher module
+const GetLatestRedpandaVersion = require('../../node_modules/@redpanda-data/docs-extensions-and-macros/extensions/version-fetcher/get-latest-redpanda-version.js');
+const yaml = require('../../node_modules/js-yaml/index.js');
+const fs = require('fs');
+
 // Fetch the latest release version from GitHub
 const owner = 'redpanda-data';
-const beta = process.env.BETA == 'true' || false;
+function getPrereleaseFromAntora() {
+  try {
+    const fileContents = fs.readFileSync('../antora.yml', 'utf8');
+    const antoraConfig = yaml.load(fileContents);
+    console.log(antoraConfig)
+    return antoraConfig.prerelease === true;
+  } catch (error) {
+    console.error("Error reading antora.yml:", error);
+    return false;
+  }
+}
+
+// Set beta based on the prerelease field in antora.yml or fallback to environment variable
+const beta = getPrereleaseFromAntora()
 // Conditionally set DOCKER_REPO for subsequent test steps such as the Docker Compose file
 if (beta) {
   REDPANDA_DOCKER_REPO = 'redpanda-unstable';
@@ -8,9 +26,6 @@ if (beta) {
   REDPANDA_DOCKER_REPO = 'redpanda';
 }
 const repo = 'redpanda';
-
-// Import the version fetcher module
-const GetLatestRedpandaVersion = require('../../node_modules/@redpanda-data/docs-extensions-and-macros/extensions/version-fetcher/get-latest-redpanda-version.js');
 
 async function loadOctokit() {
   const { Octokit } = await import('@octokit/rest');

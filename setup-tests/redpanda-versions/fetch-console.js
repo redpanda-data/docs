@@ -1,10 +1,26 @@
+// Import the version fetcher module
+const GetLatestConsoleVersion = require('../../node_modules/@redpanda-data/docs-extensions-and-macros/extensions/version-fetcher/get-latest-console-version.js');
+const yaml = require('../../node_modules/js-yaml/index.js');
+const fs = require('fs');
+
 const owner = 'redpanda-data';
 const repo = 'console';
 const CONSOLE_DOCKER_REPO = 'console'
-const beta = process.env.BETA == 'true' || false;
 
-// Import the version fetcher module
-const GetLatestConsoleVersion = require('../../node_modules/@redpanda-data/docs-extensions-and-macros/extensions/version-fetcher/get-latest-console-version.js');
+function getPrereleaseFromAntora() {
+  try {
+    const fileContents = fs.readFileSync('../antora.yml', 'utf8');
+    const antoraConfig = yaml.load(fileContents);
+    console.log(antoraConfig)
+    return antoraConfig.prerelease === true;
+  } catch (error) {
+    console.error("Error reading antora.yml:", error);
+    return false;
+  }
+}
+
+// Set beta based on the prerelease field in antora.yml or fallback to environment variable
+const beta = getPrereleaseFromAntora()
 
 // GitHub Octokit initialization
 async function loadOctokit() {
