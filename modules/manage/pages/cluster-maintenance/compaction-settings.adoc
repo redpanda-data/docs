@@ -28,7 +28,7 @@ Compaction policy may be applied to a cluster or to an individual topic. If both
 
 == Tombstone record removal
 
-When a topic's messages should be deleted, for example as data is deleted from a source system, clients add a tombstone record to the message log. A tombstone contains the message key, and the value `null`. Tombstones signal to brokers and consumers that records with the same key prior to it in the log should be deleted. 
+Compaction also enables deletion of existing records through tombstones. For example, as data is deleted from a source system, clients produce a tombstone record to the log. A tombstone record contains the key and the value `null`. Tombstones signal to brokers and consumers that records with the same key prior to it in the log should be deleted. 
 
 You can specify how long Redpanda keeps these tombstones for compacted topics using both a cluster configuration property `tombstone_retention_ms` and a topic configuration property xref:reference:properties/topic-properties.adoc#deleteretentionms[`delete.retention.ms`]. If both are set, the topic-level tombstone retention policy overrides the cluster-level policy.
 
@@ -71,10 +71,12 @@ rpk topic alter-config <topic-name> --set delete.retention.ms=-1
 
 Redpanda removes tombstones as follows:
 
-* For topics with a `compact,delete` cleanup policy: the standard garbage collection process, per the topic retention limit.
-* For topics with a `compact` only cleanup policy: The `delete.retention.ms` or `tombstone_retention_ms` value sets the time bound that a consumer has in order to see a complete view of the log with tombstones present before they are removed. 
+* For topics with a `compact` only cleanup policy: Tombstones are removed when the topic exceeds the tombstone retention limit. The `delete.retention.ms` or `tombstone_retention_ms` values therefore also set the time bound that a consumer has in order to see a complete view of the log with tombstones present before they are removed.
+* For topics with a `compact,delete` cleanup policy: Both the tombstone retention policy and standard garbage collection can remove tombstone records.
 
-If obtaining a complete snapshot of the log, including tombstone records, is important to your consumers, set the tombstone retention value such that consumers have enough time for their reads to complete before tombstones are removed. If managing local disk space is a higher priority, consider setting the tombstone retention to a lower value, for example, less than 24 hours (86400000 ms).
+If obtaining a complete snapshot of the log, including tombstone records, is important to your consumers, set the tombstone retention value such that consumers have enough time for their reads to complete before tombstones are removed. Consumers may not see tombstones if their reads take longer than `delete.retention.ms` and `tombstone_retention_ms`. The trade-offs to ensuring tombstone visibility to consumers are increased disk usage and potentially slower compaction. 
+
+On the other hand, if more frequent cleanup of tombstones is important for optimizing workloads and space management, consider setting a shorter tombstone retention, for example the typical default of 24 hours (86400000 ms). Consequently, if you set tombstone retention limits that are too low, it could cause more data inconsistencies.
 
 == Compaction policy settings
 
