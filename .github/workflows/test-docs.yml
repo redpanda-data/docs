@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       console: ${{ steps.filter.outputs.console }}
+      quickstart: ${{ steps.filter.outputs.quickstart }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -21,22 +22,39 @@ jobs:
           filters: |
             console:
               - 'modules/console/**'
+            quickstart:
+              - 'modules/get-started/pages/quick-start.adoc'
   run-tests:
     needs: setup
     permissions:
       contents: write
       pull-requests: write
       issues: write
+      id-token: write
     strategy:
       matrix:
         os: [ubuntu-latest]  # Only using Linux for now since macOS takes a long time
     runs-on: ${{ matrix.os }}
     steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.RP_AWS_CRED_REGION }}
+          role-to-assume: arn:aws:iam::${{ secrets.RP_AWS_CRED_ACCOUNT_ID }}:role/${{ vars.RP_AWS_CRED_BASE_ROLE_NAME }}${{ github.event.repository.name }}
+      - uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            ,sdlc/prod/github/actions_bot_token
+          parse-json-secrets: true
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
           path: redpanda-docs
-      - name: Test docs
+
+      - name: Set GitHub token
+        run: |
+          echo "REDPANDA_GITHUB_TOKEN=${{ env.ACTIONS_BOT_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Run all tests
         if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch' }}
         uses: doc-detective/github-action@v1
         with:
@@ -46,11 +64,32 @@ jobs:
           # create a PR/issue only if the workflow wasn't already triggered by a PR
           create_pr_on_change: true
           create_issue_on_fail: true
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
 
-      - name: Test Console docs
+      - name: Test Redpanda Console docs
         if: needs.setup.outputs.console == 'true'
         uses: doc-detective/github-action@v1
         with:
           input: ../modules/console
           working_directory: redpanda-docs/setup-tests
           exit_on_fail: true
+        env:
+          REDPANDA_GITHUB_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
+
+      - name: Test Redpanda Self-Managed quickstart
+        if: needs.setup.outputs.quickstart == 'true'
+        uses: doc-detective/github-action@v1
+        with:
+          input: ../modules/get-started/pages/quick-start.adoc
+          working_directory: redpanda-docs/setup-tests
+          exit_on_fail: true
+        env:
+          REDPANDA_GITHUB_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doc-detective-output
+          path: /home/runner/work/_temp/doc-detective-output.json
+        env:
+          REDPANDA_GITHUB_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
