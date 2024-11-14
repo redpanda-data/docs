@@ -5,106 +5,119 @@
 :env-kubernetes: true
 :page-categories: Deployment, GitOps
 
-Kubernetes is a container orchestration tool that helps you manage Redpanda deployments using declarative configuration files called _manifests_.
-Kubernetes provides a standardized way of achieving the following:
+Kubernetes is a container orchestration tool that helps you manage Redpanda deployments using declarative configuration files called _manifests_. Kubernetes provides a standardized way of achieving the following:
 
 * High availability
 * Disaster recovery
 * Scalability
 
-== Redpanda Helm chart vs Redpanda Operator
+== Deployment tools
 
-To deploy Redpanda in Kubernetes, you can choose to use Helm for its simplicity, or combine Helm with the Redpanda Operator to leverage custom resource definitions (CRDs) for a more GitOps-friendly deployment process. Redpanda Operator is the recommended deployment option.
+To deploy Redpanda in Kubernetes, you can choose to use Helm for its simplicity or the Redpanda Operator to leverage custom resource definitions (CRDs) for a more GitOps-friendly deployment process. The Redpanda Operator is the recommended option for production deployments.
 
 |===
-| Feature | Helm | Helm + Redpanda Operator
+| Feature | Helm | Redpanda Operator
 
 | *Version management*
-| Directly supported through Helm, enabling updates and rollbacks.
-| Managed through Helm.
+| Supported through Helm, enabling updates and rollbacks.
+| Managed through Redpanda custom resources, with optional integration with Flux for GitOps workflows.
 
 | *Multi-tenant Kubernetes clusters*
-| Supported. Helm allows you to deploy multiple independent Redpanda clusters by defining different Helm release names.
-| Supported. The Redpanda Operator enables a more declarative approach for managing multi-tenant clusters using the RedpandaList custom resource.
+| Supported. Helm allows deployment of multiple independent Redpanda clusters by defining different Helm release names.
+| Supported. The Redpanda Operator provides a declarative approach for managing multi-tenant clusters using the RedpandaList custom resource.
 
 | *Dependency and configuration management*
-| Managed directly through the Redpanda Helm chart.
-| Configurations defined in custom resources are passed to Helm, which then manages the dependencies and configurations.
+| Managed through the Redpanda Helm chart.
+| Configurations are defined in custom resources.
 |===
 
-TIP: If you are already using the Redpanda Helm chart and want to migrate to the latest Redpanda Operator to manage your deployment, see xref:upgrade:migrate/kubernetes/helm-to-operator.adoc[Migrate from the Redpanda Helm chart].
+TIP: If you are already using the Redpanda Helm chart and want to migrate to the latest Redpanda Operator for better lifecycle management, see xref:upgrade:migrate/kubernetes/helm-to-operator.adoc[Migrate from the Redpanda Helm chart].
 
 === Helm
 
-https://helm.sh/docs[Helm^] is a package manager for Kubernetes, which simplifies the process of defining, installing, and upgrading Kubernetes applications. Helm uses charts, a collection of files that describe a related set of Kubernetes resources, to deploy applications in a Kubernetes cluster.
+https://helm.sh/docs[Helm^] is a package manager for Kubernetes that simplifies defining, installing, and upgrading Kubernetes applications. Helm uses charts, a collection of files describing Kubernetes resources, to deploy applications in a Kubernetes cluster.
 
-The Redpanda Helm chart generates and applies all the manifest files you need for deploying Redpanda in Kubernetes, including:
+The Redpanda Helm chart provides all the manifest files required to deploy Redpanda in Kubernetes, including:
 
-- The StatefulSet to manage the Redpanda brokers.
-- A Headless ClusterIP Service for internal communication with the Redpanda cluster.
-- A NodePort Service for external communication with the Redpanda cluster.
+- A StatefulSet to manage Redpanda brokers
+- A Headless ClusterIP Service for internal communication with the Redpanda cluster
+- A NodePort Service for external communication with the Redpanda cluster
 
-The Redpanda Helm chart comes with default settings that enable a straightforward deployment out of the box. However, Helm also offers customization by allowing you to override these default values.
+You can customize Redpanda configurations with Helm by overriding default values using YAML files (via `--values`) or directly on the command line (via `--set`).
 
-You can override the defaults in your own YAML files using the `--values` option or directly in the command line with the `--set` option. These changes in Helm chart values not only influence the configuration of the Redpanda cluster, but also determine what Kubernetes resources are deployed and how these resources are configured.
+[[helm-and-redpanda-operator]]
+=== Redpanda Operator
 
-=== Helm and Redpanda Operator
+The Redpanda Operator provides two deployment modes controlled by the `useFlux` flag. The modes differ in how reconciliation is handled:
 
-The recommended option for deploying Redpanda in Kubernetes is a combination of <<Helm>> and the Redpanda Operator. While the Helm chart facilitates the deployment of Redpanda, the Redpanda Operator manages the lifecycle of Redpanda clusters. The operator uses https://fluxcd.io/flux/concepts/[Flux^] to automate the deployment of the Redpanda Helm chart through the HelmRelease resource.
+- *Flux-managed mode (`useFlux: true`)*:
+When `useFlux` is set to `true`, the Redpanda Operator delegates reconciliation to https://fluxcd.io/flux/concepts/[Flux^] controllers. The workflow is as follows:
++
+. The Redpanda Operator defines the necessary CRDs for Redpanda. A Redpanda resource represents a Redpanda cluster, configured through the Redpanda Helm chart values.
+. When the Redpanda Operator detects changes to Redpanda resources, it triggers Flux to reconcile the corresponding HelmRelease resource.
+. Flux uses the HelmRelease resource to manage the lifecycle of the Redpanda Helm chart, applying updates as needed.
 
-Flux, when integrated with the Redpanda Operator, uses the HelmRelease resource to manage the lifecycle of the Redpanda Helm chart in the Kubernetes cluster. This integration streamlines the creation and management of Redpanda clusters, ensuring they are always in the desired state as defined by the operator's custom resource definitions (CRDs).
+- *Redpanda-managed mode (`useFlux: false`)*:
+When `useFlux` is set to `false`, the Redpanda Operator manages and reconciles Redpanda resources directly, without involving Flux. This mode works as follows:
++
+. The Redpanda Operator creates both `HelmRelease` and `HelmRepository` resources but suspends them, keeping Flux inactive.
+. The operator directly reconciles Redpanda resources, performing tasks such as installations, updates, and cleanup, normally handled by Flux.
+. If `useFlux` is later re-enabled, the operator unsuspends the Flux resources, and Flux resumes lifecycle management.
+
+Example configuration to specify the deployment mode in Redpanda’s custom resource:
+
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    useFlux: false  # or true, depending on your desired deployment mode
+----
 
 image::shared:operator-flux-relationship.png[CRDs for the Redpanda Operator include Flux CRDs. Flux manages the Redpanda Helm chart through the HelmRelease resource.]
 
-Here's how it works with Flux:
+== Kubernetes deployment environments
 
-. The Redpanda Operator defines the necessary CRDs for Redpanda. The Redpanda resource represents a Redpanda cluster that's configured using values from the Redpanda Helm chart.
-. When the Redpanda Operator detects changes to these Redpanda resources, it triggers Flux to reconcile the corresponding HelmRelease resource.
-. Flux uses the HelmRelease resource to manage the lifecycle of the Redpanda Helm chart in the cluster.
-
-If you already have Flux installed in your environment, you can disable the Flux HelmReleaseController and SourceController in the Redpanda Operator to prevent redundant reconciliations of HelmRelease resources. For details, see xref:./k-production-deployment.adoc#config-operator[Deploy a Redpanda cluster].
-
-== Managed vs bare-metal
-
-You can run Redpanda on managed Kubernetes services as well as in bare-metal environments. Managed Kubernetes services offer simpler deployment and maintenance, while bare-metal environments provide complete control and potential cost efficiencies.
+You can run Redpanda on managed Kubernetes services as well as in bare-metal environments. Managed Kubernetes services offer simpler deployment and maintenance, while bare-metal environments provide complete control and cost efficiencies.
 
 === Managed Kubernetes
 
-Managed Kubernetes services manage one or more components of a Kubernetes cluster for you. Several cloud computing vendors provide this service, such as Google Cloud's Google Kubernetes Engine (GKE) and Amazon Web Services' Elastic Kubernetes Service (EKS).
+Managed Kubernetes services, such as Google Kubernetes Engine (GKE) and Amazon Elastic Kubernetes Service (EKS), handle core components of a Kubernetes cluster, offering benefits such as:
 
-Managed Kubernetes platforms provide the following benefits:
+* *Ease of deployment*: Pre-configured instances join your Kubernetes cluster automatically.
+* *Control plane maintenance*: The provider maintains the control plane, ensuring security and reliability.
+* *Health monitoring and repairs*: The provider monitors master nodes and repairs them as needed.
 
-* *Ease of deployment*: Managed Kubernetes platforms allow you to provision cloud instances to serve as worker nodes. These instances are pre-configured with Kubernetes agent software and automatically join your Kubernetes cluster, making the process of deploying Redpanda simpler and more efficient.
-* *Control plane maintenance*: The managed service provider maintains and updates the control plane software, ensuring that it remains secure, reliable, and up-to-date.
-* *Health monitoring and repairs*: The health of the master nodes is continuously monitored, and repairs are made as necessary. This provides an additional level of confidence in the reliability of the platform.
-
-However, you are still responsible for deploying and maintaining your Redpanda instances on the worker nodes.
+You remain responsible for deploying and maintaining Redpanda instances on worker nodes.
 
 === Bare-metal Kubernetes environments
 
-Bare-metal Kubernetes environments refer to any deployments where you are responsible for both the control plane and the worker nodes. Running Redpanda on bare-metal environments offers several advantages:
+Bare-metal Kubernetes environments give you complete control over both the control plane and the worker nodes, which can be advantageous when:
 
-* *Complete control*: With bare-metal Kubernetes, you have full control over every aspect of the deployment. Bare-metal deployments may be beneficial when your needs aren't addressed by managed Kubernetes services.
-* *Custom configuration*: Bare-metal allows for granular control over the Kubernetes configuration, meaning you can fine-tune the environment.
-* *Cost efficiency*: Owning and operating your own hardware may prove to be more cost-effective.
+* *Complete control*: Bare-metal Kubernetes offers control over every aspect of deployment, suited for highly customized environments.
+* *Custom configurations*: You have granular control to fine-tune the Kubernetes setup.
+* *Cost efficiency*: Owning and operating your hardware may be more economical over time.
 
 == Documentation conventions
 
-The Kubernetes documentation follows these conventions:
+This documentation follows conventions to help users easily identify Kubernetes resource types and Helm values:
 
-* Resource names: Kubernetes resources names, such as Service or PersistentVolume, are distinguished by the use of Pascal case. These are the names of resources when specified as a kind in manifest files.
-* Helm values: Helm values, such as `storage.persistentVolume.enabled`, are rendered in monospace font and written according to the JSON path specification.
+* *Resource names*: Kubernetes resource names, such as Service or PersistentVolume, are capitalized and in Pascal case to match the manifest files.
+* *Helm values*: Helm values, like `storage.persistentVolume.enabled`, are displayed in monospace font.
 
 == Next steps
 
-Whether you're deploying locally or in the cloud, choose one of the following guides to get you started:
+Whether you're deploying locally or in the cloud, choose one of the following guides to get started:
 
-* xref:./local-guide.adoc[Local] (kind and minikube)
-* xref:./aks-guide.adoc[Azure Kubernetes Service] (AKS)
-* xref:./eks-guide.adoc[Elastic Kubernetes Service] (EKS)
-* xref:./gke-guide.adoc[Google Kubernetes Engine] (GKE)
+* xref:./local-guide.adoc[Local Deployment Guide] (kind and minikube)
+* xref:./aks-guide.adoc[Azure Kubernetes Service Guide] (AKS)
+* xref:./eks-guide.adoc[Elastic Kubernetes Service Guide] (EKS)
+* xref:./gke-guide.adoc[Google Kubernetes Engine Guide] (GKE)
 
-Or, you can explore our xref:./k-production-workflow.adoc[production workflow] to learn more about the requirements and best practices.
+Or, explore our xref:./k-production-workflow.adoc[production workflow] to learn about requirements and best practices.
 
 include::shared:partial$suggested-reading.adoc[]
 
