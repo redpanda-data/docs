@@ -1,28 +1,39 @@
 = Node-wise Partition Recovery
 :description: Feature to recover partitions that have lost a majority of replicas.
 
-Multi-node or entire-AZ failures (especially in cloud environments), and some forms of human error may result in ‘stuck’ partitions with fewer replicas than required to make a quorum. In such failure scenarios, some data loss may be unavoidable. This description of node-wise partition recovery helps admins understand what they can or cannot recover.
+Multi-broker or entire glossterm:availability zones[,AZ] failures (especially in cloud environments), along with some forms of human error, can result in ‘stuck’ partitions where there are fewer replicas than required to make a quorum. In such failure scenarios, some data loss may be unavoidable. Node-wise partition recovery provides a way to unsafely recover at least a portion of your data using remaining replicas, which are moved off of target brokers and allocated to healthy ones. In one step, this process repairs partitions while draining the target brokers of all partition replicas. This topic helps admins understand what they can or cannot recover using node-wise partition recovery.
 
-IMPORTANT: This is a last-ditch measure when all other recovery options have failed. In some cases, no remaining replicas may exist for the partitions on the dead nodes. This recovery method is intended for scenarios where you are already experiencing data loss - the goal is to stop the loss of additional data.
-
-Node-wise partition recovery allows you to unsafely recover at least a portion of your data using whatever replicas are remaining. All replicas are moved off the target nodes and allocated to healthy nodes. In one step, this process repairs partitions while draining the target nodes.
+IMPORTANT: Only use this operation as a last-resort measure when all other recovery options have failed. In some cases, there may be no remaining replicas for the partitions on the dead brokers. This recovery method is intended for scenarios where you have already experienced data loss, with the goal being to stop the loss of additional data.
 
 == Perform the recovery operation
 
-You perform node-wise partition recovery using the `rpk` command `rpk cluster partitions unsafe-recover`. This command includes an interactive prompt to confirm execution of the generated recovery plan as it is a destructive operation. When you trigger node-wise partition recovery, the partitions on the node are rebuilt in a best-effort basis. As a result of executing this operation, you may lose some data that has not yet been replicated to the surviving partition replicas.
+To start node-wise partition recovery, run `rpk cluster partitions unsafe-recover`. For example:  
 
-The syntax for this command is as follows:
+`rpk cluster partitions unsafe-recover --from-nodes 1,3,5`
 
- rpk cluster partitions unsafe-recover --from-nodes 1,3,5
+This command includes a prompt to confirm the generated recovery plan, as it is a destructive operation. When you run node-wise partition recovery, the partitions on the broker are rebuilt on a best-effort basis. When there are zero surviving partition replicas, such as a topic with a replication factor of 1 (`RF=1`), partition recovery rebuilds empty partitions with no data (although you may be able to recover the partition from Tiered Storage), allowing producers to continue writing to the partition even though no data can be recovered in such situations.
 
-The `--from-nodes` parameter accepts a comma-delineated list of dead node IDs you wish to recover the data from. The above example would perform recovery operations on nodes 1, 3, and 5. Redpanda will assess these nodes to identify which partitions lack majority. It will then create a plan to recover the impacted partitions and prompt you to confirm it. You must respond `yes` to continue with recovery.
 
-You may also optionally add the `--dry` parameter to this command. This will perform a dry run and allow viewing the recovery plan with no risk to your cluster.
+The `--from-nodes` flag accepts a comma-separated list of the brokers' node IDs you wish to recover the data from. This example performs recovery operations on nodes 1, 3, and 5. Redpanda assesses these brokers to identify which partitions lack a majority. It then creates a plan to recover the impacted partitions and prompts you for confirmation. You must respond `yes` to continue with recovery.
 
-Once the recovery operation is started, you may monitor the status of its execution using the `rpk cluster partitions balancer-status` command. The recovery operation can take some time to complete, especially when a lot of data is involved. This command allows you to monitor progress in real-time.
+The `--dry` flag performs a dry run and allows you to view the recovery plan with no risk to your cluster.
 
-== Example recovery operation
-Here's an example of the recovery process in action.
+[NOTE] 
+====
+When running node-wise partition recovery, it's possible that there may be more recent data (a higher offset) available in Tiered Storage if:
+
+* Raft replication was stuck or slow before the node failure
+* Zero live replicas remain in the cluster (because the partition had a replication factor of one, `RF=1`)
+
+For topics configured to use Tiered Storage, Redpanda also attempts to recover partition data from object storage, recovering the latest offset available for a partition in either storage tier (local or object storage). This allows for the maximum amount of data to be recovered in all cases, even for topics with a replication factor of 1, where no replicas remain in local storage.
+====
+
+The recovery operation can take some time to complete, especially for a large amount of data. To monitor the status of the recovery operation in real-time, run: 
+
+`rpk cluster partitions balancer-status`
+
+== Example recovery operations
+The following example shows the node-wise partition recovery process in action:
 
 ----
 $ rpk cluster partitions unsafe-recover --from-nodes 1
@@ -37,4 +48,21 @@ Status:                               ready
 Seconds Since Last Tick:              26
 Current Reassignment Count:           0
 Partitions Pending Recovery (1):      [kafka/bar/0]
+----
+
+The following example shows the status of moved partitions:
+
+----
+$ rpk cluster partitions move-status
+PARTITION MOVEMENTS
+===================
+NAMESPACE-TOPIC   PARTITION  MOVING-FROM MOVING-TO  COMPLETION-%  PARTITION-SIZE BYTES-MOVED BYTES-REMAINING
+kafka/prod_tests  4          [045]       [045]      0             56204032205    0           56204032205
+kafka/prod_tests  7          [045]       [045]      0             64607340009    0           64607340009
+kafka/prod_tests  12         [014]       [014]      0             29074311639    0           29074311639
+kafka/prod_tests  20         [014]       [014]      0             29673620476    0           29673620476
+kafka/prod_tests  22         [045]       [045]      0             28471089141    0           28471089141
+kafka/prod_tests  23         [045]       [045]      0             29692435312    0           29692435312
+kafka/prod_tests  31         [014]       [014]      0             66982232299    0           66982232299
+kafka/prod_tests  33         [014]       [014]      0             46329276747    0           46329276747
 ----
