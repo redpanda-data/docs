@@ -2,6 +2,7 @@
 :description: Learn how to integrate Redpanda topics with Apache Iceberg.
 :page-context-links: [{"name": "Linux", "to": "manage:topic-iceberg-integration.adoc" } ]
 :page-categories: Management, High Availability, Data Replication, Integration
+:page-beta: true
 
 
 The Apache Iceberg integration for Redpanda allows you to store topic data in the cloud in Iceberg's table format. This makes your streaming data immediately available for analytical systems, such as data warehouses like RedShift, Snowflake, and Clickhouse, and big data processing platforms, such as Apache Spark and Flink, without setting up and maintaining additional ETL pipelines. 
@@ -54,12 +55,11 @@ image::shared:iceberg-integration.png[]
 
 When you enable the Iceberg integration for a Redpanda topic, Redpanda brokers store streaming data in the Iceberg-compatible format in Parquet files in object storage. The brokers also write events to segment files stored on disk. Storing the streaming data in Iceberg tables in the cloud allows you to derive real-time insights through compatible business intelligence and machine learning tools. 
 
-
 == Enable Iceberg integration
 
-To use the Iceberg integration for a topic, you must set the cluster configuration property `enable_datalake` to `true`, and also explicitly set the topic configuration to `true`. You can choose to provide a schema if you need the Iceberg table to be structured with defined columns.
+To use the Iceberg integration for a topic, you must set the cluster configuration property `iceberg_enabled` to `true`, and also configure the topic property `redpanda.iceberg.mode`. You can choose to provide a schema if you need the Iceberg table to be structured with defined columns.
 
-. Set the `enable_datalake` configuration option on your cluster to `true`. 
+. Set the `iceberg_enabled` configuration option on your cluster to `true`. 
 +
 [,bash]
 ----
@@ -84,11 +84,15 @@ TOPIC            STATUS
 new-topic-name   OK
 ----
 
-. Enable the integration for the topic. 
+. Enable the integration for the topic by configuring `redpanda.iceberg.mode`. You can choose one of the following modes:
++
+. `KEY_VALUE`: Creates an Iceberg table with a `Key` column and a `Value` column. Redpanda stores the raw topic content in the `Value` column.
+. `VALUE_SCHEMA_ID_PREFIX`: Creates an Iceberg table whose structure matches the Redpanda schema for this topic, with columns corresponding to each field. Redpanda parses the topic values per field and stores them in the corresponding table columns. 
+. `DISABLED` (default): Disables the creation of an Iceberg table for this topic.
 +
 [,bash]
 ----
-rpk topic alter-config <new-topic-name> --set iceberg_topic=true 
+rpk topic alter-config <new-topic-name> --set redpanda.iceberg.mode=<topic-iceberg-mode>
 ----
 +
 [,bash,role=no-copy]
@@ -97,9 +101,7 @@ TOPIC            STATUS
 new-topic-name   OK
 ----
 
-. Register a schema for the topic (optional). Redpanda uses xref:manage:schema-reg/schema-id-validation.adoc#set-subject-name-strategy-per-topic[`TopicNameStrategy`] (`<topic-name>-value` or `<topic-name>-key`) to find the matching schema based on the subject name. Redpanda derives the Iceberg table format from the schema and writes data files to object storage in this format. Protobuf and Avro schemas are supported.
-+
-If there is no registered schema for the topic, Redpanda uses a simple schema consisting of the record’s key, value, and the original event timestamp. Consider this schemaless approach if you can use the data in a more semi-structured format.
+. Register a schema for the topic (optional). You must also set the `redpanda.iceberg.mode` topic property to `VALUE_SCHEMA_ID_PREFIX`. Redpanda uses xref:manage:schema-reg/schema-id-validation.adoc#set-subject-name-strategy-per-topic[`TopicNameStrategy`] (`<topic-name>-value` or `<topic-name>-key`) to find the matching schema based on the subject name. Redpanda derives the Iceberg table format from the schema and writes data files to object storage in this format. Protobuf and Avro schemas are supported.
 +
 [,bash]
 ----
@@ -111,6 +113,10 @@ rpk registry schema create <subject-name> --schema </path-to-schema> --type <for
 SUBJECT                VERSION   ID   TYPE
 new-topic-name-value   1         1    PROTOBUF
 ----
++
+If you select `KEY_VALUE` for the topic Iceberg mode, Redpanda uses a simple schema consisting of the record’s key, value, and the original record timestamp. Consider this schemaless approach if you can use the data in a more semi-structured format.
++
+NOTE: Redpanda automatically adds three Kafka-related fields to the table it creates: the record timestamp, the partition it belongs to, and its offset.
 
 As you produce records to the topic, the data also becomes available in object storage for consumption by Iceberg-compatible clients. 
 
@@ -149,6 +155,7 @@ message twitter_record {
 rpk registry schema create test_topic-value --schema path/to/schema.proto --type protobuf
 ----
 
+// Change to different example
 Platforms such as Clickhouse provide Iceberg integrations to give easy access to existing Iceberg tables in object storage. This example reads the data from `test_topic` into Clickhouse: 
 
 [,sql]
@@ -208,7 +215,14 @@ FROM test_topic_schemaless
 +---------------+-------+--------------------------------+
 ----
 
+== Integrate into Iceberg catalog
+
+
+////
+Comment out due to renamed properties and other changes to beta
+
 == Suggested reading
 
 * https://www.redpanda.com/blog/apache-iceberg-topics-streaming-data[Apache Iceberg Topics: Stream directly into your data lake
 ^]
+////
