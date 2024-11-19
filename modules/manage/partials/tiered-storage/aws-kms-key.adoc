@@ -1,0 +1,71 @@
+ifndef::env-kubernetes[]
+[discrete]
+endif::[]
+= **Configure access with an AWS KMS key**
+
+When there are strict data compliance requirements and you must manage and store encryption keys separate from your cloud provider, you can configure an Amazon S3 bucket that Tiered Storage can use to leverage your customer-provided key (SSE-KMS) instead of the default AWS-managed key (SSE-S3).
+
+To convert an existing S3 bucket and its contents, you must:
+
+. Create a new KMS key.
+. Configure the S3 bucket to use the new KMS key.
+. (Optional) Re-encrypt existing objects to use the new KMS key.
+
+[NOTE]
+====
+ifdef::env-cloud[]
+You cannot configure a cloud-provider managed encryption key at the topic level or in Redpanda Cloud Dedicated clusters.
+endif::[]
+ifndef::env-cloud[]
+You cannot configure a cloud provider-managed encryption key at the topic level.
+endif::[]
+
+For topic-level control, each CLI Get or Put for a partition must use the correct key as configured on the topic.
+====
+
+ifndef::env-kubernetes[]
+[discrete]
+endif::[]
+== **Prerequisites**
+
+- The user configuring S3 bucket encryption must be assigned the Key admin permission. Without this permission, the user is unable to re-encrypt existing bucket objects to use the KMS key.
+- The S3 bucket must be assigned the Key user permission. Without this permission, Redpanda is unable to write new objects to Tiered Storage.
+- If you intend to retroactively re-encrypt existing data with the new KMS key, store the ARN identifier of the key upon creation. It is required for AWS CLI commands.
+
+To create a new KMS key in the AWS Console:
+
+. In AWS Console, search for “Key Management Service”.
+. Click **Create a key**.
+. On the Configure key page, select the **Symmetric** key type, then select **Encrypt and decrypt**.
+. Click the **Advanced options** tab and configure Key material origin and Regionality as needed. For example, if you are using xref:manage:remote-read-replicas.adoc[Remote Read Replicas] or have Redpanda spanning across regions, select **Multi-Region key**.
+. Click **Next**.
+. On the Add labels page, specify an alias name and description for the key. Do not include sensitive information in these fields.
+. Click **Next**.
+. On the Define key administrative permissions page, specify a user who can administer this key through the KMS API.
+. Click **Next**.
+. On the Define key usage permissions page, assign the S3 bucket as a Key user. This is required for the S3 bucket to encrypt and decrypt.
+. Click **Next**.
+. Review your KMS key configuration and click **Finish**.
+
+For more information, see the https://docs.aws.amazon.com/kms/latest/developerguide/create-symmetric-cmk.html[AWS documentation^].
+
+To configure the S3 bucket to use the new KMS key (and reduce KMS costs through caching):
+
+. In AWS Console, search for "S3".
+. Select the bucket used by Redpanda.
+. Click the **Properties** tab.
+. In Default encryption, click **Edit**.
+. For Encryption type, select “Server-side encryption with AWS Key Management Service keys (SSE-KMS)”.
+. Locate and select your AWS KMS key ARN identifier.
+. Click **Save changes**.
+
+(Optional) To re-encrypt existing data using the new KMS key:
+
+Existing data in your S3 bucket continues to be read using the AWS-managed key, while new objects are encrypted using the new KMS key. If you wish to re-encrypt all S3 bucket data to use the KMS key, run:
+
+[,bash]
+----
+aws s3 cp s3://{BUCKET_NAME}/ s3://{BUCKET_NAME}/ --recursive --sse-kms-key-id {KMS_KEY_ARN} --sse aws:kms
+----
+
+For more information, see the https://docs.aws.amazon.com/AmazonS3/latest/userguide/configuring-bucket-key.html[AWS documentation^].
