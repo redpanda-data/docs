@@ -1,12 +1,11 @@
 import json
 import os
-import re 
+import re
 
-##input_json_path = "C:/Projetos/1 - GitHub/StackBuilders/property extractor/redpanda-property-extractor/gen"
-input_json_path = "../gen/"
+input_json_path = "gen/"
 input_json_file = "properties-output.json"
 
-output_path = "../output/"
+output_path = "output/"
 page_folder = output_path+"pages/"
 output_file_broker = "broker-properties.adoc"
 output_file_cluster = "cluster-properties.adoc"
@@ -38,11 +37,11 @@ broker_intro = "Broker configuration properties are applied individually to each
 broker_title = "== Broker configuration\n\n"
 
 schema_registry_title = "== Schema Registry\n\n"
-pandaproxy_title = "== HTTP Proxy\n\n" 
+pandaproxy_title = "== HTTP Proxy\n\n"
 kafka_client_title = "== HTTP Proxy Client\n\n"
 
 schema_registry_intro = "The Schema Registry provides configuration properties to help you enable producers and consumers to share  information needed to serialize and deserialize producer and consumer messages.\n\nFor information on how to edit broker properties for the Schema Registry, see xref:manage:cluster-maintenance/node-property-configuration.adoc[].\n\n"
-pandaproxy_intro = "Redpanda HTTP Proxy allows access to your data through a REST API. For example, you can list topics or brokers, get events, produce events, subscribe to events from topics using consumer groups, and commit offsets for a consumer.\n\nSee xref:develop:http-proxy.adoc[]\n\n" 
+pandaproxy_intro = "Redpanda HTTP Proxy allows access to your data through a REST API. For example, you can list topics or brokers, get events, produce events, subscribe to events from topics using consumer groups, and commit offsets for a consumer.\n\nSee xref:develop:http-proxy.adoc[]\n\n"
 kafka_client_intro = "Configuration options for HTTP Proxy Client.\n\n"
 
 cluster_page_title = "= Cluster Configuration Properties \n:page-aliases: reference:tunable-properties.adoc, reference:cluster-properties.adoc\n:description: Cluster configuration properties list. \n\n"
