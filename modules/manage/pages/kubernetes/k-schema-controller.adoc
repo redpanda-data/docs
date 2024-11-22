@@ -1,0 +1,272 @@
+= Manage Schemas with the Redpanda Operator
+:description: Use the Schema resource to declaratively create and manage schemas as part of a Redpanda deployment in Kubernetes.
+:page-categories: Management, Development
+:env-kubernetes: true
+
+Use the Schema resource to declaratively create and manage schemas as part of a Redpanda deployment in Kubernetes. Each Schema resource maps to a schema in your Redpanda cluster, allowing you to define data structures, compatibility, and schema evolution in a declarative way.
+
+== Prerequisites
+
+Ensure you have the following:
+
+* *Kubectl*: Ensure the https://kubernetes.io/docs/tasks/tools/#kubectl[kubectl^] command-line tool is installed and configured to communicate with your cluster.
+* *Redpanda cluster*: Ensure you have at least version v2.3.0-24.3.1 of the xref:deploy:deployment-option/self-hosted/kubernetes/k-production-deployment.adoc[Redpanda Operator] and a Redpanda resource deployed and accessible.
+
+== Create a schema
+
+. Define a schema using the Schema resource. Here's a basic example configuration that defines an Avro schema:
++
+.`schema.yaml`
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Schema
+metadata:
+  name: example-schema
+  namespace: <namespace>
+spec:
+  cluster:
+    clusterRef:
+      name: <cluster-name>
+  schemaType: avro
+  compatibilityLevel: Backward
+  text: |
+    {
+      "type": "record",
+      "name": "ExampleRecord",
+      "fields": [
+        { "type": "string", "name": "field1" },
+        { "type": "int", "name": "field2" }
+      ]
+    }
+----
++
+Replace the following placeholders:
++
+- `<namespace>`: The namespace in which to deploy the Schema resource. The Schema resource must be deployed in the same namespace as the Redpanda resource defined in `clusterRef.name`.
+- `<cluster-name>`: The name of the Redpanda resource that defines the Redpanda cluster to which you want to upload the schema.
+
+. Apply the manifest:
++
+[source,bash]
+----
+kubectl apply -f schema.yaml --namespace <namespace>
+----
++
+When the manifest is applied, the schema will be created in your Redpanda cluster.
+
+. Check the status of the Schema resource using the following command:
++
+[,bash]
+----
+kubect get schema example-schema --namespace <namespace>
+----
+
+. Verify that the schema was created in Redpanda:
++
+[source,bash]
+----
+kubectl exec -it --namespace <namespace> <pod-name> -- curl https://<pod-name>.<cluster-name>.<namespace>.svc.cluster.local:8081/subjects -sS --cacert /etc/tls/certs/default/ca.crt -w '\n'
+----
++
+Replace `<pod-name>` with the name of a Pod that's running Redpanda.
+
+== Schema examples
+
+These examples demonstrate how to define schemas in Avro, Protobuf, and JSON Schema formats.
+
+=== Create an Avro schema
+
+.`avro-schema.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/schema-crds.feature[tags=customer-profile-avro-schema-manifest,indent=0]
+----
+
+=== Create a Protobuf schema
+
+.`proto-schema.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/schema-crds.feature[tags=product-catalog-protobuf-schema-manifest,indent=0]
+----
+
+=== Create a JSON schema
+
+.`json-schema.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/schema-crds.feature[tags=order-event-json-schema-manifest,indent=0]
+----
+
+== Configuration
+
+The Schema resource in Redpanda offers various options to customize and control schema behavior. This section covers schema compatibility, schema references, and schema types, providing a detailed guide on using each of these features to maintain data integrity, manage dependencies, and facilitate schema evolution.
+
+You can find all configuration options for the Schema resource in the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-schema[CRD reference].
+
+.`schema.yaml`
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Schema
+metadata:
+  name: <subject-name> <.>
+  namespace: <namespace> <.>
+spec:
+  cluster:
+    clusterRef:
+      name: <cluster-name> <.>
+  schemaType: avro <.>
+  compatibilityLevel: Backward <.>
+  references: [] <.>
+  text: | <.>
+    {
+      "type": "record",
+      "name": "test",
+      "fields": [
+        { "type": "string", "name": "field1" },
+        { "type": "int", "name": "field2" }
+      ]
+    }
+----
+
+<.> *Subject name*: The name of the subject for the schema. When data formats are updated, a new version of the schema can be registered under the same subject, enabling backward and forward compatibility.
+<.> *Namespace*: The namespace in which to deploy the Schema resource. The Schema resource must be deployed in the same namespace as the Redpanda resource defined in `clusterRef.name`.
+<.> *Cluster name*: The name of the Redpanda resource that defines the Redpanda cluster to which you want to upload the schema.
+<.> *Compatibility level*: Defines the compatibility level for the schema. Options are `Backward` (default), `BackwardTransitive`, `Forward`, `ForwardTransitive` `Full`, `FullTransitive`, or `None`. See <<Choose a compatibility mode>>.
+<.> *Schema type*: Specifies the type of the schema. Options are `avro` (default) or `protobuf`. For JSON Schema, include `"$schema":` in the `text` to indicate the JSON Schema draft version. See <<Choose a schema type>>.
+<.> *References*: Any references you want to add to other schemas. If no references are needed, this can be an empty list (default). See <<Use schema references>>.
+<.> *Schema body*: The body of the schema, which defines the data structure.
+
+=== Choose a schema type
+
+Redpanda's Schema Registry supports the following schema types:
+
+* *Avro*: A widely used serialization format in event-driven architectures.
+* *Protobuf*: Popular for defining data structures in gRPC APIs and efficient data serialization.
+* *JSON Schema*: Dynamic, schema-based validation for JSON documents.
+
+If no type is specified, Redpanda defaults to Avro.
+
+=== Choose a compatibility mode
+
+Compatibility modes determine how schema versions within a subject can evolve without breaking existing data consumers. Redpanda supports the following compatibility levels:
+
+* `None`: Disables compatibility checks, allowing any schema change.
+* `Backward`: Consumers using the new schema (for example, version 10) can read data from producers using the previous schema (for example, version 9).
+* `BackwardTransitive`: Enforces backward compatibility across all versions, not just the latest.
+* `Forward`: Consumers using the previous schema (for example, version 9) can read data from producers using the new schema (for example, version 10).
+* `ForwardTransitive`: Ensures forward compatibility across all schema versions.
+* `Full`: Combines backward and forward compatibility, requiring that changes maintain compatibility in both directions. A new schema and the previous schema (for example, versions 10 and 9) are both backward and forward-compatible with each other.
+* `FullTransitive`: Enforces full compatibility across all schema versions.
+
+For example, to set full compatibility, configure the Schema resource with:
+
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Schema
+metadata:
+  name: fully-compatible-schema
+  namespace: redpanda
+spec:
+  cluster:
+    clusterRef:
+      name: basic
+  schemaType: avro
+  compatibilityLevel: Full
+  text: |
+    {
+      "type": "record",
+      "name": "ExampleRecord",
+      "fields": [
+        { "type": "string", "name": "field1" },
+        { "type": "int", "name": "field2" }
+      ]
+    }
+----
+
+Compatibility settings are essential for maintaining data consistency, especially when updating schemas over time.
+
+=== Use schema references
+
+For complex data structures, you can define schema references that allow one schema to reference another, enabling modular and reusable schema components. Schema references are helpful for shared data structures across topics like product information or user profiles, reducing redundancy.
+
+NOTE: This feature is supported for Avro and Protobuf schemas.
+
+Define a schema reference using the `references` field. The reference includes the name, subject, and version of the referenced schema:
+
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Schema
+metadata:
+  name: order-schema
+  namespace: redpanda
+spec:
+  cluster:
+    clusterRef:
+      name: basic
+  references:
+    - name: product-schema
+      subject: product
+      version: 1
+  text: |
+    {
+      "type": "record",
+      "name": "Order",
+      "fields": [
+        { "name": "product", "type": "Product" }
+      ]
+    }
+----
+
+== Update a schema
+
+To update a schema, modify the Schema resource and apply the changes:
+
+[source,bash]
+----
+kubectl apply -f <manfiest-filename>.yaml --namespace <namespace>
+----
+
+== Check schema version
+
+Ensure the schema has been versioned by running:
+
+[source,bash]
+----
+kubectl get schema <subject-name> --namespace <namespace>
+----
+
+You can also check specific versions of the schema:
+
+[source,bash]
+----
+kubectl exec -it --namespace <namespace> <pod-name> -- curl https://<pod-name>.<cluster-name>.<namespace>.svc.cluster.local:8081/schemas/ids/1 -sS --cacert /etc/tls/certs/default/ca.crt -w '\n'
+kubectl exec -it --namespace <namespace> <pod-name> -- curl https://<pod-name>.<cluster-name>.<namespace>.svc.cluster.local:8081/schemas/ids/2 -sS --cacert /etc/tls/certs/default/ca.crt -w '\n'
+----
+
+== Delete a schema
+
+To delete a schema, use the following command:
+
+[source,bash]
+----
+kubectl delete schema <subject-name> --namespace redpanda
+----
+
+Verify that the schema was deleted by checking the Redpanda Schema Registry:
+
+[source,bash]
+----
+kubectl exec -it --namespace <namespace> <pod-name> -- curl https://<pod-name>.<cluster-name>.<namespace>.svc.cluster.local:8081/subjects -sS --cacert /etc/tls/certs/default/ca.crt -w '\n'
+----
+
+== Suggested reading
+
+For more details on using schemas in Redpanda, see:
+
+* xref:manage:schema-reg/index.adoc[]
+
