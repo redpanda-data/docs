@@ -1,12 +1,14 @@
-= Monitor the Status of an Enterprise Edition License
+= Check the Status of an Enterprise Edition License
 :description: pass:q[Learn how to monitor the status of your Redpanda Enterprise Edition license using `rpk`, the Redpanda Console, the Admin API, and observability tools such as logs and metrics.]
 
-To track license expiration and ensure compliance with xref:get-started:licensing/overview.adoc[Redpanda licensing], you can monitor the status of your Enterprise Edition license using <<rpk, `rpk`>>, the <<admin, Admin API>>, <<console, Redpanda Console>>, and observability tools such as <<logs, logs>> and <<metrics, metrics>>.
+To track license expiration and ensure compliance with xref:get-started:licensing/overview.adoc[Redpanda licensing], you can monitor the status of your Enterprise Edition license using <<rpk, `rpk`>>, <<console, Redpanda Console>>, and observability tools such as <<logs, logs>> and <<metrics, metrics>>.
 
 [[rpk]]
-== Check the status of a license with `rpk`
+== Use `rpk` to check license status and feature usage
 
-To check the status of your current license and information about in-use enterprise features, use the `rpk cluster license info` command. You can choose different output formats depending on your use case.
+To check the status of your license, use the `rpk cluster license info` command. This command provides a detailed overview of your Redpanda license, including its status, expiration, and enterprise features currently in use.
+
+NOTE: Enterprise features in use are specific to Redpanda. They do not include enterprise features for xref:get-started:licensing/overview.adoc#connect[Redpanda Connect] or xref:get-started:licensing/overview.adoc#console[Redpanda Console].
 
 . Make sure that xref:get-started:rpk-install.adoc[`rpk` is installed] and configured to connect to your cluster's Admin API endpoint.
 
@@ -16,25 +18,105 @@ To check the status of your current license and information about in-use enterpr
 rpk cluster license info
 ```
 +
-The command displays the license information in a user-friendly format. The output includes:
+The command displays the license information in a user-friendly format. The output depends on the license status. It can include the following:
 +
---
-- *Organization*: The organization for which the license was issued.
-- *Type*: The type of license (for example, enterprise or trial).
-- *Expires*: The license expiration date.
-- *Version*: The schema version of the license.
-- *Enterprise features in use*: A list of enabled enterprise features.
---
-+
-If the license is within 30 days of expiration, a warning is logged:
-+
+[cols="1,2a"]
+|===
+|Field |Description
+
+|License status
+|
+Indicates the current state of the license. Possible values include:
+
+* `valid`: The license is active and valid.
+* `expired`: The license has expired, and restrictions may apply to enterprise features.
+* `not_present`: No license is currently applied.
+
+|License violation 
+|
+A boolean value that indicates whether enterprise features are being used in violation of the licensing terms:
+
+* `true`: Enterprise features are enabled without a valid license.
+* `false`: No violations are detected.
+
+[NOTE]
+====
+If the `license violation` status is `true`, you must either obtain a valid license or disable the enterprise features in use to ensure compliance.
+For instructions, see xref:get-started:licensing/disable-enterprise-features.adoc[].
+====
+
+|Organization
+|
+The organization for which the license was issued. Typically corresponds to the organization that purchased or activated the license.
+
+|Type
+|
+The type of license applied to the cluster:
+
+* `enterprise`: A full-featured enterprise license.
+* `trial`: A time-limited trial license.
+
+|Expires
+|
+The expiration date of the current license. After this date, the license status changes to `expired`.
+
+|Enterprise features in use
+|
+A list of enabled enterprise features in the cluster, such as `tiered_storage`, `audit_logging`, and `partition_auto_balancing_continuous`.
+|===
+
+If the license is within 30 days of expiration, a warning is logged. `rpk` displays warnings when you execute `rpk` commands that use the Admin API in the following scenarios:
+
+- *License violation*: When enterprise features are enabled without a valid license.
+
+- *Trial expiration*: When enterprise features are enabled and a trial license expires in less than 15 days.
+
+- *Enterprise expiration*: When enterprise features are enabled and an Enterprise license is expired.
+
+=== Examples
+
+This section provides examples of what `rpk` reports depending on the license status.
+
+Valid license:
+
+[.no-copy]
 ----
-warning: your license will expire soon
+LICENSE INFORMATION
+===================
+License status:              valid
+License violation:           false
+Enterprise features in use:  [partition_auto_balancing_continuous]
+Organization:                Devex
+Type:                        enterprise
+Expires:                     Oct 11 2025
+----
+
+Without a valid license:
+
+[.no-copy]
+----
+LICENSE INFORMATION
+===================
+License status:              not_present
+License violation:           false
+Enterprise features in use:  [partition_auto_balancing_continuous]
+----
+
+Expired license:
+
+[.no-copy]
+----
+WARNING: The following enterprise features are being used in your Redpanda cluster: [partition_auto_balancing_continuous]. These features require a license.
+LICENSE INFORMATION
+===================
+License status:              expired
+License violation:           true
+Enterprise features in use:  [partition_auto_balancing_continuous]
 ----
 
 === Change the output format
 
-Different output formats can be useful depending on your scenario. The available formats include JSON, YAML, text, and wide (expanded). For example, if you are writing scripts or automating license monitoring, you may prefer the JSON format, as it's easily parsed by tools like `jq` or integrated into monitoring systems.
+Different output formats can be useful depending on your scenario. For example, if you are writing scripts or automating license monitoring, you may prefer the JSON format, as it's easily parsed by tools like `jq` or integrated into monitoring systems.
 
 To get the license information in another format, use the `--format` flag:
 
@@ -44,65 +126,26 @@ rpk cluster license info --format <format>
 
 Replace `<format>` with one of the available formats. See xref:reference:rpk/rpk-cluster/rpk-cluster-license-info.adoc[].
 
-For more details, including the SHA-256 checksum and Unix timestamp for expiration, use the `wide` format. This format is useful when you need a deeper level of detail about the license for troubleshooting or verification. For example:
-
-----
-LICENSE INFORMATION
-Organization:      Your Organization
-Type:              enterprise
-Expires:           Jan 1 2025
-License Expired:   false
-Checksum:          3d2e5b4d07d294534d9b7e90d8f73e91d34f7b4a62c45b6dc1c1e6f9d0a12bcf
-ExpiresUnix:       1735689600
-----
-
-[[admin]]
-== Check the status of a license with the Admin API
-
-You can retrieve the license status and information about in-use enterprise features using the Redpanda Admin API. This API provides JSON-formatted responses and is useful for programmatic access to the license details and feature status.
-
-To get the license status and features in use, make a `GET` request to the `/v1/features/enterprise` endpoint. For example:
-
-[,bash]
-----
-curl -X GET http://<redpanda-host>:<port>/v1/features/enterprise
-----
-
-Example response:
-
-[,json]
-----
-{
-  "license_status": "valid",
-  "violation": false,
-  "features": [
-    {
-      "name": "audit_logging",
-      "enabled": true
-    },
-    {
-      "name": "tiered_storage",
-      "enabled": false
-    }
-  ]
-}
-----
-
-- `license_status`: The status of the license. Possible values are:
-** `valid`: The license is valid.
-** `expired`: The license has expired.
-** `not_present`: No license is present.
-
-- `violation`: A boolean value that indicates whether there is a violation. For example, the license is not valid and one or more enterprise features are enabled.
-
-- `features`: An array of enterprise features that lists each feature by name and whether it is enabled (`true`) or not (`false`).
-
-NOTE: The returned enterprise features are specific to Redpanda Enterprise Edition. They do not include xref:get-started:licensing/overview.adoc#connect[enterprise features for Redpanda Connect] or xref:get-started:licensing/overview.adoc#console[enterprise features in Redpanda Console].
-
 [[console]]
-== Check the status of a license in Redpanda Console
+== Use Redpanda Console to check license status
 
 You can also check the status of your license in the Redpanda Console UI. See xref:console:ui/add-license.adoc[].
+
+If Redpanda Console cannot find a valid license either locally or in the connected Redpanda cluster, it shuts down. Redpanda Console tries to load a valid license at startup in the following order:
+
+. From the local configuration file or environment variables.
+. From the connected Redpanda cluster (if available).
+
+Redpanda Console displays warnings in the following scenarios:
+
+- *Upcoming license expiration*: Redpanda Console checks the license status at startup. If the license expires within 30 days, a warning is displayed in the UI. Redpanda Console also logs the license details at startup, including the expiration date. For example:
++
+[,json]
+----
+{"level":"info","msg":"successfully loaded Redpanda Enterprise license","license_org":"redpanda","license_type":"enterprise","expires_at":"Oct 12 2024"}
+----
+
+- *Redpanda Self-Managed enterprise features are in use without a valid license*: If the Redpanda cluster is using enterprise features without a valid license, Redpanda Console displays a warning specifying the features in use without proper licensing.
 
 [[logs]]
 == Monitor a license in the logs
@@ -113,3 +156,8 @@ Logs are emitted on Redpanda brokers to help you understand how the license is b
 == Monitor a license using metrics
 
 The xref:reference:public-metrics-reference.adoc#redpanda_cluster_features_enterprise_license_expiry_sec[`redpanda_cluster_features_enterprise_license_expiry_sec`] metric tells you how many seconds remain until the license expires. Use this metric to set up alerts or dashboards to track the license expiration status and ensure timely renewal.
+
+== Next steps
+
+- xref:get-started:licensing/disable-enterprise-features.adoc[]
+
