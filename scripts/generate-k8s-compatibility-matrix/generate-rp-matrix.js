@@ -203,7 +203,7 @@ async function fetchRedpandaChartDetails(chartVersion) {
 
     // Get the Kubernetes version defined in the chart metadata
     if (response.data.data.kubeVersion) {
-      const kubeVersionRegex = /^\^?([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-[0-9]+)?)$/;
+      const kubeVersionRegex = /([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-[0-9]+)?)/;
       let kubeVersionMatch = response.data.data.kubeVersion.match(kubeVersionRegex);
       kubernetesVersion = kubeVersionMatch ? kubeVersionMatch[1] : '{supported-kubernetes-version}';
     }
