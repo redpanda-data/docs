@@ -14,42 +14,60 @@ By default, Redpanda data is sent unencrypted. A security best practice is to en
 
 TLS certificates are required for encryption. You can use your own certificates, either self-signed or issued by a trusted CA.
 
-You'll need:
-
+You'll need the following files:
+--
 - A private key file (`broker.key`) for each broker.
 - A certificate file (`broker.crt`) for each broker.
 - A truststore file (`ca.crt`). All brokers can have the same `ca.crt` file.
+--
+
+Ensure these files are readable by Redpanda and protected against unauthorized access:
+
+[,bash]
+----
+chmod 400 broker.key broker.crt ca.crt
+chown redpanda:redpanda broker.key broker.crt ca.crt
+----
 
 For mTLS, client certificates signed by the same CA are also required.
 
-If you enable TLS encryption, you can also specify a certificate revocation list (`ca.crl`) so that Redpanda can check and reject connections from entities using certificates already revoked by a certificate authority (CA). All brokers can have the same `ca.crl`. The file must contain a single, concatenated list of certificate revocation lists (CRLs) for all issuing certificates in the truststore file.
-
 If you don't already have these files, you can learn how to generate them in <<Create a local CA for self-signed certificates>>.
+
+If you enable TLS encryption, you can also specify a certificate revocation list (`ca.crl`) so that Redpanda can check and reject connections from entities using certificates already revoked by a certificate authority (CA). All brokers can have the same `ca.crl`. The file must contain a single, concatenated list of certificate revocation lists (CRLs) for all issuing certificates in the truststore file.
 
 [[gen-certs]]
 == Generate certificate files
 
 This section shows you how to generate self-signed certificate files for your Redpanda brokers. If you already have your own, you can skip this step.
 
-NOTE: Self-signed certificates are useful if you want to generate multiple certificates all signed by the same root; for example, you want to use mTLS but issue different certificates to multiple Redpanda brokers and clients.
+NOTE: Self-signed certificates are useful if you want to generate multiple certificates all signed by the same root. For example, if you want to use mTLS but issue different certificates to multiple Redpanda brokers and clients.
 
-=== Create a local CA for self-signed certificates
+=== Option 1: Simple self-signed certificate for a single broker
 
-. Create a self-signed certificate and private key for the CA:
-+
+Use this method if you need a quick, standalone self-signed certificate for a single broker.
+
+Generate a private key and certificate:
+
 [source,bash]
 ----
 openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 -keyout broker.key -out broker.crt -subj "/CN=redpanda" -addext "subjectAltName = DNS:localhost, IP:127.0.0.1"
 ----
-+
-Ensure that `subjectAltName` is accurate for your setup.
-+
-This command generates:
-+
-- `broker.key`: Private key
-- `broker.crt`: Self-signed certificate
 
-. Create a configuration file for the CA, `ca.cnf`, and include your organization's details. Ensure the `subjectAltName` extension is set correctly for broker certificates.
+This command generates:
+
+- `broker.key`: The private key.
+- `broker.crt`: The self-signed certificate.
+
+[IMPORTANT]
+====
+Ensure that `subjectAltName` includes the appropriate DNS names and IP addresses for your broker.
+====
+
+=== Option 2: Create a local CA for multiple brokers or clients
+
+Use this method to set up a local Certificate Authority (CA) for signing multiple broker or client certificates.
+
+. Create a file named `ca.cnf` and include your organization's details:
 +
 [source,ini]
 ----
@@ -83,7 +101,7 @@ organizationName = supplied
 commonName       = optional
 ----
 
-. Create the CA's private key and set its permissions:
+. Generate the CA private key:
 +
 [source,bash]
 ----
@@ -91,34 +109,18 @@ openssl genrsa -out ca.key 2048
 chmod 400 ca.key
 ----
 
-. Use the CA configuration to generate a public certificate:
+. Generate the CA certificate:
 +
 [source,bash]
 ----
 openssl req -new -x509 -config ca.cnf -key ca.key -days 365 -batch -out ca.crt
 ----
 +
-where:
+This command creates:
 +
-[cols=",",options="header",]
-|===
-|Inputs |Description
-|`-new` |New request.
+- `ca.crt`: The public certificate for the CA.
+- `ca.key`: The private key for the CA.
 
-|`-x509` |Create an X.509 certificate, instead of a certificate
-signing request (CSR).
-
-|`-config ca.cnf` |Configuration file to use when generating
-certificates (created above).
-
-|`-key ca.key` |Private key of the CA (created above).
-
-|`-days 365` |Number of days signed certificates are valid.
-
-|`-batch` |Batch mode, where certificates are certified automatically.
-|===
-+
-The output `ca.crt` is the CA's public certificate, which you'll use in the truststore.
 
 === Create broker certificates and certificate signing requests (CSRs)
 
@@ -189,7 +191,7 @@ openssl req -new -key broker.key -out broker.csr -nodes -config broker.cnf
 +
 where:
 +
-[cols=",",options="header",]
+[cols="1m,1a",options="header",]
 |===
 |Inputs |Description
 |`-req` |Input is a certificate request. Sign and output.
@@ -236,8 +238,19 @@ chmod 400 broker.key broker.crt ca.crt
 
 == Configure TLS
 
-To configure TLS, in `redpanda.yaml`, enter either the standard PEM configuration files or the PKCS#12 bundle configuration.
+To configure TLS, in `redpanda.yaml`, enter either the standard <<pem,PEM configuration files>> or the <<pkcs,PKCS#12 bundle configuration>>.
 
+Choose PEM files when:
+
+- You are using FIPS mode compliance.
+- You prefer file-based configurations with separate key, certificate, and truststore file.
+
+Choose PKCS#12 bundles when:
+
+- FIPS mode is not required in your environment.
+- You want a single, password-protected file that contains all certificates and keys.
+
+[[pem]]
 === Configure TLS with PEM files
 
 If you have separate `key_file`, `cert_file`, and `truststore_file`, use the following configuration in `redpanda.yaml`:
@@ -314,11 +327,12 @@ Schema Registry and HTTP Proxy connect to Redpanda over the Kafka API. If you co
 * xref:./authentication.adoc#configure-schema-registry-and-http-proxy-to-connect-to-redpanda-with-sasl[Configure Schema Registry and HTTP Proxy to connect to Redpanda with SASL]
 * xref:./listener-configuration.adoc[Configure Listeners]
 
+[[pkcs]]
 === Configure TLS with PKCS#12 bundles
 
-You can simplify certificate management by using a PKCS#12 bundle.
+You can simplify certificate management by generating a password-protected PKCS#12 bundle from your `broker.key` and `broker.crt` files.
 
-NOTE: If you haven't generated the `.key` and `.crt` files, refer to <<gen-certs, Generate certificate files>>.
+NOTE: PKCS#12 keys are not supported when xref:manage:security/fips-compliance.adoc[FIPS mode] is enabled in Redpanda. The PKCS12KDF algorithm used in PKCS#12 is not FIPS-compliant. To use Redpanda in FIPS mode, configure your certificates and keys in <<pem,PEM format>> instead.
 
 . Run this command to create a PKCS#12 file from your `broker.key` and `broker.crt` files:
 +
@@ -409,8 +423,6 @@ redpanda:
 See also: xref:./listener-configuration.adoc[Configure Listeners]
 
 === Configure mTLS with PKCS#12 bundles
-
-You can simplify certificate management by using a PKCS#12 bundle.
 
 . Update `redpanda.yaml` with the path to the PKCS#12 bundle:
 +
