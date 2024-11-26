@@ -29,7 +29,8 @@ rpk cluster license info
 
 * It is not possible to append or backfill data from Redpanda topics to an existing Iceberg table.
 * JSON schemas are not currently supported. For Avro schemas, records cannot contain fields greater than 128 KB.
-* You can only use one schema per topic. Schema versioning as well as upcasting (where a value is cast into its more generic data type) are not supported. 
+* You can only use one schema per topic. Schema versioning as well as upcasting (where a value is cast into its more generic data type) are not supported. See <<schema-types-translation,Schema types translation>> for more details.
+* xref:manage:remote-read-replicas.adoc[Remote read replicas] and xref:manage:topic-recovery.adoc[topic recovery] are not supported for Iceberg-enabled topics.
 
 == Architecture 
 
@@ -48,7 +49,7 @@ In the Iceberg specification, tables consist of the following layers:
 --
 +
 In the Redpanda Iceberg integration, the manifest files are in JSON format.
-* Catalog: Contains the current metadata pointer for the table. Clients reading and writing data to the table see the same version of the current state of the table. You can <<integrate-into-iceberg-catalog,configure your Iceberg catalog>> to point to your object storage bucket or container where the Redpanda data in Iceberg format is located. Redpanda can also use an https://iceberg.apache.org/concepts/catalog/#catalog-implementations[Iceberg REST catalog^] endpoint to update your catalog when there are changes to the Iceberg data and metadata.
+* Catalog: Contains the current metadata pointer for the table. Clients reading and writing data to the table see the same version of the current state of the table. The Iceberg integration supports two <<set-up-catalog-integration,catalog integration>> types. You can configure Redpanda to catalog files stored in the same object storage bucket or container where the Iceberg data files are located, or you can configure Redpanda to use an https://iceberg.apache.org/concepts/catalog/#catalog-implementations[Iceberg REST catalog^] endpoint to update an externally-managed catalog when there are changes to the Iceberg data and metadata.
 
 image::shared:iceberg-integration.png[]
 
@@ -56,7 +57,7 @@ When you enable the Iceberg integration for a Redpanda topic, Redpanda brokers s
 
 == Enable Iceberg integration
 
-To use the Iceberg integration for a topic, you must set the cluster configuration property `iceberg_enabled` to `true`, and also configure the topic property `redpanda.iceberg.mode`. You can choose to provide a schema if you need the Iceberg table to be structured with defined columns.
+To create an Iceberg table for a Redpanda topic, you must set the cluster configuration property `iceberg_enabled` to `true`, and also configure the topic property `redpanda.iceberg.mode`. You can choose to provide a schema if you need the Iceberg table to be structured with defined columns.
 
 . Set the `iceberg_enabled` configuration option on your cluster to `true`. 
 +
@@ -86,7 +87,7 @@ new-topic-name   OK
 . Enable the integration for the topic by configuring `redpanda.iceberg.mode`. You can choose one of the following modes:
 +
 --
-* `KEY_VALUE`: Creates an Iceberg table with a `Key` column and a `Value` column. Redpanda stores the raw topic content in the `Value` column.
+* `KEY_VALUE`: Creates an Iceberg table with a `Key` column and a `Value` column. Redpanda stores the raw topic content in the `Value` column. We also refer to this as the "schemaless" mode.
 * `VALUE_SCHEMA_ID_PREFIX`: Creates an Iceberg table whose structure matches the Redpanda schema for this topic, with columns corresponding to each field. Redpanda parses the topic values per field and stores them in the corresponding table columns. 
 * `DISABLED` (default): Disables writing to an Iceberg table for this topic.
 --
@@ -115,15 +116,19 @@ SUBJECT                VERSION   ID   TYPE
 new-topic-name-value   1         1    PROTOBUF
 ----
 +
-If you select `KEY_VALUE` for the topic Iceberg mode, Redpanda uses a simple schema consisting of a column that stores the record’s metadata, key, and value.
+If you don't use a schema for the topic, select `KEY_VALUE` for the topic Iceberg mode. Redpanda uses a simple schema for the Iceberg table, consisting of a column that stores the record’s metadata, key, and value.
 
 As you produce records to the topic, the data also becomes available in object storage for consumption by Iceberg-compatible clients. 
 
-== Schema mapping and support
+== Schema support and mapping
 
-The `redpanda.iceberg.mode` property determines how Redpanda maps the topic data to the Iceberg table structure. 
+The `redpanda.iceberg.mode` property determines how Redpanda maps the topic data to the Iceberg table structure. You can either have the generated Iceberg table match the stucture of a Avro or Protobuf schema in the Schema Registry, or use the schemaless mode where Redpanda stores the record values as-is in the table. The JSON Schema format is not supported in this beta release. If your topic data is in JSON, it is recommended to use the `KEY_VALUE` (schemaless) mode.
 
-For both `KEY_VALUE` and `VALUE_SCHEMA_ID_PREFIX` modes, Redpanda writes to a `redpanda` table column that stores a single struct per record, containing nested columns of the metadata from each record, including the record timestamp, the partition it belongs to, and its offset. In the `KEY_VALUE` mode, the `redpanda` metadata structs also contain both the record key and value. If you are associating a schema with the topic using the `VALUE_SCHEMA_ID_PREFIX` mode, the `redpanda` structs contain the record key only. Redpanda uses the matching schema to define table columns based on schema fields and then maps the record values to the corresponding columns.
+=== Iceberg table modes
+
+For both `KEY_VALUE` and `VALUE_SCHEMA_ID_PREFIX` modes, Redpanda writes to a `redpanda` table column that stores a single struct per record, containing nested columns of the metadata from each record, including the record timestamp, the partition it belongs to, and its offset. 
+
+In the `KEY_VALUE` ("schemaless") mode, the `redpanda` metadata structs also contain both the record key and value. If you are associating a schema with the topic using the `VALUE_SCHEMA_ID_PREFIX` mode, the `redpanda` structs contain the record key only. Redpanda uses the matching schema to define table columns based on schema fields and then maps the record values to the corresponding columns.
 
 For example, if you produce to a topic according to the following Avro schema:
 
@@ -149,7 +154,7 @@ For example, if you produce to a topic according to the following Avro schema:
 
 ```
 
-The `KEY_VALUE` mode writes to the table format:
+The `KEY_VALUE` mode writes to the following table format:
 
 ```
 CREATE TABLE ClickEvent (
@@ -164,7 +169,7 @@ CREATE TABLE ClickEvent (
 )
 ```
 
-Consider this schemaless approach if you are using the JSON Schema format, or if you can use the data in a semi-structured format.
+Consider this schemaless approach if the topic data is in JSON, or if you can use the Iceberg data in its semi-structured format.
 
 The `VALUE_SCHEMA_ID_PREFIX` translates to the following table format:
 
@@ -184,21 +189,82 @@ CREATE TABLE ClickEvent (
 
 ```
 
-With schema integration, Redpanda uses the schema ID prefix embedded in each record to find the matching schema in the Schema Registry. Producers to the topic must use the schema ID prefix in the serialization process so Redpanda can determine the schema used for each record, parse the record, and use that schema for the Iceberg table as well.
+With schema integration, Redpanda uses the schema ID prefix embedded in each record to find the matching schema in the Schema Registry. Producers to the topic must use the schema ID prefix in the serialization process so Redpanda can determine the schema used for each record, parse the record according to that schema, and use the schema for the Iceberg table as well.
 
-== Integrate Iceberg catalog
+=== Schema types translation
 
-You can configure the Iceberg integration to either create a file in the object storage bucket or container to serve as the catalog, or connect to a REST-based catalog. 
+[tabs]
+======
+Avro::
++
+--
+* Redpanda supports direct translations of the following Avro types to Iceberg value domains:
+** boolean
+** int
+** long
+** float
+** double
+** bytes 
+** string
+** record
+** array
+** maps
+** fixed
+** decimal
+** uuid
+** date
+** time
+** timestamp
+* Different flavors of timestamp and time types are all represented by the same Iceberg type, conversion will be done.
+* Avro unions are flattened to structs with optional fields, out of which only one is present, or none in case there is a field with null type:
+** For example, the union `["int", "long", "float"]` is represented as an Iceberg struct `OBJECT(0 INT NULLABLE, 1 LONG  NULLABLE, 2 FLOAT NULLABLE)`.
+** The union `["int", null, "float"]` is represented as an Iceberg struct `OBJECT(0 INT NULLABLE, 1 FLOAT NULLABLE)`.
+* All fields are required by default (Avro always sets a default in binary representation).
+* Duration logical type is ignored.
+* Null type is ignored and not represented in Iceberg schema.
+* Recursive types are not supported.
+--
 
-Set the cluster configuration property `iceberg_catalog_type`:
-* `OBJECT_STORAGE`: Write catalog files to the same object storage bucket as the data files. Use the object storage URL to access the catalog for your Redpanda tables.
+Protobuf::
++
+--
+* Redpanda supports direct translations of the following Avro types to Iceberg value domains: 
+** BOOL
+** DOUBLE
+** FLOAT
+** INT32
+** SINT32
+** INT64
+** SINT64
+** SFIXED32
+** SFIXED64
+** STRING
+** BYTES
+** MAP
+* Repeated values are translated into Iceberg ARRAY types.
+* Enums are translated into Iceberg INT types based on the integer value of the enumerated type.
+* UINT32 and FIXED32 are translated into Iceberg LONG types as that is the existing semantic for unsigned 32bit values in Iceberg.
+* UINT64 and FIXED64 values are translated into their base 10 string representation.
+* Timestamp well known protos are translated into TIMESTAMP Iceberg types.
+* Messages are converted into STRUCT types.
+* Recursive types are not supported.
+--
+======
+
+== Set up catalog integration
+
+You can configure the Iceberg integration to either create a file in the same object storage bucket or container to serve as the catalog, or connect to a REST-based catalog. 
+
+Set the cluster configuration property `iceberg_catalog_type` with one of the following values:
+
+* `OBJECT_STORAGE`: Write catalog files to the same object storage bucket as the data files. Use the object storage URL to access the catalog for your Redpanda Iceberg tables.
 * `REST`: Connect to and update an Iceberg catalog hosted on a REST server.
 
 For an Iceberg REST catalog, set the following additional cluster configuration properties:
 
-* `iceberg_rest_catalog_endpoint`
-* `iceberg_rest_catalog_client_id`
-* `iceberg_rest_catalog_client_secret`
+* `iceberg_rest_catalog_endpoint`: The endpoint URL for your Iceberg catalog, which you are either managing directly, or is managed by an external catalog service.
+* `iceberg_rest_catalog_client_id`: The ID to connect to the REST server.
+* `iceberg_rest_catalog_client_secret`: The secret data to connect to the REST server.
 
 == Consume data in Iceberg tables
 
