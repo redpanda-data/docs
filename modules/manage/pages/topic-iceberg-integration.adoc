@@ -85,9 +85,11 @@ new-topic-name   OK
 
 . Enable the integration for the topic by configuring `redpanda.iceberg.mode`. You can choose one of the following modes:
 +
-. `KEY_VALUE`: Creates an Iceberg table with a `Key` column and a `Value` column. Redpanda stores the raw topic content in the `Value` column.
-. `VALUE_SCHEMA_ID_PREFIX`: Creates an Iceberg table whose structure matches the Redpanda schema for this topic, with columns corresponding to each field. Redpanda parses the topic values per field and stores them in the corresponding table columns. 
-. `DISABLED` (default): Disables writing to an Iceberg table for this topic.
+--
+* `KEY_VALUE`: Creates an Iceberg table with a `Key` column and a `Value` column. Redpanda stores the raw topic content in the `Value` column.
+* `VALUE_SCHEMA_ID_PREFIX`: Creates an Iceberg table whose structure matches the Redpanda schema for this topic, with columns corresponding to each field. Redpanda parses the topic values per field and stores them in the corresponding table columns. 
+* `DISABLED` (default): Disables writing to an Iceberg table for this topic.
+--
 +
 [,bash]
 ----
@@ -100,7 +102,7 @@ TOPIC            STATUS
 new-topic-name   OK
 ----
 
-. Register a schema for the topic (optional). You must also set the `redpanda.iceberg.mode` topic property to `VALUE_SCHEMA_ID_PREFIX`. Redpanda uses xref:manage:schema-reg/schema-id-validation.adoc#set-subject-name-strategy-per-topic[`TopicNameStrategy`] (`<topic-name>-value` or `<topic-name>-key`) to find the matching schema based on the subject name. Redpanda derives the Iceberg table format from the schema and writes data files to object storage in this format. Protobuf and Avro schemas are supported.
+. Register a schema for the topic (optional). You must also set the `redpanda.iceberg.mode` topic property to `VALUE_SCHEMA_ID_PREFIX`.
 +
 [,bash]
 ----
@@ -113,11 +115,76 @@ SUBJECT                VERSION   ID   TYPE
 new-topic-name-value   1         1    PROTOBUF
 ----
 +
-If you select `KEY_VALUE` for the topic Iceberg mode, Redpanda uses a simple schema consisting of the record’s key, value, and the original record timestamp. Consider this schemaless approach if you can use the data in a more semi-structured format.
-+
-NOTE: Redpanda automatically adds three Kafka-related fields to the table it creates: the record timestamp, the partition it belongs to, and its offset.
+If you select `KEY_VALUE` for the topic Iceberg mode, Redpanda uses a simple schema consisting of a column that stores the record’s metadata, key, and value.
 
 As you produce records to the topic, the data also becomes available in object storage for consumption by Iceberg-compatible clients. 
+
+== Schema mapping and support
+
+The `redpanda.iceberg.mode` property determines how Redpanda maps the topic data to the Iceberg table structure. 
+
+For both `KEY_VALUE` and `VALUE_SCHEMA_ID_PREFIX` modes, Redpanda writes to a `redpanda` table column that stores a single struct per record, containing nested columns of the metadata from each record, including the record timestamp, the partition it belongs to, and its offset. In the `KEY_VALUE` mode, the `redpanda` metadata structs also contain both the record key and value. If you are associating a schema with the topic using the `VALUE_SCHEMA_ID_PREFIX` mode, the `redpanda` structs contain the record key only. Redpanda uses the matching schema to define table columns based on schema fields and then maps the record values to the corresponding columns.
+
+For example, if you produce to a topic according to the following Avro schema:
+
+```
+{
+    "type": "record",
+    "name": "ClickEvent",
+    "fields": [
+        {
+            "name": "user_id",
+            "type": "int"
+        },
+        {
+            "name": "event_type",
+            "type": "string"
+        },
+        {
+            "name": "ts",
+            "type": "string"
+        }
+    ]
+}
+
+```
+
+The `KEY_VALUE` mode writes to the table format:
+
+```
+CREATE TABLE ClickEvent (
+  redpanda OBJECT(
+    partition INT,
+    timestamp TIMESTAMP,
+    offset    LONG,
+    headers   ARRAY(OBJECT(KEY BINARY, VALUE BINARY NULLABLE)),
+    key       BINARY NULLABLE,
+    data      BINARY NULLABLE
+  )
+)
+```
+
+Consider this schemaless approach if you are using the JSON Schema format, or if you can use the data in a semi-structured format.
+
+The `VALUE_SCHEMA_ID_PREFIX` translates to the following table format:
+
+```
+CREATE TABLE ClickEvent (
+  redpanda OBJECT(
+    partition INT,
+    timestamp TIMESTAMP,
+    offset    LONG,
+    headers   ARRAY(OBJECT(KEY BINARY, VALUE BINARY NULLABLE)),
+    key       BINARY NULLABLE
+  ),
+   user_id INT,
+   event_type STRING NULLABLE,
+   ts STRING NULLABLE
+);
+
+```
+
+With schema integration, Redpanda uses the schema ID prefix embedded in each record to find the matching schema in the Schema Registry. Producers to the topic must use the schema ID prefix in the serialization process so Redpanda can determine the schema used for each record, parse the record, and use that schema for the Iceberg table as well.
 
 == Integrate Iceberg catalog
 
@@ -137,103 +204,77 @@ For an Iceberg REST catalog, set the following additional cluster configuration 
 
 You can use the same analytical tools to access table data in a data lake as you would for a relational database.
 
-For example, suppose you produce the same stream of events to a topic `test_topic`, and another topic `test_topic_schemaless`. The topics have Tiered Storage configured to an AWS S3 bucket. A sample record contains the following data:
+For example, suppose you produce the same stream of events to a topic `ClickEvent`, and another topic `ClickEvent_schemaless`. The topics have Tiered Storage configured to an AWS S3 bucket. A sample record contains the following data:
 
 [,bash,role=no-copy]
 ----
-{'Topic': 'apple', 'Sentiment': 'positive', 'TweetId': '126377656416612353', 'TweetDate': 'Tue Oct 18 19:22:35 +0000 2011', 'TweetText': 'Great up close & personal event @Apple tonight in Regent St store!'}
+{"user_id": 2324, "event_type": "BUTTON_CLICK", "ts": "2024-11-25T20:23:59.380Z"}
 ----
 
-When you point your Iceberg-compatible tool or framework to the object storage location of the Iceberg tables, how you consume the data depends on whether you've registered a schema on which to base the table format. In either approach, you do not need to rely on complex ETL jobs or pipelines to consume real-time data from Redpanda.
+When you point your Iceberg-compatible tool or framework to the object storage location of the Iceberg tables, how you consume the data depends on whether you've registered a schema on which to derive the table format. In either approach, you do not need to rely on complex ETL jobs or pipelines to consume real-time data from Redpanda.
 
 === Structured approach with schema
 
-Register the following schema for `test_topic` under the `test_topic-value` subject:
+Register the following schema for `ClickEvent` under the `ClickEvent-value` subject:
 
-[,protobuf]
+[,avro]
 ----
-syntax = "proto3";
-
-message twitter_record {
-  string Topic = 1;
-  string Sentiment = 2;
-  int64 TweetId = 3;
-  string TweetText = 4;
-  string TweetDate = 5;
-}
+{
+    "type" : "record",
+    "namespace" : "com.redpanda.examples.avro",
+    "name" : "ClickEvent",
+    "fields" : [
+       { "name": "user_id", "type" : "int" },
+       { "name": "event_type", "type" : "string" },
+       { "name": "ts", "type": "string" }
+    ]
+ }
 ----
 
 [,bash]
 ----
-rpk registry schema create test_topic-value --schema path/to/schema.proto --type protobuf
+rpk registry schema create ClickEvent-value --schema path/to/schema.avsc --type avro
 ----
 
-// Change to different example
-Platforms such as Clickhouse provide Iceberg integrations to give easy access to existing Iceberg tables in object storage. This example reads the data from `test_topic` into Clickhouse: 
-
-[,sql]
-----
-CREATE TABLE test_topic ENGINE=IcebergS3('<s3-bucket-url>', <aws-access-key-id>', '<aws-secret-access-key>', 'Parquet')
-----
-
-The Iceberg data is available to query in Clickhouse. The table structure is derived from the schema. In this case, the `test-topic` table contains columns based on the schema fields:
+Query engines such as Spark SQL provide Iceberg integrations to allow easy access to existing Iceberg tables in object storage. The table structure is derived from the schema. In this example, the `ClickEvent` table contains columns based on the schema fields:
 
 [,sql]
 ----
-SELECT
-  Topic,
-  Sentiment,
-  TweetId,
-  left(TweetText, 30)
-FROM test_topic
+SELECT user_id, 
+  event_type, 
+  ts 
+FROM ClickEvent;
 ----
 
 [,bash,role=no-copy]
 ----
-+-------+-----------+--------------------+--------------------------------+
-| Topic | Sentiment | TweetId            | left(TweetText, 30)            |
-+-------+-----------+--------------------+--------------------------------+
-| apple | positive  | 126377656416612353 | Great up close & personal even |
-+-------+-----------+--------------------+--------------------------------+
++---------+--------------+--------------------------+
+| user_id | event_type   | ts                       |
++---------+--------------+--------------------------+
+| 2324    | BUTTON_CLICK | 2024-11-25T20:23:59.380Z |
++---------+--------------+--------------------------+
 ----
 
 === Schemaless approach
 
 You can also forgo using a schema, which means using semi-structured data in Iceberg. 
 
-This example reads the semi-structured data in `test_topic_schemaless` into Clickhouse:
+This example reads the semi-structured data in the `ClickEvent_schemaless` table, which consists of a column `redpanda` containing the record key, value, and metadata:
 
 [,sql]
 ----
-CREATE TABLE test_topic_schemaless ENGINE=IcebergS3('<s3-bucket-url>', <aws-access-key-id>', '<aws-secret-access-key>', 'Parquet')
-----
-
-The table consists of columns containing the record key, value, and the original timestamp.
-
-[,sql]
-----
-SELECT
-  Timestamp,
-  Key,
-  left(Value, 30)
-FROM test_topic_schemaless
+SELECT 
+  redpanda.data
+FROM ClickEvent_schemaless;
 ----
 
 [,bash,role=no-copy]
 ----
-+---------------+-------+--------------------------------+
-| Timestamp     | Key   | left(Value, 30)                |
-+---------------+-------+--------------------------------+
-| 1728593400000 | apple | {"Topic": "apple", "Sentiment" |
-+---------------+-------+--------------------------------+
++------------------------------------------------------------------------------+
+| redpanda.data                                                                |
++------------------------------------------------------------------------------+
+| {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"} |
++------------------------------------------------------------------------------+
 ----
 
-
-////
-Comment out due to renamed properties and other changes to beta
-
 == Suggested reading
-
-* https://www.redpanda.com/blog/apache-iceberg-topics-streaming-data[Apache Iceberg Topics: Stream directly into your data lake
-^]
-////
