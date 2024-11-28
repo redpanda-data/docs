@@ -51,7 +51,7 @@ In the Iceberg specification, tables consist of the following layers:
 --
 +
 In the Redpanda Iceberg integration, the manifest files are in JSON format.
-* Catalog: Contains the current metadata pointer for the table. Clients reading and writing data to the table see the same version of the current state of the table. The Iceberg integration supports two <<set-up-catalog-integration,catalog integration>> types. You can configure Redpanda to catalog files stored in the same object storage bucket or container where the Iceberg data files are located, or you can configure Redpanda to use an https://iceberg.apache.org/concepts/catalog/#catalog-implementations[Iceberg REST catalog^] endpoint to update an externally-managed catalog when there are changes to the Iceberg data and metadata.
+* Catalog: Contains the current metadata pointer for the table. Clients reading and writing data to the table see the same version of the current state of the table. The Iceberg integration supports two <<set-up-catalog-integration,catalog integration>> types. You can configure Redpanda to catalog files stored in the same object storage bucket or container where the Iceberg data files are located, or you can configure Redpanda to use an https://iceberg.apache.org/concepts/catalog/#decoupling-using-the-rest-catalog[Iceberg REST catalog^] endpoint to update an externally-managed catalog when there are changes to the Iceberg data and metadata.
 
 image::shared:iceberg-integration.png[]
 
@@ -268,10 +268,10 @@ You can configure the Iceberg integration to either create a file in the same ob
 
 Set the cluster configuration property `iceberg_catalog_type` with one of the following values:
 
-* `rest`: Connect to and update an Iceberg catalog via REST API.
+* `rest`: Connect to and update an Iceberg catalog via REST API. See the https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml[Iceberg REST Catalog API specification].
 * `object_storage`: Write catalog files to the same object storage bucket as the data files. Use the object storage URL to access the catalog for your Redpanda Iceberg tables.
 +
-This option is not recommended for production use cases.
+This option is not recommended for production use cases. Many catalog services such as https://docs.databricks.com/en/data-governance/unity-catalog/index.html[Databricks Unity^] and https://github.com/apache/polaris[Apache Polaris^] provide Iceberg REST endpoints to simplify your data lakehouse management.
 
 For an Iceberg REST catalog, set the following additional cluster configuration properties:
 
@@ -281,6 +281,7 @@ For an Iceberg REST catalog, set the following additional cluster configuration 
 +
 --
 For REST catalogs that use self-signed certificates, also configure these properties:
+
 * `iceberg_rest_catalog_trust_file`: The path to a file containing a certificate chain to trust for the REST catalog.
 * `iceberg_rest_catalog_crl_file`: The path to the certificate revocation list for the specified trust file.
 --
@@ -288,9 +289,11 @@ For REST catalogs that use self-signed certificates, also configure these proper
 // update xref when PR for extracted properties is ready
 See xref:reference:properties/cluster-properties.adoc[Cluster Configuration Properties] for the full list of cluster properties to configure for a catalog integration.
 
-=== Example REST catalog integration
+=== Example catalog integration
 
-You'll be able to use to the catalog to load, query, or refresh the Iceberg data as you produce to the Redpanda topic. Refer to the official documentation of your query engine or Iceberg-compatible tool for guidance on integrating the REST-based catalog. 
+You'll be able to use to the catalog to load, query, or refresh the Iceberg data as you produce to the Redpanda topic. Refer to the official documentation of your query engine or Iceberg-compatible tool for guidance on integrating your Iceberg catalog. 
+
+==== REST catalog 
 
 For example, if you have Redpanda cluster configuration properties set to connect to a REST catalog named `streaming`:
 
@@ -308,7 +311,6 @@ And you use Spark as a processing engine, configured to use the `streaming` cata
 spark.sql.catalog.streaming = org.apache.iceberg.spark.SparkCatalog
 spark.sql.catalog.streaming.type = rest
 spark.sql.catalog.streaming.uri = http://catalog-service:8181
-spark.sql.catalog.streaming.warehouse = s3://redpanda/
 ```
 
 Using Spark SQL, you can query the Iceberg table directly by specifying the catalog name:
@@ -318,7 +320,18 @@ Using Spark SQL, you can query the Iceberg table directly by specifying the cata
 SELECT * FROM streaming.redpanda.ClickEvent;
 ----
 
-Using a REST catalog enables Spark to automatically discover the topic's Iceberg table. If using the object storage catalog type, you may have to explicitly create a new table and load the Iceberg data, depending on the processing engine you're using. 
+Spark can use the REST catalog to automatically discover the topic's Iceberg table. 
+
+==== Filesystem-based catalog (`object_storage`)
+
+If using the `object_storage` catalog type, you must set up the catalog integration in your processing engine accordingly. For example, you can configure Spark to use a filesystem-based catalog with at least the following properties:
+
+```
+spark.sql.catalog.streaming.type = hadoop
+spark.sql.catalog.hadoop_prod.warehouse = s3a://<bucket-name>/path/to/redpanda-iceberg-table
+```
+
+Depending on your processing engine, you may also need to create a new table for the Iceberg data.
 
 == Access data in Iceberg tables
 
@@ -333,7 +346,7 @@ For example, suppose you produce the same stream of events to a topic `ClickEven
 
 When you point your Iceberg-compatible tool or framework to the object storage location of the Iceberg tables, how you consume the data depends on the topic Iceberg mode and whether you've registered a schema on which to derive the table format. Depending on the processing engine, you may need to first create a new table that gets added to your Iceberg catalog implementation.
 
-In either mode, you do not need to rely on complex ETL jobs or pipelines to consume real-time data from Redpanda.
+In either mode, you do not need to rely on complex ETL jobs or pipelines to access real-time data from Redpanda in your data lakehouse.
 
 === Query topic with schema (`value_schema_id_prefix` mode)
 
