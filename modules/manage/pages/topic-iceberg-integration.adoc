@@ -5,7 +5,7 @@
 :page-beta: true
 
 
-The Apache Iceberg integration for Redpanda allows you to store topic data in the cloud in the Iceberg open table format. This makes your streaming data immediately available for analytical systems, such as data warehouses like RedShift, Snowflake, and Clickhouse, and big data processing platforms, such as Apache Spark and Flink, without setting up and maintaining additional ETL pipelines. 
+The Apache Iceberg integration for Redpanda allows you to store topic data in the cloud in the Iceberg open table format. This makes your streaming data immediately available in downstream analytical systems, including data warehouses like Snowflake, Databricks, Clickhouse, and Redshift, without setting up and maintaining additional ETL pipelines. You can also integrate your data directly into commonly-used big data processing frameworks, such as Apache Spark and Flink, standardizing and simplifying the consumption of streams as tables in a wide variety of data analytics pipelines.
 
 The Iceberg integration uses xref:manage:tiered-storage.adoc[Tiered Storage]. When a cluster or topic has Tiered Storage enabled, Redpanda stores the Iceberg files in the configured Tiered Storage bucket or container.  
 
@@ -27,7 +27,7 @@ rpk cluster license info
 
 == Limitations
 
-* It is not possible to append data from Redpanda topics to an existing Iceberg table.
+* It is not possible to append topic data to an existing Iceberg table that is not created by Redpanda.
 * If you enable the Iceberg integration on an existing Redpanda topic, Redpanda does not backfill the generated Iceberg table with topic data.
 * JSON schemas are not currently supported. If the topic data is in JSON, use the `key_value` mode to store the JSON in Iceberg, which then can be parsed by most query engines.
 * If you are using Avro or Protobuf data, you must use the Schema Registry wire format, where producers include the magic byte and schema ID in the message payload header. See also: xref:manage:schema-reg/schema-id-validation.adoc[] and the https://www.redpanda.com/blog/schema-registry-kafka-streaming#how-does-serialization-work-with-schema-registry-in-kafka[Understanding Apache Kafka Schema Registry^] blog post.
@@ -61,7 +61,7 @@ When you enable the Iceberg integration for a Redpanda topic, Redpanda brokers s
 
 To create an Iceberg table for a Redpanda topic, you must set the cluster configuration property `iceberg_enabled` to `true`, and also configure the topic property `redpanda.iceberg.mode`. You can choose to provide a schema if you need the Iceberg table to be structured with defined columns.
 
-. Set the `iceberg_enabled` configuration option on your cluster to `true`. 
+. Set the `iceberg_enabled` configuration option on your cluster to `true`. You must restart your cluster if you change this configuration for a running cluster. 
 +
 [,bash]
 ----
@@ -264,14 +264,16 @@ Protobuf::
 
 == Set up catalog integration
 
-You can configure the Iceberg integration to either create a file in the same object storage bucket or container to serve as the catalog, or connect to a REST-based catalog. 
+You can configure the Iceberg integration to either store the metadata in https://iceberg.apache.org/javadoc/1.5.0/org/apache/iceberg/hadoop/HadoopCatalog.html[HadoopCatalog^] format in the same object storage bucket or container, or connect to a REST-based catalog. 
 
 Set the cluster configuration property `iceberg_catalog_type` with one of the following values:
 
 * `rest`: Connect to and update an Iceberg catalog using a REST API. See the https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml[Iceberg REST Catalog API specification].
 * `object_storage`: Write catalog files to the same object storage bucket as the data files. Use the object storage URL with an Iceberg client to access the catalog and data files for your Redpanda Iceberg tables.
-+
-This option is not recommended for production use cases. Many catalog services such as https://docs.databricks.com/en/data-governance/unity-catalog/index.html[Databricks Unity^] and https://github.com/apache/polaris[Apache Polaris^] provide Iceberg REST endpoints to simplify your data lakehouse management.
+
+Switching catalog types is not supported.
+
+For production use cases, Redpanda recommends the `rest` option with REST-enabled Iceberg catalog services such as https://docs.tabular.io/[Tabular^], https://docs.databricks.com/en/data-governance/unity-catalog/index.html[Databricks Unity^] and https://github.com/apache/polaris[Apache Polaris^].
 
 For an Iceberg REST catalog, set the following additional cluster configuration properties:
 
@@ -328,10 +330,10 @@ If you are using the `object_storage` catalog type, you must set up the catalog 
 
 ```
 spark.sql.catalog.streaming.type = hadoop
-spark.sql.catalog.hadoop_prod.warehouse = s3a://<bucket-name>/path/to/redpanda-iceberg-table
+spark.sql.catalog.streaming.warehouse = s3a://<bucket-name>/path/to/redpanda-iceberg-table
 ```
 
-Depending on your processing engine, you may also need to create a new table for the Iceberg data.
+Depending on your processing engine, you may also need to create a new table in your data warehouse or lakehouse for the Iceberg data.
 
 == Access data in Iceberg tables
 
@@ -350,7 +352,7 @@ In either mode, you do not need to rely on complex ETL jobs or pipelines to acce
 
 === Query topic with schema (`value_schema_id_prefix` mode)
 
-In this example, it is assumed you have created the `ClickEvent` topic and set `redpanda.iceberg.mode` to `value_schema_id_prefix`. The following is an Avro schema for `ClickEvent`:
+In this example, it is assumed you have created the `ClickEvent` topic, set `redpanda.iceberg.mode` to `value_schema_id_prefix`, and are connecting to a REST-based Iceberg catalog. The following is an Avro schema for `ClickEvent`:
 
 .`schema.avsc`
 [,avro]
@@ -403,6 +405,8 @@ FROM <catalog-name>.ClickEvent;
 === Query topic in key-value mode
 
 You can also forgo using a schema, which means using semi-structured data in Iceberg. 
+
+In this example, it is assumed you have created the `ClickEvent_key_value` topic, set `redpanda.iceberg.mode` to `key_value`, and are also connecting to a REST-based Iceberg catalog.
 
 You can produce to the `ClickEvent_key_value` topic using the following format:
 
