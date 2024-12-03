@@ -40,8 +40,7 @@ exclusion_list = [
     'reference\\pages\\k-console-helm-spec.adoc',
     'reference\\pages\\crd.adoc',
     'reference\\pages\\k-redpanda-helm-spec.adoc',
-    'reference\\partials\\bundle-contents-k8s.adoc',
-    'reference\\partials\\bundle-contents-linux.adoc'
+    'reference\\partials\\bundle-contents.adoc'
 ]
 
 # Function to process all .adoc files in a directory
