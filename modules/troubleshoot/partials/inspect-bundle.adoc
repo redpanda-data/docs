@@ -1,156 +1,8 @@
-= Diagnostics Bundles in Kubernetes
-:description: Use the diagnostics bundle to debug issues yourself, or you can send it to the Redpanda support team to help resolve your issue.
-:tags: ["Kubernetes"]
-:page-aliases: manage:kubernetes/troubleshooting/diagnostics-bundle.adoc
-:page-categories: Management, Troubleshooting
-:env-kubernetes: true
+== Inspect the debug bundle
 
-A diagnostics bundle is a ZIP file with data that can help debug and diagnose issues with a Redpanda cluster, a broker, or the machines on which the brokers are running. You can use this file to debug issues yourself, or you can send it to the Redpanda support team to help resolve your issue.
+After downloading the debug bundle files, you can inspect the contents to debug your cluster. This section provides some useful data points to check while troubleshooting.
 
-== Prerequisites
-
-Most files in the diagnostics bundle are JSON files. To make it easier to read these files, this guide uses jq. To install jq, see the https://stedolan.github.io/jq/download/[jq downloads page^].
-
-These examples use the default values in Helm chart. If you've customized the Helm chart, you may need to provide custom values and/or flags.
-
-== Generate a diagnostics bundle
-
-. Create a ClusterRole to allow Redpanda to collect information from the Kubernetes API:
-+
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    serviceAccount:
-      create: true
-    rbac:
-      enabled: true
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
-NOTE: You must deploy the Redpanda Operator with the `--set rbac.createRPKBundleCRs=true` flag to give it the required ClusterRoles.
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
-.`serviceaccount.yaml`
-[,yaml]
-----
-serviceAccount:
-  create: true
-rbac:
-  enabled: true
-----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace redpanda --create-namespace \
-  --values serviceaccount.yaml --reuse-values
-```
-
---set::
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set serviceAccount.create=true \
-  --set rbac.enabled=true
-```
-====
---
-======
-+
-[TIP]
-====
-If you aren't using the Helm chart, you can create the ClusterRole manually:
-
-```bash
-kubectl create clusterrolebinding redpanda --clusterrole=view --serviceaccount=redpanda:default
-```
-====
-
-. Execute the xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`] command inside a Pod container that's running a Redpanda broker.
-+
-In this example, the command is executed on a Pod called `redpanda-0`.
-+
-```bash
-kubectl exec -it --namespace <namespace> redpanda-0 -c redpanda -- rpk debug bundle
-```
-+
-If you have an upload URL from the Redpanda support team,
-provide it in the `--upload-url` flag to upload your diagnostics bundle to Redpanda.
-+
-```bash
-kubectl exec -it --namespace <namespace> redpanda-0 -c redpanda -- rpk debug bundle \
-  --upload-url <url> \
-  --namespace <namespace>
-```
-+
-Example output:
-+
-[.no-copy]
-----
-Creating bundle file...
-
-Debug bundle saved to "/var/lib/redpanda/1675440652-bundle.zip"
-----
-
-. On your host machine, make a directory in which to save the diagnostics bundle:
-+
-```bash
-mkdir diagnostics-bundle
-```
-
-. Copy the diagnostics bundle from the Pod to your host machine:
-+
-Replace `<bundle-name>` with the name of your ZIP file.
-+
-```bash
-kubectl cp redpanda/redpanda-0:/var/lib/redpanda/<bundle-name> diagnostics-bundle/<bundle-name>
-```
-
-. Unzip the file on your host machine.
-+
-```bash
-cd diagnostics-bundle
-unzip <bundle-name>
-```
-
-. Remove the diagnostics bundle from the Redpanda container:
-+
-```bash
-kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- rm /var/lib/redpanda/<bundle-name>
-```
-
-
-When you've finished troubleshooting, remove the diagnostics bundle from your host machine:
-
-```bash
-rm -r diagnostics-bundle
-```
-
-For a description of the files and directories, see <<Contents of the diagnostics bundle>>.
-
-== Inspect the diagnostics bundle
-
-This section provides some useful data points to check while troubleshooting.
+Most files in the debug bundle are JSON files. To make it easier to read these files, this section uses jq. To install jq, see the https://stedolan.github.io/jq/download/[jq downloads page^].
 
 === View the version of Redpanda on all brokers
 
@@ -160,11 +12,11 @@ cat admin/brokers.json | jq '.[] | .version'
 
 Example output:
 
-[,json,role=no-copy]
+[,json,role=no-copy,subs=attributes+]
 ----
-"v23.1.1"
-"v23.1.1"
-"v23.1.1"
+"{latest-redpanda-tag}"
+"{latest-redpanda-tag}"
+"{latest-redpanda-tag}"
 ----
 
 === View the maintenance status of all brokers
@@ -254,7 +106,7 @@ cat admin/cluster_config.json | jq
 ```
 ====
 
-=== Check Enterprise license keys
+=== Check Enterprise Edition license keys
 
 ```bash
 cat admin/license.json | jq
@@ -279,11 +131,18 @@ cat admin/license.json | jq
 
 === View metadata about the Redpanda data directory
 
+You can inspect the size of directories in the Redpanda data directory and identify anomalies using a pre-generated report. This is useful for troubleshooting issues such as imbalances in partition sizes or unexpected data growth.
+
 To check the size of the directories and look for anomalies:
 
 ```bash
-cat du.txt
+cat utils/du.txt
 ```
+
+The `du.txt` file provides information about the size of each directory. Anomalies to look for include:
+
+- One partition of a topic being significantly larger than others.
+- Directories containing more data than expected for a specific topic or partition.
 
 .Example output
 [%collapsible]
@@ -627,14 +486,21 @@ cat kafka.json | jq '.[1:]'
 
 === View the Redpanda logs
 
+ifdef::env-kubernetes[]
 ```bash
 cat logs/redpanda-0.txt # logs/redpanda-1.txt logs/redpanda-2.txt
 ```
+endif::[]
+ifndef::env-kubernetes[]
+```bash
+cat redpanda.log
+```
+endif::[]
 
 === Check for clock drift
 
 ```bash
-cat ntp.txt | jq
+cat utils/ntp.txt | jq
 ```
 
 Use the output to check for clock drift. For details about how NTP works, see the http://www.ntp.org/ntpfaq/NTP-s-algo.htm[NTP documentation^].
@@ -654,6 +520,7 @@ Use the output to check for clock drift. For details about how NTP works, see th
 ```
 ====
 
+ifdef::env-kubernetes[]
 === View Kubernetes manifests
 
 ```bash
@@ -678,13 +545,4 @@ k8s
 ```
 ====
 
-== Contents of the diagnostics bundle
-
-The diagnostics bundle includes the following files and directories:
-
-include::reference:partial$bundle-contents-k8s.adoc[]
-
-include::shared:partial$suggested-reading.adoc[]
-
-- xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`]
-- https://stedolan.github.io/jq/manual/#Basicfilters[jq manual^]
+endif::[]

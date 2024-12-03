@@ -1,269 +1,12 @@
-= Troubleshoot Redpanda in Kubernetes
-:description: Find advice on how to diagnose and troubleshoot issues while deploying Redpanda in Kubernetes.
-:tags: ["Kubernetes"]
-:page-aliases: manage:kubernetes/troubleshooting/troubleshoot.adoc
-:page-categories: Management, Troubleshooting
-:env-kubernetes: true
+ifdef::env-kubernetes+include-categories[]
+== Kubernetes-related issues
 
-This topic provides guidance on how to diagnose and troubleshoot issues with Redpanda deployments in Kubernetes.
-
-== Prerequisites
-
-Before troubleshooting Redpanda, ensure that Kubernetes isn't the cause of the issue. For information about debugging applications in a Kubernetes cluster, see the https://kubernetes.io/docs/tasks/debug/[Kubernetes documentation^].
-
-== Collect all debugging data
-
-If you're unsure of what is wrong, you can generate a diagnostics bundle that contains a wide range of data to help debug and diagnose a Redpanda cluster or the nodes on which the brokers are running.
-
-See xref:./k-diagnostics-bundle.adoc[Diagnostics Bundles in Kubernetes].
-
-== View Helm chart configuration
-
-To check the overrides that were applied to your deployment:
-
-[,bash]
-----
-helm get values <chart-name> --namespace <namespace>
-----
-
-If you're using the Redpanda Operator, the chart name matches the name of your Redpanda resource.
-
-To check all the values that were set in the Redpanda Helm chart, including any overrides:
-
-[,bash]
-----
-helm get values <chart-name> --namespace <namespace> --all
-----
-
-== View recent events
-
-To understand the latest events that occurred in your Redpanda cluster's namespace, you can sort events by their creation timestamp:
-
-[,bash]
-----
-kubectl get events --namespace <namespace> --sort-by='.metadata.creationTimestamp'
-----
-
-== View Redpanda logs
-
-Logs are crucial for monitoring and troubleshooting your Redpanda clusters. Redpanda brokers output logs to STDOUT, making them accessible via `kubectl`.
-
-To access logs for a specific Pod:
-
-. List all Pods to find the names of those that are running Redpanda brokers:
-+
-[source,bash]
-----
-kubectl get pods --namespace <namespace>
-----
-
-. View logs for a particular Pod by replacing `<pod-name>` with the name of your Pod:
-+
-[source,bash]
-----
-kubectl logs <pod-name> --namespace <namespace>
-----
-+
-[TIP]
-====
-For a comprehensive overview, you can view aggregated logs from all Pods in the StatefulSet:
-
-[source,bash]
-----
-kubectl logs --namespace <namespace> -l app.kubernetes.io/component=redpanda-statefulset
-----
-====
-
-=== Change the default log level
-
-To change the default log level for all Redpanda subsystems, use the `logging.logLevel` configuration. Valid values are `trace`, `debug`, `info`, `warn`, `error`.
-
-Changing the default log level to `debug` can provide more detailed logs for diagnostics. This logging level increases the volume of generated logs.
-
-NOTE: To set different log levels for individual subsystems, see <<Override the default log level for Redpanda subsystems>>.
-
-[tabs]
-======
-Helm + Operator::
-+
---
-Apply the new log level:
-
-.`redpanda-cluster.yaml`
-[source,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    logging:
-      logLevel: debug
-----
-
-Then, apply this configuration:
-
-[source,bash]
-----
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-----
---
-
-Helm::
-+
---
-Choose between using a custom values file or setting values directly:
-[tabs]
-====
---values::
-+
-Specify logging settings in `logging.yaml`, then upgrade:
-+
-.`logging.yaml`
-[source,yaml]
-----
-logging:
-  logLevel: debug
-----
-+
-[source,bash]
-----
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values logging.yaml --reuse-values
-----
---set::
-+
-Directly set the log level during upgrade:
-+
-[source,bash]
-----
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set logging.logLevel=debug
-----
-====
---
-======
-
-After applying these changes, verify the log level by <<view-redpanda-logs, checking the initial output of the logs>> for the Redpanda Pods.
-
-=== Override the default log level for Redpanda subsystems
-
-You can override the log levels for individual subsystems, such as `rpc` and `kafka`, for more detailed logging control. Overrides exist for the entire length of the running Redpanda process.
-
-TIP: To temporarily override the log level for individual subsystems, you can use the xref:reference:rpk/rpk-redpanda/rpk-redpanda-admin-config-log-level-set.adoc[`rpk-redpanda-admin-config-log-level-set`] command.
-
-. List all available subsystem loggers:
-+
-[source,bash]
-----
-kubectl exec -it --namespace <namespace> <pod-name> -c redpanda -- rpk redpanda start --help-loggers
-----
-
-. Set the log level for one or more subsystems. In this example, the `rpc` and `kafka` subsystem loggers are set to `debug`.
-+
-[tabs]
-======
-Helm + Operator::
-+
---
-Apply the new log level:
-
-.`redpanda-cluster.yaml`
-[source,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    statefulset:
-      additionalRedpandaCmdFlags:
-        - '--logger-log-level=rpc=debug:kafka=debug'
-----
-
-Then, apply this configuration:
-
-[source,bash]
-----
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-----
---
-
-Helm::
-+
---
-Choose between using a custom values file or setting values directly:
-[tabs]
-====
---values::
-+
-Specify logging settings in `logging.yaml`, then upgrade:
-+
-.`logging.yaml`
-[source,yaml]
-----
-statefulset:
-  additionalRedpandaCmdFlags:
-    - '--logger-log-level=rpc=debug:kafka=debug'
-----
-+
-[source,bash]
-----
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values logging.yaml --reuse-values
-----
---set::
-+
-Directly set the log level during upgrade:
-+
-[source,bash]
-----
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set statefulset.additionalRedpandaCmdFlags="{--logger-log-level=rpc=debug:kafka=debug}"
-----
-====
---
-======
-
-Overriding the log levels for specific subsystems provides enhanced visibility into Redpanda's internal operations, facilitating better debugging and monitoring.
-
-== View Redpanda Operator logs
-
-To learn what's happening with the Redpanda Operator and the associated Redpanda resources, you can inspect a combination of Kubernetes events and the resource manifests. By monitoring these events and resources, you can troubleshoot any issues that arise during the lifecycle of a Redpanda deployment.
-
-[,bash]
-----
-kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
-----
-
-=== Inspect Helm releases
-
-The Redpanda Operator uses Flux to deploy the Redpanda Helm chart. By inspecting the `helmreleases.helm.toolkit.fluxcd.io` resource, you can get detailed information about the Helm installation process for your Redpanda resource:
-
-[,bash]
-----
-kubectl get helmreleases.helm.toolkit.fluxcd.io -o yaml <redpanda-resource-name> --namespace <namespace>
-----
-
-To check the Redpanda resource:
-
-[,bash]
-----
-kubectl get redpandas.cluster.redpanda.com -o yaml --namespace <namespace>
-----
-
-In both the HelmRelease and the Redpanda resource, the condition section reveals the ongoing status of the Helm installation. These conditions provide information on the success, failure, or pending status of various operations.
-
-== Troubleshoot known issues
-
-This section describes issues you might encounter while deploying Redpanda in Kubernetes and explains how to troubleshoot them.
+This section addresses common issues that may occur when deploying Redpanda in a Kubernetes environment.
+endif::[]
 
 //tag::deployment[]
 //tag::deployment-helm-release-not-ready[]
+ifdef::env-kubernetes[]
 === HelmRelease is not ready
 
 If you are using the Redpanda Operator, you may see the following message while waiting for a Redpanda custom resource to be deployed:
@@ -336,51 +79,6 @@ flux suspend helmrelease <cluster-name> --namespace <namespace>
 flux resume helmrelease <cluster-name> --namespace <namespace>
 ```
 //end::deployment-retries-exhausted[]
-
-//tag::crashloopbackoff[]
-=== Crash loop backoffs
-
-If a broker crashes after startup, or gets stuck in a crash loop, it could produce progressively more stored state that uses additional disk space and takes more time for each restart to process.
-
-To prevent infinite crash loops, the Redpanda Helm chart sets the `crash_loop_limit` node property to 5. The crash loop limit is the number of consecutive crashes that can happen within one hour of each other. After Redpanda reaches this limit, it will not start until its internal consecutive crash counter is reset to zero. In Kubernetes, the Pod running Redpanda remains in a `CrashLoopBackoff` state until its internal consecutive crash counter is reset to zero.
-
-To troubleshoot a crash loop backoff:
-
-. Check the Redpanda logs from the most recent crashes:
-+
-[,bash]
-----
-kubectl logs <pod-name> --namespace <namespace>
-----
-+
-NOTE: Kubernetes retains logs only for the current and the previous instance of a container. This limitation makes it difficult to access logs from earlier crashes, which may contain vital clues about the root cause of the issue. Given these log retention limitations, setting up a centralized logging system is crucial. Systems such as https://grafana.com/docs/loki/latest/[Loki] or https://www.datadoghq.com/product/log-management/[Datadog] can capture and store logs from all containers, ensuring you have access to historical data.
-
-. Resolve the issue that led to the crash loop backoff.
-
-. Reset the crash counter to zero to allow Redpanda to restart. You can do any of the following to reset the counter:
-+
-- Update the redpanda.yaml configuration file. You can make changes to any of the following sections in the Redpanda Helm chart to trigger an update:
-* `config.cluster`
-* `config.node`
-* `config.tunable`
-
-- Delete the `startup_log` file in the broker's data directory.
-+
-[,bash]
-----
-kubectl exec <pod-name> --namespace <namespace> -- rm /var/lib/redpanda/data/startup_log
-----
-+
-NOTE: It might be challenging to execute this command within a Pod that is in a `CrashLoopBackoff` state due to the limited time during which the Pod is available before it restarts. Wrapping the command in a loop might work.
-
-- Wait one hour since the last crash. The crash counter resets after one hour.
-
-To avoid future crash loop backoffs and manage the accumulation of small segments effectively:
-
-* xref:manage:kubernetes/monitoring/k-monitor-redpanda.adoc[Monitor] the size and number of segments regularly.
-* Optimize your Redpanda configuration for segment management.
-* Consider implementing xref:manage:kubernetes/storage/tiered-storage/k-tiered-storage.adoc[Tiered Storage] to manage data more efficiently.
-//end::crashloopbackoff[]
 
 //tag::deployment-pod-pending[]
 === StatefulSet never rolls out
@@ -686,9 +384,137 @@ After clearing the `pending-rollback` state:
 * *Retry the upgrade*: Restart the upgrade process. You should investigate the initial failure to avoid getting into the `pending-rollback` state again.
 * *Perform a rollback*: If you need to roll back to a previous release, use `helm rollback <release-name> <revision>` to revert to a specific, stable release version.
 //end::pending-rollback[]
+
+endif::[]
+
+ifdef::include-categories[]
+== Deployment issues
+
+This section addresses common deployment issues encountered during Redpanda setup or upgrades.
+endif::[]
+
+//tag::crashloopbackoff[]
+ifdef::env-kubernetes[]
+=== Crash loop backoffs
+
+If a broker crashes after startup, or gets stuck in a crash loop, it could produce progressively more stored state that uses additional disk space and takes more time for each restart to process.
+
+To prevent infinite crash loops, the Redpanda Helm chart sets the `crash_loop_limit` node property to 5. The crash loop limit is the number of consecutive crashes that can happen within one hour of each other. After Redpanda reaches this limit, it will not start until its internal consecutive crash counter is reset to zero. In Kubernetes, the Pod running Redpanda remains in a `CrashLoopBackoff` state until its internal consecutive crash counter is reset to zero.
+
+To troubleshoot a crash loop backoff:
+
+. Check the Redpanda logs from the most recent crashes:
++
+[,bash]
+----
+kubectl logs <pod-name> --namespace <namespace>
+----
++
+NOTE: Kubernetes retains logs only for the current and the previous instance of a container. This limitation makes it difficult to access logs from earlier crashes, which may contain vital clues about the root cause of the issue. Given these log retention limitations, setting up a centralized logging system is crucial. Systems such as https://grafana.com/docs/loki/latest/[Loki] or https://www.datadoghq.com/product/log-management/[Datadog] can capture and store logs from all containers, ensuring you have access to historical data.
+
+. Resolve the issue that led to the crash loop backoff.
+
+. Reset the crash counter to zero to allow Redpanda to restart. You can do any of the following to reset the counter:
++
+- Make changes to any of the following sections in the Redpanda Helm chart to trigger an update:
++
+--
+* `config.node`
+* `config.tunable`
+--
++
+For example:
++
+```yaml
+config:
+  node:
+    crash_loop_limit: <new-integer>
+```
+
+- Delete the `startup_log` file in the broker's data directory.
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- rm /var/lib/redpanda/data/startup_log
+----
++
+NOTE: It might be challenging to execute this command within a Pod that is in a `CrashLoopBackoff` state due to the limited time during which the Pod is available before it restarts. Wrapping the command in a loop might work.
+
+- Wait one hour since the last crash. The crash counter resets after one hour.
+
+To avoid future crash loop backoffs and manage the accumulation of small segments effectively:
+
+* xref:manage:kubernetes/monitoring/k-monitor-redpanda.adoc[Monitor] the size and number of segments regularly.
+* Optimize your Redpanda configuration for segment management.
+* Consider implementing xref:manage:kubernetes/storage/tiered-storage/k-tiered-storage.adoc[Tiered Storage] to manage data more efficiently.
+
+endif::[]
+//end::crashloopbackoff[]
+
+=== A Redpanda Enterprise Edition license is required
+
+During a Redpanda upgrade, if enterprise features are enabled and a valid Enterprise Edition license is missing, Redpanda logs a warning and aborts the upgrade process on the first broker. This issue prevents a successful upgrade.
+
+[.no-copy]
+----
+A Redpanda Enterprise Edition license is required to use the currently enabled features. To apply your license, downgrade this broker to the pre-upgrade version and provide a valid license key via rpk using 'rpk cluster license set <key>', or via Redpanda Console. To request an enterprise license, please visit <redpanda.com/upgrade>. To try Redpanda Enterprise for 30 days, visit <redpanda.com/try-enterprise>. For more information, see <https://docs.redpanda.com/current/get-started/licenses>.
+----
+
+If you encounter this message, follow these steps to recover:
+
+ifdef::env-kubernetes[]
+. xref:upgrade:k-rolling-upgrade.adoc#roll-back[Roll back the affected broker to the original version].
+endif::[]
+ifndef::env-kubernetes[]
+. Roll back the affected broker to the original version.
+endif::[]
+. Do one of the following:
+- xref:get-started:licensing/add-license-redpanda/index.adoc[Apply a valid Redpanda Enterprise Edition license] to the cluster.
+- Disable enterprise features.
++
+If you do not have a valid license and want to proceed without using enterprise features, you can disable the enterprise features in your Redpanda configuration.
+
+. Retry the upgrade.
+
 //end::deployment[]
 
+ifdef::include-categories[]
+ifdef::env-kubernetes[]
+== Networking issues
+
+This section provides insights into diagnosing network-related errors, such as connection timeouts, DNS misconfigurations, and network stability.
+endif::[]
+endif::[]
+
+// tag::networking[]
+ifdef::env-kubernetes[]
+=== I/O timeout
+
+This error appears when your worker nodes are unreachable through the given address.
+
+Check the following:
+
+* The address and port are correct.
+* Your DNS records point to addresses that resolve to your worker nodes.
+
+endif::[]
+//end::networking[]
+
+ifdef::include-categories[]
+== TLS issues
+
+This section covers common TLS errors, their causes, and solutions, including certificate issues and correct client configuration.
+
+endif::[]
+
 //tag::tls[]
+ifdef::env-kubernetes[]
+=== Redpanda not applying TLS changes
+
+include::manage:partial$kubernetes/tls-update-note.adoc[]
+
+endif::[]
+
 === Invalid large response size
 
 This error appears when your cluster is configured to use TLS, but you don't specify that you are connecting over TLS.
@@ -698,14 +524,15 @@ This error appears when your cluster is configured to use TLS, but you don't spe
 unable to request metadata: invalid large response size 352518912 > limit 104857600; the first three bytes received appear to be a tls alert record for TLS v1.2; is this a plaintext connection speaking to a tls endpoint?
 ----
 
-If you're using rpk, ensure to add the `-X tls.enabled` flag, and any other necessary TLS flags such as the TLS certificate:
+If you're using `rpk`, ensure to add the `-X tls.enabled` flag, and any other necessary TLS flags such as the TLS certificate:
 
 [,bash]
 ----
-kubectl exec <pod-name> -c redpanda --namespace <namespace> -- rpk cluster info -X brokers=<subdomain>.<domain>:<external-port> -X tls.enabled=true
+ifdef::env-kubernetes[kubectl exec <pod-name> -c redpanda --namespace <namespace> -- \]
+rpk cluster info -X tls.enabled=true
 ----
 
-For all available flags, see the xref:reference:rpk/index.adoc[rpk command reference].
+For all available flags, see the xref:reference:rpk/rpk-x-options.adoc[`rpk` options reference].
 
 === Malformed HTTP response
 
@@ -716,9 +543,9 @@ This error appears when a cluster has TLS enabled, and you try to access the adm
 Retrying POST for error: Post "http://127.0.0.1:9644/v1/security/users": net/http: HTTP/1.x transport connection broken: malformed HTTP response "\x15\x03\x03\x00\x02\x02"
 ----
 
-If you're using rpk, ensure to include the TLS flags.
+If you're using `rpk`, ensure to include the TLS flags.
 
-For all available flags, see the xref:reference:rpk/index.adoc[rpk command reference].
+For all available flags, see the xref:reference:rpk/rpk-x-options.adoc[`rpk` options reference].
 
 === x509: certificate signed by unknown authority
 
@@ -729,7 +556,9 @@ Check the following:
 - Ensure you have installed the root CA certificate correctly on your local system.
 - If using a self-signed certificate, ensure it is properly configured and included in your system's trust store.
 - If you are using a certificate issued by a CA, ensure the issuing CA is included in your system's trust store.
+ifdef::env-kubernetes[]
 - If you are using cert-manager, ensure it is correctly configured and running properly.
+endif::[]
 - Check the validity of your certificates. They might have expired.
 
 === x509: certificate is not valid for any names
@@ -746,45 +575,27 @@ This error appears if you are using a CA certificate when you try to establish a
 unable to request metadata: unable to dial: x509: cannot validate certificate for 127.0.0.1 because it doesn't contain any IP SANs
 ```
 
-To fix this error, you must either specify the public domain or use self-signed certificates:
+To fix this error, you must either specify the URL with a public domain or use self-signed certificates:
 
-```bash
-kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- \
-  rpk cluster info \
-  -X brokers=<subdomain>.<domain>:<external-port> \
-  -X tls.enabled=true
-```
+[,bash]
+----
+ifdef::env-kubernetes[kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- \]
+rpk cluster info \
+-X brokers=<redpanda-url>:<port> \
+-X tls.enabled=true
+----
 
-=== Redpanda not applying TLS changes
-
-include::manage:partial$kubernetes/tls-update-note.adoc[]
 //end::tls[]
 
-//tag::networking[]
-=== I/O timeout
+ifdef::include-categories[]
+== SASL issues
 
-This error appears when your worker nodes are unreachable through the given address.
+This section addresses errors related to SASL (Simple Authentication and Security Layer), focusing on connection and authentication problems.
 
-Check the following:
+endif::[]
 
-* The address and port are correct.
-* Your DNS records point to addresses that resolve to your worker nodes.
-
-//end::networking[]
 //tag::sasl[]
-=== Is SASL missing?
-
-This error appears when you try to interact with a cluster that has SASL enabled without passing a user's credentials.
-
-[.no-copy]
-----
-unable to request metadata: broker closed the connection immediately after a request was issued, which happens when SASL is required but not provided: is SASL missing?
-----
-
-If you're using rpk, ensure to specify the `-X user`, `-X pass`, and `-X sasl.mechanism` flags.
-
-For all available flags, see the xref:reference:rpk/index.adoc[rpk command reference].
-
+ifdef::env-kubernetes[]
 === Unable to continue with update: Secret
 
 When you use a YAML list to specify superusers, the Helm chart creates a Secret using the value of `auth.sasl.secretRef` as the Secret's name, and stores those superusers in the Secret. If the Secret already exists in the namespace when you deploy Redpanda, the following error is displayed:
@@ -798,4 +609,18 @@ To fix this error, ensure that you use only one of the following methods to crea
 
 - `auth.sasl.secretRef`
 - `auth.sasl.users`
+
+endif::[]
+=== Is SASL missing?
+
+This error appears when you try to interact with a cluster that has SASL enabled without passing a user's credentials.
+
+[.no-copy]
+----
+unable to request metadata: broker closed the connection immediately after a request was issued, which happens when SASL is required but not provided: is SASL missing?
+----
+
+If you're using `rpk`, ensure to specify the `-X user`, `-X pass`, and `-X sasl.mechanism` flags.
+
+For all available flags, see the xref:reference:rpk/rpk-x-options.adoc[`rpk` options reference].
 //end::sasl[]

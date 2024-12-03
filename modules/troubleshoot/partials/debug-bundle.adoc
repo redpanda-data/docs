@@ -1,0 +1,433 @@
+ifndef::env-kubernetes[]
+== Prerequisites
+
+You must have xref:get-started:rpk-install.adoc[`rpk` installed] on your host machine.
+endif::[]
+
+== Generate a debug bundle with `rpk`
+
+To generate a debug bundle with `rpk`, you can run the xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`] command on each broker in the cluster.
+
+ifdef::env-kubernetes[]
+. Create a ClusterRole to allow Redpanda to collect information from the Kubernetes API:
++
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    serviceAccount:
+      create: true
+    rbac:
+      enabled: true
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+NOTE: You must deploy the Redpanda Operator with the `--set rbac.createRPKBundleCRs=true` flag to give it the required ClusterRoles.
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`serviceaccount.yaml`
+[,yaml]
+----
+serviceAccount:
+  create: true
+rbac:
+  enabled: true
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace redpanda --create-namespace \
+  --values serviceaccount.yaml --reuse-values
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set serviceAccount.create=true \
+  --set rbac.enabled=true
+```
+====
+--
+======
++
+[TIP]
+====
+If you aren't using the Helm chart, you can create the ClusterRole manually:
+
+```bash
+kubectl create clusterrolebinding redpanda --clusterrole=view --serviceaccount=redpanda:default
+```
+====
+endif::[]
+
+
+. Execute the xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`] command on a broker:
++
+[,bash]
+----
+ifdef::env-kubernetes[]
+kubectl exec -it --namespace <namespace> redpanda-0 -c redpanda -- rpk debug bundle --namespace <namespace>
+endif::[]
+ifndef::env-kubernetes[]
+rpk debug bundle
+endif::[]
+----
++
+If you have an upload URL from the Redpanda support team,
+provide it in the `--upload-url` flag to upload your debug bundle to Redpanda.
++
+[,bash]
+----
+ifdef::env-kubernetes[]
+kubectl exec -it --namespace <namespace> redpanda-0 -c redpanda -- rpk debug bundle \
+  --upload-url <url> \
+  --namespace <namespace>
+endif::[]
+ifndef::env-kubernetes[]
+rpk debug bundle \
+  --upload-url <url>
+endif::[]
+
+----
++
+Example output:
++
+[.no-copy]
+----
+Creating bundle file...
+
+Debug bundle saved to "/var/lib/redpanda/1675440652-bundle.zip"
+----
+
+
+. On your host machine, make a directory in which to save the debug bundle:
++
+```bash
+mkdir debug-bundle
+```
+
+. Copy the debug bundle ZIP file to the `debug-bundle` directory on your host machine.
+ifdef::env-kubernetes[]
++
+Replace `<bundle-name>` with the name of your ZIP file.
++
+```bash
+kubectl cp <namespace>/redpanda-0:/var/lib/redpanda/<bundle-name> debug-bundle/<bundle-name>.zip
+```
+endif::[]
+
+. Unzip the file on your host machine.
++
+```bash
+cd debug-bundle
+unzip <bundle-name>.zip
+```
+
+. Remove the debug bundle from the Redpanda broker:
++
+[,bash]
+----
+ifdef::env-kubernetes[]
+kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- rm /var/lib/redpanda/<bundle-name>.zip
+endif::[]
+ifndef::env-kubernetes[]
+rm /var/lib/redpanda/<bundle-name>.zip
+endif::[]
+----
++
+TIP: To avoid manually deleting debug bundles, you can configure the `debug_bundle_auto_removal_seconds` property to automatically remove them after a period of time. See <<Automatically remove debug bundles>>.
+
+When you've finished troubleshooting, remove the debug bundle from your host machine:
+
+```bash
+rm -r debug-bundle
+```
+
+For a description of the files and directories, see <<Contents of the debug bundle>>.
+
+== Generate a debug bundle with Redpanda Console
+
+See xref:console:ui/generate-bundle.adoc[].
+
+== Automatically remove debug bundles
+
+To avoid manually deleting debug bundles, you can configure the xref:reference:properties/cluster-properties.adoc#debug_bundle_auto_removal_seconds[`debug_bundle_auto_removal_seconds`] property. This cluster configuration property automatically deletes debug bundles after the specified number of seconds. By default, this property is not set, meaning debug bundles are retained indefinitely.
+
+NOTE: Only one debug bundle can exist at a time. If you generate a new debug bundle, any existing bundle from a previous run will be automatically deleted.
+
+Changes to this property take effect immediately and do not require a cluster restart.
+
+ifndef::env-kubernetes[]
+To set this property, use the xref:reference:rpk/rpk-cluster/rpk-cluster-config.adoc[`rpk cluster config`] command:
+[,bash]
+----
+rpk cluster config set debug_bundle_auto_removal_seconds <seconds>
+----
+
+For example, to retain debug bundles for 1 day:
+[,bash]
+----
+rpk cluster config set debug_bundle_auto_removal_seconds 86400
+----
+endif::[]
+ifdef::env-kubernetes[]
+To set this property, use the `config.cluster.debug_bundle_auto_removal_seconds` field:
+
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    config:
+      cluster:
+        debug_bundle_auto_removal_seconds: <seconds>
+----
+
+For example, to retain debug bundles for 1 day:
+
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    config:
+      cluster:
+        debug_bundle_auto_removal_seconds: 86400
+----
+
+Apply the changes with:
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+Update the `values.yaml` file or use the `--set` flag to specify the property:
+
+[tabs]
+====
+--values::
++
+.`cloud-storage.yaml`
+[,yaml]
+----
+config:
+  cluster:
+    debug_bundle_auto_removal_seconds: <seconds>
+----
++
+For example, to retain debug bundles for 1 day:
++
+.`cloud-storage.yaml`
+[,yaml]
+----
+config:
+  cluster:
+    debug_bundle_auto_removal_seconds: 86400
+----
++
+Apply the changes with:
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values cloud-storage.yaml --reuse-values
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set config.cluster.debug_bundle_auto_removal_seconds=<seconds>
+```
++
+For example, to retain debug bundles for 1 day:
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set config.cluster.debug_bundle_auto_removal_seconds=86400
+```
+
+====
+--
+======
+endif::[]
+
+== Choose where the debug bundle is saved
+
+The xref:reference:properties/cluster-properties.adoc#debug_bundle_storage_dir[`debug_bundle_storage_dir`] property allows you to specify a custom directory for storing debug bundles. By default, debug bundles are stored in the Redpanda data directory. Configuring a custom storage directory can help manage storage capacity and isolate debug data from operational data.
+
+Changes to this property take effect immediately and do not require a cluster restart.
+
+Before you change this property:
+
+* Ensure that your chosen directory has sufficient storage capacity to handle debug bundles.
++
+Factors such as the volume of logs can increase the bundle size. While it is difficult to define an exact storage requirement due to variability in bundle size, 200 MB should be sufficient for most cases.
+* Verify the directory's permissions to ensure Redpanda can write to it. By default, Redpanda operates as the `redpanda` user within the `redpanda` group.
+
+ifndef::env-kubernetes[]
+To set a custom debug bundle storage directory, use the `rpk cluster config` command:
+
+[,bash]
+----
+rpk cluster config set debug_bundle_storage_dir <path-to-directory>
+----
+
+For example, to store debug bundles in `/var/log/redpanda/debug_bundles`:
+
+[,bash]
+----
+rpk cluster config set debug_bundle_storage_dir /var/log/redpanda/debug_bundles
+----
+endif::[]
+
+ifdef::env-kubernetes[]
+To set this property, use the `config.cluster.debug_bundle_storage_dir` field:
+
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    config:
+      cluster:
+        debug_bundle_storage_dir: <path-to-directory>
+----
+
+For example:
+
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    config:
+      cluster:
+        debug_bundle_storage_dir: /var/log/redpanda/debug_bundles
+----
+
+Apply the changes with:
+
+[,bash]
+----
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+----
+
+--
+Helm::
++
+--
+
+Update the `values.yaml` file or use the `--set` flag to specify the property:
+
+[tabs]
+====
+--values::
++
+[,yaml]
+----
+config:
+  cluster:
+    debug_bundle_storage_dir: <path-to-directory>
+----
++
+For example, to store debug bundles in `/var/log/redpanda/debug_bundles`:
++
+[,yaml]
+----
+config:
+  cluster:
+    debug_bundle_storage_dir: /var/log/redpanda/debug_bundles
+----
++
+Apply the changes with:
++
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values values.yaml --reuse-values
+----
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set config.cluster.debug_bundle_storage_dir=<path-to-directory>
+```
++
+For example:
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set config.cluster.debug_bundle_storage_dir=/var/log/redpanda/debug_bundles
+```
+
+====
+--
+======
+
+include::troubleshoot:partial$inspect-bundle.adoc[]
+
+== Contents of the debug bundle
+
+The debug bundle includes the following files and directories:
+
+include::reference:partial$bundle-contents.adoc[]
+
+include::shared:partial$suggested-reading.adoc[]
+
+- xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`]
+- https://stedolan.github.io/jq/manual/#Basicfilters[jq manual^]
