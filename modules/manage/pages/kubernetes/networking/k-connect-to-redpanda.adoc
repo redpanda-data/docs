@@ -37,11 +37,11 @@ You must have the following:
 
 To connect a client to Redpanda brokers running in the same Kubernetes cluster, use their xref:./k-networking-and-connectivity.adoc#internal-networking[fully qualified domain names] (FQDNs) and the internal port of a listener. Together, the FQDN and internal port are called an endpoint. These endpoints may be secured using TLS and/or authentication.
 
-The `rpk` client on each Redpanda broker is pre-configured to connect to the internal Admin API and internal Kafka API of the local Redpanda cluster. To use other clients, such as a Kafka client, you must configure them.
+The `rpk` client on each Redpanda broker is pre-configured to connect to the internal Admin API, Kafka API, and Schema Registry of the local Redpanda cluster. To use other clients, such as a Kafka client, you must configure them.
 
-=== Connect internally with a local rpk client
+=== Connect internally with a local `rpk` client
 
-The `rpk` command-line client, available on each Redpanda broker, allows you to communicate with the internal listeners of both the Admin API endpoint and the Kafka API endpoint. By default, the Redpanda Helm chart configures `rpk` with a local `redpanda.yaml` configuration file located in the `/etc/redpanda/` directory. As a result, you can use `rpk` from inside the container. For example, this command executes the `rpk cluster info` command:
+The `rpk` command-line client, available on each Redpanda broker, allows you to communicate with the internal listeners of the Admin API, the Kafka API and Schema Registry. By default, the Redpanda Helm chart configures `rpk` with a local `redpanda.yaml` configuration file located in the `/etc/redpanda/` directory. As a result, you can use `rpk` from inside the container. For example, this command executes the `rpk cluster info` command:
 
 [,bash]
 ----
@@ -83,17 +83,17 @@ kubectl exec <pod-name> --namespace <namespace> -- cat /etc/redpanda/redpanda.ya
 The `rpk.kafka_api.brokers` list contains the internal Kafka API endpoints of the Redpanda brokers:
 
 .`redpanda.yaml`
-[,yaml,lines=4-6,.no-copy]
+[,yaml,.no-copy]
 ----
 rpk:
   kafka_api:
     brokers:
-      - redpanda-0.redpanda.redpanda.svc.cluster.local.:9093
-      - redpanda-1.redpanda.redpanda.svc.cluster.local.:9093
-      - redpanda-2.redpanda.redpanda.svc.cluster.local.:9093
+      - <pod-name>.redpanda.<namespace>.svc.cluster.local.:9093
+      - redpanda-1.redpanda.<namespace>.svc.cluster.local.:9093
+      - redpanda-2.redpanda.<namespace>.svc.cluster.local.:9093
 ----
 
-If the internal listeners have SASL authentication enabled, you must also configure your clients with valid credentials. To find out if a listener has authentication enabled, check the Helm values:
+If the internal listeners have SASL authentication or TLS enabled, you must also configure your clients with valid credentials. To find out if a listener has authentication enabled, check the Helm values:
 
 [source,bash]
 ----
@@ -102,7 +102,7 @@ helm get values <release-name> --namespace <namespace> --all
 
 In this example, the Kafka API has SASL authentication enabled:
 
-[source,yaml,lines=3+9]
+[source,yaml]
 ----
 auth:
   sasl:
@@ -114,11 +114,9 @@ listeners:
     authenticationMethod: null
 ----
 
-For details about SASL authentication, see xref:manage:kubernetes/security/authentication/k-authentication.adoc[].
-
 If the internal listeners have TLS or mTLS enabled, you must configure your clients with valid TLS files. To find out if the Redpanda cluster has TLS or mTLS enabled, check the Helm values. In this example, the Kafka API has TLS and mTLS enabled:
 
-[source,yaml,lines=5+7,.no-copy]
+[source,yaml,.no-copy]
 ----
 listeners:
   kafka:
@@ -186,15 +184,17 @@ For details about TLS, see xref:manage:kubernetes/security/tls/index.adoc[].
 
 === Connect to the internal HTTP Proxy
 
-To connect to the HTTP Proxy, use its configured internal port. To find the port, check the Helm values:
+To connect to the HTTP Proxy, use its configured internal port.
 
+. Check the Helm values to find the port:
++
 [source,bash]
 ----
 helm get values <release-name> --namespace <namespace> --all
 ----
-
++
 In this example, the internal port is 8082.
-
++
 [source,yaml]
 ----
 listeners:
@@ -202,34 +202,34 @@ listeners:
     port: 8082
 ----
 
-To test an internal connection, you can use the cURL command-line client inside the container running a Redpanda broker:
-
+. Use the curl command-line client inside the container running a Redpanda broker:
++
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:8082/topics -sS
+kubectl exec <pod-name> --namespace <namespace> -- curl http://<pod-name>.redpanda.<namespace>.svc.cluster.local:8082/topics -sS
 ----
-
++
 If SASL authentication is enabled, provide a valid username and password using basic authentication:
-
++
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:8082/topics -u <username>:<password> -sS
+kubectl exec <pod-name> --namespace <namespace> -- curl http://<pod-name>.redpanda.<namespace>.svc.cluster.local:8082/topics -u <username>:<password> -sS
 ----
-
++
 If TLS is enabled, specify the HTTPS protocol and pass the path to the `ca.crt` file:
-
++
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8082/topics --cacert /etc/tls/certs/default/ca.crt -sS
+kubectl exec <pod-name> --namespace <namespace> -- curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:8082/topics --cacert /etc/tls/certs/default/ca.crt -sS
 ----
-
++
 NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
-
++
 If mTLS is enabled, pass the path to the client's key and certificate:
-
++
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8082/topics \
+kubectl exec <pod-name> --namespace <namespace> -- curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:8082/topics \
   --cacert /etc/tls/certs/default/ca.crt \
   --cert /etc/tls/certs/redpanda-client/tls.crt \
   --key /etc/tls/certs/redpanda-client/tls.key
@@ -239,15 +239,33 @@ For all available endpoints, see xref:api:ROOT:pandaproxy-rest.adoc[].
 
 === Connect to internal Schema Registry
 
-To connect to the Schema Registry, use its configured internal port. To find the port, check the Helm values:
+[tabs]
+======
+rpk::
++
+--
+The xref:reference:rpk/rpk-registry/rpk-registry.adoc[`rpk registry`] command can manage schemas directly:
 
+[source,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- rpk registry subject list
+----
+--
+curl::
++
+--
+
+To connect to the Schema Registry, use its configured internal port.
+
+. Check the Helm values to find the port:
++
 [source,bash]
 ----
 helm get values <release-name> --namespace <namespace> --all
 ----
-
++
 In this example, the internal port is 8081.
-
++
 [source,yaml]
 ----
 listeners:
@@ -255,93 +273,110 @@ listeners:
     port: 8081
 ----
 
-To test an internal connection, you can use the cURL command-line client inside the container running a Redpanda broker:
-
+. Use the curl command-line client inside the container running a Redpanda broker:
++
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:8081/subjects -sS
+kubectl exec <pod-name> --namespace <namespace> -- curl http://<pod-name>.redpanda.<namespace>.svc.cluster.local:8081/subjects -sS
 ----
-
++
 If SASL authentication is enabled, provide a username and password using basic authentication:
-
++
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:8081/subjects -u <username>:<password> -sS
+kubectl exec <pod-name> --namespace <namespace> -- curl http://<pod-name>.redpanda.<namespace>.svc.cluster.local:8081/subjects -u <username>:<password> -sS
 ----
-
++
 If TLS is enabled, specify the HTTPS protocol and pass the path to the `ca.crt` file:
-
++
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8081/subjects --cacert /etc/tls/certs/default/ca.crt -sS
+kubectl exec <pod-name> --namespace <namespace> -- curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:8081/subjects --cacert /etc/tls/certs/default/ca.crt -sS
 ----
-
++
 NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
-
++
 If mTLS is enabled, pass the path to the client's key and certificate:
-
++
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8081/subjects \
+kubectl exec <pod-name> --namespace <namespace> -- curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:8081/subjects \
   --cacert /etc/tls/certs/default/ca.crt \
   --cert /path/to/client.crt \
   --key /path/to/client.key
 ----
 
 For all available endpoints, see xref:api:ROOT:pandaproxy-schema-registry.adoc[].
+--
+======
 
 === Connect to the internal Admin API
 
-To connect to the Admin API, use its configured internal port. To find the port, check the Helm values:
+[tabs]
+====
+rpk::
++
+--
+Using `rpk`, which is already configured inside the Redpanda Pod, you can interact with the Admin API. For example, to export cluster configuration:
 
 [source,bash]
 ----
-helm get values <release-name> --namespace <namespace> --all
+kubectl exec <pod-name> --namespace <namespace> -- rpk cluster config export
 ----
 
-In this example, the internal port is 8081.
-
-[source,yaml]
-----
-listeners:
-  admin:
-    port: 9644
-----
-
-To test an internal connection, you can use the cURL command-line client inside the container running a Redpanda broker:
+If SASL is enabled, set your environment variables first:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:9644/v1/node_config -sS
+export RPK_USER=<username>
+export RPK_PASS=<password>
+export RPK_SASL_MECHANISM=<mechanism>
 ----
 
-If TLS is enabled, specify the HTTPS protocol and pass the path to the `ca.crt` file:
+--
+curl::
++
+--
+If you prefer to use curl from within the Redpanda Pod:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:9644/v1/node_config --cacert /etc/tls/certs/default/ca.crt -sS
+kubectl exec <pod-name> --namespace <namespace> -- curl http://<pod-name>.redpanda.<namespace>.svc.cluster.local:9644/v1/node_config -sS
 ----
 
-NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
-
-If mTLS is enabled, pass the path to the client's key and certificate:
+If TLS is enabled, use `https` and `--cacert`:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:9644/v1/node_config \
+kubectl exec <pod-name> --namespace <namespace> -- \
+  curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:9644/v1/node_config \
+  --cacert /etc/tls/certs/default/ca.crt -sS
+----
+
+If mTLS is enabled, also include the client certificate and key:
+
+[source,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- \
+  curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:9644/v1/node_config \
   --cacert /etc/tls/certs/default/ca.crt \
   --cert /path/to/client.crt \
-  --key /path/to/client.key
+  --key /path/to/client.key -sS
 ----
 
+NOTE: If the broker's certificate is signed by a well-known, trusted CA, and your system's CA trust store is reliable, you may omit `--cacert`.
+
 For all available endpoints, see xref:api:ROOT:admin-api.adoc[].
+
+--
+====
 
 == Connect to an external cluster
 
 To connect to your Redpanda cluster from outside Kubernetes, the Redpanda cluster must be configured with external access. See xref:./external/index.adoc[].
 
 [[rpk-profile]]
-=== Create an rpk profile
+=== Create an `rpk` profile
 
 An rpk profile contains a reusable configuration for a Redpanda cluster. When running `rpk`, you can create a profile, configure it for a cluster you're working with, and use it repeatedly when running an `rpk` command for the cluster.
 
@@ -395,14 +430,14 @@ kubectl exec <pod-name> --namespace <namespace> -- cat /etc/redpanda/redpanda.ya
 The `redpanda.advertised_kafka_api` list item called `default` contains the external Kafka API endpoints for the Redpanda brokers:
 
 .`redpanda.yaml`
-[,yaml,lines=7-8,.no-copy]
+[,yaml,.no-copy]
 ----
 redpanda:
   advertised_kafka_api:
-    - address: redpanda-0.redpanda.redpanda.svc.cluster.local.
+    - address: <pod-name>.redpanda.<namespace>.svc.cluster.local.
       port: 9093
       name: internal
-    - address: redpanda-0.customredpandadomain.local
+    - address: <pod-name>.customredpandadomain.local
       port: 31092
       name: default
 ----
@@ -416,7 +451,7 @@ helm get values <release-name> --namespace <namespace> --all
 
 In this example, the Kafka API has SASL authentication enabled:
 
-[source,yaml,lines=19]
+[source,yaml]
 ----
 auth:
   sasl:
@@ -433,7 +468,7 @@ For details about SASL authentication, see xref:manage:kubernetes/security/authe
 
 If the external listeners have TLS or mTLS enabled, you must configure your clients with valid TLS files. To find out if the Redpanda cluster has TLS enabled, check the Helm values. In this example, the Kafka API has TLS enabled:
 
-[source,yaml,lines=9-11,.no-copy]
+[source,yaml,.no-copy]
 ----
 listeners:
   kafka:
@@ -509,25 +544,25 @@ listeners:
           - 30082
 ----
 
-To test an external connection, you can use the cURL command-line client inside the container running a Redpanda broker:
+To test an external connection, you can use the curl command-line client inside the container running a Redpanda broker:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:8083/topics -sS
+curl http://<pod-name>.redpanda.<namespace>.svc.cluster.local:30082/topics -sS
 ----
 
 If SASL authentication is enabled, provide a username and password using basic authentication:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:8083/topics -u <username>:<password> -sS
+curl http://<pod-name>.redpanda.<namespace>.svc.cluster.local:30082/topics -u <username>:<password> -sS
 ----
 
 If TLS is enabled, specify the HTTPS protocol and pass the path to the `ca.crt` file:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8083/topics --cacert /etc/tls/certs/external/ca.crt -sS
+curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:30082/topics --cacert /etc/tls/certs/external/ca.crt -sS
 ----
 
 NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
@@ -536,7 +571,7 @@ If mTLS is enabled, pass the path to the client's key and certificate:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8083/topics \
+curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:30082/topics \
   --cacert /etc/tls/certs/external/ca.crt \
   --cert /etc/tls/certs/external/tls.crt \
   --key /etc/tls/certs/external/tls.key
@@ -546,7 +581,7 @@ For all available endpoints, see xref:api:ROOT:pandaproxy-rest.adoc[].
 
 === Connect to external Schema Registry
 
-To connect to the Schema Registry, use its configured external port. To find the port, check the Helm values:
+To connect to the Schema Registry with a HTTP client, use its configured external port. To find the port, check the Helm values:
 
 [source,bash]
 ----
@@ -566,25 +601,25 @@ listeners:
         - 30081
 ----
 
-To test an external connection, you can use the cURL command-line client inside the container running a Redpanda broker:
+To test an external connection, you can use the curl command-line client inside the container running a Redpanda broker:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:8084/subjects -sS
+curl http://<pod-name>.redpanda.<namespace>.svc.cluster.local:30081/subjects -sS
 ----
 
 If SASL authentication is enabled, provide a username and password using basic authentication:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:8084/subjects -u <username>:<password> -sS
+curl http://<pod-name>.redpanda.<namespace>.svc.cluster.local:30081/subjects -u <username>:<password> -sS
 ----
 
 If TLS is enabled, specify the HTTPS protocol and pass the path to the `ca.crt` file:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8084/subjects --cacert /etc/tls/certs/external/ca.crt -sS
+curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:30081/subjects --cacert /etc/tls/certs/external/ca.crt -sS
 ----
 
 NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
@@ -593,7 +628,7 @@ If mTLS is enabled, pass the path to the client's key and certificate:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:8084/subjects \
+curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:30081/subjects \
   --cacert /etc/tls/certs/external/ca.crt \
   --cert /etc/tls/certs/external/tls.crt \
   --key /etc/tls/certs/external/tls.key
@@ -603,7 +638,7 @@ For all available endpoints, see xref:api:ROOT:pandaproxy-schema-registry.adoc[]
 
 === Connect to external Admin API
 
-To connect to the Admin API, use its configured external port. To find the port, check the Helm values:
+To connect to the Admin API using an HTTP client, use its configured external port. To find the port, check the Helm values:
 
 [source,bash]
 ----
@@ -623,18 +658,18 @@ listeners:
         - 31644
 ----
 
-To test an external connection, you can use the cURL command-line client inside the container running a Redpanda broker:
+To test an external connection, you can use the curl command-line client inside the container running a Redpanda broker:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl http://redpanda-0.redpanda.redpanda.svc.cluster.local:9645/v1/node_config -sS
+curl http://<pod-name>.redpanda.<namespace>.svc.cluster.local:31644/v1/node_config -sS
 ----
 
 If TLS is enabled, specify the HTTPS protocol and pass the path to the `ca.crt` file:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:9645/v1/node_config --cacert /etc/tls/certs/external/ca.crt -sS
+curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:31644/v1/node_config --cacert /etc/tls/certs/external/ca.crt -sS
 ----
 
 NOTE: If the broker's certificate is signed by a well-known, trusted CA, and you're confident about the integrity of your system's CA trust store, you don't need the `--cacert` flag.
@@ -643,7 +678,7 @@ If mTLS is enabled, pass the path to the client's key and certificate:
 
 [source,bash]
 ----
-kubectl exec <pod-name> --namespace <namespace> -- curl https://redpanda-0.redpanda.redpanda.svc.cluster.local:9645/v1/node_config \
+curl https://<pod-name>.redpanda.<namespace>.svc.cluster.local:31644/v1/node_config \
   --cacert /etc/tls/certs/external/ca.crt \
   --cert /etc/tls/certs/external/tls.crt \
   --key /etc/tls/certs/external/tls.key
