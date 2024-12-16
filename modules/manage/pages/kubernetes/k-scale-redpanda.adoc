@@ -17,17 +17,17 @@ IMPORTANT: You cannot decrease the number of CPU cores in a running cluster.
 If your existing worker nodes have either too many resources or not enough resources, you may need to move Redpanda brokers to new worker nodes that meet your resource requirements. This process involves:
 
 - Making sure the new worker nodes are available.
-- Deleting each worker node one-by-one.
+- Deleting each worker node one by one.
 - Deleting the Pod's PersistentVolumeClaim (PVC).
 - Ensuring that the PersistentVolume's (PV) reclaim policy is set to `Retain` to make sure that you can roll back to the original worker node without losing data.
 
-The <<node-pvc, Nodewatcher controller>> can automate this process.
+As an emergency backstop, the <<node-pvc, Nodewatcher controller>> can automate the deletion of PVCs and set the reclaim policy of PVs to `Retain`.
 
 == Horizontal scaling
 
 Horizontal scaling involves modifying the number of brokers in your cluster, either by adding new ones (scaling out) or removing existing ones (scaling in). In situations where the workload is variable, horizontal scaling allows for flexibility. You can scale out when demand is high and scale in when demand is low, optimizing resource usage and cost.
 
-NOTE: Redpanda does not support Kubernetes autoscalers in production. Autoscalers primarily rely on CPU and memory metrics for scaling decisions, which do not fully capture the complexities involved in scaling Redpanda clusters. Improper scaling can lead to operational challenges. Therefore, we recommend manually scaling your Redpanda clusters as described in this topic.
+CAUTION: Redpanda does not support Kubernetes autoscalers. Autoscalers rely on CPU and memory metrics for scaling decisions, which do not fully capture the complexities involved in scaling Redpanda clusters. Improper scaling can lead to operational challenges. Always manually scale your Redpanda clusters as described in this topic.
 
 === Scale out
 
@@ -57,7 +57,7 @@ Helm + Operator::
 .`redpanda-cluster.yaml`
 [,yaml]
 ----
-apiVersion: cluster.redpanda.com/v1alpha1
+apiVersion: cluster.redpanda.com/v1alpha2
 kind: Redpanda
 metadata:
   name: redpanda
@@ -124,7 +124,16 @@ To scale in a Redpanda cluster, you must decommission the brokers that you want 
 [[node-pvc]]
 == Install the Nodewatcher controller
 
-The Nodewatcher controller manages the lifecycle of PersistentVolumes (PVs) and PersistentVolumeClaims (PVCs) for Redpanda clusters. When the controller detects that a Node resource is not available, it sets the reclaim policy of the PV to `Retain`, helping to prevent data loss. Concurrently, it orchestrates the deletion of the PVC, which allows the Redpanda broker that was previously running on the deleted worker node to be rescheduled onto new, operational nodes.
+The Nodewatcher controller maintains cluster operation during node failures by managing the lifecycle of PersistentVolumes (PVs) and PersistentVolumeClaims (PVCs) for Redpanda clusters. When the controller detects that a Node resource is not available, it sets the reclaim policy of the PV to `Retain`, helping to prevent data loss. Concurrently, it orchestrates the deletion of the PVC, which allows the Redpanda broker that was previously running on the deleted worker node to be rescheduled onto new, operational nodes.
+
+[WARNING]
+====
+The Nodewatcher controller is an emergency backstop to keep your Redpanda cluster running in case of unexpected node failures. *Never use this controller as a routine method for removing brokers.*
+
+Using the Nodewatcher controller as a routine method for removing brokers can lead to unintended consequences, such as increased risk of data loss and inconsistent cluster states. The Nodewatcher is designed for emergency scenarios and not for managing the regular scaling, decommissioning, and rebalancing of brokers.
+
+To safely scale in your Redpanda cluster, always use the xref:manage:kubernetes/k-decommission-brokers.adoc[decommission process], which ensures that brokers are removed in a controlled manner, with data properly redistributed across the remaining nodes, maintaining cluster health and data integrity.
+====
 
 . Install the Nodewatcher controller:
 +
@@ -143,6 +152,7 @@ To install the Nodewatcher controller as part of the Redpanda Operator:
 [,bash,subs="attributes+",lines=7+8]
 ----
 helm repo add redpanda https://charts.redpanda.com
+helm repo update
 helm upgrade --install redpanda-controller redpanda/operator \
   --namespace <namespace> \
   --set image.tag={latest-operator-version} \
@@ -159,7 +169,7 @@ helm upgrade --install redpanda-controller redpanda/operator \
 .`redpanda-cluster.yaml`
 [,yaml]
 ----
-apiVersion: cluster.redpanda.com/v1alpha1
+apiVersion: cluster.redpanda.com/v1alpha2
 kind: Redpanda
 metadata:
   name: redpanda
@@ -177,7 +187,7 @@ To install the Decommission controller as a sidecar:
 .`redpanda-cluster.yaml`
 [,yaml,lines=11+13+15]
 ----
-apiVersion: cluster.redpanda.com/v1alpha1
+apiVersion: cluster.redpanda.com/v1alpha2
 kind: Redpanda
 metadata:
   name: redpanda
@@ -249,18 +259,20 @@ helm upgrade --install redpanda redpanda/redpanda \
 ----
 kubectl delete node <node-name>
 ----
++
+NOTE: This step is for testing purposes only.
 
 . Monitor the logs of the Nodewatcher controller:
 +
 --
-- If you're running the Decommission controller as part of the Redpanda Operator:
+- If you're running the Nodewatcher controller as part of the Redpanda Operator:
 +
 [,bash]
 ----
 kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
 ----
 
-- If you're running the Decommission controller as a sidecar:
+- If you're running the Nodewatcher controller as a sidecar:
 +
 [,bash]
 ----
@@ -281,4 +293,10 @@ kubectl get persistentvolumeclaim --namespace <namespace>
 ----
 kubectl get persistentvolume --namespace <namespace>
 ----
+
+After the Nodewatcher controller has finished, xref:manage:kubernetes/k-decommission-brokers.adoc[decommission the broker] that was removed from the node. This is necessary to prevent a potential loss of quorum and ensure cluster stability.
+
+NOTE: Make sure to use the `--force` flag when decommissioning the broker with xref:reference:rpk/rpk-redpanda/rpk-redpanda-admin-brokers-decommission.adoc[`rpk redpanda admin brokers decommission`]. This flag is required when the broker is no longer running.
+
+
 

@@ -1,0 +1,226 @@
+= Authorization
+:description: Redpanda Console uses role-based access control (RBAC) to restrict system access to authorized users.
+:page-aliases: console:single-sign-on/authorization.adoc, manage:security/console/authorization.adoc, console:features/role-bindings.adoc, console:reference/role-bindings.adoc, reference:console/role-bindings.adoc
+:page-categories: Management, Security, Redpanda Console
+
+Redpanda Console uses role-based access control (RBAC) to manage and restrict access to various system resources. This document covers how to configure and use RBAC in Redpanda Console, including binding roles to users.
+
+[NOTE]
+====
+include::shared:partial$enterprise-and-console.adoc[]
+====
+
+== RBAC concepts
+
+RBAC in Redpanda Console allows you to control access to different resources by binding specific roles to users or groups. These roles determine the permissions that users have when interacting with Redpanda Console.
+
+You can assign existing roles (admin, editor, viewer) to individual users or groups from your configured identity providers. Users with multiple roles receive the union of all permissions defined in those roles.
+
+== Default roles
+
+Redpanda Console comes with three primitive roles:
+
+=== Viewer
+
+The `viewer` role grants permission to view all resources within Redpanda Console. This includes:
+
+* Viewing all topic data (messages, configs, partitions, using search filters).
+* Viewing all cluster data (node configs, ACLs, service accounts, quotas).
+* Viewing all consumer group data (consumer groups, group offsets, and lags).
+* Viewing all Schema Registry data (registered schemas with their contents).
+* Viewing all Kafka Connect data (list configured clusters and their connectors, including the status and connector configs).
+
+It does not include permissions to view the list of Console users that are allowed to use Redpanda Console.
+
+=== Editor
+
+The `editor` role grants all permissions that come with the `viewer` role and additionally includes:
+
+* Managing all topic aspects, such as creating topics, editing topic configurations, deleting topics, and publishing and deleting topic records.
+* Managing all cluster configuration aspects, such as editing node or cluster configs.
+* Managing all consumer group aspects, such as editing group offsets or deleting group offsets.
+* Managing all Kafka connect aspects, such as creating/updating/deleting or starting/pausing/stopping connectors.
+
+It does not include permission to create/remove ACLs or to create or remove a service account.
+
+=== Admin
+
+The `admin` role grants all permissions that come with the `editor` role and additionally includes:
+
+* Access to the *Admin* page that includes:
+** Details about all users and ACLs
+** The ability to xref:console:ui/generate-bundle.adoc[generate debug bundles]
+* Managing all service account aspects (create/remove service accounts)
+* Managing all ACL aspects (create/remove ACLs)
+
+== Configure roles and role bindings
+
+Both roles and role binding configurations are applied through separate YAML files that Redpanda Console loads at startup. You need to specify the file paths to the roles configuration file and the role bindings configuration file in the main Redpanda Console configuration file. These file paths are set using the `rolesFilepath` and `roleBindingsFilepath` options under the `enterprise.rbac` configuration block.
+
+Here is an example of how to configure these file paths in your Redpanda Console configuration file:
+
+[,yaml]
+----
+# Path to your redpanda.license file
+licenseFilepath: "/etc/redpanda/redpanda.license"
+enterprise:
+  rbac:
+    enabled: true
+    roleBindingsFilepath: "/etc/redpanda/role-bindings.yaml"
+----
+
+- `roleBindingsFilepath` specifies the path to your role bindings file. This file should contain the role bindings that associate the <<default-roles, default roles>> with specific users or groups.
+
+Ensure that the paths provided are correct and that the Redpanda Console process has read access to these files.
+
+* The `role-bindings.yaml` file should be stored in a secure location, with appropriate file permissions to prevent unauthorized access or modification.
+* Regularly review and update the `role-bindings.yaml` file to ensure that they reflect your organization's current access control policies.
+* After making changes to this file, restart Redpanda Console to apply the updates.
+
+== Role bindings
+
+To grant users the permissions defined in a role, you must bind the role to a user or a group. Each role binding holds a list of subjects (users or groups) and a reference to the role being granted. Optionally, you can add metadata (key-value pairs) which may help you to manage your role bindings. Redpanda Console shows the metadata in the UI, so that it helps you to understand how a specific user received their permissions.
+
+For example, this role binding binds Google account `john.doe@redpanda.com` to the role named `admin`:
+
+[,yaml]
+----
+roleBindings:
+  - roleName: admin
+    metadata:
+      # Metadata properties will be shown in the UI. You can omit it if you want to
+      name: Developers
+      creator: John Doe
+    subjects:
+      - kind: user
+        provider: Google
+        name: john.doe@redpanda.com
+----
+
+=== Bind roles to groups
+
+If you want to bind roles to a set of users (for example, GitHub teams or Google Groups), you need to configure your identity provider to grant Redpanda Console additional permissions so that it can resolve the memberships of these user sets. For more information about this setup, see the respective xref:console:config/security/authentication.adoc[identity provider] documentation.
+
+All group memberships that are used in role bindings are resolved at startup. Group memberships are cached for 15 minutes. Resolving group memberships proactively is required in order to support nested groups.
+
+This role binding binds all Google accounts which are a member of Google group `dev-team-console@redpanda.com` to the role named `admin`. Group memberships are resolved recursively, so that members from nested groups are also considered.
+
+[,yaml]
+----
+roleBindings:
+  - roleName: admin
+    metadata:
+      # Metadata properties will be shown in the UI. You can omit it if you want to
+      name: Developers
+      creator: John Doe
+    subjects:
+      - kind: group
+        provider: Google
+        name: dev-team-console@redpanda.com
+----
+
+Users who have multiple roles assigned through role bindings will <<union, inherit all these roles' permissions>>.
+
+=== Subjects
+
+Each subject has three properties that are configurable to bind a role to one or more users:
+
+* `kind`: Supported kinds are `group` and `user`.
+* `provider`: One of `Google`, `GitHub`, `Okta`, `OIDC`, or `Plain`.
+* `name`: Depending on your `kind` and `provider`, the `name` property may refer to different things. Here is an overview:
+
+|===
+| Kind | Provider | Name Reference
+
+| `user`
+| Google
+| Google email address
+
+| `group`
+| Google
+| Google Group Name (which is an email address)
+
+| `user`
+| GitHub
+| Login handle / GitHub username
+
+| `group`
+| GitHub
+| GitHub team name within your GitHub organization
+
+| `user`
+| Okta
+| Login handle / email
+
+| `group`
+| Okta
+| Okta Group ID (not name), for example "00gra1ajmZa1G1ks04x9"
+
+| `user`
+| OIDC
+| Configurable via `login.oidc.userIdentifyingClaimKey` (by default, it uses the `sub` claim from the issued access token)
+
+| `user`
+| Plain
+| Username as defined in the `login.plain.credentials` configuration
+|===
+
+[[union]]
+=== Multiple roles and duplicate role bindings
+
+Redpanda Console allows you to assign multiple roles to users through role bindings. When a user is associated with more than one role, the user is granted all the permissions defined in each role they are assigned.
+
+For example, if a user is assigned both the `viewer` and `editor` roles, they will have all the permissions of a `viewer` as well as the additional permissions of an `editor`.
+
+Duplicate role bindings do not cause errors or conflicts. If a user is assigned the same role multiple times through role bindings, the duplicate role bindings do not affect the user's final set of permissions, which are the same as if the role was assigned once.
+
+=== Example role bindings
+
+The following `role-bindings.yaml` configuration file includes a complete list of all `roleBindings` configuration properties and their descriptions.
+
+[,yaml]
+----
+roleBindings:
+  - roleName: admin
+    metadata:
+      name: Admin Users
+    subjects:
+      - kind: user
+        provider: OIDC
+        name: jane@mycompany.com # Matches the value from the claim key
+      - kind: user
+        provider: Google
+        name: joe@mycompany.com
+      - kind: user
+        provider: Plain
+        name: jane
+      - kind: group
+        provider: Google
+        name: global-admins@mycompany.com # Google workspace group
+  - roleName: editor
+    metadata:
+      name: Editors
+    subjects:
+      - kind: group
+        provider: Okta
+        name: 00gcgwvqiwitcrgge696 # Okta Group ID
+      - kind: group
+        provider: GitHub
+        name: engineers # GitHub Team ID
+        organization: redpanda-data # GitHub organization name
+  - roleName: viewer
+    metadata:
+      name: Viewers
+    subjects:
+      - kind: group
+        provider: Okta
+        name: 00gcgwvqiwitcrgge696 # Okta Group ID
+      - kind: user
+        provider: GitHub
+        name: nat # Refers to the GitHub handle
+----
+
+== Suggested reading
+
+* xref:console:config/configure-console.adoc[Redpanda Console configuration guide]
+* xref:manage:security/authorization/rbac.adoc[Redpanda RBAC]
