@@ -1,0 +1,278 @@
+ifdef::env-kubernetes[]
+:link-configure-bundles: troubleshoot:debug-bundle/configure/kubernetes.adoc
+endif::[]
+ifndef::env-kubernetes[]
+:link-configure-bundles: troubleshoot:debug-bundle/configure/linux.adoc
+endif::[]
+
+To generate a debug bundle with rpk, you have two options depending on your needs:
+
+- <<debug-bundle, Use `rpk debug bundle`>>: Run this command directly on each broker in the cluster. This method requires access to the nodes your brokers are running on.
+
+- <<remote-debug-bundle, Use `rpk debug remote-bundle`>>: Run this command from a remote machine to collect diagnostics data from all brokers in the cluster. This method is ideal when you want to gather data without logging into each node individually.
+
+== Prerequisites
+
+You must have xref:get-started:rpk-install.adoc[`rpk` installed] on your host machine.
+
+[[debug-bundle]]
+== Use `rpk debug bundle`
+
+To generate a debug bundle with `rpk`, you can run the xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`] command on each broker in the cluster.
+
+ifdef::env-kubernetes[]
+. Create a ClusterRole to allow Redpanda to collect information from the Kubernetes API:
++
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    serviceAccount:
+      create: true
+    rbac:
+      enabled: true
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+NOTE: You must deploy the Redpanda Operator with the `--set rbac.createRPKBundleCRs=true` flag to give it the required ClusterRoles.
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`serviceaccount.yaml`
+[,yaml]
+----
+serviceAccount:
+  create: true
+rbac:
+  enabled: true
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace redpanda --create-namespace \
+  --values serviceaccount.yaml --reuse-values
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set serviceAccount.create=true \
+  --set rbac.enabled=true
+```
+====
+--
+======
++
+[TIP]
+====
+If you aren't using the Helm chart, you can create the ClusterRole manually:
+
+```bash
+kubectl create clusterrolebinding redpanda --clusterrole=view --serviceaccount=redpanda:default
+```
+====
+endif::[]
+
+
+. Execute the xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`] command on a broker:
++
+[,bash]
+----
+ifdef::env-kubernetes[]
+kubectl exec -it --namespace <namespace> redpanda-0 -c redpanda -- rpk debug bundle --namespace <namespace>
+endif::[]
+ifndef::env-kubernetes[]
+rpk debug bundle
+endif::[]
+----
++
+If you have an upload URL from the Redpanda support team,
+provide it in the `--upload-url` flag to upload your debug bundle to Redpanda.
++
+[,bash]
+----
+ifdef::env-kubernetes[]
+kubectl exec -it --namespace <namespace> redpanda-0 -c redpanda -- rpk debug bundle \
+  --upload-url <url> \
+  --namespace <namespace>
+endif::[]
+ifndef::env-kubernetes[]
+rpk debug bundle \
+  --upload-url <url>
+endif::[]
+
+----
++
+Example output:
++
+[.no-copy]
+----
+Creating bundle file...
+
+Debug bundle saved to "/var/lib/redpanda/1675440652-bundle.zip"
+----
+
+. On your host machine, make a directory in which to save the debug bundle:
++
+```bash
+mkdir debug-bundle
+```
+
+. Copy the debug bundle ZIP file to the `debug-bundle` directory on your host machine.
+ifdef::env-kubernetes[]
++
+Replace `<bundle-name>` with the name of your ZIP file.
++
+```bash
+kubectl cp <namespace>/redpanda-0:/var/lib/redpanda/<bundle-name> debug-bundle/<bundle-name>.zip
+```
+endif::[]
+
+. Unzip the file on your host machine and use it to debug your cluster.
++
+```bash
+cd debug-bundle
+unzip <bundle-name>.zip
+```
++
+For guidance on reading the debug bundle, see xref:troubleshoot:debug-bundle/inspect.adoc[].
+
+. Remove the debug bundle from the Redpanda broker:
++
+[,bash]
+----
+ifdef::env-kubernetes[]
+kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- rm /var/lib/redpanda/<bundle-name>.zip
+endif::[]
+ifndef::env-kubernetes[]
+rm /var/lib/redpanda/<bundle-name>.zip
+endif::[]
+----
+
+When you've finished troubleshooting, remove the debug bundle from your host machine:
+
+```bash
+rm -r debug-bundle
+```
+
+[[remote-debug-bundle]]
+== Use `rpk debug remote-bundle`
+
+The xref:reference:rpk/rpk-debug/rpk-debug-remote-bundle.adoc[`rpk debug remote-bundle`] command allows you to remotely generate a consolidated debug bundle from all brokers in your cluster. This command is useful when you do not want to log into each broker's node individually using `rpk debug bundle`.
+
+. Create an xref:get-started:config-rpk-profile.adoc[`rpk` profile] to connect to your cluster. Include all brokers you want to collect data from in the `admin.hosts` configuration.
++
+[,bash]
+----
+rpk profile create <profile-name> --set admin.hosts=<brokers>
+----
+
+. Check the configured addresses in your profile:
++
+[,bash]
+----
+rpk profile print
+----
++
+Example output:
++
+.`profile.yml`
+```yaml
+admin:
+  hosts:
+    - broker1:9644
+    - broker2:9644
+    - broker3:9644
+```
+
+. Start the debug bundle process:
++
+[,bash]
+----
+ifdef::env-kubernetes[]
+rpk debug remote-bundle start --namespace <namespace>
+endif::[]
+ifndef::env-kubernetes[]
+rpk debug remote-bundle start
+endif::[]
+----
+ifdef::env-kubernetes[]
++
+Replace `<namespace>` with the Kubernetes namespace in which your Redpanda cluster is running.
+endif::[]
++
+[TIP]
+====
+To skip the confirmation steps, use the `--no-confirm` flag.
+
+To generate a bundle for a subset of brokers, use the `-X admin.hosts` flag. For example, `rpk debug remote-bundle start -X admin.hosts target-broker:9644`.
+====
+
+. Check the status:
++
+[,bash]
+----
+rpk debug remote-bundle status
+----
++
+Example output:
++
+[.no-copy]
+----
+BROKER           STATUS   JOB-ID
+localhost:29644  running  7f93fd6e-fc5e-46a5-8842-717542f89e59
+localhost:19644  running  7f93fd6e-fc5e-46a5-8842-717542f89e59
+----
++
+When the status changes to `success`, the process is complete.
++
+TIP: To cancel a debug bundle process while it's running, use `rpk debug remote-bundle cancel`.
+
+. When the process is complete, download the debug bundle:
++
+[,bash]
+----
+rpk debug remote-bundle download
+----
+By default the compressed file is downloaded to your current working directory. To choose a different location or filename, use the `--output` flag. For example:
++
+[,bash]
+----
+rpk debug remote-bundle download --output ~/redpanda/debug-bundles/cluster1
+----
++
+This command results in `cluster1.zip` downloaded to the `~/redpanda/debug-bundles/` directory.
+
+Unzip the file and use the contents to debug your cluster. For guidance on reading the debug bundle, see xref:troubleshoot:debug-bundle/inspect.adoc[].
+
+TIP: Configure the xref:reference:properties/cluster-properties.adoc#debug_bundle_auto_removal_seconds[`debug_bundle_auto_removal_seconds`] property to automatically remove debug bundles after a period of time. See xref:{link-configure-bundles}#remove[Automatically remove debug bundles].
+
+== Next steps
+
+xref:troubleshoot:debug-bundle/inspect.adoc[].
+
+include::shared:partial$suggested-reading.adoc[]
+
+- xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[`rpk debug bundle`]
+- xref:reference:rpk/rpk-debug/rpk-debug-remote-bundle.adoc[`rpk debug remote-bundle`]
+- https://stedolan.github.io/jq/manual/#Basicfilters[jq manual^]
