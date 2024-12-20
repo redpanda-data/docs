@@ -154,6 +154,13 @@ components:
             $ref: '#/components/schemas/Status.VPCEndpointConnection'
           type: array
       type: object
+    Action:
+      enum:
+        - ACTION_PREPARE
+        - ACTION_EXECUTE
+        - ACTION_FINISH
+        - ACTION_CANCEL
+      type: string
     Anytime:
       type: object
     AzurePrivateLinkSpec:
@@ -1115,6 +1122,8 @@ components:
     DeleteConnectSecretResponse:
       description: DeleteConnectSecretResponse is the response of DeleteConnectSecret.
       type: object
+    DeleteMountTaskResponse:
+      type: object
     DeleteNamespaceResponse:
       type: object
     DeleteNetworkOperation:
@@ -1437,6 +1446,11 @@ components:
         status:
           $ref: '#/components/schemas/ConnectorStatus'
       type: object
+    GetMountTaskResponse:
+      properties:
+        task:
+          $ref: '#/components/schemas/MountTask'
+      type: object
     GetNetworkResponse:
       description: GetNetworkRequest is the request of GetNetwork.
       properties:
@@ -1459,6 +1473,18 @@ components:
         config_schema:
           description: JSON schema of the configuration components that are allowed for Connect pipelines.
           type: string
+      type: object
+    GetPipelinesBySecretsResponse:
+      properties:
+        pipelines_for_secret:
+          items:
+            $ref: '#/components/schemas/PipelinesForSecret'
+          type: array
+      type: object
+    GetPipelinesForSecretResponse:
+      properties:
+        pipelines_for_secret:
+          $ref: '#/components/schemas/PipelinesForSecret'
       type: object
     GetRegionResponse:
       properties:
@@ -1665,6 +1691,20 @@ components:
           description: Page Token to fetch the next page. The value can be used as page_token in the next call to this endpoint.
           type: string
       type: object
+    ListMountTasksResponse:
+      properties:
+        tasks:
+          items:
+            $ref: '#/components/schemas/MountTask'
+          type: array
+      type: object
+    ListMountableTopicsResponse:
+      properties:
+        topics:
+          items:
+            $ref: '#/components/schemas/TopicLocation'
+          type: array
+      type: object
     ListNamespacesRequest.Filter:
       properties:
         name:
@@ -1740,6 +1780,14 @@ components:
           items:
             $ref: '#/components/schemas/ResourceGroup'
           maxItems: 100
+          type: array
+      type: object
+    ListSecretScopesResponse:
+      description: ListSecretScopesResponse is the response of ListSecretScopes.
+      properties:
+        scopes:
+          items:
+            $ref: '#/components/schemas/Scope'
           type: array
       type: object
     ListSecretsFilter:
@@ -1939,6 +1987,72 @@ components:
           $ref: '#/components/schemas/ResourcePatternType'
         resource_type:
           $ref: '#/components/schemas/ResourceType'
+      type: object
+    MountTask:
+      properties:
+        id:
+          description: Unique identifier for this mount task.
+          format: int32
+          type: integer
+        state:
+          $ref: '#/components/schemas/MountTask.State'
+        topics:
+          description: List of topics that are being mounted or unmounted.
+          items:
+            $ref: '#/components/schemas/MountTask.Topic'
+          type: array
+        type:
+          $ref: '#/components/schemas/MountTask.Type'
+      type: object
+    MountTask.State:
+      description: |2-
+         - STATE_PLANNED: Planned: The mount task has been created and is awaiting further actions.
+         - STATE_PREPARING: Preparing: The mount task is gathering resources and preparing for execution.
+         - STATE_PREPARED: Prepared: All preparations are complete, and the mount task is ready to be executed.
+         - STATE_EXECUTING: Executing: The mount task is actively transferring or transforming data.
+         - STATE_EXECUTED: Executed: The core mount task actions are complete, but the mount task has not yet cut over or finalized.
+         - STATE_CUT_OVER: Cut Over: The mount task has reached a critical point where ownership is transferred or final adjustments are made.
+         - STATE_FINISHED: Finished: The mount task has been successfully completed, and no further actions are required.
+         - STATE_CANCELING: Canceling: The mount task is in the process of being canceled, and rollback or cleanup actions may be in progress.
+         - STATE_CANCELLED: Cancelled: The mount task has been fully canceled, and no further actions will be taken.
+      enum:
+        - STATE_PLANNED
+        - STATE_PREPARING
+        - STATE_PREPARED
+        - STATE_EXECUTING
+        - STATE_EXECUTED
+        - STATE_CUT_OVER
+        - STATE_FINISHED
+        - STATE_CANCELING
+        - STATE_CANCELLED
+      type: string
+    MountTask.Topic:
+      properties:
+        source_topic_reference:
+          description: |-
+            The topic reference in the object storage bucket.
+            This field is only set for tasks of type MOUNT.
+          type: string
+        topic_reference:
+          description: |-
+            The topic reference within the current cluster, which may be either a simple topic name or a full reference
+            in the form: cluster-uuid/topic-name/revision.
+          type: string
+      type: object
+    MountTask.Type:
+      description: |2-
+         - TYPE_MOUNT: Mount represents the process of making topics available in a cluster by loading them from object storage.
+         - TYPE_UNMOUNT: Unmount represents the process of offloading topics back to object storage.
+      enum:
+        - TYPE_MOUNT
+        - TYPE_UNMOUNT
+      type: string
+    MountTopicsResponse:
+      properties:
+        mount_task_id:
+          format: int32
+          title: ID of mount
+          type: integer
       type: object
     Namespace:
       properties:
@@ -2149,7 +2263,7 @@ components:
         resources:
           $ref: '#/components/schemas/Resources'
         state:
-          $ref: '#/components/schemas/State'
+          $ref: '#/components/schemas/Pipeline.State'
         status:
           $ref: '#/components/schemas/Pipeline.Status'
       required:
@@ -2157,6 +2271,24 @@ components:
         - display_name
         - config_yaml
       type: object
+    Pipeline.State:
+      description: |-
+        State of the pipeline.
+
+         - STATE_STARTING: The pipeline is starting.
+         - STATE_RUNNING: The pipeline is running.
+         - STATE_STOPPING: The pipeline is in the process of stopping.
+         - STATE_STOPPED: The pipeline is stopped and in paused state.
+         - STATE_ERROR: The pipeline encountered an error. See [Error Handling](https://docs.redpanda.com/redpanda-cloud/develop/connect/configuration/error_handling/) for further guidance.
+         - STATE_COMPLETED: The pipeline has completed the job successfully.
+      enum:
+        - STATE_STARTING
+        - STATE_RUNNING
+        - STATE_STOPPING
+        - STATE_STOPPED
+        - STATE_ERROR
+        - STATE_COMPLETED
+      type: string
     Pipeline.Status:
       description: Pipeline status may contain an error message.
       properties:
@@ -2197,6 +2329,15 @@ components:
       required:
         - display_name
         - config_yaml
+      type: object
+    PipelinesForSecret:
+      properties:
+        pipelines:
+          items:
+            $ref: '#/components/schemas/Pipeline'
+          type: array
+        secret_id:
+          type: string
       type: object
     PlannedDeletion:
       description: Date after which this cluster can and should be deleted.
@@ -2698,6 +2839,8 @@ components:
           type: string
         state:
           $ref: '#/components/schemas/ServerlessCluster.State'
+        tier:
+          $ref: '#/components/schemas/Tier'
         updated_at:
           description: Timestamp when the Serverless cluster was updated.
           format: date-time
@@ -2763,6 +2906,8 @@ components:
         serverless_region:
           description: Name of the region where the Serverless cluster will be provisioned.
           type: string
+        tier:
+          $ref: '#/components/schemas/Tier'
       required:
         - name
         - resource_group_id
@@ -2773,7 +2918,9 @@ components:
       description: Resource describing a ServerlessRegion.
       properties:
         available:
-          description: Region available.
+          description: |-
+            Region available.
+            Deprecated: Use `tiers_available` instead.
           type: boolean
         cloud_provider:
           $ref: '#/components/schemas/v1beta2.CloudProvider'
@@ -2787,6 +2934,11 @@ components:
           description: Unique name of the Serverless region.
           example: int-eu-west-1
           type: string
+        tiers_available:
+          description: Tiers available in this region.
+          items:
+            $ref: '#/components/schemas/Tier'
+          type: array
       title: ServerlessRegion
       type: object
     SetConfiguration:
@@ -2812,24 +2964,6 @@ components:
         pipeline:
           $ref: '#/components/schemas/Pipeline'
       type: object
-    State:
-      description: |-
-        State of the pipeline.
-
-         - STATE_STARTING: The pipeline is starting.
-         - STATE_RUNNING: The pipeline is running.
-         - STATE_STOPPING: The pipeline is in the process of stopping.
-         - STATE_STOPPED: The pipeline is stopped and in paused state.
-         - STATE_ERROR: The pipeline encountered an error. See [Error Handling](https://docs.redpanda.com/redpanda-cloud/develop/connect/configuration/error_handling/) for further guidance.
-         - STATE_COMPLETED: The pipeline has completed the job successfully.
-      enum:
-        - STATE_STARTING
-        - STATE_RUNNING
-        - STATE_STOPPING
-        - STATE_STOPPED
-        - STATE_ERROR
-        - STATE_COMPLETED
-      type: string
     Status.ConnectedEndpoint:
       description: ConnectedEndpoint defines endpoint connection connected to Redpanda GCP PSC (Private Service Connect) service.
       properties:
@@ -3014,6 +3148,14 @@ components:
           title: This will be used during the migration period, remove before it becomes GA
           type: boolean
       type: object
+    Tier:
+      description: |2-
+         - TIER_STANDARD: Tier Standard represents a standard tier.
+         - TIER_PRO: Tier PRO represents a PRO tier.
+      enum:
+        - TIER_STANDARD
+        - TIER_PRO
+      type: string
     TimeZone:
       description: |-
         Represents a time zone from the
@@ -3025,6 +3167,39 @@ components:
         version:
           description: Optional. IANA Time Zone Database version number, e.g. "2019a".
           type: string
+      type: object
+    TopicLocation:
+      properties:
+        name:
+          description: Topic name.
+          type: string
+        topic_location:
+          description: |-
+            Full reference for the unmounted topic in this format: `topic-name/cluster-uuid/revision`.
+            Use this as unique identifier for mounting a topic if there are multiple topics available
+            with the same name.
+          type: string
+      type: object
+    TopicMount:
+      description: |-
+        TopicMount defines the migration of a topic from the cloud storage into this cluster,
+        so that it becomes available via the Kafka API.
+      properties:
+        alias:
+          description: |-
+            Alias may be provided to mount the topic under a different name. Leave
+            blank to re-use the source topic name. The alias does not persist if you
+            unmount the topic again.
+          type: string
+        source_topic_reference:
+          description: |-
+            The topic name or full reference of the topic to mount. The full reference
+            must be used in case the same topic exists more than once. This may be the case if
+            the same topic has been unmounted multiple times. List all mountable topics to
+            find the full reference (contains topic name, cluster uuid and revision).
+          type: string
+      required:
+        - source_topic_reference
       type: object
     TransformMetadata:
       properties:
@@ -3060,6 +3235,13 @@ components:
       required:
         - name
       type: object
+    UnmountTopicsResponse:
+      properties:
+        mount_task_id:
+          format: int32
+          title: ID of unmount
+          type: integer
+      type: object
     Unspecified:
       type: object
     UpdateClusterOperation:
@@ -3085,6 +3267,8 @@ components:
       properties:
         secret:
           $ref: '#/components/schemas/Secret'
+      type: object
+    UpdateMountTaskResponse:
       type: object
     UpdatePipelineResponse:
       properties:
@@ -4736,6 +4920,329 @@ paths:
       summary: Create ACL
       tags:
         - ACLService
+  /v1alpha2/cloud-storage/mount-tasks:
+    get:
+      description: This operation retrieves the status of a task responsible for mounting or unmounting topics. It provides details on the task’s type (mount or unmount), its current state, and the topics involved.
+      operationId: CloudStorageService_ListMountTasks
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMountTasksResponse'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Retrieve the mount task status
+      tags:
+        - CloudStorageService
+  /v1alpha2/cloud-storage/mount-tasks/{id}:
+    delete:
+      description: Delete a mount or unmount by ID.
+      operationId: CloudStorageService_DeleteMountTask
+      parameters:
+        - description: Unique identifier of the mount or unmount task to delete.
+          in: path
+          name: id
+          required: true
+          schema:
+            format: int32
+            type: integer
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteMountTaskResponse'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Delete a mount or unmount
+      tags:
+        - CloudStorageService
+    get:
+      description: Retrieves the status of a mount or unmount by ID.The response provides details on the operation type (mount or unmount), its current state, and the topics involved. Use the ID returned when you start the mount or unmount, or use the ListMountTasks endpoint to retrieve a list of IDs.
+      operationId: CloudStorageService_GetMountTask
+      parameters:
+        - description: Unique identifier of the mount or unmount task to retrieve.
+          in: path
+          name: id
+          required: true
+          schema:
+            format: int32
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetMountTaskResponse'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Get the status of a mount or unmount by ID
+      tags:
+        - CloudStorageService
+    post:
+      description: This operation allows performing an action on an ongoing mount task.
+      operationId: CloudStorageService_UpdateMountTask
+      parameters:
+        - description: ID is the unique identifier of the mount or unmount to update.
+          in: path
+          name: id
+          required: true
+          schema:
+            format: int32
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                action:
+                  $ref: '#/components/schemas/Action'
+              required:
+                - action
+              type: object
+        required: true
+        x-originalParamName: body
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateMountTaskResponse'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Update a mount or unmount
+      tags:
+        - CloudStorageService
+  /v1alpha2/cloud-storage/topics/mount:
+    post:
+      description: Attach mountable topics from object storage to a cluster, making them available for consumption and production again. Mounting a topic reloads its data and state to the local brokers, allowing active use of the topic.
+      operationId: CloudStorageService_MountTopics
+      requestBody:
+        content:
+          application/json:
+            schema:
+              items:
+                $ref: '#/components/schemas/TopicMount'
+              required:
+                - topics
+              type: array
+        required: true
+        x-originalParamName: topics
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MountTopicsResponse'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Mount topics from object storage
+      tags:
+        - CloudStorageService
+  /v1alpha2/cloud-storage/topics/mountable:
+    get:
+      description: Retrieve all topics that are currently unmounted and available to be mounted to the cluster. These topics reside in object storage and can be mounted for consumption or production within the cluster.
+      operationId: CloudStorageService_ListMountableTopics
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMountableTopicsResponse'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: List mountable topics
+      tags:
+        - CloudStorageService
+  /v1alpha2/cloud-storage/topics/unmount:
+    post:
+      description: Unmount topics to object storage, freeing up all local cluster resources. Once you unmount a topic, it can no longer be consumed or produced to. It detaches from the active cluster while its data remains safely stored in the external Object Storage.
+      operationId: CloudStorageService_UnmountTopics
+      requestBody:
+        content:
+          application/json:
+            schema:
+              items:
+                type: string
+              required:
+                - topics
+              type: array
+        description: List of topics to unmount.
+        required: true
+        x-originalParamName: topics
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnmountTopicsResponse'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Unmount topics to object storage
+      tags:
+        - CloudStorageService
   /v1alpha2/kafka-connect/clusters:
     get:
       description: List connect clusters available for being consumed by the console's kafka-connect service.
@@ -5838,6 +6345,77 @@ paths:
       summary: Create Redpanda Connect pipeline
       tags:
         - PipelineService
+  /v1alpha2/redpanda-connect/pipelines-by-secrets:
+    get:
+      description: Get Redpanda Connect pipelines by secrets.
+      operationId: PipelineService_GetPipelinesBySecrets
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetPipelinesBySecretsResponse'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Get Redpanda Connect pipelines by secrets
+      tags:
+        - PipelineService
+  /v1alpha2/redpanda-connect/pipelines-for-secret:
+    get:
+      description: Get Redpanda Connect pipelines for a given secret.
+      operationId: PipelineService_GetPipelinesForSecret
+      parameters:
+        - description: Secret ID.
+          in: query
+          name: secret_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetPipelinesForSecretResponse'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: Get Redpanda Connect pipelines for secret
+      tags:
+        - PipelineService
   /v1alpha2/redpanda-connect/pipelines/{id}:
     delete:
       description: Delete a Redpanda Connect pipeline.
@@ -6061,6 +6639,38 @@ paths:
       summary: Stops a Redpanda Connect pipeline
       tags:
         - PipelineService
+  /v1alpha2/secret-scopes:
+    get:
+      description: List supported secret scopes.
+      operationId: SecretService_ListSecretScopes
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSecretScopesResponse'
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Unauthenticated.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: Internal Server Error. Reach out to support.
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/rpc.Status'
+          description: An unexpected error response.
+      summary: List Secret Scopes
+      tags:
+        - SecretService
   /v1alpha2/secrets:
     get:
       description: 'List secrets. Optional: filter based on secret name and labels.'
@@ -8641,6 +9251,7 @@ tags:
     name: ServerlessRegionService
   - description: Manage Redpanda [access-control lists](https://docs.redpanda.com/beta/manage/security/authorization/acl/) (ACLs).
     name: ACLService
+  - name: CloudStorageService
   - name: TransformService
   - description: Manage [connectors](https://docs.redpanda.com/current/deploy/deployment-option/cloud/managed-connectors/) and interact with the Kafka Connect API.
     name: KafkaConnectService
