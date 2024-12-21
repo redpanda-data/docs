@@ -1,6 +1,6 @@
 // Import the version fetcher module
-const GetLatestRedpandaVersion = require('../../node_modules/@redpanda-data/docs-extensions-and-macros/extensions/version-fetcher/get-latest-redpanda-version.js');
-const yaml = require('../../node_modules/js-yaml/index.js');
+const GetLatestRedpandaVersion = require('../../../node_modules/@redpanda-data/docs-extensions-and-macros/extensions/version-fetcher/get-latest-redpanda-version.js');
+const yaml = require('../../../node_modules/js-yaml/index.js');
 const fs = require('fs');
 
 // Fetch the latest release version from GitHub
