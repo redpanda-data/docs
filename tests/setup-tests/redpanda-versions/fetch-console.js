@@ -1,6 +1,6 @@
 // Import the version fetcher module
-const GetLatestConsoleVersion = require('../../node_modules/@redpanda-data/docs-extensions-and-macros/extensions/version-fetcher/get-latest-console-version.js');
-const yaml = require('../../node_modules/js-yaml/index.js');
+const GetLatestConsoleVersion = require('../../../node_modules/@redpanda-data/docs-extensions-and-macros/extensions/version-fetcher/get-latest-console-version.js');
+const yaml = require('../../../node_modules/js-yaml/index.js');
 const fs = require('fs');
 
 const owner = 'redpanda-data';
