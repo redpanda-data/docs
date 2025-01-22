@@ -1,10 +1,11 @@
+import os
+import sys
 import requests
 import re
 import json
 import logging
-import os
+import glob
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 def fetch_metrics(url):
@@ -20,7 +21,7 @@ def fetch_metrics(url):
 def parse_metrics(metrics_text):
     """
     Parse metrics text into a structured dictionary.
-    Logs metrics without a # TYPE entry.
+    Logs metrics that do not have a # TYPE entry.
     """
     metrics = {}
     lines = metrics_text.splitlines()
@@ -43,7 +44,8 @@ def parse_metrics(metrics_text):
         elif current_metric and not line.startswith("#"):
             continue
 
-    print("Extracted metrics:",len(metrics))        
+    logging.info(f"Extracted {len(metrics)} metrics.")
+
     # Log metrics without a type
     for metric, data in metrics.items():
         if data["type"] is None:
@@ -71,16 +73,78 @@ def ensure_directory_exists(directory):
     if not os.path.exists(directory):
         os.makedirs(directory)
 
+def find_largest_version_in_gen(gen_path):
+    """
+    Finds the directory in `gen_path` with the greatest semantic version number.
+    Ignores 'latest' or other non-version dirs.
+    """
+    dirs = []
+    for item in os.listdir(gen_path):
+        full_path = os.path.join(gen_path, item)
+        # Only consider directories that look like "X.Y" or "X.Y.Z"
+        if os.path.isdir(full_path) and re.match(r'^\d+(\.\d+){1,2}$', item):
+            dirs.append(item)
+
+    if not dirs:
+        return None
+
+    # Sort as "semantic versions" by splitting on dots
+    def version_tuple(v):
+        return tuple(map(int, v.split(".")))
+    
+    dirs.sort(key=version_tuple)  # sorts ascending
+    return dirs[-1]  # largest version
+
 if __name__ == "__main__":
+    # Read the tag from script
+    # If none provided, assume "latest"
+    tag = "latest"
+    if len(sys.argv) > 1:
+        tag = sys.argv[1]
+
+    # Convert "24.3.3" -> "24.3"
+    # If tag is not "latest", strip the last dot.number
+    if tag.lower() != "latest":
+        parts = tag.split(".")
+        if len(parts) >= 2:
+            # remove the last part
+            tag_modified = ".".join(parts[:-1])
+        else:
+            # fallback if only "24" was passed
+            tag_modified = tag
+    else:
+        tag_modified = None
+
+    gen_path = os.path.join(os.path.dirname(__file__), "..", "..", "gen")
+    gen_path = os.path.abspath(gen_path)
+
+    if not os.path.isdir(gen_path):
+        logging.error(f"gen folder not found at: {gen_path}")
+        sys.exit(1)
+
+    if tag_modified is None:
+        # If "latest", find the largest version folder inside docs/gen
+        folder = find_largest_version_in_gen(gen_path)
+        if not folder:
+            logging.error("No version folder found in docs/gen. Exiting.")
+            sys.exit(1)
+        tag_modified = folder
+        logging.info(f"No tag provided or 'latest' used. Using largest version folder: {tag_modified}")
+
+    output_dir = os.path.join(gen_path, tag_modified, "metrics")
+    ensure_directory_exists(output_dir)
+
     METRICS_URL = "http://localhost:19644/public_metrics/"
-    OUTPUT_DIR = "gen"
-    JSON_OUTPUT_FILE = os.path.join(OUTPUT_DIR, "metrics.json")
-    ASCIIDOC_OUTPUT_FILE = os.path.join(OUTPUT_DIR, "metrics.adoc")
-
-    ensure_directory_exists(OUTPUT_DIR)
-
     metrics_text = fetch_metrics(METRICS_URL)
-    if metrics_text:
-        metrics = parse_metrics(metrics_text)
-        output_json(metrics, JSON_OUTPUT_FILE)
-        output_asciidoc(metrics, ASCIIDOC_OUTPUT_FILE)
+
+    if not metrics_text:
+        logging.error("No metrics retrieved. Exiting.")
+        sys.exit(1)
+
+    metrics = parse_metrics(metrics_text)
+
+    JSON_OUTPUT_FILE = os.path.join(output_dir, "metrics.json")
+    ASCIIDOC_OUTPUT_FILE = os.path.join(output_dir, "metrics.adoc")
+
+    output_json(metrics, JSON_OUTPUT_FILE)
+    output_asciidoc(metrics, ASCIIDOC_OUTPUT_FILE)
