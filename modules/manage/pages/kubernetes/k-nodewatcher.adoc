@@ -1,0 +1,189 @@
+= Install the Nodewatcher Controller
+:page-categories: Management
+:env-kubernetes: true
+
+The Nodewatcher controller is an emergency backstop that automates certain actions when a Kubernetes node is lost or decommissioned unexpectedly. This controller helps keep your Redpanda cluster running in case of unexpected node failures.
+
+[WARNING]
+====
+The Nodewatcher controller is intended only for emergency scenarios (for example, node hardware or infrastructure failures). *Never use the Nodewatcher controller as a routine method for removing brokers.* If you want to remove brokers, see xref:manage:kubernetes/k-decommission-brokers.adoc[Decommission brokers] for the correct procedure.
+====
+
+== How Nodewatcher works
+
+When the controller detects that a `Node` resource is not available, it does the following:
+
+- Sets the reclaim policy of the affected PV to `Retain`.
+- Deletes the associated PVC.
+
+This process allows a Redpanda broker Pod to reschedule onto a new, operational node.
+
+== Prerequisites
+
+- An existing Redpanda cluster in Kubernetes.
+- Sufficient RBAC permissions for Nodewatcher to read and modify PVs, PVCs, and Node resources.
+
+== Install Nodewatcher
+
+[tabs]
+======
+Helm + Operator::
++
+--
+
+You can install the Nodewatcher controller as part of the Redpanda Operator or as a sidecar on each Pod that runs a Redpanda broker. When you install the controller as part of the Redpanda Operator, the controller monitors all Redpanda clusters running in the same namespace as the Redpanda Operator. If you want the controller to manage only a single Redpanda cluster, install it as a sidecar on each Pod that runs a Redpanda broker, using the Redpanda resource.
+
+To install the Nodewatcher controller as part of the Redpanda Operator:
+
+.. Deploy the Redpanda Operator with the Nodewatcher controller:
++
+[,bash,subs="attributes+",lines=7+8]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm repo update
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <namespace> \
+  --set image.tag={latest-operator-version} \
+  --create-namespace \
+  --set additionalCmdFlags={--additional-controllers="nodeWatcher"} \
+  --set rbac.createAdditionalControllerCRs=true
+----
++
+- `--additional-controllers="nodeWatcher"`: Enables the Nodewatcher controller.
+- `rbac.createAdditionalControllerCRs=true`: Creates the required RBAC rules for the Redpanda Operator to monitor the Node resources and update PVCs and PVs.
+
+.. Deploy a Redpanda resource:
++
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec: {}
+----
++
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+To install the Decommission controller as a sidecar:
+
+.`redpanda-cluster.yaml`
+[,yaml,lines=11+13+15]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    statefulset:
+      sideCars:
+        controllers:
+          enabled: true
+          run:
+            - "nodeWatcher"
+    rbac:
+      enabled: true
+----
+
+- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
+- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
+- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`decommission-controller.yaml`
+[,yaml,lines=4+6+8]
+----
+statefulset:
+  sideCars:
+    controllers:
+      enabled: true
+      run:
+        - "nodeWatcher"
+rbac:
+  enabled: true
+----
++
+- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
+- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
+- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
+
+--set::
++
+[,bash,lines=4-6]
+----
+helm upgrade --install redpanda redpanda/redpanda \
+  --namespace <namespace> \
+  --create-namespace \
+  --set statefulset.sideCars.controllers.enabled=true \
+  --set statefulset.sideCars.controllers.run={"nodeWatcher"} \
+  --set rbac.enabled=true
+----
++
+- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
+- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
+- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
+
+====
+--
+======
+
+== Test the Nodewatcher controller
+
+. Test the Nodewatcher controller by deleting a Node resource:
++
+[,bash]
+----
+kubectl delete node <node-name>
+----
++
+NOTE: This step is for testing purposes only.
+
+. Monitor the logs of the Nodewatcher controller:
++
+--
+- If you're running the Nodewatcher controller as part of the Redpanda Operator:
++
+[,bash]
+----
+kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
+----
+
+- If you're running the Nodewatcher controller as a sidecar:
++
+[,bash]
+----
+kubectl logs <pod-name> --namespace <namespace> -c redpanda-controllers
+----
+--
++
+You should see that the controller successfully deleted the PVC of the Pod that was running on the deleted Node resource.
++
+[,bash]
+----
+kubectl get persistentvolumeclaim --namespace <namespace>
+----
+
+. Verify that the reclaim policy of the PV is set to `Retain` to allow you to recover the node, if necessary:
++
+[,bash]
+----
+kubectl get persistentvolume --namespace <namespace>
+----
+
+After the Nodewatcher controller has finished, xref:manage:kubernetes/k-decommission-brokers.adoc[decommission the broker] that was removed from the node. This is necessary to prevent a potential loss of quorum and ensure cluster stability.
+
+NOTE: Make sure to use the `--force` flag when decommissioning the broker with xref:reference:rpk/rpk-redpanda/rpk-redpanda-admin-brokers-decommission.adoc[`rpk redpanda admin brokers decommission`]. This flag is required when the broker is no longer running.

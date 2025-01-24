@@ -222,10 +222,171 @@ So the primary limitation consideration is the replication factor of five, meani
 
 To decommission a broker, you can use one of the following methods:
 
-- <<Automated>>: Use the Decommission controller to automatically decommission brokers whenever you reduce the number of StatefulSet replicas.
 - <<Manual>>: Use `rpk` to decommission one broker at a time.
+- <<Automated>>: Use the Decommission controller to automatically decommission brokers whenever you reduce the number of StatefulSet replicas.
 
-This example shows how to scale a cluster from seven brokers to five brokers.
+[[Manual]]
+=== Manually decommission a broker
+
+Follow this workflow to manually decommission a broker before reducing the number of StatefulSet replicas:
+
+[mermaid]
+....
+flowchart TB
+    %% Define classes
+    classDef userAction stroke:#374D7C, fill:#E2EBFF, font-weight:bold,rx:5,ry:5
+
+    A[Start Manual Scale-In]:::userAction --> B["Identify Broker to Remove<br/>(Highest Pod Ordinal)"]:::userAction
+    B --> C[Decommission Broker Running on Pod with Highest Ordinal]:::userAction
+    C --> D[Monitor Decommission Status]:::userAction
+    D --> E{Is Broker Removed?}:::userAction
+    E -- No --> D
+    E -- Yes --> F[Decrease StatefulSet Replicas by 1]:::userAction
+    F --> G[Wait for Rolling Update and Cluster Health]:::userAction
+    G --> H{More Brokers to Remove?}:::userAction
+    H -- Yes --> B
+    H -- No --> I[Done]:::userAction
+....
+
+. List your brokers and their associated broker IDs:
++
+```bash
+kubectl --namespace <namespace> exec -ti redpanda-0 -c redpanda -- \
+  rpk cluster info
+```
++
+.Example output
+[%collapsible]
+====
+```
+CLUSTER
+=======
+redpanda.560e2403-3fd6-448c-b720-7b456d0aa78c
+
+BROKERS
+=======
+ID    HOST                          PORT   RACK
+0     redpanda-0.testcluster.local  32180  A
+1     redpanda-1.testcluster.local  32180  A
+4     redpanda-3.testcluster.local  32180  B
+5*    redpanda-2.testcluster.local  32180  B
+6     redpanda-4.testcluster.local  32180  C
+8     redpanda-6.testcluster.local  32180  C
+9     redpanda-5.testcluster.local  32180  D
+```
+====
++
+The output shows that the IDs don't match the StatefulSet ordinal, which appears in the hostname. In this example, two brokers will be decommissioned: `redpanda-6` (ID 8) and `redpanda-5` (ID 9).
++
+NOTE: When scaling in a cluster, you cannot choose which broker is removed. Redpanda is deployed as a StatefulSet in Kubernetes. The StatefulSet controls which Pods are destroyed and always starts with the Pod that has the highest ordinal. So the first broker to be removed when updating the StatefulSet in this example is `redpanda-6` (ID 8).
+
+. Decommission the broker with the highest Pod ordinal:
++
+```bash
+kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
+  rpk redpanda admin brokers decommission <broker-id>
+```
++
+This message is displayed before the decommission process is complete.
++
+```bash
+Success, broker <broker-id> has been decommissioned!
+```
++
+TIP: If the broker is not running, use the `--force` flag.
+
+. Monitor the decommissioning status:
++
+```bash
+kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
+  rpk redpanda admin brokers decommission-status <broker-id>
+```
++
+The output uses cached cluster health data that is refreshed every 10 seconds. When the completion column for all rows is 100%, the broker is decommissioned.
++
+Another way to verify decommission is complete is by running the following command:
++
+```bash
+kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
+  rpk cluster health
+```
++
+Be sure to verify that the decommissioned broker's ID does not appear in the list of IDs. In this example, ID 9 is missing, which means the decommission is complete.
++
+```
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:               true
+Controller ID:               0
+All nodes:                   [4 1 0 5 6 8]
+Nodes down:                  []
+Leaderless partitions:       []
+Under-replicated partitions: []
+```
+
+. Decrease the number of replicas *by one* to remove the Pod with the highest ordinal (the one you just decommissioned).
++
+:caution-caption: Reduce replicas by one
+[CAUTION]
+====
+When scaling in (removing brokers), remove only one broker at a time. If you reduce the StatefulSet replicas by more than one, Kubernetes can terminate multiple Pods simultaneously, causing quorum loss and cluster unavailability.
+====
+:caution-caption: Caution
++
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    statefulset:
+      replicas: <number-of-replicas>
+----
+
+Apply the Redpanda resource:
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+
+[tabs]
+====
+--values::
++
+.`decommission.yaml`
+[,yaml]
+----
+statefulset:
+  replicas: <number-of-replicas>
+----
+
+--set::
++
+[,bash]
+----
+helm upgrade redpanda redpanda/redpanda --namespace <namespace> --wait --reuse-values --set statefulset.replicas=<number-of-replicas>
+----
+====
+--
+======
++
+This process triggers a rolling restart of each Pod so that each broker has an up-to-date `seed_servers` configuration to reflect the new list of brokers.
+
+You can repeat this procedure to continue to scale down.
 
 [[Automated]]
 === Use the Decommission controller
@@ -527,169 +688,6 @@ If you're running the Decommission controller as a sidecar:
 ----
 kubectl logs <pod-name> --namespace <namespace> -c redpanda-controllers
 ----
-
-You can repeat this procedure to continue to scale down.
-
-[[Manual]]
-=== Manually decommission a broker
-
-If you don't want to use the <<Automated, Decommission controller>>, follow this workflow to manually decommission a broker before reducing the number of StatefulSet replicas:
-
-[mermaid]
-....
-flowchart TB
-    %% Define classes
-    classDef userAction stroke:#374D7C, fill:#E2EBFF, font-weight:bold,rx:5,ry:5
-
-    A[Start Manual Scale-In]:::userAction --> B["Identify Broker to Remove<br/>(Highest Pod Ordinal)"]:::userAction
-    B --> C[Decommission Broker Running on Pod with Highest Ordinal]:::userAction
-    C --> D[Monitor Decommission Status]:::userAction
-    D --> E{Is Broker Removed?}:::userAction
-    E -- No --> D
-    E -- Yes --> F[Decrease StatefulSet Replicas by 1]:::userAction
-    F --> G[Wait for Rolling Update and Cluster Health]:::userAction
-    G --> H{More Brokers to Remove?}:::userAction
-    H -- Yes --> B
-    H -- No --> I[Done]:::userAction
-....
-
-. List your brokers and their associated broker IDs:
-+
-```bash
-kubectl --namespace <namespace> exec -ti redpanda-0 -c redpanda -- \
-  rpk cluster info
-```
-+
-.Example output
-[%collapsible]
-====
-```
-CLUSTER
-=======
-redpanda.560e2403-3fd6-448c-b720-7b456d0aa78c
-
-BROKERS
-=======
-ID    HOST                          PORT   RACK
-0     redpanda-0.testcluster.local  32180  A
-1     redpanda-1.testcluster.local  32180  A
-4     redpanda-3.testcluster.local  32180  B
-5*    redpanda-2.testcluster.local  32180  B
-6     redpanda-4.testcluster.local  32180  C
-8     redpanda-6.testcluster.local  32180  C
-9     redpanda-5.testcluster.local  32180  D
-```
-====
-+
-The output shows that the IDs don't match the StatefulSet ordinal, which appears in the hostname. In this example, two brokers will be decommissioned: `redpanda-6` (ID 8) and `redpanda-5` (ID 9).
-+
-NOTE: When scaling in a cluster, you cannot choose which broker is removed. Redpanda is deployed as a StatefulSet in Kubernetes. The StatefulSet controls which Pods are destroyed and always starts with the Pod that has the highest ordinal. So the first broker to be removed when updating the StatefulSet in this example is `redpanda-6` (ID 8).
-
-. Decommission the broker with the highest Pod ordinal:
-+
-```bash
-kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
-  rpk redpanda admin brokers decommission <broker-id>
-```
-+
-This message is displayed before the decommission process is complete.
-+
-```bash
-Success, broker <broker-id> has been decommissioned!
-```
-+
-TIP: If the broker is not running, use the `--force` flag.
-
-. Monitor the decommissioning status:
-+
-```bash
-kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
-  rpk redpanda admin brokers decommission-status <broker-id>
-```
-+
-The output uses cached cluster health data that is refreshed every 10 seconds. When the completion column for all rows is 100%, the broker is decommissioned.
-+
-Another way to verify decommission is complete is by running the following command:
-+
-```bash
-kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
-  rpk cluster health
-```
-+
-Be sure to verify that the decommissioned broker's ID does not appear in the list of IDs. In this example, ID 9 is missing, which means the decommission is complete.
-+
-```
-CLUSTER HEALTH OVERVIEW
-=======================
-Healthy:               true
-Controller ID:               0
-All nodes:                   [4 1 0 5 6 8]
-Nodes down:                  []
-Leaderless partitions:       []
-Under-replicated partitions: []
-```
-
-. Decrease the number of replicas *by one* to remove the Pod with the highest ordinal (the one you just decommissioned).
-+
-:caution-caption: Reduce replicas by one
-[CAUTION]
-====
-When scaling in (removing brokers), remove only one broker at a time. If you reduce the StatefulSet replicas by more than one, Kubernetes can terminate multiple Pods simultaneously, causing quorum loss and cluster unavailability.
-====
-:caution-caption: Caution
-+
-[tabs]
-======
-Helm + Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    statefulset:
-      replicas: <number-of-replicas>
-----
-
-Apply the Redpanda resource:
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-
-[tabs]
-====
---values::
-+
-.`decommission.yaml`
-[,yaml]
-----
-statefulset:
-  replicas: <number-of-replicas>
-----
-
---set::
-+
-[,bash]
-----
-helm upgrade redpanda redpanda/redpanda --namespace <namespace> --wait --reuse-values --set statefulset.replicas=<number-of-replicas>
-----
-====
---
-======
-+
-This process triggers a rolling restart of each Pod so that each broker has an up-to-date `seed_servers` configuration to reflect the new list of brokers.
 
 You can repeat this procedure to continue to scale down.
 
