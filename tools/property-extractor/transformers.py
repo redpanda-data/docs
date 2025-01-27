@@ -287,3 +287,50 @@ class AliasTransformer:
                 aliases.extend(alias.strip('{}"') for alias in aliases_dict.values())
 
         property['aliases'] = aliases
+
+class EnterpriseTransformer:
+    def accepts(self, property,file_pair):
+        if property['type'] is not None and 'enterprise' in property['type']: # Check for enterprise properties
+            return True
+        return False
+    
+    def parse(self, property, info, file_pair):
+        if info['params'] is not None:
+            enterpriseValue = info['params'][0]['value']
+            property['enterprise_value'] = enterpriseValue
+            property['is_enterprise'] = True
+            del info['params'][0]
+
+class MetaParamTransformer:
+    def accepts(self, info, file_pair):
+        """
+        Check if the given info contains parameters that include a meta{...} value.
+        """
+        if 'params' in info:
+            for param in info['params']:
+                if isinstance(param, dict) and 'value' in param:
+                    value = param['value']
+                    if isinstance(value, str) and value.startswith("meta{"):
+                        return True
+        return False
+
+    def parse(self, property, info, file_pair):
+        """
+        Transform into a structured dictionary.
+        """
+        if 'params' not in info or info['params'] is None:
+            return
+
+        iterable_params = info['params']
+        for param in iterable_params:
+            if isinstance(param['value'], str) and param['value'].startswith("meta{"):
+                meta_content = param['value'].strip("meta{ }").strip()
+                meta_dict = {}
+                for item in meta_content.split(','):
+                    item = item.strip()
+                    if '=' in item:
+                        key, value = item.split('=')
+                        meta_dict[key.strip().replace('.', '')] = value.strip()
+                        meta_dict['type'] = 'initializer_list'  # Enforce required type
+
+                param['value'] = meta_dict

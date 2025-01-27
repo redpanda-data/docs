@@ -78,7 +78,9 @@ def get_files_with_properties(file_pairs, treesitter_parser, cpp_language):
         if any(path in implementation_value for path in file_paths):
             if len(properties) > 0:
                 files_with_properties.append((fp, properties))
-                logger.info(f"Extracted {len(properties)} properties from {fp.implementation}")
+                logging.info(f"Properties found in '{fp.implementation}'.")
+
+    
 
     return files_with_properties
 
@@ -86,6 +88,8 @@ def get_files_with_properties(file_pairs, treesitter_parser, cpp_language):
 def transform_files_with_properties(files_with_properties):
     type_transformer = TypeTransformer()
     transformers = [
+        EnterpriseTransformer(), ## this must be the first, as it modifies current data
+        MetaParamTransformer(),
         BasicInfoTransformer(),
         type_transformer,
         IsNullableTransformer(),
