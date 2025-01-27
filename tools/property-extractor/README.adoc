@@ -1,0 +1,212 @@
+= Redpanda Property Generator
+
+The Redpanda Property Generator is a CLI tool designed to extract properties from Redpanda's source code and generate a JSON output with their definitions as well as Asciidoc pages.
+
+== Prerequisites
+
+Ensure the following prerequisites are installed on your system:
+
+- https://www.python.org/downloads/[Python 3.10 or higher]
+- A C++ compiler (such as `gcc`, `clang`)
+- https://www.google.com/search?q=how+to+install+make[`make` utility] (to use the Makefile for automation)
++
+To ensure `make` is available:
++
+[,bash]
+----
+make --version
+----
+
+== Install
+
+. Clone the repository:
++
+[,bash]
+----
+git clone https://github.com/redpanda-data/docs.git
+git checkout add-property-extractor
+----
+
+. Initialize and update submodules:
++
+[,bash]
+----
+git submodule update --init --recursive
+----
+
+== Generate properties
+
+. Run the build process:
++
+[,bash]
+----
+cd tools/property-extractor
+make build
+----
++
+This command:
++
+- Sets up the Python virtual environment (`venv`).
+- Checks out the Redpanda source code to the specified branch or tag.
+- Runs the extractor to generate a JSON file at `gen/properties-output.json`.
+- Runs the docs generator to generate Asciidoc pages from the `properties-output.json`.
+
+. Locate the generated files:
++
+[,bash]
+----
+ls gen/properties-output.json
+ls output
+----
+
+To clean the environment and generated files:
+
+[,bash]
+----
+make clean
+----
+
+== Run the extractor manually
+
+To run the extractor tool directly:
+
+[,bash]
+----
+./property_extractor.py --path <path-to-redpanda-source> [options]
+----
+
+=== Command options
+
+|===
+| Option | Description
+
+| `--path <path>`
+| Path to the Redpanda source directory to extract properties from (required).
+| `--recursive`
+| Recursively scan the provided path for header (`*.h`) and implementation (`*.cc`) file pairs.
+| `--output <output>`
+| Path to the output JSON file. If not provided, the output will be printed to the console.
+| `--definitions <definitions>`
+| Path to the `definitions.json` file for type definitions (default: included `definitions.json`).
+| `-v`, `--verbose`
+| Enable verbose logging for debugging purposes.
+|===
+
+=== Example command
+
+[,bash]
+----
+./property_extractor.py --path ./tmp/redpanda --recursive --output gen/properties.json
+----
+
+=== How it works
+
+. The tool identifies pairs of header (`*.h`) and implementation (`*.cc`) files in the specified Redpanda source directory. This ensures that both the declaration and definition of properties are available.
+
+. Tree-sitter is used to parse the C++ source code and create abstract syntax trees (ASTs). Both the Tree-sitter C++ library (via a Git submodule) and its Python bindings (`tree_sitter`) are required for this step.
+
+. Custom logic in `property_extractor.py` processes the ASTs to extract property definitions from specific files like:
++
+- `src/v/config/configuration.cc`
+- `src/v/kafka/client/configuration.cc`
+
+. Extracted properties are processed by a series of transformers to enrich and normalize the data. For example:
++
+- `BasicInfoTransformer`: Extracts names and metadata.
+- `VisibilityTransformer`: Determines visibility (e.g., public or private).
+- `IsNullableTransformer`: Detects if a property is nullable.
+
+. The `definitions.json` file is merged into the output, linking property types to their descriptions.
+
+=== JSON output
+
+The final JSON contains:
+
+- `properties`: Extracted properties with metadata.
+- `definitions`: Type definitions, merged from `definitions.json`.
+
+Example JSON structure:
+
+[,json]
+----
+{
+    "properties": {
+        "example_property": {
+            "type": "string",
+            "description": "An example property."
+        }
+    },
+    "definitions": {
+        "string": {
+            "description": "A string type."
+        }
+    }
+}
+----
+
+=== Custom definitions
+
+You can provide a custom `definitions.json` file:
+
+[,bash]
+----
+./property_extractor.py --path ./tmp/redpanda --definitions custom-definitions.json --output gen/custom-output.json
+----
+
+=== Debugging
+
+Enable verbose logging to see detailed information:
+[,bash]
+----
+./property_extractor.py --path ./tmp/redpanda --verbose
+----
+
+== Run the docs generator manually
+
+. Make sure you have the `gen/properties-output.json` file, relative to the `Makefile` location.
+
+. Run the script:
++
+[,bash]
+----
+python3 generate_docs.py
+----
+
+The script will process the JSON and generate AsciiDoc files in the `output/pages/` directory.
+
+=== Output files
+
+The following files will be generated:
+
+- Broker Properties: `output/pages/broker-properties.adoc`
+- Cluster Properties: `output/pages/cluster-properties.adoc`
+- Object Storage Properties: `output/pages/object-storage-properties.adoc`
+- Deprecated Properties: `output/pages/deprecated/partials/deprecated-properties.adoc`
+
+=== Error reports
+
+If the script encounters issues, it will generate error files in the `output/error/` directory:
+
+- `empty_description.txt`: Properties without descriptions.
+- `empty_type.txt`: Properties without types.
+- `max_without_min.txt`: Properties with a maximum value but no minimum.
+- `min_without_max.txt`: Properties with a minimum value but no maximum.
+
+The console output will summarize the errors and property statistics.
+
+=== How it works
+
+. Input parsing:
+   - The script loads the JSON file from the `gen/` directory.
+   - Properties are categorized into groups based on their `defined_in` field or specific naming conventions such as the `cloud_` prefix.
+
+. Validation:
+   - Validates fields like `description`, `type`, `maximum`, and `minimum`.
+   - Identifies missing or inconsistent data and logs these to error files.
+
+. Documentation generation:
+   - Creates AsciiDoc files with categorized properties, including metadata such as type, default value, visibility, and restart requirements.
+   - Appends appropriate titles, introductions, and formatting for each group.
+
+. Error reporting: Generates error reports for easy debugging and correction of the input JSON.
+
