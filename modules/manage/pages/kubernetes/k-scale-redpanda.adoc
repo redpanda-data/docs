@@ -21,13 +21,26 @@ If your existing worker nodes have either too many resources or not enough resou
 - Deleting the Pod's PersistentVolumeClaim (PVC).
 - Ensuring that the PersistentVolume's (PV) reclaim policy is set to `Retain` to make sure that you can roll back to the original worker node without losing data.
 
-As an emergency backstop, the <<node-pvc, Nodewatcher controller>> can automate the deletion of PVCs and set the reclaim policy of PVs to `Retain`.
+TIP: For emergency scenarios in which a node unexpectedly fails or is decommissioned without warning, the Nodewatcher controller can help protect your Redpanda data. For details, see xref:manage:kubernetes/k-nodewatcher.adoc[].
 
 == Horizontal scaling
 
 Horizontal scaling involves modifying the number of brokers in your cluster, either by adding new ones (scaling out) or removing existing ones (scaling in). In situations where the workload is variable, horizontal scaling allows for flexibility. You can scale out when demand is high and scale in when demand is low, optimizing resource usage and cost.
 
-CAUTION: Redpanda does not support Kubernetes autoscalers. Autoscalers rely on CPU and memory metrics for scaling decisions, which do not fully capture the complexities involved in scaling Redpanda clusters. Improper scaling can lead to operational challenges. Always manually scale your Redpanda clusters as described in this topic.
+:caution-caption: Do not use autoscalers
+
+CAUTION: Redpanda does not support Kubernetes autoscalers. Autoscalers rely on CPU and memory metrics for scaling decisions, which do not fully capture the complexities involved in scaling Redpanda clusters. Always manually scale your Redpanda clusters as described in this topic.
+
+:caution-caption: Caution
+
+While you should not rely on Kubernetes autoscalers to scale your Redpanda brokers, you can prevent infrastructure-level autoscalers like Karpenter from terminating nodes that run Redpanda Pods. For example, you can set the xref:reference:k-redpanda-helm-spec.adoc#statefulset-podtemplate-annotations[`statefulset.podTemplate.annotations`] field in the Redpanda Helm values, or the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-podtemplate[`statefulset.podTemplate.annotations`] field in the Redpanda custom resource to include:
+
+[,yaml]
+----
+karpenter.sh/do-not-disrupt: "true"
+----
+
+This annotation tells Karpenter not to disrupt the node on which the annotated Pod is running. This can help protect Redpanda brokers from unexpected shutdowns in environments that use Karpenter to manage infrastructure nodes.
 
 === Scale out
 
@@ -119,184 +132,7 @@ kubectl exec redpanda-0 --namespace <namespace> -- rpk cluster health
 
 Scaling in is the process of removing brokers from your Redpanda cluster. You may want to remove brokers for cost reduction and resource optimization.
 
-To scale in a Redpanda cluster, you must decommission the brokers that you want to remove before updating the `statefulset.replica` setting in the Helm values. See xref:manage:kubernetes/k-decommission-brokers.adoc[].
-
-[[node-pvc]]
-== Install the Nodewatcher controller
-
-The Nodewatcher controller maintains cluster operation during node failures by managing the lifecycle of PersistentVolumes (PVs) and PersistentVolumeClaims (PVCs) for Redpanda clusters. When the controller detects that a Node resource is not available, it sets the reclaim policy of the PV to `Retain`, helping to prevent data loss. Concurrently, it orchestrates the deletion of the PVC, which allows the Redpanda broker that was previously running on the deleted worker node to be rescheduled onto new, operational nodes.
-
-[WARNING]
-====
-The Nodewatcher controller is an emergency backstop to keep your Redpanda cluster running in case of unexpected node failures. *Never use this controller as a routine method for removing brokers.*
-
-Using the Nodewatcher controller as a routine method for removing brokers can lead to unintended consequences, such as increased risk of data loss and inconsistent cluster states. The Nodewatcher is designed for emergency scenarios and not for managing the regular scaling, decommissioning, and rebalancing of brokers.
-
-To safely scale in your Redpanda cluster, always use the xref:manage:kubernetes/k-decommission-brokers.adoc[decommission process], which ensures that brokers are removed in a controlled manner, with data properly redistributed across the remaining nodes, maintaining cluster health and data integrity.
-====
-
-. Install the Nodewatcher controller:
-+
-[tabs]
-======
-Helm + Operator::
-+
---
-
-You can install the Nodewatcher controller as part of the Redpanda Operator or as a sidecar on each Pod that runs a Redpanda broker. When you install the controller as part of the Redpanda Operator, the controller monitors all Redpanda clusters running in the same namespace as the Redpanda Operator. If you want the controller to manage only a single Redpanda cluster, install it as a sidecar on each Pod that runs a Redpanda broker, using the Redpanda resource.
-
-To install the Nodewatcher controller as part of the Redpanda Operator:
-
-.. Deploy the Redpanda Operator with the Nodewatcher controller:
-+
-[,bash,subs="attributes+",lines=7+8]
-----
-helm repo add redpanda https://charts.redpanda.com
-helm repo update
-helm upgrade --install redpanda-controller redpanda/operator \
-  --namespace <namespace> \
-  --set image.tag={latest-operator-version} \
-  --create-namespace \
-  --set additionalCmdFlags={--additional-controllers="nodeWatcher"} \
-  --set rbac.createAdditionalControllerCRs=true
-----
-+
-- `--additional-controllers="nodeWatcher"`: Enables the Nodewatcher controller.
-- `rbac.createAdditionalControllerCRs=true`: Creates the required RBAC rules for the Redpanda Operator to monitor the Node resources and update PVCs and PVs.
-
-.. Deploy a Redpanda resource:
-+
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec: {}
-----
-+
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
-To install the Decommission controller as a sidecar:
-
-.`redpanda-cluster.yaml`
-[,yaml,lines=11+13+15]
-----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    statefulset:
-      sideCars:
-        controllers:
-          enabled: true
-          run:
-            - "nodeWatcher"
-    rbac:
-      enabled: true
-----
-
-- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
-- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
-- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
-
---
-Helm::
-+
---
-[tabs]
-====
---values::
-+
-.`decommission-controller.yaml`
-[,yaml,lines=4+6+8]
-----
-statefulset:
-  sideCars:
-    controllers:
-      enabled: true
-      run:
-        - "nodeWatcher"
-rbac:
-  enabled: true
-----
-+
-- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
-- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
-- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
-
---set::
-+
-[,bash,lines=4-6]
-----
-helm upgrade --install redpanda redpanda/redpanda \
-  --namespace <namespace> \
-  --create-namespace \
-  --set statefulset.sideCars.controllers.enabled=true \
-  --set statefulset.sideCars.controllers.run={"nodeWatcher"} \
-  --set rbac.enabled=true
-----
-+
-- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
-- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
-- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
-
-====
---
-======
-
-. Test the Nodewatcher controller by deleting a Node resource:
-+
-[,bash]
-----
-kubectl delete node <node-name>
-----
-+
-NOTE: This step is for testing purposes only.
-
-. Monitor the logs of the Nodewatcher controller:
-+
---
-- If you're running the Nodewatcher controller as part of the Redpanda Operator:
-+
-[,bash]
-----
-kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
-----
-
-- If you're running the Nodewatcher controller as a sidecar:
-+
-[,bash]
-----
-kubectl logs <pod-name> --namespace <namespace> -c redpanda-controllers
-----
---
-+
-You should see that the controller successfully deleted the PVC of the Pod that was running on the deleted Node resource.
-+
-[,bash]
-----
-kubectl get persistentvolumeclaim --namespace <namespace>
-----
-
-. Verify that the reclaim policy of the PV is set to `Retain` to allow you to recover the node, if necessary:
-+
-[,bash]
-----
-kubectl get persistentvolume --namespace <namespace>
-----
-
-After the Nodewatcher controller has finished, xref:manage:kubernetes/k-decommission-brokers.adoc[decommission the broker] that was removed from the node. This is necessary to prevent a potential loss of quorum and ensure cluster stability.
-
-NOTE: Make sure to use the `--force` flag when decommissioning the broker with xref:reference:rpk/rpk-redpanda/rpk-redpanda-admin-brokers-decommission.adoc[`rpk redpanda admin brokers decommission`]. This flag is required when the broker is no longer running.
+To scale in a Redpanda cluster, follow the xref:manage:kubernetes/k-decommission-brokers.adoc[instructions for decommissioning brokers in Kubernetes] to safely remove brokers from the Redpanda cluster.
 
 
 
