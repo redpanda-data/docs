@@ -76,13 +76,21 @@ Metrics are stored in docs/gen/24.3/metrics.
 
 ## Clean Up
 
-When you’re done, you can remove the Docker containers and volumes:
+When you’re done:
 
-```bash
-docker compose down --volumes
-```
+1. Deactivate the Python virtual environment:
 
-Or rerun `./extract_metrics.sh` to reset and recreate the environment.
+   ```bash
+   deactivate
+   ```
+
+2. Remove the Docker containers and volumes:
+
+   ```bash
+   docker compose down --volumes
+   ```
+
+   Or rerun `./extract_metrics.sh` to reset and recreate the environment.
 
 ## Caveats
 
