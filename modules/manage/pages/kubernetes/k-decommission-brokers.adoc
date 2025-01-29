@@ -1,16 +1,18 @@
 = Decommission Brokers in Kubernetes
-:description: Remove a broker so that it is no longer considered part of the cluster.
+:description: Remove a Redpanda broker from the cluster without risking data loss or causing instability.
 :page-context-links: [{"name": "Linux", "to": "manage:cluster-maintenance/decommission-brokers.adoc" },{"name": "Kubernetes", "to": "manage:kubernetes/k-decommission-brokers.adoc" } ]
 :tags: ["Kubernetes"]
 :page-aliases: manage:kubernetes/decommission-brokers.adoc
 :page-categories: Management
 :env-kubernetes: true
 
-When you decommission a broker, its partition replicas are reallocated across the remaining brokers and it is removed from the cluster. You may want to decommission a broker in the following circumstances:
+Decommissioning a broker is the *safe and controlled* way to remove a Redpanda broker from the cluster without risking data loss or causing instability. By decommissioning, you ensure that partition replicas are reallocated across the remaining brokers so that you can then safely shut down the broker.
+
+You may want to decommission a broker in the following situations:
 
 * You are removing a broker to decrease the size of the cluster, also known as scaling down.
 * The broker has lost its storage and you need a new broker with a new node ID (broker ID).
-* You are replacing a worker node, for example to upgrade the Kubernetes cluster or to replace the hardware.
+* You are replacing a worker node, for example, by upgrading the Kubernetes cluster or replacing the hardware.
 
 NOTE: When a broker is decommissioned, it cannot rejoin the cluster. If a broker with the same ID tries to rejoin the cluster, it is rejected.
 
@@ -18,7 +20,7 @@ NOTE: When a broker is decommissioned, it cannot rejoin the cluster. If a broker
 
 You must have the following:
 
-* Kubernetes cluster: Ensure you have a running Kubernetes cluster, either locally, such as with minikube or kind, or remotely.
+* Kubernetes cluster: Ensure you have a running Kubernetes cluster, either locally, with minikube or kind, or remotely.
 
 * https://kubernetes.io/docs/tasks/tools/#kubectl[Kubectl^]: Ensure you have the `kubectl` command-line tool installed and configured to communicate with your cluster.
 
@@ -30,7 +32,7 @@ When a broker is decommissioned, the controller leader creates a reallocation pl
 
 The reallocation of each partition is translated into a Raft group reconfiguration and executed by the controller leader. The partition leader then handles the reconfiguration for its Raft group. After the reallocation for a partition is complete, it is recorded in the controller log and the status is updated in the topic tables of each broker.
 
-The decommissioning process is successful only when all partition reallocations have been completed successfully. The controller leader polls for the status of all the partition-level reallocations to ensure that everything completes as expected.
+The decommissioning process is successful only when all partition reallocations have been completed. The controller leader polls for the status of all the partition-level reallocations to ensure that everything completes as expected.
 
 During the decommissioning process, new partitions are not allocated to the broker that is being decommissioned. After all the reallocations have been completed successfully, the broker is removed from the cluster.
 
@@ -77,17 +79,17 @@ ID    HOST                          PORT   RACK
 ```
 ====
 
-The output shows four racks (A/B/C/D), so you might want to have at least four brokers to make use of all racks.
+The output shows four racks (A/B/C/D), so you might want to have at least four brokers to use all racks.
 
 Rack awareness is just one aspect of availability. Refer to xref:deploy:deployment-option/self-hosted/kubernetes/k-high-availability.adoc[High Availability] for more details on deploying Redpanda for high availability.
 
 === Cost
 
-Infrastructure costs increase with each broker, so adding a broker means an additional instance cost. For example, if you deploy Redpanda on GKE on https://gcloud-compute.com/n2-standard-8.html[n2-standard-8^] GCP instances, the instance cost of the cluster is $1925 per month. Reducing the number of brokers to five would save $550 per month, and reducing it further to three brokers would save $1100 per month. You must also consider other costs, but they won't be as impacted by changing the broker count.
+Infrastructure costs increase with each broker because each broker requires a dedicated node (instance), so adding a broker means an additional instance cost. For example, if the instance cost is $1925 per month in a cluster with seven brokers, the instance cost for each broker is $275. Reducing the number of brokers from seven to five would save $550 per month ($275 x 2), and reducing it to three brokers would save $1100 per month. You must also consider other costs, but they won't be as impacted by changing the broker count.
 
 === Data retention
 
-Local data retention is determined by the storage capability of each broker and producer throughput, which is the amount of data being produced over a given period. When decommissioning, storage capability must take into account both the free storage space and the amount of space already in use by existing partitions.
+Local data retention is determined by the storage capability of each broker and producer throughput, which is the amount of data produced over a given period. When decommissioning, storage capability must consider both the free storage space and the amount of space already in use by existing partitions.
 
 Run the following command to determine how much storage is being used, in bytes, on each broker:
 
@@ -113,9 +115,9 @@ BROKER  SIZE          ERROR
 
 This example shows that each broker has roughly 240GB of data. This means scaling in to five brokers would require each broker to have at least 337GB to store that same data.
 
-Keep in mind that actual space used on disk will be greater than the data size reported by Redpanda. Redpanda reserves some data on disk per partition, and reserves less space per partition as available disk space decreases. Incoming data for each partition is then written to disk in the form of segments (files). The time when segments are written to disk is based on a number of factors, including the topic's segment configuration, broker restarts, and changes in Raft leadership.
+Keep in mind that the actual space used on disk will be greater than the data size reported by Redpanda. Redpanda reserves some data on disk per partition and reserves less space per partition as available disk space decreases. Incoming data for each partition is then written to disk as segments (files). The time when segments are written to disk is based on a number of factors, including the topic's segment configuration, broker restarts, and changes in Raft leadership.
 
-Throughput is the primary measurement required to calculate future data storage requirements. For example, if throughput is at 200MB/sec, the application will generate 0.72TB/hour (or 17.28TB/day, or 120.96TB/wk). Divide this amount by the target number of brokers to get an estimate of how much storage is needed to retain that much data for various periods of time:
+Throughput is the primary measurement required to calculate future data storage requirements. For example, if the throughput is 200MB/sec, the application will generate 0.72TB/hour (17.28TB/day, or 120.96TB/wk). Divide this amount by the target number of brokers to get an estimate of how much storage is needed to retain that much data for various periods of time:
 
 |===
 | Retention | Disk size (on each of the 5 brokers)
@@ -159,13 +161,13 @@ Example output:
 5
 ----
 
-In this example the highest replication factor is five, which means at least five brokers are required in this cluster.
+In this example, the highest replication factor is five, which means that at least five brokers are required in this cluster.
 
 Generally, a cluster can withstand a higher number of brokers going down if more brokers exist in the cluster. For details, see xref:get-started:architecture.adoc#raft-consensus-algorithm[Raft consensus algorithm].
 
 === Partition count
 
-It is best practice to make sure the total partition count does not exceed 1K per core. This maximum partition count depends on many other factors, such as memory per core, CPU performance, throughput, and latency requirements. Exceeding 1K partitions per core can lead to increased latency, increased number of partition leadership elections, and general reduced stability.
+It is best practice to make sure the total partition count does not exceed 1K per core. This maximum partition count depends on many other factors, such as memory per core, CPU performance, throughput, and latency requirements. Exceeding 1K partitions per core can lead to increased latency, an increased number of partition leadership elections, and generally reduced stability.
 
 Run the following command to get the total partition count for your cluster:
 
@@ -222,15 +224,208 @@ So the primary limitation consideration is the replication factor of five, meani
 
 To decommission a broker, you can use one of the following methods:
 
-- <<Automated>>: Use the Decommission controller to automatically decommission brokers whenever you reduce the number of StatefulSet replicas.
 - <<Manual>>: Use `rpk` to decommission one broker at a time.
+- <<Automated>>: Use the Decommission controller to automatically decommission brokers whenever you reduce the number of StatefulSet replicas.
 
-This example shows how to scale a cluster from seven brokers to five brokers.
+[[Manual]]
+=== Manually decommission a broker
+
+Follow this workflow to manually decommission a broker before reducing the number of StatefulSet replicas:
+
+[mermaid]
+....
+flowchart TB
+    %% Define classes
+    classDef userAction stroke:#374D7C, fill:#E2EBFF, font-weight:bold,rx:5,ry:5
+
+    A[Start Manual Scale-In]:::userAction --> B["Identify broker to R=remove<br/>(highest Pod ordinal)"]:::userAction
+    B --> C[Decommission broker running on Pod with highest ordinal]:::userAction
+    C --> D[Monitor decommission status]:::userAction
+    D --> E{Is broker removed?}:::userAction
+    E -- No --> D
+    E -- Yes --> F[Decrease StatefulSet replicas by 1]:::userAction
+    F --> G[Wait for rolling update and cluster health]:::userAction
+    G --> H{More brokers to remove?}:::userAction
+    H -- Yes --> B
+    H -- No --> I[Done]:::userAction
+....
+
+. List your brokers and their associated broker IDs:
++
+```bash
+kubectl --namespace <namespace> exec -ti redpanda-0 -c redpanda -- \
+  rpk cluster info
+```
++
+.Example output
+[%collapsible]
+====
+```
+CLUSTER
+=======
+redpanda.560e2403-3fd6-448c-b720-7b456d0aa78c
+
+BROKERS
+=======
+ID    HOST                          PORT   RACK
+0     redpanda-0.testcluster.local  32180  A
+1     redpanda-1.testcluster.local  32180  A
+4     redpanda-3.testcluster.local  32180  B
+5*    redpanda-2.testcluster.local  32180  B
+6     redpanda-4.testcluster.local  32180  C
+8     redpanda-6.testcluster.local  32180  C
+9     redpanda-5.testcluster.local  32180  D
+```
+====
++
+The output shows that the IDs don't match the StatefulSet ordinal, which appears in the hostname. In this example, two brokers will be decommissioned: `redpanda-6` (ID 8) and `redpanda-5` (ID 9).
++
+NOTE: When scaling in a cluster, you cannot choose which broker is removed. Redpanda is deployed as a StatefulSet in Kubernetes. The StatefulSet controls which Pods are destroyed and always starts with the Pod that has the highest ordinal. So the first broker to be removed when updating the StatefulSet in this example is `redpanda-6` (ID 8).
+
+. Decommission the broker with the highest Pod ordinal:
++
+```bash
+kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
+  rpk redpanda admin brokers decommission <broker-id>
+```
++
+This message is displayed before the decommission process is complete.
++
+```bash
+Success, broker <broker-id> has been decommissioned!
+```
++
+TIP: If the broker is not running, use the `--force` flag.
+
+. Monitor the decommissioning status:
++
+```bash
+kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
+  rpk redpanda admin brokers decommission-status <broker-id>
+```
++
+The output uses cached cluster health data that is refreshed every 10 seconds. When the completion column for all rows is 100%, the broker is decommissioned.
++
+Another way to verify decommission is complete is by running the following command:
++
+```bash
+kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
+  rpk cluster health
+```
++
+Be sure to verify that the decommissioned broker's ID does not appear in the list of IDs. In this example, ID 9 is missing, which means the decommission is complete.
++
+```
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:               true
+Controller ID:               0
+All nodes:                   [4 1 0 5 6 8]
+Nodes down:                  []
+Leaderless partitions:       []
+Under-replicated partitions: []
+```
+
+. Decrease the number of replicas *by one* to remove the Pod with the highest ordinal (the one you just decommissioned).
++
+:caution-caption: Reduce replicas by one
+[CAUTION]
+====
+When scaling in (removing brokers), remove only one broker at a time. If you reduce the StatefulSet replicas by more than one, Kubernetes can terminate multiple Pods simultaneously, causing quorum loss and cluster unavailability.
+====
+:caution-caption: Caution
++
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    statefulset:
+      replicas: <number-of-replicas>
+----
+
+Apply the Redpanda resource:
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+
+[tabs]
+====
+--values::
++
+.`decommission.yaml`
+[,yaml]
+----
+statefulset:
+  replicas: <number-of-replicas>
+----
+
+--set::
++
+[,bash]
+----
+helm upgrade redpanda redpanda/redpanda --namespace <namespace> --wait --reuse-values --set statefulset.replicas=<number-of-replicas>
+----
+====
+--
+======
++
+This process triggers a rolling restart of each Pod so that each broker has an up-to-date `seed_servers` configuration to reflect the new list of brokers.
+
+You can repeat this procedure to continue to scale down.
 
 [[Automated]]
 === Use the Decommission controller
 
-The Decommission controller is responsible for monitoring the StatefulSet for changes in the number replicas. When the number of replicas is reduced, the controller decommissions brokers, starting from the highest Pod ordinal, until the number of brokers matches the number of replicas. For example, you have a Redpanda cluster with the following brokers:
+The Decommission controller is responsible for monitoring the StatefulSet for changes in the number replicas. When the number of replicas is reduced, the controller decommissions brokers, starting from the highest Pod ordinal, until the number of brokers matches the number of replicas.
+
+[mermaid]
+....
+flowchart TB
+  %% Define classes
+  classDef userAction stroke:#374D7C, fill:#E2EBFF, font-weight:bold,rx:5,ry:5
+  classDef systemAction fill:#F6FBF6,stroke:#25855a,stroke-width:2px,color:#20293c,rx:5,ry:5
+
+  %% Legend
+  subgraph Legend
+    direction TB
+    UA([User action]):::userAction
+    SE([System event]):::systemAction
+  end
+  Legend ~~~ Workflow
+
+  %% Main workflow
+  subgraph Workflow
+    direction TB
+    A[Start automated scale-in]:::userAction --> B[Decrease StatefulSet<br/>replicas by 1]:::userAction
+    B --> C[Decommission controller<br/>detects reduced replicas]:::systemEvent
+    C --> D[Controller marks<br/>highest ordinal Pod for removal]:::systemEvent
+    D --> E[Controller orchestrates<br/>broker decommission]:::systemEvent
+    E --> F[Partitions reallocate<br/>under controller supervision]:::systemEvent
+    F --> G[Check cluster health]:::systemEvent
+    G --> H{Broker fully removed?}:::systemEvent
+    H -- No --> F
+    H -- Yes --> I[Done,<br/>or repeat if further scale-in needed]:::userAction
+  end
+....
+
+For example, you have a Redpanda cluster with the following brokers:
 
 [.no-copy]
 ----
@@ -402,7 +597,14 @@ helm upgrade --install redpanda redpanda/redpanda \
 kubectl exec redpanda-0 --namespace <namespace> -- rpk cluster health
 ```
 
-. Decrease the number of replicas by one:
+. Decrease the number of replicas *by one*.
++
+:caution-caption: Reduce replicas by one
+[CAUTION]
+====
+When scaling in (removing brokers), remove only one broker at a time. If you reduce the StatefulSet replicas by more than one, Kubernetes can terminate multiple Pods simultaneously, causing quorum loss and cluster unavailability.
+====
+:caution-caption: Caution
 +
 [tabs]
 ======
@@ -493,104 +695,7 @@ If you're running the Decommission controller as a sidecar:
 kubectl logs <pod-name> --namespace <namespace> -c redpanda-controllers
 ----
 
-You can repeat this procedure to scale down to 5 brokers.
-
-[[Manual]]
-=== Manually decommission a broker
-
-If you don't want to use the <<Automated, Decommission controller>>, follow these steps to manually decommission a broker before reducing the number of StatefulSet replicas:
-
-. List your brokers and their associated broker IDs:
-+
-```bash
-kubectl --namespace <namespace> exec -ti redpanda-0 -c redpanda -- \
-  rpk cluster info
-```
-+
-.Example output
-[%collapsible]
-====
-```
-CLUSTER
-=======
-redpanda.560e2403-3fd6-448c-b720-7b456d0aa78c
-
-BROKERS
-=======
-ID    HOST                          PORT   RACK
-0     redpanda-0.testcluster.local  32180  A
-1     redpanda-1.testcluster.local  32180  A
-4     redpanda-3.testcluster.local  32180  B
-5*    redpanda-2.testcluster.local  32180  B
-6     redpanda-4.testcluster.local  32180  C
-8     redpanda-6.testcluster.local  32180  C
-9     redpanda-5.testcluster.local  32180  D
-```
-====
-+
-The output shows that the IDs don't match the StatefulSet ordinal, which appears in the hostname. In this example, two brokers will be decommissioned: `redpanda-6` (ID 8) and `redpanda-5` (ID 9).
-+
-NOTE: When scaling in a cluster, you cannot choose which broker is decommissioned. Redpanda is deployed as a StatefulSet in Kubernetes. The StatefulSet controls which Pods are destroyed and always starts with the Pod that has the highest ordinal. So the first broker to be destroyed when updating the StatefulSet in this example is `redpanda-6` (ID 8).
-
-. Decommission the broker with your selected broker ID:
-+
-```bash
-kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
-  rpk redpanda admin brokers decommission <broker-id>
-```
-+
-This message is displayed before the decommission process is complete.
-+
-```
-Success, broker <broker-id> has been decommissioned!
-```
-+
-TIP: If the broker is not running, use the `--force` flag.
-
-. Monitor the decommissioning status:
-+
-```bash
-kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
-  rpk redpanda admin brokers decommission-status <broker-id>
-```
-+
-The output uses cached cluster health data that is refreshed every 10 seconds. When the completion column for all rows is 100%, the broker is decommissioned.
-+
-Another way to verify decommission is complete is by running the following command:
-+
-```bash
-kubectl --namespace <namespace> exec -ti <pod-name> -c <container-name> -- \
-  rpk cluster health
-```
-+
-Be sure to verify that the decommissioned broker's ID does not appear in the list of IDs. In this example, ID 9 is missing, which means the decommission is complete.
-+
-```
-CLUSTER HEALTH OVERVIEW
-=======================
-Healthy:               true
-Controller ID:               0
-All nodes:                   [4 1 0 5 6 8]
-Nodes down:                  []
-Leaderless partitions:       []
-Under-replicated partitions: []
-```
-
-. Decommission any other brokers.
-+
-After decommissioning one broker and verifying that the process is complete, continue decommissioning another broker by repeating the previous two steps.
-+
-NOTE: Be sure to take into account everything in <<should-you-decommission-brokers, this section>>, and that you have verified that your cluster and use cases will not be negatively impacted by losing brokers.
-
-. Update the StatefulSet replica value.
-+
-The last step is to update the StatefulSet replica value to reflect the new broker count. In this example the count was updated to five. If you deployed with the Helm chart, then run following command:
-+
-```bash
-helm upgrade redpanda redpanda/redpanda --namespace <namespace> --wait --reuse-values --set statefulset.replicas=5
-```
-+
-This process triggers a rolling restart of each Pod so that each broker has an up-to-date `seed_servers` configuration to reflect the new list of brokers.
+You can repeat this procedure to continue to scale down.
 
 == Troubleshooting
 
