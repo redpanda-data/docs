@@ -7,7 +7,7 @@ const fs = require('fs');
 const owner = 'redpanda-data';
 function getPrereleaseFromAntora() {
   try {
-    const fileContents = fs.readFileSync('../antora.yml', 'utf8');
+    const fileContents = fs.readFileSync('../../antora.yml', 'utf8');
     const antoraConfig = yaml.load(fileContents);
     return antoraConfig.prerelease === true;
   } catch (error) {
