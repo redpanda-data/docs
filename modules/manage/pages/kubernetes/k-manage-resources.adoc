@@ -27,32 +27,52 @@ kubectl describe nodes
 [[memory]]
 == Configure memory resources
 
-On a worker node, Kubernetes and Redpanda processes are running at the same time. Redpanda's memory usage is influenced by its architecture, which leverages the Seastar framework for efficient performance.
+When deploying Redpanda on Kubernetes, you must reserve sufficient memory for both Redpanda and other system processes. Redpanda uses the Seastar framework to manage memory through two important flags:
 
-=== Memory allocation and Seastar flags
+- **`--memory`**: When set, explicitly defines the Redpanda heap size.
+- **`--reserve-memory`**: When set, reserves a specific amount of memory for system overhead. If not set, a reserve is automatically calculated.
 
-Redpanda uses the following Seastar flags to control memory allocation:
+.Learn more about these Seastar flags
+[%collapsible]
+====
 
-[cols="1m,2a"]
+[cols="1,1,2"]
 |===
-|Seastar Flag|Description
+|                        | **`--memory` Not set**
+|                       **`--memory` Set (M)**
 
-|--memory
-|Specifies the memory available to the Redpanda process. This value directly impacts Redpanda's ability to manage workloads efficiently.
+| **`--reserve-memory` Not set**  
+| Heap size = available memory - calculated reserve
+| Heap size = exactly M (if M plus calculated reserve ≤ available memory). Otherwise, startup fails
 
-|--reserve-memory
-|Reserves a part of memory for system overheads such as non-heap memory, page tables, and other non-Redpanda operations. This flag is designed for Seastar running on a dedicated VM rather than inside a container.
+| **`--reserve-memory` set \(R)**
+| Heap size = available memory - R
+| Heap size = exactly M (if M + R ≤ available memory). Otherwise, startup fails
 |===
 
-*Default (legacy) behavior*: By default, the Helm chart allocates 80% of the memory in `resources.memory.container` to `--memory` and reserves 20% for `--reserve-memory`. This is legacy behavior to maintain backward compatibility. Do not use this default in production.
+Definitions and behavior:
 
-*Production recommendation*: Use `resources.requests.memory` for production deployments. This configuration:
+- **Available memory**: The memory remaining after subtracting system requirements, such as `/proc/sys/vm/min_free_kbytes`, from the total or cgroup-limited memory.
+- **Calculated reserve**: The greater of 1.5 GiB or 7% of _available memory_ used when `--reserve-memory` is not explicitly set.
 
-- Sets `--memory` to 90% of the requested memory.
-- Fixes `--reserve-memory` at 0, as Kubernetes already manages container overhead using https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#requests-and-limits[resource requests and limits^]. This simplifies memory allocation and ensures predictable resource usage.
-- Configures Kubernetes resource requests for memory, enabling Kubernetes to effectively schedule and enforce memory allocation for containers.
+====
 
-CAUTION: Avoid manually setting the `--memory` and `--reserve-memory` flags unless absolutely necessary. Incorrect values can lead to performance issues, instability, or data loss.
+**Legacy (default) behavior**: By default, the Helm chart uses `resources.memory.container`, which allocates:
+
+- 80% of the container memory to `--memory`
+- 20% to `--reserve-memory`
+
+CAUTION: This default legacy behavior is for backward compatibility only. **Do not use it in production.**
+
+**Production recommendation**: For production deployments, use `resources.requests.memory` to ensure predictable memory allocation by letting Kubernetes schedule and enforce resource limits. When you set a value for `resources.requests.memory`:
+
+- Kubernetes allocates 90% of the requested memory to the Redpanda heap (using `--memory`).
++
+The remaining 10% of the requested memory is reserved for container overhead. This allocation ensures that system processes and runtime requirements have sufficient memory, while still providing a predictable, dedicated heap for Redpanda.
+- The `--reserve-memory` value is fixed at 0 because Kubernetes already manages container overhead.
+
+CAUTION: Avoid manually setting the `--memory` and `--reserve-memory` flags unless absolutely necessary. Incorrect settings can lead to performance issues, instability, or data loss.
+
 
 [tabs]
 ======
