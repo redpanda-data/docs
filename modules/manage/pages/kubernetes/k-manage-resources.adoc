@@ -5,7 +5,7 @@
 :page-categories: Management
 :env-kubernetes: true
 
-You can define requirements for Pod resources such as CPU, memory, and storage. Redpanda Data recommends that you determine and set these values before deploying the cluster, but you can also update the values on a running cluster.
+Managing Pod resources, such as CPU, memory, and storage, is critical for ensuring that your Redpanda cluster runs well in Kubernetes. In this guide, you'll learn how to define and configure resource requests and limits using the Redpanda Helm chart and Redpanda CRD. Setting these values before deployment helps guarantee predictable scheduling, enforces the Guaranteed QoS classification, and minimizes the risk of performance issues such as resource contention or unexpected evictions.
 
 == Prerequisites
 
@@ -24,6 +24,12 @@ kubectl describe nodes
 
 - <<memory, Enable memory locking>>. This configuration prevents the operating system from paging out Redpanda's memory to disk, which can significantly impact performance.
 
+- Ensure you <<cpu, give each Redpanda broker at least 4 CPU cores>>. This configuration ensures that Redpanda has enough CPU resources to run efficiently.
+
+- Ensure you <<memory, give Redpanda at least 2 Gi of memory>> per core. This configuration ensures that Redpanda has enough memory to run efficiently.
+
+- Ensure that the number of CPU cores you allocate to Redpanda is an even integer. This configuration allows Redpanda to leverage the static CPU manager policy, granting the Pod exclusive access to the requested cores for optimal performance.
+
 [[memory]]
 == Configure memory resources
 
@@ -41,7 +47,7 @@ When deploying Redpanda on Kubernetes, you must reserve sufficient memory for bo
 |                        | **`--memory` Not set**
 |                       **`--memory` Set (M)**
 
-| **`--reserve-memory` Not set**  
+| **`--reserve-memory` Not set**
 | Heap size = available memory - calculated reserve
 | Heap size = exactly M (if M plus calculated reserve ≤ available memory). Otherwise, startup fails
 
@@ -57,22 +63,34 @@ Definitions and behavior:
 
 ====
 
-**Legacy (default) behavior**: By default, the Helm chart uses `resources.memory.container`, which allocates:
-
-- 80% of the container memory to `--memory`
-- 20% to `--reserve-memory`
-
-CAUTION: This default legacy behavior is for backward compatibility only. **Do not use it in production.**
-
-**Production recommendation**: For production deployments, use `resources.requests.memory` to ensure predictable memory allocation by letting Kubernetes schedule and enforce resource limits. When you set a value for `resources.requests.memory`:
-
-- Kubernetes allocates 90% of the requested memory to the Redpanda heap (using `--memory`).
-+
-The remaining 10% of the requested memory is reserved for container overhead. This allocation ensures that system processes and runtime requirements have sufficient memory, while still providing a predictable, dedicated heap for Redpanda.
-- The `--reserve-memory` value is fixed at 0 because Kubernetes already manages container overhead.
+These flags are set for you by default when using the Redpanda Helm chart or Operator. However, you can manually set these flags using the `statefulset.additionalRedpandaCmdFlags` configuration if needed.
 
 CAUTION: Avoid manually setting the `--memory` and `--reserve-memory` flags unless absolutely necessary. Incorrect settings can lead to performance issues, instability, or data loss.
 
+[cols="1a,1a"]
+|===
+| **Legacy Behavior (Default)**
+| **Production Recommendation**
+
+|
+`resources.memory.container.max`, which allocates:
+
+- 80% of container memory to `--memory`
+- 20% to `--reserve-memory`
+
+NOTE: This option is deprecated and maintained only for backward compatibility.
+|
+Use `resources.requests.memory` with matching `resources.limits.memory` to provide a predictable, dedicated heap for Redpanda while allowing Kubernetes to effectively schedule and enforce resource limits.
+
+These options ensure:
+
+- Predictable scheduling: Kubernetes uses memory requests to accurately place Pods on nodes with sufficient resources.
+- Guaranteed QoS: Matching requests and limits ensure the Pod receives the <<qos, Guaranteed QoS class>>, reducing eviction risk.
+- Dedicated allocation:
+** 90% of the requested memory is allocated to the Redpanda heap using the `--memory` flag.
+** The remaining 10% is reserved for other processes such as exec probes, emptyDirs, and `kubectl exec`, helping prevent transient spikes in memory from causing Redpanda to be killed (`OOMKilled`).
+- The `--reserve-memory` flag is fixed at 0 because the https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/[kubelet] already manages system-level memory reservations.
+|===
 
 [tabs]
 ======
@@ -94,8 +112,9 @@ spec:
         - '--lock-memory' <1>
     resources:
       requests:
-        # Allocates 90% to the --memory Seastar flag
         memory: <number><unit> <2>
+      limits:
+        memory: <number><unit> <3>
 ----
 
 ```bash
@@ -118,8 +137,9 @@ statefulset:
     - '--lock-memory' <1>
 resources:
   requests:
-    # Allocates 90% to the --memory Seastar flag
     memory: <number><unit> <2>
+  limits:
+    memory: <number><unit> <3>
 ----
 +
 ```bash
@@ -132,7 +152,8 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 ```bash
 helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
   --set statefulset.additionalRedpandaCmdFlags=="{--lock-memory}" \ <1>
-  --set resources.requests.memory=<number><unit> <2>
+  --set resources.requests.memory=<number><unit> \ <2>
+  --set resources.limits.memory=<number><unit> <3>
 ```
 
 ====
@@ -141,11 +162,102 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 
 <1> Enabling memory locking prevents the operating system from paging out Redpanda's memory to disk. This can significantly improve performance by ensuring Redpanda has uninterrupted access to its allocated memory.
 
-<2> Allocate at least 2.22 Gi of memory per core to ensure Redpanda has the 2 Gi per core it requires after accounting for the 90% allocation to the `--memory` flag.
+<2> Request at least 2.22 Gi of memory per core to ensure Redpanda has the 2 Gi per core it requires after accounting for the 90% allocation to the `--memory` flag.
 +
 Redpanda supports the following memory resource units: B, K, M, G, Ki, Mi, and Gi.
 +
 Memory units are truncated to the nearest whole MiB. For example, a memory request of 1024 KiB will result in 1 MiB being allocated. For a description of memory resource units, see the https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#meaning-of-memory[Kubernetes documentation^].
+
+<3> Set the memory limit to match the memory request. This ensures Kubernetes enforces a strict upper bound on memory usage and helps maintain the <<qos, Guaranteed QoS classification>>.
+
+When the StatefulSet is deployed, make sure that the memory request and limit are set:
+
+[source,bash]
+----
+kubectl --namespace=<namespace> get pod <pod-name> -o jsonpath='{.spec.containers[?(@.name=="redpanda")].resources}{"\n"}'
+----
+
+[[cpu]]
+== Configure CPU resources
+
+Redpanda uses the Seastar framework to manage CPU usage through the `--smp` flag, which sets the number of CPU cores available to Redpanda. This is configured using `resources.cpu.cores`, which automatically applies the same value to both `resources.requests.cpu` and `resources.limits.cpu`.
+
+[cols="1,1", options="header"]
+|===
+| **Default Configuration** | **Production Recommendation**
+
+|
+`resources.cpu.cores: 1`
+Equivalent to setting `resources.requests.cpu` and `resources.limits.cpu` to 1.
+|
+Set `resources.cpu.cores` to `4` or greater.
+
+Set CPU cores to an even integer to leverage static CPU manager policy, granting the Pod exclusive access to the requested cores for optimal performance.
+|===
+
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    resources:
+      cpu:
+        cores: <number-of-cpu-cores> <1>
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`cpu-cores.yaml`
+[,yaml]
+----
+resources:
+  cpu:
+    cores: <number-of-cpu-cores> <1>
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values cpu-cores.yaml --reuse-values
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set resources.cpu.cores=<number-of-cpu-cores> \ <1>
+```
+====
+--
+======
+
+<1> Set `resources.cpu.cores` to the desired number of CPU cores for Redpanda. This value is applied as both the CPU request and limit, ensuring that the Pod maintains the <<qos, Guaranteed QoS classification>> by enforcing a strict upper bound on CPU usage.
+
+When the StatefulSet is deployed, make sure that the CPU request and limit are set:
+
+[source,bash]
+----
+kubectl --namespace <namespace> get pod <pod-name> -o jsonpath='{.spec.containers[?(@.name=="redpanda")].resources}{"\n"}'
+----
 
 [[qos]]
 == Quality of service and resource guarantees
@@ -174,11 +286,11 @@ spec:
   chartRef: {}
   clusterSpec:
     resources:
+      cpu:
+        cores: <number-of-cpu-cores>
       requests:
-        cpu: <number-of-cpu-cores>
         memory: <redpanda-container-memory>
       limits:
-        cpu: <number-of-cpu-cores> # Matches the request
         memory: <redpanda-container-memory> # Matches the request
     statefulset:
       sideCars:
@@ -233,11 +345,11 @@ Helm::
 [,yaml]
 ----
 resources:
+  cpu:
+    cores: <number-of-cpu-cores>
   requests:
-    cpu: <number-of-cpu-cores>
     memory: <redpanda-container-memory>
   limits:
-    cpu: <number-of-cpu-cores> # Matches the request
     memory: <redpanda-container-memory> # Matches the request
 statefulset:
   sideCars:
@@ -285,8 +397,7 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 +
 ```bash
 helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set resources.requests.cpu=<number-of-cpu-cores> \
-  --set resources.limits.cpu=<number-of-cpu-cores> \
+  --set resources.cpu.cores=<number-of-cpu-cores> \
   --set resources.requests.memory=<redpanda-container-memory> \
   --set resources.limits.memory=<redpanda-container-memory> \
   --set statefulset.sideCars.configWatcher.resources.requests.cpu=<redpanda-sidecar-container-cpu> \
@@ -331,7 +442,7 @@ If Redpanda runs in a shared environment, where multiple applications run on the
 
 You can enable overprovisioning by either setting the CPU request to a fractional value less than 1 or enabling the `--overprovisioned` flag.
 
-NOTE: You cannot enable overprovisioning when both `resources.requests` and `resources.limits` are set. When both of these configurations are set, the `resources.cpu` parameter (including cores) is ignored.
+NOTE: You cannot enable overprovisioning using `resources.cpu.overprovisioned` when both `resources.requests` and `resources.limits` are set. When both of these configurations are set, the `resources.cpu` parameter (including cores) is ignored. Instead, use the `statefulset.additionalRedpandaCmdFlags` configuration to enable overprovisioning.
 
 [tabs]
 ======
