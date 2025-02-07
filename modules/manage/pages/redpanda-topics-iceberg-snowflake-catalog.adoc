@@ -18,7 +18,7 @@ This guide walks you through querying Redpanda topics as Iceberg tables in https
 * An Open Catalog account. To https://other-docs.snowflake.com/en/opencatalog/create-open-catalog-account[create an Open Catalog account], you need ORGADMIN access in Snowflake.
 * An internal catalog created in Open Catalog with your Tiered Storage AWS S3 bucket configured as external storage.
 ** Follow this guide to https://other-docs.snowflake.com/en/opencatalog/create-catalog#create-a-catalog-using-amazon-simple-storage-service-amazon-s3[create a catalog] with the S3 bucket configured as external storage. You'll need admin permissions to carry out these steps in AWS:
-. Create an IAM policy that grants Open Catalog read and write access to your S3 bucket.
+. If you don't already have one, create an IAM policy that gives Open Catalog read and write access to your S3 bucket.
 . Create an IAM role and attach the IAM policy to the role.
 . After you create a new catalog in Open Catalog, grant the catalog's AWS IAM user access to the S3 bucket.
 * A Snowflake https://docs.snowflake.com/en/user-guide/tables-iceberg-configure-external-volume[external volume] set up using the Tiered Storage bucket. 
@@ -59,7 +59,7 @@ In this step, you'll configure your Redpanda cluster to enable Iceberg on a topi
 ----
 iceberg_enabled: true 
 iceberg_catalog_type: rest
-iceberg_rest_catalog_endpoint: <open-catalog-uri>
+iceberg_rest_catalog_endpoint: https://<snowflake-orgname>-<open-catalog-account-name>.snowflakecomputing.com/polaris/api/catalog
 iceberg_rest_catalog_client_id: <open-catalog-connection-client-id>
 iceberg_rest_catalog_client_secret: <open-catalog-connection-client-secret>
 iceberg_rest_catalog_prefix: <open-catalog-name>
@@ -72,7 +72,9 @@ iceberg_catalog_commit_interval_ms: 1000
 Use your own values for the following placeholders:
 +
 --
-- `<open-catalog-uri>`: Your https://docs.snowflake.com/en/sql-reference/sql/create-catalog-integration-open-catalog#required-parameters[Open Catalog account URI], for example `\https://<snowflake-orgname>-<account-name>.snowflakecomputing.com/polaris/api/catalog`.
+- `<snowflake-orgname>` and `<open-catalog-account-name>`: Your https://docs.snowflake.com/en/sql-reference/sql/create-catalog-integration-open-catalog#required-parameters[Open Catalog account URI] is composed of these values.
++
+TIP: In Snowflake, navigate to **Admin**, then **Accounts**. Click **...** to the right of your Open Catalog account name, and select **Manage URLs**. The **Current URL** contains `<snowflake-orgname>` and `<open-catalog-account-name>`.
 - `<open-catalog-connection-client-id>`: The client ID of the service connection you created in an earlier step.
 - `<open-catalog-connection-client-secret>`: The client secret of the service connection you created in an earlier step.
 - `<open-catalog-name>`: The name of your catalog in Open Catalog.
@@ -126,13 +128,14 @@ CREATE CATALOG INTEGRATION <catalog-integration-name>
     OAUTH_CLIENT_SECRET = '<open-catalog-connection-client-secret>'
     OAUTH_ALLOWED_SCOPES = ('PRINCIPAL_ROLE:ALL')
   )
+  REFRESH_INTERVAL_SECONDS = 30
   ENABLED = TRUE;
 ----
 +
 Use your own values for the following placeholders:
 +
 - `<catalog-integration-name>`: Provide a name for your Iceberg catalog integration in Snowflake. 
-- `<open-catalog-uri>`: Your https://docs.snowflake.com/en/sql-reference/sql/create-catalog-integration-open-catalog#required-parameters[Open Catalog account URI], for example `https://<snowflake-orgname>-<account-name>.snowflakecomputing.com/polaris/api/catalog`
+- `<open-catalog-uri>`: Your https://docs.snowflake.com/en/sql-reference/sql/create-catalog-integration-open-catalog#required-parameters[Open Catalog account URI] (`https://<snowflake-orgname>-<account-name>.snowflakecomputing.com/polaris/api/catalog`).
 - `<open-catalog-name>`: The name of your catalog in Open Catalog.
 - `<open-catalog-connection-client-id>`: The client ID of the service connection you created in an earlier step.
 - `<open-catalog-connection-client-secret>`: The client secret of the service connection you created in an earlier step.
@@ -141,7 +144,7 @@ Use your own values for the following placeholders:
 
 After creating the catalog integration, you must create an externally-managed table in Snowflake. You'll run your Snowflake queries against this table.
 
-. Run the https://docs.snowflake.com/en/sql-reference/sql/create-iceberg-table-rest[CREATE ICEBERG TABLE] command in Snowflake. The following exampe also specifies that the table should automatically refresh metadata:
+. In your Snowflake database, run the https://docs.snowflake.com/en/sql-reference/sql/create-iceberg-table-rest[CREATE ICEBERG TABLE] command. The following example also specifies that the table should automatically refresh metadata:
 +
 [,sql]
 ----
@@ -166,13 +169,35 @@ To verify that Snowflake has successfully created the table containing the topic
 [,sql]
 ----
 SELECT SYSTEM$LIST_ICEBERG_TABLES_FROM_CATALOG('<catalog-integration-name>');
-
-SELECT * FROM <table-name>;
-SELECT * FROM <table-name> WHERE redpanda:offset > 100;
 ----
 
-// Query results example
+[,sql]
+----
+SELECT * FROM <table-name>;
+----
+
+Your query results should look like the following:
+
 [,bash]
 ----
+# Example for redpanda.iceberg.mode=key_value
++-----------------------------------------------------------------------+
+| SYSTEM$LIST_ICEBERG_TABLES_FROM_CATALOG('<catalog_integration_name>') |
++-----------------------------------------------------------------------+
+| [{"namespace":"redpanda","name":"<table_name>"}]                      |
++-----------------------------------------------------------------------+
+----
+
+[,bash]
+----
+# Example for redpanda.iceberg.mode=key_value with 3 records produced to topic
+
++--------------------------------------------------------------------------------------------------------------+------------+
+|                                                   REDPANDA                                                   |   VALUE    |
++--------------------------------------------------------------------------------------------------------------+------------+
+| { "partition": 0, "offset": 0, "timestamp": "2025-02-07 16:29:50.122", "headers": null, "key": "68656C6C6F"} | 776F726C64 |
+| { "partition": 0, "offset": 1, "timestamp": "2025-02-07 16:29:50.122", "headers": null, "key": "666F6F"}     | 626172     |
+| { "partition": 0, "offset": 2, "timestamp": "2025-02-07 16:29:50.122", "headers": null, "key": "62617A" }    | 717578     |
++--------------------------------------------------------------------------------------------------------------+------------+
 
 ----
