@@ -1,6 +1,6 @@
 // Import the version fetcher module
-const GetLatestConsoleVersion = require('../../node_modules/@redpanda-data/docs-extensions-and-macros/extensions/version-fetcher/get-latest-console-version.js');
-const yaml = require('../../node_modules/js-yaml/index.js');
+const GetLatestConsoleVersion = require('../../../node_modules/@redpanda-data/docs-extensions-and-macros/extensions/version-fetcher/get-latest-console-version.js');
+const yaml = require('../../../node_modules/js-yaml/index.js');
 const fs = require('fs');
 
 const owner = 'redpanda-data';
@@ -9,7 +9,7 @@ const CONSOLE_DOCKER_REPO = 'console'
 
 function getPrereleaseFromAntora() {
   try {
-    const fileContents = fs.readFileSync('../antora.yml', 'utf8');
+    const fileContents = fs.readFileSync('../../antora.yml', 'utf8');
     const antoraConfig = yaml.load(fileContents);
     return antoraConfig.prerelease === true;
   } catch (error) {
