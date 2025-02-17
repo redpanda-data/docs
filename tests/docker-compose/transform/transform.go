@@ -1,6 +1,8 @@
 package main
-// This data transform filters records based on a customizable regex pattern. If a record's key or value
-// (determined by an environment variable) matches the specified regex, the record is forwarded to the output.
+// This data transform filters records based on a customizable regex pattern.
+// If a record's key or value
+// (determined by an environment variable) matches the specified regex,
+// the record is forwarded to the output.
 // Otherwise, it is dropped.
 //
 // Usage:
@@ -14,14 +16,15 @@ package main
 //   MATCH_VALUE="true"
 //
 // Logs:
-// This transform logs information about each record and whether it matched. The logs appear in the _redpanda.transform_logs topic, so you can debug how your records are being processed.
+// This transform logs information about each record and whether it matched.
+// The logs appear in the _redpanda.transform_logs topic, so you can debug how your records are being processed.
 //
 // Build instructions:
 //   go mod tidy
 //   rpk transform build
 //
 // For more details on building transforms with the Redpanda SDK, see:
-// https://docs.redpanda.com/<version>/develop/data-transforms
+// https://docs.redpanda.com/current/develop/data-transforms
 //
 
 import (
@@ -50,7 +53,7 @@ func isTrueVar(v string) bool {
 // The main() function runs only once at startup. It performs all initialization steps:
 // - Reads and compiles the regex pattern.
 // - Determines whether to match on the key or value.
-// - Registers the doRegexFilter function to process records.
+// - Registers the doRegexFilter() function to process records.
 func main() {
 	// Set logging preferences, including timestamp and UTC time.
 	log.SetPrefix("[regex-transform] ")
@@ -76,7 +79,7 @@ func main() {
 
 	log.Println("Initialization complete, waiting for records...")
 
-	// Listen for records to be written, calling doRegexFilter for each record.
+	// Listen for records to be written, calling doRegexFilter() for each record.
 	transform.OnRecordWritten(doRegexFilter)
 }
 
