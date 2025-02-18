@@ -26,8 +26,8 @@ fi
 # Create folder and set up Redpanda quickstart
 echo "Setting up redpanda-quickstart folder..."
 mkdir redpanda-quickstart && cd redpanda-quickstart || exit 1
-curl -sSL https://deploy-preview-937--redpanda-docs-preview.netlify.app/redpanda-quickstart.tar.gz | tar xzf -
-cd docker-compose/three-brokers || exit 1
+curl -sSL https://docs.redpanda.com/redpanda-quickstart.tar.gz | tar xzf -
+cd docker-compose || exit 1
 
 # Check and handle Docker containers
 check_docker_containers

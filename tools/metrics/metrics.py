@@ -34,7 +34,7 @@ def parse_metrics(metrics_text):
             if match:
                 current_metric = match.group(1)
                 description = match.group(2)
-                metrics[current_metric] = {"description": description, "type": None}
+                metrics[current_metric] = {"description": description, "type": None, "labels": {}}
         elif line.startswith("# TYPE"):
             # Extract metric type
             if current_metric:
@@ -42,7 +42,14 @@ def parse_metrics(metrics_text):
                 if match and match.group(1) == current_metric:
                     metrics[current_metric]["type"] = match.group(2)
         elif current_metric and not line.startswith("#"):
-            continue
+            # Extract labels and values
+            match = re.match(r"(\S+)\{(.+)\} (.+)", line)
+            if match:
+                metric_name = match.group(1)
+                if metric_name == current_metric:
+                    labels = match.group(2)
+                    label_keys = [item.split("=")[0] for item in labels.split(",")]
+                    metrics[current_metric]["labels"] = label_keys
 
     logging.info(f"Extracted {len(metrics)} metrics.")
 
@@ -50,14 +57,7 @@ def parse_metrics(metrics_text):
     for metric, data in metrics.items():
         if data["type"] is None:
             logging.warning(f"Metric '{metric}' does not have an associated # TYPE entry.")
-    
     return metrics
-
-def output_json(metrics, json_file):
-    """Output metrics as JSON."""
-    with open(json_file, "w") as f:
-        json.dump(metrics, f, indent=4)
-    logging.info(f"JSON output written to {json_file}")
 
 def output_asciidoc(metrics, adoc_file):
     """Output metrics as AsciiDoc."""
@@ -66,7 +66,17 @@ def output_asciidoc(metrics, adoc_file):
             f.write(f"=== {name}\n\n")
             f.write(f"{data['description']}\n\n")
             f.write(f"*Type*: {data['type']}\n\n")
+            if data["labels"]:
+                f.write(f"*Labels*:\n")
+                for label in data["labels"]:
+                    f.write(f"  - {label}\n")
     logging.info(f"AsciiDoc output written to {adoc_file}")
+
+def output_json(metrics, json_file):
+    """Output metrics as JSON."""
+    with open(json_file, "w") as f:
+        json.dump(metrics, f, indent=4)
+    logging.info(f"JSON output written to {json_file}")
 
 def ensure_directory_exists(directory):
     """Ensure the given directory exists."""
@@ -91,7 +101,6 @@ def find_largest_version_in_gen(gen_path):
     # Sort as "semantic versions" by splitting on dots
     def version_tuple(v):
         return tuple(map(int, v.split(".")))
-    
     dirs.sort(key=version_tuple)  # sorts ascending
     return dirs[-1]  # largest version
 
