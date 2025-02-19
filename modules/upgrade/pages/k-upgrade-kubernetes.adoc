@@ -27,7 +27,7 @@ NOTE: In clusters with only three brokers and a replication factor of 3, upgradi
 
 == Upgrade the Redpanda Helm chart
 
-Before upgrading Kubernetes, always upgrade your Redpanda Helm chart to the latest version. This ensures that any deprecated Kubernetes resources (e.g. the `v1beta1` PodDisruptionBudget in Kubernetes 1.25) are replaced with updated ones. If you skip this step, Helm may fail during or after the Kubernetes upgrade.
+Before upgrading Kubernetes, always upgrade your Redpanda Helm chart or Redpanda CRD to the latest version. This ensures that any deprecated Kubernetes resources (e.g. the `v1beta1` PodDisruptionBudget in Kubernetes 1.25) are replaced with updated ones. If you skip this step, you may see errors during or after the Kubernetes upgrade.
 
 For more details, see xref:upgrade:k-rolling-upgrade.adoc[].
 
@@ -166,7 +166,14 @@ rpk cluster health
 +
 Use your monitoring stack or `rpk cluster health` to verify that all brokers are online and that data replication is healthy.
 
-. If you created a buffer broker, scale the StatefulSet replica count back to 3 and delete the extra node.
+. If you created a buffer broker, decommission that broker, scale the StatefulSet replica count back to 3, and delete the extra node.
+
+. Verify cluster health:
++
+[source,bash]
+----
+rpk cluster health
+----
 
 With network-backed storage, your Redpanda data volumes remain intact and available when a node goes offline. After a node reboots or a new node is brought up, the PV reattaches, ensuring your Redpanda cluster can recover without data loss.
 
@@ -184,7 +191,7 @@ flowchart TB
 
   %% Main flow for a single broker upgrade (controllers remain disabled until all brokers are upgraded)
   A((Start)):::systemAction --> B["Verify PDB is at least 1 & replication factor is at least 3"]:::userAction
-  B --> C{Broker count is 3?}:::decision
+  B --> C{Broker count is only 3?}:::decision
   C -- Yes --> D{Extra node available for temporary broker?}:::decision
   D -- Yes --> E["Scale up replicas to 4 (add buffer broker)"]:::userAction
   D -- No --> F["Provision extra node"]:::userAction
@@ -194,17 +201,16 @@ flowchart TB
   H --> I["Decommission broker on node to be upgraded"]:::userAction
   I --> J["Wait for data migration to other replicas"]:::systemAction
   J --> K["Delete associated PVC (local PV)"]:::userAction
-  K --> L["Cordon and drain node"]:::userAction
-  L --> M["Upgrade node (VM replacement)"]:::userAction
-  M --> N["Wait for node to be Ready & new broker Pod is scheduled"]:::systemAction
-  N --> O["Verify cluster health"]:::userAction
-  O --> P["Broker upgrade complete"]:::systemAction
-  P --> Q{More brokers to upgrade?}:::decision
-  Q -- Yes --> R["Proceed with next broker upgrade"]:::userAction
-  R --> I
-  Q -- No --> S["Re-enable controllers"]:::userAction
-  S --> T["Verify cluster health"]:::userAction
-  T --> U((Process complete)):::systemAction
+  K --> L["Upgrade node (VM replacement)"]:::userAction
+  L --> M["Wait for node to be Ready & new broker Pod is scheduled"]:::systemAction
+  M --> N["Verify cluster health"]:::userAction
+  N --> O["Broker upgrade complete"]:::systemAction
+  O --> P{More brokers to upgrade?}:::decision
+  P -- Yes --> Q["Proceed with next broker upgrade"]:::userAction
+  Q --> I
+  P -- No --> R["Re-enable controllers"]:::userAction
+  R --> S["Verify cluster health"]:::userAction
+  S --> T((Process complete)):::systemAction
 ----
 
 . Confirm that a safe Pod Disruption Budget (PDB) exists:
@@ -274,7 +280,7 @@ rbac:
 --
 ======
 
-. Decommission the broker on the node to be upgraded. This moves its data and replicas to other brokers. See xref:manage:kubernetes/k-decommission-brokers.adoc[Decommission Brokers].
+. Decommission the broker on the target node to be upgraded. This moves its data and replicas to other brokers. See xref:manage:kubernetes/k-decommission-brokers.adoc[Decommission Brokers].
 
 . Wait for the decommissioning process to complete. The time required depends on the amount of data being migrated from the broker's partitions. If the broker has a large amount of data, this process can take hours.
 
@@ -285,28 +291,38 @@ For local PVs, delete the PVC to allow Kubernetes to provision new storage for t
 [source,bash]
 ----
 kubectl get pvc --namespace <namespace>
-kubectl delete pvc <pvc-name> --namespace <namespace>
+kubectl delete pvc <pvc-name> --namespace <namespace> --wait=false
 ----
 +
-NOTE: Deleting the PVC sets a deletion timestamp. The actual removal occurs when the Pod terminates.
+NOTE: Deleting the PVC sets a deletion timestamp. The actual removal occurs when the Pod terminates. The `--wait=false``= flag ensures the associated PersistentVolume is not deleted until the associated Pod is deleted so that the Redpanda broker can shut down cleanly.
 
-. Cordon and drain the node to prevent new Pods from scheduling and gracefully evict existing ones.
+. Delete the Pod.
 +
-[,bash]
+[source,bash]
 ----
-kubectl get nodes -o wide
-kubectl cordon <node-name>
-kubectl drain <node-name>
+kubectl get pods --namespace <namespace>
+kubectl delete pod <pod-name> --namespace <namespace> --wait=false
 ----
++
+This step ensures that the Pod is rescheduled on a different node.
 
-. Upgrade the node. Follow your hosting platform's guidelines:
+. Check that this new Pod is running on a different node:
++
+[source,bash]
+----
+kubectl get pods --namespace <namespace> -o wide | grep <pod-name>
+----
++
+If the Pod is not rescheduled, check the node's status and events for any issues.
+
+. Upgrade the target node. Follow your hosting platform's guidelines:
 +
 * https://cloud.google.com/kubernetes-engine/docs-how-to/upgrading-a-cluster[Upgrade on GKE]
 * https://docs.aws.amazon.com/eks/latest/userguide/update-cluster.html[Upgrade on EKS]
 * https://learn.microsoft.com/en-us/azure/aks/upgrade-cluster?tabs=azure-cli[Upgrade on AKS]
 * https://kubernetes.io/docs/tasks/administer-cluster/cluster-upgrade/[Upgrade on Self-Managed]
 
-. Wait for the node to be ready and for the new broker Pod to be scheduled:
+. Wait for the upgraded node to be ready and for the new broker Pod to be scheduled:
 +
 [source,bash]
 ----
@@ -358,7 +374,7 @@ statefulset:
 --
 ======
 
-. If you created a buffer broker, scale the StatefulSet replica count back to 3 and delete the extra node.
+. If you created a buffer broker, decommission that broker, scale the StatefulSet replica count back to 3, and delete the extra node.
 
 . Verify cluster health:
 +
@@ -366,8 +382,6 @@ statefulset:
 ----
 rpk cluster health
 ----
-+
-Use your monitoring stack or `rpk cluster health` to verify that all brokers are online and that data replication is healthy.
 
 Because the data resides on ephemeral local disks, upgrading the node without decommissioning the broker or deleting PVCs can lead to data being stuck on that node or lost when the local disk is wiped. Ensuring a higher replication factor and decommissioning the broker moves your data to other nodes, so you can safely bring the node down and start fresh without losing or corrupting data.
 
