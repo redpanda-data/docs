@@ -42,32 +42,6 @@ When upgrading a node, Kubernetes restarts or replaces that node's underlying vi
 
 When using network-backed PersistentVolumes (PVs), the data is stored on external storage systems such as EBS, Persistent Disks, or Azure Disks. This storage remains intact even if the node is replaced, making the upgrade process more straightforward than for ephemeral disks. Follow these steps to ensure a smooth upgrade while maintaining data integrity and cluster availability:
 
-[mermaid]
-----
-flowchart TB
-  %% Define classes
-  classDef userAction stroke:#374D7C, fill:#E2EBFF, font-weight:bold, rx:5, ry:5;
-  classDef systemAction fill:#F6FBF6, stroke:#25855a, stroke-width:2px, color:#20293c, rx:5, ry:5;
-  classDef decision fill:#FFF3CD, stroke:#FFEEBA, font-weight:bold, rx:5, ry:5;
-
-  %% MAIN FLOW
-  A((Start)):::systemAction --> B["Verify PDB\n& replication factor (≥3)"]:::userAction
-  B --> C{Broker count is 3?}:::decision
-  C -- Yes --> D{Extra node available for temporary broker?}:::decision
-  D -- Yes --> E["Update StatefulSet to scale replicas to 4\n(add buffer broker)"]:::userAction
-  D -- No --> F["Provision extra node for temporary broker,\nthen update StatefulSet to scale replicas to 4"]:::userAction
-  C -- No --> G["Proceed with current replica count"]:::userAction
-  E --> H["Disable controllers"]:::userAction
-  F --> H
-  G --> H
-  H --> I["Cordon and drain node"]:::userAction
-  I --> J["Upgrade node (VM replacement)"]:::userAction
-  J --> K["Wait for node to be Ready"]:::userAction
-  K --> L["Re-enable controllers"]:::userAction
-  L --> M["Verify cluster health"]:::userAction
-  M --> N((Cluster healthy)):::systemAction
-----
-
 . Confirm that a Pod Disruption Budget (PDB) exists for your Redpanda StatefulSet:
 +
 [source,bash]
@@ -209,15 +183,14 @@ flowchart TB
   classDef decision fill:#FFF3CD, stroke:#FFEEBA, font-weight:bold, rx:5, ry:5;
 
   %% Main flow for a single broker upgrade (controllers remain disabled until all brokers are upgraded)
-  A((Start)):::systemAction --> B["Verify PDB\n& replication factor (≥3)"]:::userAction
+  A((Start)):::systemAction --> B["Verify PDB is at least 1 & replication factor is at least 3"]:::userAction
   B --> C{Broker count is 3?}:::decision
   C -- Yes --> D{Extra node available for temporary broker?}:::decision
-  D -- Yes --> E["Update StatefulSet: scale replicas to 4\n(add buffer broker)"]:::userAction
-  D -- No --> F["Provision extra node, then update StatefulSet:\nscale replicas to 4"]:::userAction
-  C -- No --> G["Proceed with current replica count"]:::userAction
+  D -- Yes --> E["Scale up replicas to 4 (add buffer broker)"]:::userAction
+  D -- No --> F["Provision extra node"]:::userAction
   E --> H["Disable controllers"]:::userAction
-  F --> H
-  G --> H
+  F --> E
+  C --> H
   H --> I["Decommission broker on node to be upgraded"]:::userAction
   I --> J["Wait for data migration to other replicas"]:::systemAction
   J --> K["Delete associated PVC (local PV)"]:::userAction
