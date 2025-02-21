@@ -205,7 +205,7 @@ Helm + Operator::
 Scale down the operator to 0 to temporarily disable it:
 
 ```bash
-kubectl scale deployment redpanda-operator --replicas=0 --namespace <namespace>
+kubectl scale deployment redpanda-controller-operator --replicas=0 --namespace <namespace>
 ```
 
 --
@@ -293,7 +293,7 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 . For each broker running on the old node pool, perform these steps:
 +
 --
-.. [[identify-broker]]List your brokers and their associated broker IDs:
+.. [[identify-broker]]List your brokers and their associated broker IDs. Replace `<pod-name>` with any broker Pod name.
 +
 ```bash
 kubectl --namespace <namespace> exec -ti <pod-name> -c redpanda -- rpk cluster info
@@ -305,18 +305,20 @@ kubectl --namespace <namespace> exec -ti <pod-name> -c redpanda -- rpk cluster i
 ```
 CLUSTER
 =======
-redpanda.560e2403-3fd6-448c-b720-7b456d0aa78c
+redpanda.8a18c0db-ff14-40c8-9fc0-ba29c277707d
 
 BROKERS
 =======
-ID    HOST                          PORT   RACK
-0     redpanda-0.testcluster.local  32180  A
-1     redpanda-1.testcluster.local  32180  A
-4     redpanda-3.testcluster.local  32180  B
-5*    redpanda-2.testcluster.local  32180  B
-6     redpanda-4.testcluster.local  32180  C
-8     redpanda-6.testcluster.local  32180  C
-9     redpanda-5.testcluster.local  32180  D
+ID    HOST                                             PORT
+0     redpanda-0.redpanda.redpanda.svc.cluster.local.  9093
+1*    redpanda-1.redpanda.redpanda.svc.cluster.local.  9093
+2     redpanda-2.redpanda.redpanda.svc.cluster.local.  9093
+3     redpanda-3.redpanda.redpanda.svc.cluster.local.  9093
+
+TOPICS
+======
+NAME      PARTITIONS  REPLICAS
+_schemas  1           3
 ```
 ====
 +
@@ -329,7 +331,12 @@ The output shows that the broker IDs don't match the StatefulSet ordinal, which 
 kubectl get pods --namespace <namespace> -o wide | grep <pod-name>
 ----
 +
-The output shows the node name in the `NODE` column.
+Example output (node name is `kind-worker2`):
++
+[.no-copy]
+----
+redpanda-0    2/2     Running     0    11m     10.244.7.3   kind-worker2
+----
 
 .. [[decommission-broker]]Decommission the broker. This moves its data and replicas to other brokers.
 +
@@ -340,14 +347,28 @@ rpk redpanda admin brokers decommission <broker-id>
 +
 The time required depends on the amount of data being migrated from the broker's partitions. If the broker has a large amount of data, this process can take hours. For more details, see xref:manage:kubernetes/k-decommission-brokers.adoc[Decommission Brokers].
 
+.. Check the status of the decommission process:
++
+[source,bash]
+----
+rpk redpanda admin brokers decommission-status <broker-id>
+----
++
+Wait until you see this message before proceeding:
++
+[.no-copy]
+----
+Node <broker-id> is decommissioned successfully.
+----
+
 .. [[drain-node]]Drain the node that the decommissioned broker is on.
 +
 [source,bash]
 ----
-kubectl drain node <node-name> --ignore-daemonsets --delete-local-data
+kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data
 ----
 +
-When the node is drained, the Pod is evicted, but remains in the `Terminating` state until the associated PVC is deleted.
+When the node is drained, the Pod is evicted, but remains in the `Pending` state until the associated PVC is deleted.
 
 .. [[delete-pvc]]Delete the PVC for the broker's local PV. This allows Kubernetes to provision new storage for the rescheduled broker.
 +
@@ -358,6 +379,15 @@ kubectl delete pvc <pvc-name> --namespace <namespace> --wait=false
 ----
 +
 NOTE: Deleting the PVC sets a deletion timestamp. The actual removal occurs when the Pod terminates. The `--wait=false` flag ensures the associated PersistentVolume is not deleted until the associated Pod is deleted so that the Redpanda broker can shut down cleanly.
+
+.. Delete the Pod to trigger rescheduling on the new node pool:
++
+[,bash]
+----
+kubectl delete pod <pod-name> --namespace <namespace>
+----
++
+The Pod is rescheduled on the new node pool with a new broker ID.
 
 .. Check that the Pod is now running on your new node pool:
 +
@@ -376,11 +406,57 @@ kubectl get events --namespace <namespace>
 +
 TIP: Save the events to a file so that you can review them later.
 
+.. List your brokers and their associated broker IDs. Replace `<pod-name>` with any broker Pod name.
++
+```bash
+kubectl --namespace <namespace> exec -ti <pod-name> -c redpanda -- rpk cluster info
+```
++
+You should see that you have the same number of brokers, but the broker ID for your new broker has changed. The broker ID is the number in the ID column.
++
+.Example output
+[%collapsible]
+====
+```
+CLUSTER
+=======
+redpanda.8a18c0db-ff14-40c8-9fc0-ba29c277707d
+
+BROKERS
+=======
+ID    HOST                                             PORT
+1*    redpanda-1.redpanda.redpanda.svc.cluster.local.  9093
+2     redpanda-2.redpanda.redpanda.svc.cluster.local.  9093
+3     redpanda-3.redpanda.redpanda.svc.cluster.local.  9093
+4     redpanda-0.redpanda.redpanda.svc.cluster.local.  9093
+
+TOPICS
+======
+NAME      PARTITIONS  REPLICAS
+_schemas  1           3
+```
+====
+
 .. [[verify-broker-health]]Verify cluster health:
 +
 [source,bash]
 ----
 rpk cluster health
+----
++
+Example output:
++
+[.no-copy]
+----
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:                          true
+Unhealthy reasons:                []
+Controller ID:                    1
+All nodes:                        [1 2 3 4]
+Nodes down:                       []
+Leaderless partitions (0):        []
+Under-replicated partitions (0):  []
 ----
 
 .. Repeat these steps for each broker sequentially.
@@ -433,7 +509,7 @@ Helm + Operator::
 Scale up the operator to re-enable it:
 
 ```bash
-kubectl scale deployment redpanda-operator --replicas=1 --namespace <namespace>
+kubectl scale deployment redpanda-controller-operator --replicas=1 --namespace <namespace>
 ```
 
 --
@@ -574,7 +650,7 @@ Helm + Operator::
 Scale down the operator to 0 to temporarily disable it:
 
 ```bash
-kubectl scale deployment redpanda-operator --replicas=0 --namespace <namespace>
+kubectl scale deployment redpanda-controller-operator --replicas=0 --namespace <namespace>
 ```
 
 --
@@ -607,7 +683,7 @@ rbac:
 +
 [source,bash]
 ----
-kubectl drain node <node-name> --ignore-daemonsets --delete-local-data
+kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data
 ----
 +
 Because the underlying networked PV is remountable, the data remains intact and the Pod will be rescheduled on the new node pool with the same broker ID.
@@ -630,7 +706,7 @@ Helm + Operator::
 Scale up the operator to re-enable it:
 
 ```bash
-kubectl scale deployment redpanda-operator --replicas=1 --namespace <namespace>
+kubectl scale deployment redpanda-controller-operator --replicas=1 --namespace <namespace>
 ```
 
 --
