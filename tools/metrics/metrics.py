@@ -69,7 +69,7 @@ def output_asciidoc(metrics, adoc_file):
             if data["labels"]:
                 f.write(f"*Labels*:\n")
                 for label in data["labels"]:
-                    f.write(f"  - {label}\n")
+                    f.write(f"\n- `{label}`\n\n---\n\n")
     logging.info(f"AsciiDoc output written to {adoc_file}")
 
 def output_json(metrics, json_file):
