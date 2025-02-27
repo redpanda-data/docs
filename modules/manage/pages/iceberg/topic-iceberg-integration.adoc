@@ -3,7 +3,6 @@
 :page-context-links: [{"name": "Linux", "to": "manage:iceberg/topic-iceberg-integration.adoc" } ]
 :page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
 :page-aliases: manage:topic-iceberg-integration.adoc
-:page-beta: true
 
 [NOTE]
 ====
@@ -12,7 +11,9 @@ include::shared:partial$enterprise-license.adoc[]
 
 The Apache Iceberg integration for Redpanda allows you to store topic data in the cloud in the Iceberg open table format. This makes your streaming data immediately available in downstream analytical systems, including data warehouses like Snowflake, Databricks, Clickhouse, and Redshift, without setting up and maintaining additional ETL pipelines. You can also integrate your data directly into commonly-used big data processing frameworks, such as Apache Spark and Flink, standardizing and simplifying the consumption of streams as tables in a wide variety of data analytics pipelines.
 
-The Iceberg integration uses xref:manage:tiered-storage.adoc[Tiered Storage]. When a cluster or topic has Tiered Storage enabled, Redpanda stores the Iceberg files in the configured Tiered Storage bucket or container.  
+The Iceberg integration uses xref:manage:tiered-storage.adoc[Tiered Storage]. When a cluster or topic has Tiered Storage enabled, Redpanda stores the Iceberg files in the configured Tiered Storage bucket or container.
+
+Redpanda supports https://iceberg.apache.org/spec/#format-versioning[version 2^] of the Iceberg table format.
 
 == Prerequisites
 
@@ -31,8 +32,6 @@ rpk cluster license info
 * If you enable the Iceberg integration on an existing Redpanda topic, Redpanda does not backfill the generated Iceberg table with topic data.
 * JSON schemas are not currently supported. If the topic data is in JSON, use the `key_value` mode to store the JSON in Iceberg, which then can be parsed by most query engines.
 * If you are using Avro or Protobuf data, you must use the Schema Registry wire format, where producers include the magic byte and schema ID in the message payload header. See also: xref:manage:schema-reg/schema-id-validation.adoc[] and the https://www.redpanda.com/blog/schema-registry-kafka-streaming#how-does-serialization-work-with-schema-registry-in-kafka[Understanding Apache Kafka Schema Registry^] blog post to learn more about the wire format.
-* You can only use one schema per topic. Schema versioning as well as upcasting (where a value is cast into its more generic data type) are not supported. See <<schema-types-translation,Schema types translation>> for more details.
-* xref:manage:remote-read-replicas.adoc[Remote read replicas] and xref:manage:topic-recovery.adoc[topic recovery] are not supported for Iceberg-enabled topics.
 
 == Iceberg concepts 
 
@@ -51,7 +50,7 @@ In the Iceberg specification, tables consist of the following layers:
 --
 +
 In the Redpanda Iceberg integration, the manifest files are in JSON format.
-* Catalog: Contains the current metadata pointer for the table. Clients reading and writing data to the table see the same version of the current state of the table. The Iceberg integration supports two <<set-up-catalog-integration,catalog integration>> types. You can configure Redpanda to catalog files stored in the same object storage bucket or container where the Iceberg data files are located, or you can configure Redpanda to use an https://iceberg.apache.org/concepts/catalog/#decoupling-using-the-rest-catalog[Iceberg REST catalog^] endpoint to update an externally-managed catalog when there are changes to the Iceberg data and metadata.
+* Catalog: Contains the current metadata pointer for the table. Clients reading and writing data to the table see the same version of the current state of the table. The Iceberg integration supports two <<access-data-in-iceberg-tables,catalog integration>> types. You can configure Redpanda to catalog files stored in the same object storage bucket or container where the Iceberg data files are located, or you can configure Redpanda to use an https://iceberg.apache.org/concepts/catalog/#decoupling-using-the-rest-catalog[Iceberg REST catalog^] endpoint to update an externally-managed catalog when there are changes to the Iceberg data and metadata.
 
 image::shared:iceberg-integration.png[]
 
@@ -85,6 +84,25 @@ rpk topic create <new-topic-name>
 TOPIC            STATUS
 <new-topic-name>   OK
 ----
++
+To implement partitioning for the Iceberg topic, configure the config_ref:redpanda.iceberg.partition.spec,true,properties/topic-properties[] topic property.
++
+[,bash,]
+----
+# Create new topic with five topic partitions, replication factor 1, and custom table partitioning for Iceberg
+rpk topic create <new-topic-name> -p5 -r1 -c "redpanda.iceberg.partition.spec=<( ...)>"
+----
++
+The `<partition-key>` value is either a column name or a transformation of a column, defining how to partition the Iceberg table data. Iceberg stores records in files based on this expression. 
++
+For example: 
++
+--
+* To partition the table by a single column `col1`, use: `redpanda.iceberg.partition.spec=(col1)`. 
+* To partition by multiple columns, use a comma separated list: `redpanda.iceberg.partition.spec=(col1, col2)`. 
+* To partition by the year of a timestamp column `ts1` and `col1`, use: `redpanda.iceberg.partition.spec=(year(ts1), col1)`.
+--
+
 
 . Enable the integration for the topic by configuring `redpanda.iceberg.mode`. You can choose one of the following modes:
 +
@@ -262,40 +280,150 @@ Protobuf::
 --
 ======
 
-== Set up catalog integration
+=== Schema evolution
 
-You can configure the Iceberg integration to either store the metadata in https://iceberg.apache.org/javadoc/1.5.0/org/apache/iceberg/hadoop/HadoopCatalog.html[HadoopCatalog^] format in the same object storage bucket or container, or connect to a REST-based catalog. 
+Redpanda supports schema evolution for Avro and Protobuf schemas. When you update the schema in the Schema Registry, Redpanda automatically updates the Iceberg table schema to match the new schema.
+
+For example, if you produce records to a topic `demo-topic` with the following Avro schema:
+
+.schema_1.avsc
+[,avro]
+----
+{
+  "type": "record",
+  "name": "ClickEvent",
+  "fields": [
+    {
+      "name": "user_id",
+      "type": "int"
+    },
+    {
+      "name": "event_type",
+      "type": "string"
+    }
+  ]
+}
+----
+
+[,bash]
+----
+rpk registry schema create demo-topic-value --schema schema_1.avsc
+
+echo '{"user_id":23, "event_type":"BUTTON_CLICK"}' | rpk topic produce demo-topic --format='%v\n' --schema-id=topic
+----
+
+If you update the schema to add a new field `ts`, and produce records with the updated schema:
+
+.schema_2.avsc
+[,avro]
+----
+{
+  "type": "record",
+  "name": "ClickEvent",
+  "fields": [
+    {
+      "name": "user_id",
+      "type": "int"
+    },
+    {
+      "name": "event_type",
+      "type": "string"
+    }.
+    {
+      "name": "ts",
+      "type": [
+          "null",  
+          { "type": "string", "logicalType": "date" }
+        ],
+      "default": null  # Default value for the new field
+    }
+  ]
+}
+----
+The `ts` field can be either null or a string representing a date. The default value is null.
+
+[,bash]
+----
+rpk registry schema create demo-topic-value --schema schema_2.avsc
+
+echo '{"user_id":858, "event_type":"BUTTON_CLICK", "ts":{"string":"2025-02-26T20:05:23.230ZZ"}}' | rpk topic produce demo-topic --format='%v\n' --schema-id=topic
+----
+
+<<query-iceberg-tables,Querying the Iceberg table>> for `demo-topic` includes the new column `ts`:
+
+[,bash,role=no-copy]
+----
++---------+--------------+--------------------------+
+| user_id | event_type   | ts                       |
++---------+--------------+--------------------------+
+| 858     | BUTTON_CLICK | 2025-02-26T20:05:23.230Z |
+| 23      | BUTTON_CLICK | NULL                     |
++---------+--------------+--------------------------+
+----
+
+== Access data in Iceberg tables
+
+To read from the Iceberg table, your Iceberg-compatible client or tool needs access to the catalog to know the current state of the table. The catalog provides the location of the current metadata pointer. You can configure Redpanda to either store the table metadata in https://iceberg.apache.org/javadoc/1.5.0/org/apache/iceberg/hadoop/HadoopCatalog.html[HadoopCatalog^] format in the same object storage bucket or container, or connect to a REST-based catalog. 
 
 Set the cluster configuration property `iceberg_catalog_type` with one of the following values:
 
+* `object_storage` (default): Write catalog files to the same object storage bucket as the data files. Use the object storage URL with an Iceberg client to access the catalog and data files for your Redpanda Iceberg tables.
 * `rest`: Connect to and update an Iceberg catalog using a REST API. See the https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml[Iceberg REST Catalog API specification].
-* `object_storage`: Write catalog files to the same object storage bucket as the data files. Use the object storage URL with an Iceberg client to access the catalog and data files for your Redpanda Iceberg tables.
+
+The quickest way to access the data in Iceberg-enabled topics is to use the `object_storage` catalog type, and point your query engine to the table metadata path in the bucket or container. For production use cases, it is recommended to use a REST catalog integration to more easily manage governance, and ensure discoverability and consistency across multiple engines or tools. In either case, you use the catalog to load, query, or refresh the Iceberg data as you produce to the Redpanda topic. For specific guidance on adding the Iceberg tables to your data warehouse or lakehouse using the catalog, refer to the official documentation of your query engine or Iceberg-compatible tool. 
 
 Once you have enabled the Iceberg integration for a topic and selected a catalog type, you cannot switch to another catalog type.
+
+=== File system-based catalog (`object_storage`)
+
+If you are using the `object_storage` catalog type, you must also set up the catalog integration in your processing engine using the location of the metadata in the bucket or container.
+
+For example, you can configure Spark to use a file system-based catalog with at least the following properties, is using AWS S3 for object storage:
+
+.Example Spark configuration for `object_storage` catalog type
+[,spark]
+----
+spark.sql.catalog.streaming.type = hadoop
+spark.sql.catalog.streaming.warehouse = s3a://<bucket-name>/path/to/redpanda-iceberg-table
+----
+
+Depending on your processing engine, you may need to specify the location for the metadata to <<query-iceberg-tables,query the table>>. You may also need to create a new table in your data warehouse or lakehouse for the Iceberg data.
+
+==== Specify metadata location
+
+The config_ref:iceberg_catalog_base_location,true,properties/cluster-properties[] property stores the base path for the file-system based catalog if using the `object_storage` catalog type. The default value is `redpanda-iceberg-catalog`. 
+
+CAUTION: Do not change the `iceberg_catalog_base_location` value after you have enabled Iceberg integration for a topic.
+
+If your engine needs the full JSON metadata path, use the following:
+
+```
+redpanda-iceberg-catalog/metadata/redpanda/<topic-name>/v<version-number>.metadata.json
+```
+
+This provides read access to a single snapshot (denoted by `version-number`) of a table. 
+
+NOTE: You can disable snapshot expiry by setting 
+
+
+=== REST catalog integration
 
 For production use cases, Redpanda recommends the `rest` option with REST-enabled Iceberg catalog services such as https://docs.tabular.io/[Tabular^], https://docs.databricks.com/en/data-governance/unity-catalog/index.html[Databricks Unity^] and https://other-docs.snowflake.com/en/opencatalog/overview[Snowflake Open Catalog^].
 
 For an Iceberg REST catalog, set the following additional cluster configuration properties:
 
-* `iceberg_rest_catalog_endpoint`: The endpoint URL for your Iceberg catalog, which you are either managing directly, or is managed by an external catalog service.
-* `iceberg_rest_catalog_client_id`: The ID to connect to the REST server.
-* `iceberg_rest_catalog_client_secret`: The secret data to connect to the REST server.
+* iceberg_rest_catalog_endpoint,true,properties/cluster-properties[]: The endpoint URL for your Iceberg catalog, which you either manage directly, or is managed by an external catalog service.
+* iceberg_rest_catalog_client_id,true,properties/cluster-properties[]: The ID to connect to the REST server.
+* iceberg_rest_catalog_client_secret,true,properties/cluster-properties[]: The secret data to connect to the REST server.
 +
 --
 For REST catalogs that use self-signed certificates, also configure these properties:
 
-* `iceberg_rest_catalog_trust_file`: The path to a file containing a certificate chain to trust for the REST catalog.
-* `iceberg_rest_catalog_crl_file`: The path to the certificate revocation list for the specified trust file.
+* iceberg_rest_catalog_trust_file,true,properties/cluster-properties[]: The path to a file containing a certificate chain to trust for the REST catalog.
+* iceberg_rest_catalog_crl_file,true,properties/cluster-properties[]: The path to the certificate revocation list for the specified trust file.
 --
 
-// update xref when PR for extracted properties is ready
 See xref:reference:properties/cluster-properties.adoc[Cluster Configuration Properties] for the full list of cluster properties to configure for a catalog integration.
-
-=== Example catalog integration
-
-You'll be able to use to the catalog to load, query, or refresh the Iceberg data as you produce to the Redpanda topic. Refer to the official documentation of your query engine or Iceberg-compatible tool for guidance on integrating your Iceberg catalog. 
-
-==== REST catalog 
 
 For example, if you have Redpanda cluster configuration properties set to connect to a REST catalog named `streaming`:
 
@@ -309,11 +437,13 @@ iceberg_rest_catalog_client_secret: <rest-connection-password>
 
 And you use Spark as a processing engine, configured to use the `streaming` catalog:
 
-```
+.Example Spark configuration for `rest` catalog type
+[,spark]
+----
 spark.sql.catalog.streaming = org.apache.iceberg.spark.SparkCatalog
 spark.sql.catalog.streaming.type = rest
 spark.sql.catalog.streaming.uri = http://catalog-service:8181
-```
+----
 
 Using Spark SQL, you can query the Iceberg table directly by specifying the catalog name:
 
@@ -324,20 +454,9 @@ SELECT * FROM streaming.redpanda.ClickEvent;
 
 Spark can use the REST catalog to automatically discover the topic's Iceberg table. 
 
-See also: xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[]
+Depending on your processing engine, to <<query-iceberg-tables,query the Iceberg data>> you may need to create a new table in your data warehouse or lakehouse. See also: xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[]
 
-==== File system-based catalog (`object_storage`)
-
-If you are using the `object_storage` catalog type, you must set up the catalog integration in your processing engine accordingly. For example, you can configure Spark to use a file system-based catalog with at least the following properties, is using AWS S3 for object storage:
-
-```
-spark.sql.catalog.streaming.type = hadoop
-spark.sql.catalog.streaming.warehouse = s3a://<bucket-name>/path/to/redpanda-iceberg-table
-```
-
-Depending on your processing engine, you may also need to create a new table in your data warehouse or lakehouse for the Iceberg data.
-
-== Access data in Iceberg tables
+== Query Iceberg tables
 
 You can use the same analytical tools to access table data in a data lake as you would for a relational database.
 
@@ -433,6 +552,30 @@ FROM <catalog-name>.ClickEvent_key_value;
 +------------------------------------------------------------------------------+
 | {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"} |
 +------------------------------------------------------------------------------+
+----
+
+== Dead-letter queue
+
+Errors may occur when writing records to the Iceberg table; for example, if the record does not match the topic schema, or you do not use the Schema Registry wire format and the schema is not found, or if an Avro or Protobuf data type cannot be translated to an Iceberg type.
+
+If Redpanda encounters an error while writing a record to the Iceberg table, the record is dropped by default. To enable a dead-letter queue (DLQ) for these records, configure the config_ref:redpanda.iceberg.invalid.record.action,true,properties/topic-properties[] topic property. Redpanda writes these records to a separate Iceberg table named `<topic-name>~dlq`.
+
+The DLQ table uses the `key_value` schema, consisting of two columns: the record metadata including the key, and a binary column for the record's value.
+
+The DQL table allows you to inspect the records that failed to write to the Iceberg table, and take further action on these records such as transforming and reprocessing them, and debugging issues that may have occurred upstream.
+
+For example, if the DLQ table contains the following record:
+
+[,bash,role=no-copy]
+----
+
+----
+
+You can apply a transformation and reprocess in your data lakehouse to the original Iceberg table:
+
+[,sql]
+----
+
 ----
 
 == Next steps
