@@ -140,7 +140,7 @@ The Iceberg table is inside a namespace called `redpanda`, and has the same name
 
 == Schema support and mapping
 
-The `redpanda.iceberg.mode` property determines how Redpanda maps the topic data to the Iceberg table structure. You can either have the generated Iceberg table match the stucture of a Avro or Protobuf schema in the Schema Registry, or use the `key_value` mode where Redpanda stores the record values as-is in the table. 
+The config_ref:redpanda.iceberg.mode,true,properties/topic-properties property determines how Redpanda maps the topic data to the Iceberg table structure. You can either have the generated Iceberg table match the stucture of a Avro or Protobuf schema in the Schema Registry, or use the `key_value` mode where Redpanda stores the record values as-is in the table. 
 
 The JSON Schema format is not supported. If your topic data is in JSON, it is recommended to use the `key_value` mode.
 
@@ -209,6 +209,8 @@ CREATE TABLE ClickEvent (
 ----
 
 With schema integration, Redpanda uses the schema ID prefix embedded in each record to find the matching schema in the Schema Registry. Producers to the topic must use the schema ID prefix in the serialization process so Redpanda can determine the schema used for each record, parse the record according to that schema, and use the schema for the Iceberg table as well.
+
+If Redpanda fails to translate the record to the columnar format as defined by the schema, it writes the record to a dead-letter queue (DLQ) table. See <<dead-letter-queue,Dead-letter queue>> for more information.
 
 === Schema types translation
 
@@ -554,29 +556,72 @@ FROM <catalog-name>.ClickEvent_key_value;
 +------------------------------------------------------------------------------+
 ----
 
-== Dead-letter queue
+== Manage dead-letter queue
 
-Errors may occur when writing records to the Iceberg table; for example, if the record does not match the topic schema, or you do not use the Schema Registry wire format and the schema is not found, or if an Avro or Protobuf data type cannot be translated to an Iceberg type.
+Errors may occur when translating records in the `value_schema_id_prefix` mode to the Iceberg table format; for example, if you do not use the Schema Registry wire format with the magic byte, or the schema ID in the record is not found in the Schema Registry, or if an Avro or Protobuf data type cannot be translated to an Iceberg type.
 
-If Redpanda encounters an error while writing a record to the Iceberg table, the record is dropped by default. To enable a dead-letter queue (DLQ) for these records, configure the config_ref:redpanda.iceberg.invalid.record.action,true,properties/topic-properties[] topic property. Redpanda writes these records to a separate Iceberg table named `<topic-name>~dlq`.
+If Redpanda encounters an error while writing a record to the Iceberg table, Redpanda writes the record to a separate dead-letter queue (DLQ) Iceberg table named `<topic-name>~dlq`. To disable the default behavior for a topic and drop the record, set the config_ref:redpanda.iceberg.invalid.record.action,true,properties/topic-properties[] topic property to `drop`. You can also configure the default cluster-wide behavior for invalid records by setting the config_ref:iceberg_invalid_record_action,true,properties/cluster-properties[] property.
 
 The DLQ table uses the `key_value` schema, consisting of two columns: the record metadata including the key, and a binary column for the record's value.
 
-The DQL table allows you to inspect the records that failed to write to the Iceberg table, and take further action on these records such as transforming and reprocessing them, and debugging issues that may have occurred upstream.
+You can inspect the DLQ table for records that failed to write to the Iceberg table, allowing you to take further action on these records such as transforming and reprocessing them, and debugging issues that may have occurred upstream.
 
-For example, if the DLQ table contains the following record:
+If you produce the following record to the `ClickEvent` topic from the previous example, and do not use the Schema Registry wire format that includes the magic byte and schema ID:
 
 [,bash,role=no-copy]
 ----
-
+echo '"key1" {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"}' | rpk topic produce ClickEvent --format='%k %v\n'
 ----
 
-You can apply a transformation and reprocess in your data lakehouse to the original Iceberg table:
+Querying the DLQ table returns the record that was not translated:
 
 [,sql]
 ----
-
+SELECT 
+    value
+FROM <catalog-name>.ClickEvent~dlq;
 ----
+
+[,bash,role=no-copy]
+----
++-------------------------------------------------+
+| value                                           |
++-------------------------------------------------+
+| 7b 22 75 73 65 72 5f 69 64 22 3a 32 33 32 34 2c |
+| 22 65 76 65 6e 74 5f 74 79 70 65 22 3a 22 42 55 |
+| 54 54 4f 4e 5f 43 4c 49 43 4b 22 2c 22 74 73 22 |
+| 3a 22 32 30 32 34 2d 31 31 2d 32 35 54 32 30 3a |
+| 32 33 3a 35 39 2e 33 38 30 5a 22 7d             |
++-------------------------------------------------+
+----
+
+The data is in binary format, and the first byte is not `0x00`, indicating that it was not produced with a schema. 
+
+You can apply a transformation and reprocess the record in your data lakehouse to the original Iceberg table. In this case, you have a JSON value represented as UTF-8 binary, so you can cast the value to JSON and extract each field:
+
+[,sql]
+----
+SELECT
+    CAST(JSON_EXTRACT(json, '$.user_id') AS int) AS user_id,
+    JSON_EXTRACT(json, '$.event_type') AS event_type,
+    JSON_EXTRACT(json, '$.ts') AS ts
+FROM (
+    SELECT
+        FROM_UTF8(value) AS json
+    FROM <catalog-name>."ClickEvent~dlq";
+);
+----
+
+[,bash,role=no-copy]
+----
++---------+--------------+--------------------------+
+| user_id | event_type   | ts                       |
++---------+--------------+--------------------------+
+|    2324 | BUTTON_CLICK | 2024-11-25T20:23:59.380Z |
++---------+--------------+--------------------------+
+----
+
+You can now insert the transformed record back into the main Iceberg table. Redpanda recommends employing a strategy for exactly-once processing to avoid duplicates when reprocessing records.
 
 == Next steps
 
