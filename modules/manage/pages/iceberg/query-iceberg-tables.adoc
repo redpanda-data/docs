@@ -1,0 +1,104 @@
+= Query Iceberg Topics
+:description: Query Redpanda topic data stored in Iceberg tables, based on the topic Iceberg mode and schema registration
+:page-context-links: [{"name": "Linux", "to": "manage:iceberg/query-iceberg-tables.adoc" } ]
+:page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
+
+You can use the same analytical tools to read the xref:manage:iceberg/topic-iceberg-integration.adoc[Iceberg topic data] in a data lake as you would for a relational database.
+
+When you point your Iceberg-compatible tool or framework to the object storage location of the Iceberg tables, how you consume the data depends on the topic xref:manage:iceberg/topic-iceberg-integration.adoc#enable-iceberg-integration[Iceberg mode] and whether you've registered a schema on which to derive the table format. Depending on the processing engine, you may need to first create a new table that gets added to your Iceberg catalog implementation. See xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[] for an example.
+
+In either mode, you do not need to rely on complex ETL jobs or pipelines to access real-time data from Redpanda in your data lakehouse.
+
+For example, suppose you produce the same stream of events to a topic `ClickEvent`, which uses a schema, and another topic `ClickEvent_key_value`, which uses the key-value mode. The topics have Tiered Storage configured to an AWS S3 bucket. A sample record contains the following data:
+
+[,bash,role=no-copy]
+----
+{"user_id": 2324, "event_type": "BUTTON_CLICK", "ts": "2024-11-25T20:23:59.380Z"}
+----
+
+== Query topic with schema (`value_schema_id_prefix` mode)
+
+In this example, it is assumed you have created the `ClickEvent` topic, set `redpanda.iceberg.mode` to `value_schema_id_prefix`, and are connecting to a REST-based Iceberg catalog. The following is an Avro schema for `ClickEvent`:
+
+.`schema.avsc`
+[,avro]
+----
+{
+    "type" : "record",
+    "namespace" : "com.redpanda.examples.avro",
+    "name" : "ClickEvent",
+    "fields" : [
+       { "name": "user_id", "type" : "int" },
+       { "name": "event_type", "type" : "string" },
+       { "name": "ts", "type": "string" }
+    ]
+ }
+----
+
+You can register the schema under the `ClickEvent-value` subject:
+
+[,bash]
+----
+rpk registry schema create ClickEvent-value --schema path/to/schema.avsc --type avro
+----
+
+You can then produce to the `ClickEvent` topic using the following format:
+
+[,bash]
+----
+echo '"key1" {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"}' | rpk topic produce ClickEvent --format='%k %v\n' --schema-id=topic
+----
+
+The following SQL query returns values from columns in the `ClickEvent` table, with the table structure derived from the schema, and column names matching the schema fields. If you've integrated a catalog, query engines such as Spark SQL provide Iceberg integrations that allow easy discovery and access to existing Iceberg tables in object storage.
+
+[,sql]
+----
+SELECT user_id, 
+    event_type, 
+    ts 
+FROM <catalog-name>.ClickEvent;
+----
+
+[,bash,role=no-copy]
+----
++---------+--------------+--------------------------+
+| user_id | event_type   | ts                       |
++---------+--------------+--------------------------+
+| 2324    | BUTTON_CLICK | 2024-11-25T20:23:59.380Z |
++---------+--------------+--------------------------+
+----
+
+== Query topic in key-value mode
+
+In `key_value` mode, you do not associate the topic with a schema in the Schema Registry, which means using semi-structured data in Iceberg. 
+
+In this example, it is assumed you have created the `ClickEvent_key_value` topic, set `redpanda.iceberg.mode` to `key_value`, and are also connecting to a REST-based Iceberg catalog.
+
+You can produce to the `ClickEvent_key_value` topic using the following format:
+
+[,bash]
+----
+echo 'key1 {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"}' | rpk topic produce ClickEvent_key_value --format='%k %v\n'
+----
+
+This example queries the semi-structured data in the `ClickEvent_key_value` table, which also consists of another column `redpanda` containing the record key and other metadata:
+
+[,sql]
+----
+SELECT 
+    value
+FROM <catalog-name>.ClickEvent_key_value;
+----
+
+[,bash,role=no-copy]
+----
++------------------------------------------------------------------------------+
+| value                                                                        |
++------------------------------------------------------------------------------+
+| {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"} |
++------------------------------------------------------------------------------+
+----
+
+== Next steps
+
+* xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[]

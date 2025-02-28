@@ -1,0 +1,103 @@
+= Access Topic Data in Iceberg Tables
+:description: Learn how to access Redpanda topic data stored in Iceberg tables, using table metadata or a catalog integration.
+:page-context-links: [{"name": "Linux", "to": "manage:iceberg/access-iceberg-topics.adoc" } ]
+:page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
+
+To read from the Redpanda-generated xref:manage:iceberg/topic-iceberg-integration.adoc[Iceberg table], your Iceberg-compatible client or tool needs access to the catalog to know the current state of the table. The catalog provides the location of the current metadata pointer. You can configure Redpanda to either store the table metadata in https://iceberg.apache.org/javadoc/1.5.0/org/apache/iceberg/hadoop/HadoopCatalog.html[HadoopCatalog^] format in the same object storage bucket or container, or connect to a REST-based catalog. 
+
+Set the cluster configuration property `iceberg_catalog_type` with one of the following values:
+
+* `object_storage` (default): Write catalog files to the same object storage bucket as the data files. Use the object storage URL with an Iceberg client to access the catalog and data files for your Redpanda Iceberg tables.
+* `rest`: Connect to and update an Iceberg catalog using a REST API. See the https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml[Iceberg REST Catalog API specification].
+
+The quickest way to access the data in Iceberg-enabled topics is to use the `object_storage` catalog type, and point your query engine to the table metadata path in the bucket or container. For production use cases, it is recommended to use a REST catalog integration to more easily manage governance, and ensure discoverability and consistency across multiple engines or tools. In either case, you use the catalog to load, query, or refresh the Iceberg data as you produce to the Redpanda topic. For specific guidance on adding the Iceberg tables to your data warehouse or lakehouse using the catalog, refer to the official documentation of your query engine or Iceberg-compatible tool. 
+
+Once you have xref:manage:iceberg/topic-iceberg-integration.adoc#enable-iceberg-integration[enabled the Iceberg integration] for a topic and selected a catalog type, you cannot switch to another catalog type.
+
+== File system-based catalog (`object_storage`)
+
+If you are using the `object_storage` catalog type, you must also set up the catalog integration in your processing engine using the location of the metadata in the bucket or container.
+
+For example, you can configure Spark to use a file system-based catalog with at least the following properties, is using AWS S3 for object storage:
+
+.Example Spark configuration for `object_storage` catalog type
+[,spark]
+----
+spark.sql.catalog.streaming.type = hadoop
+spark.sql.catalog.streaming.warehouse = s3a://<bucket-name>/path/to/redpanda-iceberg-table
+----
+
+Depending on your processing engine, you may need to specify the location for the metadata to xref:manage:iceberg/query-iceberg-tables.adoc[query the Iceberg table]. You may also need to create a new table in your data warehouse or lakehouse for the Iceberg data.
+
+=== Specify metadata location
+
+The config_ref:iceberg_catalog_base_location,true,properties/cluster-properties[] property stores the base path for the file-system based catalog if using the `object_storage` catalog type. The default value is `redpanda-iceberg-catalog`. 
+
+CAUTION: Do not change the `iceberg_catalog_base_location` value after you have enabled Iceberg integration for a topic.
+
+If your engine needs the full JSON metadata path, use the following:
+
+```
+redpanda-iceberg-catalog/metadata/redpanda/<topic-name>/v<version-number>.metadata.json
+```
+
+This provides read access to a single snapshot (denoted by `version-number`) of a table. 
+
+NOTE: Redpanda automatically removes expired snapshots on a periodic basis. 
+
+
+== REST catalog integration
+
+For production use cases, Redpanda recommends the `rest` option with REST-enabled Iceberg catalog services such as https://docs.tabular.io/[Tabular^], https://docs.databricks.com/en/data-governance/unity-catalog/index.html[Databricks Unity^] and https://other-docs.snowflake.com/en/opencatalog/overview[Snowflake Open Catalog^].
+
+For an Iceberg REST catalog, set the following additional cluster configuration properties:
+
+* iceberg_rest_catalog_endpoint,true,properties/cluster-properties[]: The endpoint URL for your Iceberg catalog, which you either manage directly, or is managed by an external catalog service.
+* iceberg_rest_catalog_client_id,true,properties/cluster-properties[]: The ID to connect to the REST server.
+* iceberg_rest_catalog_client_secret,true,properties/cluster-properties[]: The secret data to connect to the REST server.
++
+--
+For REST catalogs that use self-signed certificates, also configure these properties:
+
+* iceberg_rest_catalog_trust_file,true,properties/cluster-properties[]: The path to a file containing a certificate chain to trust for the REST catalog.
+* iceberg_rest_catalog_crl_file,true,properties/cluster-properties[]: The path to the certificate revocation list for the specified trust file.
+--
+
+See xref:reference:properties/cluster-properties.adoc[Cluster Configuration Properties] for the full list of cluster properties to configure for a catalog integration.
+
+For example, if you have Redpanda cluster configuration properties set to connect to a REST catalog named `streaming`:
+
+[,yaml]
+----
+iceberg_rest_catalog_type: rest 
+iceberg_rest_catalog_endpoint: http://catalog-service:8181 
+iceberg_rest_catalog_client_id: <rest-connection-user>
+iceberg_rest_catalog_client_secret: <rest-connection-password>
+----
+
+And you use Spark as a processing engine, configured to use the `streaming` catalog:
+
+.Example Spark configuration for `rest` catalog type
+[,spark]
+----
+spark.sql.catalog.streaming = org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.streaming.type = rest
+spark.sql.catalog.streaming.uri = http://catalog-service:8181
+----
+
+Using Spark SQL, you can query the Iceberg table directly by specifying the catalog name:
+
+[,sql]
+----
+SELECT * FROM streaming.redpanda.ClickEvent;
+----
+
+Spark can use the REST catalog to automatically discover the topic's Iceberg table. 
+
+Depending on your processing engine, to xref:manage:iceberg/query-iceberg-tables.adoc[query the Iceberg data] you may need to create a new table in your data warehouse or lakehouse. See also: xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[]
+
+== Next steps
+
+* xref:manage:iceberg/query-iceberg-tables.adoc[]
+* xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[]
+
