@@ -53,7 +53,7 @@ services:
     healthcheck:
       test: ["CMD", "rpk", "cluster", "info", "-X", "user=superuser", "-X", "pass=secretpassword"]
       interval: 10s
-      timeout: 5s
+      timeout: 15s
       retries: 10
     depends_on:
       - minio
@@ -130,7 +130,7 @@ services:
     networks:
       - redpanda_network
     entrypoint: /bin/sh
-    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml && echo "$$CONSOLE_ROLEBINDINGS_CONFIG_FILE" > /tmp/role-bindings.yml && /app/console'
+    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml && /app/console'
     volumes:
       - ./config:/tmp/config/
     environment:
@@ -140,20 +140,22 @@ services:
         # See https://docs.redpanda.com/current/console/config/connect-to-redpanda/
         kafka:
           brokers: ["redpanda-0:9092"]
-          schemaRegistry:
-            enabled: true
-            urls: ["http://redpanda-0:8081","http://redpanda-1:8081","http://redpanda-2:8081"]
           sasl:
             enabled: true
-            username: superuser
-            password: secretpassword
-            mechanism: SCRAM-SHA-256
+            impersonateUser: true
+        schemaRegistry:
+          enabled: true
+          urls: ["http://redpanda-0:8081","http://redpanda-1:8081","http://redpanda-2:8081"]
+          impersonateUser: true
         redpanda:
           adminApi:
             enabled: true
             urls: ["http://redpanda-0:9644","http://redpanda-1:9644","http://redpanda-2:9644"]
-            username: superuser
-            password: secretpassword
+            authentication:
+              basic:
+                username: superuser
+                password: secretpassword
+            impersonateUser: false
         console:
           # Configures Redpanda Console to fetch topic documentation from GitHub and display it in the UI.
           # See https://docs.redpanda.com/current/console/config/topic-documentation/
@@ -165,41 +167,16 @@ services:
                 url: https://github.com/redpanda-data/docs
                 branch: main
                 baseDirectory: tests/docker-compose
-        login:
-          enabled: true
-          jwtSecret: change-this-to-something-secret
-          useSecureCookies: false
-          # Enable plain login authentication (enterprise feature)
-          # See https://docs.redpanda.com/current/console/config/security/plain/
-          plain:
+        authentication:
+          jwtSigningKey: vazxnT+ZHtxKslK6QlDGovcYnSjTk/lKMmZ+mHrBVE+YdVDkLgSuP6AszAKe9Gvq
+          basic:
             enabled: true
-            credentials:
-            - username: "jane"
-              password: "some-other-secret-password"
-            - username: "john"
-              password: "some-secret-password"
-        enterprise:
-          # Configures role-based access control to data and features in Redpanda Console.
-          # See https://docs.redpanda.com/current/console/config/security/authorization/
-          rbac:
-            enabled: true
-            roleBindingsFilepath: /tmp/role-bindings.yml
-      CONSOLE_ROLEBINDINGS_CONFIG_FILE: |
-        roleBindings:
-        - metadata:
-            name: Platform Ops
-          subjects:
-            - kind: user
-              provider: Plain
-              name: jane
-          roleName: admin
-        - metadata:
-            name: Software Engineers
-          subjects:
-            - kind: user
-              provider: Plain
-              name: john
-          roleName: editor
+        authorization:
+          roleBindings:
+          - roleName: admin
+            users:
+              - loginType: basic
+                name: superuser
     ports:
       - 8080:8080
     depends_on:
