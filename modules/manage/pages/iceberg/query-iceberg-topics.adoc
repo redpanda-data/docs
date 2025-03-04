@@ -1,5 +1,5 @@
 = Query Iceberg Topics
-:description: Query Redpanda topic data stored in Iceberg tables, based on the topic Iceberg mode and schema registration.
+:description: Query Redpanda topic data stored in Iceberg tables, based on the topic Iceberg mode and schema.
 :page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
 :page-beta: true
 
@@ -8,7 +8,23 @@
 include::shared:partial$enterprise-license.adoc[]
 ====
 
-When you point your Iceberg-compatible tool or framework to the object storage location of the Iceberg tables, how you consume the data depends on the topic xref:manage:iceberg/topic-iceberg-integration.adoc#enable-iceberg-integration[Iceberg mode] and whether you've registered a schema on which to derive the table format. In either mode, you do not need to rely on complex ETL jobs or pipelines to access real-time data from Redpanda in your data lakehouse.
+When you access Iceberg topics from a data lakehouse or other Iceberg-compatible tools, how you consume the data depends on the topic xref:manage:iceberg/topic-iceberg-integration.adoc#enable-iceberg-integration[Iceberg mode] and whether you've registered a schema for the topic in the xref:manage:schema-reg/schema-reg-overview.adoc[Redpanda Schema Registry]. In either mode, you do not need to rely on complex ETL jobs or pipelines to access real-time data from Redpanda.
+
+== Access Iceberg tables
+
+Depending on the processing engine and your Iceberg xref:manage:iceberg/use-iceberg-catalogs.adoc[catalog implementation], you may also need to create a table to point your data lakehouse to the table location in the catalog. For an example, see xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[].
+
+If your engine needs the full JSON metadata path, use the following:
+
+```
+redpanda-iceberg-catalog/metadata/redpanda/<topic-name>/v<version-number>.metadata.json
+```
+
+This provides read access to all snapshots in the given version (denoted by `version-number`) of a table. 
+
+NOTE: Redpanda automatically removes expired snapshots on a periodic basis. Snapshot expiry helps maintain a smaller metadata size and reduces the window available for <<time-travel-queries,time travel>>.
+
+== Query examples
 
 To follow along with the examples on this page, suppose you produce the same stream of events to a topic `ClickEvent`, which uses a schema, and another topic `ClickEvent_key_value`, which uses the key-value mode. The topics have xref:manage:tiered-storage.adoc[Tiered Storage] configured to an AWS S3 bucket. A sample record contains the following data:
 
@@ -17,9 +33,7 @@ To follow along with the examples on this page, suppose you produce the same str
 {"user_id": 2324, "event_type": "BUTTON_CLICK", "ts": "2024-11-25T20:23:59.380Z"}
 ----
 
-Depending on the processing engine and your Iceberg xref:manage:iceberg/access-iceberg-topics.adoc[catalog implementation], you may also need to create a table to point your data lakehouse to the table location in the catalog. For an example, see xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[].
-
-== Query topic with schema (`value_schema_id_prefix` mode)
+=== Topic with schema (`value_schema_id_prefix` mode)
 
 In this example, it is assumed you have created the `ClickEvent` topic, set `redpanda.iceberg.mode` to `value_schema_id_prefix`, and are connecting to a REST-based Iceberg catalog. The following is an Avro schema for `ClickEvent`:
 
@@ -38,22 +52,27 @@ In this example, it is assumed you have created the `ClickEvent` topic, set `red
  }
 ----
 
-You can register the schema under the `ClickEvent-value` subject:
-
+. Register the schema under the `ClickEvent-value` subject:
++
 [,bash]
 ----
 rpk registry schema create ClickEvent-value --schema path/to/schema.avsc --type avro
 ----
++
+Iceberg topics require that the schema subject follow `TopicNameStrategy` so Redpanda can use the schema to decode records and translate them into the Iceberg table format, where the table name is the name of the topic. For more information on subject name strategies, see xref:manage:schema-reg/schema-id-validation.adoc[].
 
-You can then produce to the `ClickEvent` topic using the following format:
-
+. Produce to the `ClickEvent` topic using the following format:
++
 [,bash]
 ----
 echo '"key1" {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"}' | rpk topic produce ClickEvent --format='%k %v\n' --schema-id=topic
 ----
++
+The `value_schema_id_prefix` requires that you produce to a topic using the Schema Registry wire format, which includes the magic byte and schema ID in the message payload header. This allows Redpanda to identify the correct schema version in the Schema Registry for a record. See the https://www.redpanda.com/blog/schema-registry-kafka-streaming#how-does-serialization-work-with-schema-registry-in-kafka[Understanding Apache Kafka Schema Registry^] blog post to learn more about the wire format.
 
-The following SQL query returns values from columns in the `ClickEvent` table, with the table structure derived from the schema, and column names matching the schema fields. If you've integrated a catalog, query engines such as Spark SQL provide Iceberg integrations that allow easy discovery and access to existing Iceberg tables in object storage.
 
+. The following SQL query returns values from columns in the `ClickEvent` table, with the table structure derived from the schema, and column names matching the schema fields. If you've integrated a catalog, query engines such as Spark SQL provide Iceberg integrations that allow easy discovery and access to existing Iceberg tables in object storage.
++
 [,sql]
 ----
 SELECT user_id, 
@@ -61,7 +80,7 @@ SELECT user_id,
     ts 
 FROM <catalog-name>.ClickEvent;
 ----
-
++
 [,bash,role=no-copy]
 ----
 +---------+--------------+--------------------------+
@@ -71,28 +90,27 @@ FROM <catalog-name>.ClickEvent;
 +---------+--------------+--------------------------+
 ----
 
-== Query topic in key-value mode
+=== Topic in key-value mode
 
 In `key_value` mode, you do not associate the topic with a schema in the Schema Registry, which means using semi-structured data in Iceberg. 
 
-In this example, it is assumed you have created the `ClickEvent_key_value` topic, set `redpanda.iceberg.mode` to `key_value`, and are also connecting to a REST-based Iceberg catalog.
+In this example, it is assumed you have created the `ClickEvent_key_value` topic, and set `redpanda.iceberg.mode` to `key_value`.
 
-You can produce to the `ClickEvent_key_value` topic using the following format:
-
+. Produce to the `ClickEvent_key_value` topic using the following format:
++
 [,bash]
 ----
 echo 'key1 {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"}' | rpk topic produce ClickEvent_key_value --format='%k %v\n'
 ----
 
-This example queries the semi-structured data in the `ClickEvent_key_value` table, which also consists of another column `redpanda` containing the record key and other metadata:
-
+. The following is an example of a query that returns the semi-structured data in the `ClickEvent_key_value` table. The table consists of two columns: one named `redpanda`, containing the record key and other metadata, and another binary column named `value` for the record's value:
++
 [,sql]
 ----
-SELECT 
-    value
+SELECT *
 FROM <catalog-name>.ClickEvent_key_value;
 ----
-
++
 [,bash,role=no-copy]
 ----
 +------------------------------------------------------------------------------+
@@ -104,7 +122,7 @@ FROM <catalog-name>.ClickEvent_key_value;
 
 Depending on your query engine, you might need to decode the binary value first before extracting the JSON fields. Some engines may also automatically decode the binary value for you.
 
-== Query using time travel
+=== Time travel queries
 
 Some query engines, such as Spark, support time travel with Iceberg, allowing you to query the table at a specific point in time. You can query the table as it existed at a specific timestamp or version number. 
 
