@@ -1,46 +1,74 @@
-.PHONY: build venv clean redpanda-git generate-docs tags
-.SILENT: build venv clean redpanda-git generate-docs tags
+.PHONY: build venv clean redpanda-git generate-docs tags treesitter
+.SILENT: build venv clean redpanda-git generate-docs tags treesitter
 
+# Default TAG if none is provided
 TAG ?= dev
 
-build: venv redpanda-git
+# Paths
+TREESITTER_DIR := tools/property-extractor/tree-sitter/tree-sitter-cpp
+TREESITTER_LIB := $(TREESITTER_DIR)/tree-sitter-cpp.so
+VENV := ./tmp/redpanda-property-extractor-venv
+REPO_ROOT := $(shell git rev-parse --show-toplevel)
+OUTPUT_DIR := $(REPO_ROOT)/gen/$(TAG)/properties
+
+# --- Main Build Target ---
+build: venv redpanda-git treesitter
 	mkdir -p gen
-	. ./tmp/redpanda-property-extractor-venv/bin/activate; ./property_extractor.py --recursive --path ./tmp/redpanda --verbose --output gen/properties-output.json
+	. $(VENV)/bin/activate; \
+		./property_extractor.py --recursive --path ./tmp/redpanda --verbose --output gen/properties-output.json
 	@echo "File generated at ./gen/properties-output.json"
 	$(MAKE) generate-docs
 
+# --- Ensure Virtual Environment Exists ---
 venv: requirements.txt
-	python3 -m venv ./tmp/redpanda-property-extractor-venv
-	. ./tmp/redpanda-property-extractor-venv/bin/activate; pip3 install --no-cache-dir -r requirements.txt
+	if [ ! -d "$(VENV)" ]; then \
+		echo "Creating virtual environment..."; \
+		python3 -m venv $(VENV); \
+		. $(VENV)/bin/activate; \
+		pip install --no-cache-dir -r requirements.txt; \
+	else \
+		echo "Virtual environment already exists."; \
+	fi
 
+# --- Clean Up Temporary Files ---
 clean:
-	rm -rf ./tmp/redpanda-property-extractor-venv ./output
+	rm -rf $(VENV) ./output ./gen ./output/pages/
 
+# --- Clone & Update Redpanda Repo ---
 redpanda-git:
 	if [ -d "./tmp/redpanda" ]; then \
 		cd ./tmp/redpanda && git fetch --tags -q; \
 		if [ -z "$(TAG)" ]; then \
-			echo "TAG is empty, using default branch 'dev'"; \
+			echo "Using default branch 'dev'"; \
 			git checkout dev -q && git pull -q; \
 		else \
-			echo "TAG is set to $(TAG), checking out and pulling"; \
-			git checkout $(TAG) -q && git pull -q; \
+			echo "Checking out $(TAG)"; \
+			git checkout $(TAG) -q 2>/dev/null || git checkout tags/$(TAG) -q; \
+			git pull -q || true; \
 		fi; \
 		git reflog -1; \
 	else \
-		echo "Cloning repository"; \
+		echo "Cloning Redpanda repository..."; \
 		mkdir -p ./tmp/redpanda; \
-		if [ -z "$(TAG)" ]; then \
-			echo "TAG is empty, using default branch 'dev'"; \
-			git clone -q https://github.com/redpanda-data/redpanda.git ./tmp/redpanda --branch dev; \
-		else \
-			echo "Cloning repository with branch $(TAG)"; \
-			git clone -q https://github.com/redpanda-data/redpanda.git ./tmp/redpanda --branch $(TAG); \
-		fi; \
+		git clone -q https://github.com/redpanda-data/redpanda.git ./tmp/redpanda; \
+		cd ./tmp/redpanda && git checkout $(TAG) -q 2>/dev/null || git checkout tags/$(TAG) -q; \
 		git reflog -1; \
 	fi
 
+# --- Initialize and Build Tree-sitter C++ Parser ---
+treesitter:
+	if [ ! -d "$(TREESITTER_DIR)/src" ]; then \
+		echo "Initializing Tree-sitter submodule..."; \
+		(cd $(REPO_ROOT) && git submodule update --init --recursive); \
+		echo "Tree-sitter C++ parser built successfully."; \
+	else \
+		echo "Tree-sitter C++ parser already built."; \
+	fi
+
+# --- Generate Documentation ---
 generate-docs:
 	@echo "Generating documentation from properties JSON..."
-	. ./tmp/redpanda-property-extractor-venv/bin/activate; python3 json-to-asciidoc/generate_docs.py
-	@echo "Documentation generated successfully in ./output/pages/"
+	mkdir -p $(OUTPUT_DIR)  # Ensure the output directory exists
+	. $(VENV)/bin/activate; \
+		python3 json-to-asciidoc/generate_docs.py --output-dir $(OUTPUT_DIR)
+	@echo "Documentation generated successfully in $(OUTPUT_DIR)"
