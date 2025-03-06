@@ -101,6 +101,7 @@ def transform_files_with_properties(files_with_properties):
         NumericBoundsTransformer(type_transformer),
         DurationBoundsTransformer(type_transformer),
         SimpleDefaultValuesTransformer(),
+        FriendlyDefaultTransformer(),
         ExperimentalTransformer(),
         AliasTransformer(),
     ]
@@ -125,6 +126,7 @@ def transform_files_with_properties(files_with_properties):
     return all_properties
 
 
+# The definitions.json file contains type definitions that the extractor uses to standardize and centralize type information. After extracting and transforming the properties from the source code, the function merge_properties_and_definitions looks up each property's type in the definitions. If a property's type (or the type of its items, in the case of arrays) matches one of the definitions, the transformer replaces that type with a JSON pointer ( such as #/definitions/<type>) to the corresponding entry in definitions.json. The final JSON output then includes both a properties section (with types now referencing the definitions) and a definitions section, so that consumers of the output can easily resolve the full type information.
 def merge_properties_and_definitions(properties, definitions):
     for name in properties:
         property = properties[name]
@@ -198,9 +200,17 @@ def main():
         with open(options.definitions) as json_file:
             definitions = json.load(json_file)
 
+    treesitter_dir = os.path.join(os.getcwd(), "tree-sitter/tree-sitter-cpp")
+    destination_path = os.path.join(treesitter_dir, "tree-sitter-cpp.so")
+
+    if not os.path.exists(os.path.join(treesitter_dir, "src/parser.c")):
+        logging.error("Missing parser.c. Ensure Tree-sitter submodules are initialized.")
+        sys.exit(1)
+
     treesitter_parser, cpp_language = get_treesitter_cpp_parser_and_language(
-        "tree-sitter/tree-sitter-cpp", "tree-sitter/tree-sitter-cpp.so"
+        treesitter_dir, destination_path
     )
+
     files_with_properties = get_files_with_properties(
         file_pairs, treesitter_parser, cpp_language
     )

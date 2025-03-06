@@ -60,7 +60,7 @@ class NeedsRestartTransformer:
             needs_restart = re.sub(
                 r"^.*::", "", info["params"][2]["value"]["needs_restart"]
             )
-        property["needs_restart"] = needs_restart != "no" # True by default, unless we find "no"
+        property["needs_restart"] = needs_restart != "no"  # True by default, unless we find "no"
 
 
 class VisibilityTransformer:
@@ -145,7 +145,6 @@ class IsSecretTransformer:
 
     def parse(self, property, info, file_pair):
         is_secret = re.sub(r"^.*::", "", info["params"][2]["value"]["secret"])
-
         property["is_secret"] = is_secret == "yes"
 
 
@@ -154,8 +153,8 @@ class NumericBoundsTransformer:
         self.type_transformer = type_transformer
 
     def accepts(self, info, file_pair):
-        type = self.type_transformer.get_cpp_type_from_declaration(info["declaration"])
-        return re.search("^(unsigned|u?int(8|16|32|64)?(_t)?)", type)
+        type_str = self.type_transformer.get_cpp_type_from_declaration(info["declaration"])
+        return re.search("^(unsigned|u?int(8|16|32|64)?(_t)?)", type_str)
 
     def parse(self, property, info, file_pair):
         type_mapping = dict(
@@ -170,11 +169,10 @@ class NumericBoundsTransformer:
             int32_t=(-(2**31), 2**31 - 1),
             int64_t=(-(2**63), 2**63 - 1),
         )
-        type = self.type_transformer.get_cpp_type_from_declaration(info["declaration"])
-
-        if type in type_mapping:
-            property["minimum"] = type_mapping[type][0]
-            property["maximum"] = type_mapping[type][1]
+        type_str = self.type_transformer.get_cpp_type_from_declaration(info["declaration"])
+        if type_str in type_mapping:
+            property["minimum"] = type_mapping[type_str][0]
+            property["maximum"] = type_mapping[type_str][1]
 
 
 class DurationBoundsTransformer:
@@ -185,22 +183,21 @@ class DurationBoundsTransformer:
         return re.search("std::chrono::", info["declaration"])
 
     def parse(self, property, info, file_pair):
-        # sizes are based in the documentation: https://en.cppreference.com/w/cpp/chrono/duration
+        # Sizes based on: https://en.cppreference.com/w/cpp/chrono/duration
         type_mapping = dict(
             nanoseconds=(-(2**63), 2**63 - 1),  # int 64
             microseconds=(-(2**54), 2**54 - 1),  # int 55
             milliseconds=(-(2**44), 2**44 - 1),  # int 45
-            seconds=(-(2**34), 2**34 - 1),  # int 35
-            minutes=(-(2**28), 2**28 - 1),  # int 29
-            hours=(-(2**22), 2**22 - 1),  # int 23
-            days=(-(2**24), 2**24 - 1),  # int 25
-            weeks=(-(2**21), 2**21 - 1),  # int 22
-            months=(-(2**19), 2**19 - 1),  # int 20
-            years=(-(2**16), 2**16 - 1),  # int 17
+            seconds=(-(2**34), 2**34 - 1),       # int 35
+            minutes=(-(2**28), 2**28 - 1),       # int 29
+            hours=(-(2**22), 2**22 - 1),         # int 23
+            days=(-(2**24), 2**24 - 1),          # int 25
+            weeks=(-(2**21), 2**21 - 1),         # int 22
+            months=(-(2**19), 2**19 - 1),        # int 20
+            years=(-(2**16), 2**16 - 1),         # int 17
         )
-        type = self.type_transformer.get_cpp_type_from_declaration(info["declaration"])
-        duration_type = type.replace("std::chrono::", "")
-
+        type_str = self.type_transformer.get_cpp_type_from_declaration(info["declaration"])
+        duration_type = type_str.replace("std::chrono::", "")
         if duration_type in type_mapping:
             property["minimum"] = type_mapping[duration_type][0]
             property["maximum"] = type_mapping[duration_type][1]
@@ -208,13 +205,13 @@ class DurationBoundsTransformer:
 
 class SimpleDefaultValuesTransformer:
     def accepts(self, info, file_pair):
-        # the default value is the 4th param
+        # The default value is the 4th parameter.
         return info["params"] and len(info["params"]) > 3
 
     def parse(self, property, info, file_pair):
         default = info["params"][3]["value"]
 
-        # handle simple cases
+        # Handle simple cases.
         if default == "std::nullopt":
             property["default"] = None
         elif default == "{}":
@@ -223,7 +220,7 @@ class SimpleDefaultValuesTransformer:
             property["default"] = default
         elif re.search("^-?[0-9][0-9']*$", default):  # integers
             property["default"] = int(default.replace("[^0-9-]", ""))
-        elif re.search("^-?[0-9]+(\.[0-9]+)$", default):  # floats
+        elif re.search(r"^-?[0-9]+(\.[0-9]+)$", default):  # floats
             property["default"] = float(default.replace("[^0-9]", ""))
         elif re.search("^(true|false)$", default):  # booleans
             property["default"] = True if default == "true" else False
@@ -233,7 +230,7 @@ class SimpleDefaultValuesTransformer:
                 for s in re.sub("{([^}]+)}", "\\1", default).split(",")
             ]
         else:
-            # file sizes
+            # File sizes.
             matches = re.search("^([0-9]+)_(.)iB$", default)
             if matches:
                 size = int(matches.group(1))
@@ -248,17 +245,65 @@ class SimpleDefaultValuesTransformer:
                     size = size * 1024**4
                 elif unit == "P":
                     size = size * 1024**5
-
                 property["default"] = size
-            elif re.search("^(https|/[^/])", default):  # urls and paths
+            elif re.search("^(https|/[^/])", default):  # URLs and paths
                 property["default"] = default
             else:
-                # ignoring numbers (they are durations if they reached here), enums (::), or default initializations (e.g. tls_config())
+                # For durations, enums, or other default initializations.
                 if not re.search("([0-9]|::|\\()", default):
                     property["default"] = default
                 else:
-                    # unhandled cases
                     property["default"] = default
+
+
+class FriendlyDefaultTransformer:
+    """
+    Transforms C++ default expressions into a more user-friendly format for docs.
+    Handles cases like:
+      - std::numeric_limits<uint64_t>::max()
+      - std::chrono::seconds(15min)
+      - std::vector<ss::sstring>{"basic"}
+      - std::chrono::milliseconds(10)
+      - std::nullopt
+    """
+    def accepts(self, info, file_pair):
+        return info.get("params") and len(info["params"]) > 3
+
+    def parse(self, property, info, file_pair):
+        default = info["params"][3]["value"]
+
+        # Transform std::nullopt into None.
+        if "std::nullopt" in default:
+            property["default"] = None
+            return property
+
+        # Transform std::numeric_limits expressions.
+        if "std::numeric_limits" in default:
+            property["default"] = "Maximum value"
+            return property
+
+        # Transform std::chrono durations.
+        if "std::chrono" in default:
+            m = re.search(r"std::chrono::(\w+)\(([^)]+)\)", default)
+            if m:
+                unit = m.group(1)
+                value = m.group(2).strip()
+                property["default"] = f"{value} {unit}"
+                return property
+
+        # Transform std::vector defaults.
+        if "std::vector" in default:
+            m = re.search(r'\{([^}]+)\}', default)
+            if m:
+                contents = m.group(1).strip()
+                items = [item.strip(' "\'') for item in contents.split(',')]
+                property["default"] = items
+                return property
+
+        # Otherwise, leave the default as-is.
+        property["default"] = default
+        return property
+
 
 class ExperimentalTransformer:
     def accepts(self, info, file_pair):
@@ -266,6 +311,7 @@ class ExperimentalTransformer:
             return info["type"].startswith(("development_", "hidden_when_default_"))
     def parse(self, property, info, file_pair):
         property["is_experimental_property"] = True
+
 
 class AliasTransformer:
     def accepts(self, info, file_pair):
@@ -283,14 +329,14 @@ class AliasTransformer:
             value = param.get('value', {})
             if isinstance(value, dict) and 'aliases' in value:
                 aliases_dict = value['aliases']
-                # Extract each alias, removing any surrounding braces or quotes
+                # Extract each alias, removing any surrounding braces or quotes.
                 aliases.extend(alias.strip('{}"') for alias in aliases_dict.values())
-
         property['aliases'] = aliases
 
+
 class EnterpriseTransformer:
-    def accepts(self, property,file_pair):
-        if property['type'] is not None and 'enterprise' in property['type']: # Check for enterprise properties
+    def accepts(self, property, file_pair):
+        if property['type'] is not None and 'enterprise' in property['type']:
             return True
         return False
     
@@ -300,6 +346,7 @@ class EnterpriseTransformer:
             property['enterprise_value'] = enterpriseValue
             property['is_enterprise'] = True
             del info['params'][0]
+
 
 class MetaParamTransformer:
     def accepts(self, info, file_pair):
@@ -332,5 +379,4 @@ class MetaParamTransformer:
                         key, value = item.split('=')
                         meta_dict[key.strip().replace('.', '')] = value.strip()
                         meta_dict['type'] = 'initializer_list'  # Enforce required type
-
                 param['value'] = meta_dict
