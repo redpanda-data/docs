@@ -1,6 +1,5 @@
-= Iceberg Topics
-:description: Learn how to integrate Redpanda topics with Apache Iceberg.
-:page-context-links: [{"name": "Linux", "to": "manage:iceberg/topic-iceberg-integration.adoc" } ]
+= About Iceberg Topics
+:description: Learn how Redpanda can integrate topics with Apache Iceberg.
 :page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
 :page-aliases: manage:topic-iceberg-integration.adoc
 :page-beta: true
@@ -10,38 +9,19 @@
 include::shared:partial$enterprise-license.adoc[]
 ====
 
-The Apache Iceberg integration for Redpanda allows you to store topic data in the cloud in the Iceberg open table format. This makes your streaming data immediately available in downstream analytical systems, including data warehouses like Snowflake, Databricks, Clickhouse, and Redshift, without setting up and maintaining additional ETL pipelines. You can also integrate your data directly into commonly-used big data processing frameworks, such as Apache Spark and Flink, standardizing and simplifying the consumption of streams as tables in a wide variety of data analytics pipelines.
+The Apache Iceberg integration for Redpanda allows you to store topic data in the cloud in the Iceberg open table format. This makes your streaming data immediately available in downstream analytical systems, including data warehouses like Snowflake, Databricks, ClickHouse, and Redshift, without setting up and maintaining additional ETL pipelines. You can also integrate your data directly into commonly-used big data processing frameworks, such as Apache Spark and Flink, standardizing and simplifying the consumption of streams as tables in a wide variety of data analytics pipelines.
 
-The Iceberg integration uses xref:manage:tiered-storage.adoc[Tiered Storage]. When a cluster or topic has Tiered Storage enabled, Redpanda stores the Iceberg files in the configured Tiered Storage bucket or container.  
+The Iceberg integration uses xref:manage:tiered-storage.adoc[Tiered Storage]. When a cluster or topic has Tiered Storage enabled, Redpanda stores the Iceberg files in the configured Tiered Storage bucket or container.
 
-== Prerequisites
-
-* Install xref:get-started:rpk-install.adoc[`rpk`].
-* To check if you already have a license key applied to your cluster:
-+
-[,bash]
-----
-rpk cluster license info
-----
-* Enable xref:manage:tiered-storage.adoc#set-up-tiered-storage[Tiered Storage] for the topics for which you want to generate Iceberg tables.
-
-== Limitations
-
-* It is not possible to append topic data to an existing Iceberg table that is not created by Redpanda.
-* If you enable the Iceberg integration on an existing Redpanda topic, Redpanda does not backfill the generated Iceberg table with topic data.
-* JSON schemas are not currently supported. If the topic data is in JSON, use the `key_value` mode to store the JSON in Iceberg, which then can be parsed by most query engines.
-* If you are using Avro or Protobuf data, you must use the Schema Registry wire format, where producers include the magic byte and schema ID in the message payload header. See also: xref:manage:schema-reg/schema-id-validation.adoc[] and the https://www.redpanda.com/blog/schema-registry-kafka-streaming#how-does-serialization-work-with-schema-registry-in-kafka[Understanding Apache Kafka Schema Registry^] blog post to learn more about the wire format.
-* You can only use one schema per topic. Schema versioning as well as upcasting (where a value is cast into its more generic data type) are not supported. See <<schema-types-translation,Schema types translation>> for more details.
-* xref:manage:remote-read-replicas.adoc[Remote read replicas] and xref:manage:topic-recovery.adoc[topic recovery] are not supported for Iceberg-enabled topics.
+Redpanda supports https://iceberg.apache.org/spec/#format-versioning[version 2^] of the Iceberg table format.
 
 == Iceberg concepts 
 
-Apache Iceberg is an open source format specification for defining structured tables in a data lake. The table format lets you quickly and easily manage, query, and process huge amounts of structured and unstructured data. This is similar to the way in which you would manage and run SQL queries against relational data in a database or data warehouse. The open format lets you use many different languages, tools, and applications to process the same data in a consistent way, so you can avoid vendor lock-in. This data management system is referred to as a _data lakehouse_.
+https://iceberg.apache.org[Apache Iceberg^] is an open source format specification for defining structured tables in a data lake. The table format lets you quickly and easily manage, query, and process huge amounts of structured and unstructured data. This is similar to the way in which you would manage and run SQL queries against relational data in a database or data warehouse. The open format lets you use many different languages, tools, and applications to process the same data in a consistent way, so you can avoid vendor lock-in. This data management system is also known as a _data lakehouse_.
 
 In the Iceberg specification, tables consist of the following layers:
 
-* Data layer
-** Data files: Store the data. The Iceberg integration currently supports the Parquet file format. Parquet files are column-based and suitable for analytical workloads at scale. They come with compression capabilities that optimize files for object storage. 
+* Data layer: Stores the data in data files. The Iceberg integration currently supports the Parquet file format. Parquet files are column-based and suitable for analytical workloads at scale. They come with compression capabilities that optimize files for object storage. 
 * Metadata layer: Stores table metadata separately from data files. The metadata layer allows multiple writers to stage metadata changes and apply updates atomically. It also supports database snapshots, and time travel queries that query the database at a previous point in time. 
 +
 --
@@ -50,16 +30,36 @@ In the Iceberg specification, tables consist of the following layers:
 ** Metadata file: Stores metadata about the table, including its schema, partition information, and snapshots. Whenever a change is made to the table, a new metadata file is created and becomes the latest version of the metadata in the catalog.
 --
 +
-In the Redpanda Iceberg integration, the manifest files are in JSON format.
-* Catalog: Contains the current metadata pointer for the table. Clients reading and writing data to the table see the same version of the current state of the table. The Iceberg integration supports two <<set-up-catalog-integration,catalog integration>> types. You can configure Redpanda to catalog files stored in the same object storage bucket or container where the Iceberg data files are located, or you can configure Redpanda to use an https://iceberg.apache.org/concepts/catalog/#decoupling-using-the-rest-catalog[Iceberg REST catalog^] endpoint to update an externally-managed catalog when there are changes to the Iceberg data and metadata.
+For Iceberg-enabled topics, the manifest files are in JSON format.
+* Catalog: Contains the current metadata pointer for the table. Clients reading and writing data to the table see the same version of the current state of the table. The Iceberg integration supports two xref:manage:iceberg/use-iceberg-catalogs.adoc[catalog integration] types. You can configure Redpanda to catalog files stored in the same object storage bucket or container where the Iceberg data files are located, or you can configure Redpanda to use an https://iceberg.apache.org/terms/#decoupling-using-the-rest-catalog[Iceberg REST catalog^] endpoint to update an externally-managed catalog when there are changes to the Iceberg data and metadata.
 
-image::shared:iceberg-integration.png[]
+image::shared:iceberg-integration-optimized.png[Redpanda's Iceberg integration]
 
 When you enable the Iceberg integration for a Redpanda topic, Redpanda brokers store streaming data in the Iceberg-compatible format in Parquet files in object storage, in addition to the log segments uploaded using Tiered Storage. Storing the streaming data in Iceberg tables in the cloud allows you to derive real-time insights through many compatible data lakehouse, data engineering, and business intelligence https://iceberg.apache.org/vendors/[tools^]. 
 
+== Prerequisites
+
+To enable Iceberg for Redpanda topics, you must have the following:
+
+* *rpk*: See xref:get-started:rpk-install.adoc[].
+* *Enterprise license*: To check if you already have a license key applied to your cluster:
++
+[,bash]
+----
+rpk cluster license info
+----
+* *Tiered Storage*: Enable xref:manage:tiered-storage.adoc#set-up-tiered-storage[Tiered Storage] for the topics for which you want to generate Iceberg tables.
+
+== Limitations
+
+* It is not possible to append topic data to an existing Iceberg table that is not created by Redpanda.
+* If you enable the Iceberg integration on an existing Redpanda topic, Redpanda does not backfill the generated Iceberg table with topic data.
+* JSON schemas are not currently supported. If the topic data is in JSON, use the `key_value` mode to store the JSON in Iceberg, which then can be parsed by most query engines.
+* If you're using Avro or Protobuf data, you must use the Schema Registry wire format, where producers include the magic byte and schema ID in the message payload header. See also: xref:manage:schema-reg/schema-id-validation.adoc[] and the https://www.redpanda.com/blog/schema-registry-kafka-streaming#how-does-serialization-work-with-schema-registry-in-kafka[Understanding Apache Kafka Schema Registry^] blog post to learn more about the wire format.
+
 == Enable Iceberg integration
 
-To create an Iceberg table for a Redpanda topic, you must set the cluster configuration property xref:reference:properties/cluster-properties.adoc#iceberg_enabled[`iceberg_enabled`] to `true`, and also configure the topic property xref:reference:properties/topic-properties.adoc#redpandaicebergmode[`redpanda.iceberg.mode`]. You can choose to provide a schema if you need the Iceberg table to be structured with defined columns.
+To create an Iceberg table for a Redpanda topic, you must set the cluster configuration property config_ref:iceberg_enabled,true,properties/cluster-properties[`iceberg_enabled`] to `true`, and also configure the topic property xref:reference:properties/topic-properties.adoc#redpanda-iceberg-mode[`redpanda.iceberg.mode`]. You can choose to provide a schema if you need the Iceberg table to be structured with defined columns.
 
 . Set the `iceberg_enabled` configuration option on your cluster to `true`. You must restart your cluster if you change this configuration for a running cluster. 
 +
@@ -82,9 +82,29 @@ rpk topic create <new-topic-name>
 +
 [,bash,role=no-copy]
 ----
-TOPIC            STATUS
+TOPIC              STATUS
 <new-topic-name>   OK
 ----
++
+To improve query performance, consider implementing custom https://iceberg.apache.org/docs/nightly/partitioning/[partitioning^] for the Iceberg topic. Use the xref:reference:properties/topic-properties.adoc#redpanda-iceberg-partition-spec[`redpanda.iceberg.partition.spec`] topic property to define the partitioning scheme:
++
+[,bash,]
+----
+# Create new topic with five topic partitions, replication factor 1, and custom table partitioning for Iceberg
+rpk topic create <new-topic-name> -p5 -r1 -c "redpanda.iceberg.partition.spec=(<partition-key1>, <partition-key2>, ...)"
+----
++
+Valid `<partition-key>` values include a source column name or a transformation of a column. The columns referenced can be Redpanda-defined (such as `redpanda.timestamp`) or user-defined based on a schema that you register for the topic. The Iceberg table stores records that share the same partition key values in the same files based on this specification. 
++
+For example: 
++
+--
+* To partition the table by a single key, such as a column `col1`, use: `redpanda.iceberg.partition.spec=(col1)`. 
+* To partition by multiple columns, use a comma-separated list: `redpanda.iceberg.partition.spec=(col1, col2)`. 
+* To partition by the year of a timestamp column `ts1`, and a string column `col1`, use: `redpanda.iceberg.partition.spec=(year(ts1), col1)`.
+
+For details on the partitioning specification, including allowed transforms, see the https://iceberg.apache.org/spec/#partitioning[Apache Iceberg documentation^].
+--
 
 . Enable the integration for the topic by configuring `redpanda.iceberg.mode`. You can choose one of the following modes:
 +
@@ -101,7 +121,7 @@ rpk topic alter-config <new-topic-name> --set redpanda.iceberg.mode=<topic-icebe
 +
 [,bash,role=no-copy]
 ----
-TOPIC            STATUS
+TOPIC              STATUS
 <new-topic-name>   OK
 ----
 
@@ -114,15 +134,15 @@ rpk registry schema create <subject-name> --schema </path-to-schema> --type <for
 +
 [,bash,role=no-copy]
 ----
-SUBJECT                VERSION   ID   TYPE
+SUBJECT          VERSION   ID   TYPE
 <subject-name>   1         1    PROTOBUF
 ----
 
-The Iceberg table is inside a namespace called `redpanda`, and has the same name as the Redpanda topic name. As you produce records to the topic, the data also becomes available in object storage for consumption by Iceberg-compatible clients. 
+The Iceberg table is inside a namespace called `redpanda`, and has the same name as the Redpanda topic name. As you produce records to the topic, the data also becomes available in object storage for consumption by Iceberg-compatible clients. You can use the same analytical tools to xref:manage:iceberg/query-iceberg-topics.adoc[read the Iceberg topic data] in a data lake as you would for a relational database.
 
-== Schema support and mapping
+== About schema support and translation to Iceberg format
 
-The `redpanda.iceberg.mode` property determines how Redpanda maps the topic data to the Iceberg table structure. You can either have the generated Iceberg table match the stucture of a Avro or Protobuf schema in the Schema Registry, or use the `key_value` mode where Redpanda stores the record values as-is in the table. 
+The xref:reference:properties/topic-properties.adoc#redpanda-iceberg-mode[`redpanda.iceberg.mode`] property determines how Redpanda maps the topic data to the Iceberg table structure. You can have the generated Iceberg table match the structure of a Avro or Protobuf schema in the Schema Registry, or you can use the `key_value` mode where Redpanda stores the record values as-is in the table. 
 
 The JSON Schema format is not supported. If your topic data is in JSON, it is recommended to use the `key_value` mode.
 
@@ -191,6 +211,8 @@ CREATE TABLE ClickEvent (
 ----
 
 With schema integration, Redpanda uses the schema ID prefix embedded in each record to find the matching schema in the Schema Registry. Producers to the topic must use the schema ID prefix in the serialization process so Redpanda can determine the schema used for each record, parse the record according to that schema, and use the schema for the Iceberg table as well.
+
+If Redpanda fails to translate the record to the columnar format as defined by the schema, it writes the record to a dead-letter queue (DLQ) table. See <<manage-dead-letter-queue,Manage dead-letter queue>> for more information.
 
 === Schema types translation
 
@@ -262,137 +284,144 @@ Protobuf::
 --
 ======
 
-== Set up catalog integration
+=== Schema evolution
 
-You can configure the Iceberg integration to either store the metadata in https://iceberg.apache.org/javadoc/1.5.0/org/apache/iceberg/hadoop/HadoopCatalog.html[HadoopCatalog^] format in the same object storage bucket or container, or connect to a REST-based catalog. 
+Redpanda supports schema evolution for Avro and Protobuf schemas in accordance with the https://iceberg.apache.org/spec/#schema-evolution[Iceberg specification^]. Permitted schema evolutions include reordering fields and promoting field types. When you update the schema in Schema Registry, Redpanda automatically updates the Iceberg table schema to match the new schema.
 
-Set the cluster configuration property `iceberg_catalog_type` with one of the following values:
+For example, if you produce records to a topic `demo-topic` with the following Avro schema:
 
-* `rest`: Connect to and update an Iceberg catalog using a REST API. See the https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml[Iceberg REST Catalog API specification].
-* `object_storage`: Write catalog files to the same object storage bucket as the data files. Use the object storage URL with an Iceberg client to access the catalog and data files for your Redpanda Iceberg tables.
-
-Once you have enabled the Iceberg integration for a topic and selected a catalog type, you cannot switch to another catalog type.
-
-For production use cases, Redpanda recommends the `rest` option with REST-enabled Iceberg catalog services such as https://docs.tabular.io/[Tabular^], https://docs.databricks.com/en/data-governance/unity-catalog/index.html[Databricks Unity^] and https://other-docs.snowflake.com/en/opencatalog/overview[Snowflake Open Catalog^].
-
-For an Iceberg REST catalog, set the following additional cluster configuration properties:
-
-* `iceberg_rest_catalog_endpoint`: The endpoint URL for your Iceberg catalog, which you are either managing directly, or is managed by an external catalog service.
-* `iceberg_rest_catalog_client_id`: The ID to connect to the REST server.
-* `iceberg_rest_catalog_client_secret`: The secret data to connect to the REST server.
-+
---
-For REST catalogs that use self-signed certificates, also configure these properties:
-
-* `iceberg_rest_catalog_trust_file`: The path to a file containing a certificate chain to trust for the REST catalog.
-* `iceberg_rest_catalog_crl_file`: The path to the certificate revocation list for the specified trust file.
---
-
-// update xref when PR for extracted properties is ready
-See xref:reference:properties/cluster-properties.adoc[Cluster Configuration Properties] for the full list of cluster properties to configure for a catalog integration.
-
-=== Example catalog integration
-
-You'll be able to use to the catalog to load, query, or refresh the Iceberg data as you produce to the Redpanda topic. Refer to the official documentation of your query engine or Iceberg-compatible tool for guidance on integrating your Iceberg catalog. 
-
-==== REST catalog 
-
-For example, if you have Redpanda cluster configuration properties set to connect to a REST catalog named `streaming`:
-
-[,yaml]
-----
-iceberg_rest_catalog_type: rest 
-iceberg_rest_catalog_endpoint: http://catalog-service:8181 
-iceberg_rest_catalog_client_id: <rest-connection-user>
-iceberg_rest_catalog_client_secret: <rest-connection-password>
-----
-
-And you use Spark as a processing engine, configured to use the `streaming` catalog:
-
-```
-spark.sql.catalog.streaming = org.apache.iceberg.spark.SparkCatalog
-spark.sql.catalog.streaming.type = rest
-spark.sql.catalog.streaming.uri = http://catalog-service:8181
-```
-
-Using Spark SQL, you can query the Iceberg table directly by specifying the catalog name:
-
-[,sql]
-----
-SELECT * FROM streaming.redpanda.ClickEvent;
-----
-
-Spark can use the REST catalog to automatically discover the topic's Iceberg table. 
-
-See also: xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[]
-
-==== File system-based catalog (`object_storage`)
-
-If you are using the `object_storage` catalog type, you must set up the catalog integration in your processing engine accordingly. For example, you can configure Spark to use a file system-based catalog with at least the following properties, is using AWS S3 for object storage:
-
-```
-spark.sql.catalog.streaming.type = hadoop
-spark.sql.catalog.streaming.warehouse = s3a://<bucket-name>/path/to/redpanda-iceberg-table
-```
-
-Depending on your processing engine, you may also need to create a new table in your data warehouse or lakehouse for the Iceberg data.
-
-== Access data in Iceberg tables
-
-You can use the same analytical tools to access table data in a data lake as you would for a relational database.
-
-For example, suppose you produce the same stream of events to a topic `ClickEvent`, which uses a schema, and another topic `ClickEvent_key_value`, which uses the key-value mode. The topics have Tiered Storage configured to an AWS S3 bucket. A sample record contains the following data:
-
-[,bash,role=no-copy]
-----
-{"user_id": 2324, "event_type": "BUTTON_CLICK", "ts": "2024-11-25T20:23:59.380Z"}
-----
-
-When you point your Iceberg-compatible tool or framework to the object storage location of the Iceberg tables, how you consume the data depends on the topic Iceberg mode and whether you've registered a schema on which to derive the table format. Depending on the processing engine, you may need to first create a new table that gets added to your Iceberg catalog implementation.
-
-In either mode, you do not need to rely on complex ETL jobs or pipelines to access real-time data from Redpanda in your data lakehouse.
-
-=== Query topic with schema (`value_schema_id_prefix` mode)
-
-In this example, it is assumed you have created the `ClickEvent` topic, set `redpanda.iceberg.mode` to `value_schema_id_prefix`, and are connecting to a REST-based Iceberg catalog. The following is an Avro schema for `ClickEvent`:
-
-.`schema.avsc`
+.schema_1.avsc
 [,avro]
 ----
 {
-    "type" : "record",
-    "namespace" : "com.redpanda.examples.avro",
-    "name" : "ClickEvent",
-    "fields" : [
-       { "name": "user_id", "type" : "int" },
-       { "name": "event_type", "type" : "string" },
-       { "name": "ts", "type": "string" }
-    ]
- }
+  "type": "record",
+  "name": "ClickEvent",
+  "fields": [
+    {
+      "name": "user_id",
+      "type": "int"
+    },
+    {
+      "name": "event_type",
+      "type": "string"
+    }
+  ]
+}
 ----
-
-You can register the schema under the `ClickEvent-value` subject:
 
 [,bash]
 ----
-rpk registry schema create ClickEvent-value --schema path/to/schema.avsc --type avro
+rpk registry schema create demo-topic-value --schema schema_1.avsc
+
+echo '{"user_id":23, "event_type":"BUTTON_CLICK"}' | rpk topic produce demo-topic --format='%v\n' --schema-id=topic
 ----
 
-You can then produce to the `ClickEvent` topic using the following format:
+Then, you update the schema to add a new field `ts`, and produce records with the updated schema:
+
+.schema_2.avsc
+[,avro]
+----
+{
+  "type": "record",
+  "name": "ClickEvent",
+  "fields": [
+    {
+      "name": "user_id",
+      "type": "int"
+    },
+    {
+      "name": "event_type",
+      "type": "string"
+    }.
+    {
+      "name": "ts",
+      "type": [
+          "null",  
+          { "type": "string", "logicalType": "date" }
+        ],
+      "default": null  # Default value for the new field
+    }
+  ]
+}
+----
+The `ts` field can be either null or a string representing a date. The default value is null.
 
 [,bash]
 ----
-echo '"key1" {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"}' | rpk topic produce ClickEvent --format='%k %v\n' --schema-id=topic
+rpk registry schema create demo-topic-value --schema schema_2.avsc
+
+echo '{"user_id":858, "event_type":"BUTTON_CLICK", "ts":{"string":"2025-02-26T20:05:23.230ZZ"}}' | rpk topic produce demo-topic --format='%v\n' --schema-id=topic
 ----
 
-The following SQL query returns values from columns in the `ClickEvent` table, with the table structure derived from the schema, and column names matching the schema fields. If you've integrated a catalog, query engines such as Spark SQL provide Iceberg integrations that allow easy discovery and access to existing Iceberg tables in object storage.
+xref:manage:iceberg/query-iceberg-topics.adoc[Querying the Iceberg table] for `demo-topic` includes the new column `ts`:
+
+[,bash,role=no-copy]
+----
++---------+--------------+--------------------------+
+| user_id | event_type   | ts                       |
++---------+--------------+--------------------------+
+| 858     | BUTTON_CLICK | 2025-02-26T20:05:23.230Z |
+| 23      | BUTTON_CLICK | NULL                     |
++---------+--------------+--------------------------+
+----
+
+== Manage dead-letter queue
+
+Errors may occur when translating records in the `value_schema_id_prefix` mode to the Iceberg table format; for example, if you do not use the Schema Registry wire format with the magic byte, if the schema ID in the record is not found in the Schema Registry, or if an Avro or Protobuf data type cannot be translated to an Iceberg type.
+
+If Redpanda encounters an error while writing a record to the Iceberg table, Redpanda writes the record to a separate dead-letter queue (DLQ) Iceberg table named `<topic-name>~dlq`. To disable the default behavior for a topic and drop the record, set the xref:reference:properties/topic-properties.adoc#redpandaiceberginvalidrecordaction[`redpanda.iceberg.invalid.record.action`] topic property to `drop`. You can also configure the default cluster-wide behavior for invalid records by setting the `iceberg_invalid_record_action` property.
+
+The DLQ table itself uses the `key_value` schema, consisting of two columns: the record metadata including the key, and a binary column for the record's value.
+
+You can inspect the DLQ table for records that failed to write to the Iceberg table, and you can take further action on these records, such as transforming and reprocessing them, or debugging issues that occurred upstream.
+
+=== Reprocess DLQ records
+
+The following example produces a record to a topic named `ClickEvent` and does not use the Schema Registry wire format that includes the magic byte and schema ID:
+
+[,bash,role=no-copy]
+----
+echo '"key1" {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"}' | rpk topic produce ClickEvent --format='%k %v\n'
+----
+
+Querying the DLQ table returns the record that was not translated:
 
 [,sql]
 ----
-SELECT user_id, 
-    event_type, 
-    ts 
-FROM <catalog-name>.ClickEvent;
+SELECT 
+    value
+FROM <catalog-name>."ClickEvent~dlq"; -- Fully qualified table name
+----
+
+[,bash,role=no-copy]
+----
++-------------------------------------------------+
+| value                                           |
++-------------------------------------------------+
+| 7b 22 75 73 65 72 5f 69 64 22 3a 32 33 32 34 2c |
+| 22 65 76 65 6e 74 5f 74 79 70 65 22 3a 22 42 55 |
+| 54 54 4f 4e 5f 43 4c 49 43 4b 22 2c 22 74 73 22 |
+| 3a 22 32 30 32 34 2d 31 31 2d 32 35 54 32 30 3a |
+| 32 33 3a 35 39 2e 33 38 30 5a 22 7d             |
++-------------------------------------------------+
+----
+
+The data is in binary format, and the first byte is not `0x00`, indicating that it was not produced with a schema. 
+
+You can apply a transformation and reprocess the record in your data lakehouse to the original Iceberg table. In this case, you have a JSON value represented as a UTF-8 binary. Depending on your query engine, you might need to decode the binary value first before extracting the JSON fields. Some engines may automatically decode the binary value for you:
+
+.ClickHouse SQL example to reprocess DLQ record
+[,sql]
+----
+SELECT
+    CAST(jsonExtractString(json, 'user_id') AS Int32) AS user_id,
+    jsonExtractString(json, 'event_type') AS event_type,
+    jsonExtractString(json, 'ts') AS ts
+FROM (
+    SELECT
+        CAST(value AS String) AS json
+    FROM <catalog-name>.`ClickEvent~dlq` -- Ensure that the table name is properly parsed
+);
 ----
 
 [,bash,role=no-copy]
@@ -400,44 +429,15 @@ FROM <catalog-name>.ClickEvent;
 +---------+--------------+--------------------------+
 | user_id | event_type   | ts                       |
 +---------+--------------+--------------------------+
-| 2324    | BUTTON_CLICK | 2024-11-25T20:23:59.380Z |
+|    2324 | BUTTON_CLICK | 2024-11-25T20:23:59.380Z |
 +---------+--------------+--------------------------+
 ----
 
-=== Query topic in key-value mode
-
-In `key_value` mode, you do not associate the topic with a schema in the Schema Registry, which means using semi-structured data in Iceberg. 
-
-In this example, it is assumed you have created the `ClickEvent_key_value` topic, set `redpanda.iceberg.mode` to `key_value`, and are also connecting to a REST-based Iceberg catalog.
-
-You can produce to the `ClickEvent_key_value` topic using the following format:
-
-[,bash]
-----
-echo 'key1 {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"}' | rpk topic produce ClickEvent_key_value --format='%k %v\n'
-----
-
-This example queries the semi-structured data in the `ClickEvent_key_value` table, which also consists of another column `redpanda` containing the record key and other metadata:
-
-[,sql]
-----
-SELECT 
-    value
-FROM <catalog-name>.ClickEvent_key_value;
-----
-
-[,bash,role=no-copy]
-----
-+------------------------------------------------------------------------------+
-| value                                                                        |
-+------------------------------------------------------------------------------+
-| {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"} |
-+------------------------------------------------------------------------------+
-----
+You can now insert the transformed record back into the main Iceberg table. Redpanda recommends employing a strategy for exactly-once processing to avoid duplicates when reprocessing records.
 
 == Next steps
 
-* xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[]
+* xref:manage:iceberg/use-iceberg-catalogs.adoc[]
 
 == Suggested reading
 
