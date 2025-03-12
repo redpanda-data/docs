@@ -3,6 +3,14 @@ const GetLatestConsoleVersion = require('../../../node_modules/@redpanda-data/do
 const yaml = require('../../../node_modules/js-yaml/index.js');
 const fs = require('fs');
 
+if (process.argv.length > 3) {
+  const overrideDockerRepo = process.argv[2];
+  const overrideVersion = process.argv[3];
+  console.log(`CONSOLE_DOCKER_REPO=${overrideDockerRepo}`);
+  console.log(`CONSOLE_VERSION=${overrideVersion}`);
+  process.exit(0);
+}
+
 const owner = 'redpanda-data';
 const repo = 'console';
 const CONSOLE_DOCKER_REPO = 'console'

@@ -1,0 +1,373 @@
+= Migrate to Redpanda Console v3.0.0 (beta)
+
+This guide provides step-by-step instructions for migrating from Redpanda Console v2.x.x (v2) to v3.x.x (v3). The new release introduces user impersonation to unify authentication and authorization between Redpanda Console and Redpanda, along with several breaking changes. This guide explains these changes and provides examples to help you update your configuration.
+
+For details on the new authentication and authorization system, see xref:console:config/security/authentication.adoc[].
+
+== Breaking changes
+
+The following changes require your attention when migrating from v2 to v3:
+
+include::upgrade:partial$console/v3-breaking-changes.adoc[]
+
+== Authentication and authorization migration
+
+In v2, login provider configurations were defined under the `login` stanza. In v3, these have been replaced by the new `authentication` stanza. Below are examples showing how to migrate from different login providers.
+
+=== Migrate from the plain login provider
+
+In v3, the plain login provider is no longer supported and the `enterprise` stanza is deprecated, so you should configure authentication and RBAC directly in the main configuration.
+
+For user impersonation, the logged-in user's credentials are re-used when making API calls. If you're using username/password authentication, these credentials are used as SASL/SCRAM credentials.
+
+[.side-by-side]
+--
+.V2 plain login with RBAC
+[source,yaml,role="no-wrap"]
+----
+login:
+  enabled: true
+  jwtSecret: "secret-key"
+  useSecureCookies: false
+  plain:
+    enabled: true
+    credentials:
+      - username: "jane"
+        password: "some-other-secret-password"
+      - username: "john"
+        password: "some-secret-password"
+enterprise:
+  rbac:
+    enabled: true
+    roleBindingsFilepath: /tmp/role-bindings.yml
+----
+
+.V3 user impersonation
+[source,yaml,role="no-wrap"]
+----
+kafka:
+  sasl:
+    enabled: true
+    impersonateUser: true <1>
+authentication:  <2>
+  jwtSigningSecret: "secret-key"
+  useSecureCookies: false
+  basic:
+    enabled: true  <3>
+----
+--
+<1> When using user impersonation, the credentials from the logged-in user are forwarded to the Kafka API. As a result, any static role binding settings are ignored for impersonated API calls. Ensure your users are provisioned as SASL/SCRAM users in Redpanda.
+<2> The `authentication` stanza replaces the `login` stanza in v3. Use this stanza to configure authentication settings.
+<3> The `basic` block enables basic authentication for Redpanda Console.
+
+Role bindings are ignored with user impersonation. If you prefer to disable user impersonation so that static credentials are used instead, modify your configuration as follows:
+
+.V3 static credentials
+[source,yaml,role="no-wrap"]
+----
+kafka:
+  sasl:
+    enabled: true
+    impersonateUser: false <1>
+    username: "jane" <2>
+    password: "some-other-secret-password"
+    mechanism: SCRAM-SHA-256
+authentication:
+  jwtSigningSecret: "secret-key"
+  useSecureCookies: false
+  basic:
+    enabled: true
+# With static credentials, the role bindings still apply to control Console access.
+authorization: <3>
+  roleBindings:
+    - roleName: admin
+      users:
+        - loginType: basic
+          name: "jane"
+----
+
+<1> Set `impersonateUser` to `false` to disable user impersonation.
+<2> Specify the username, password, and mechanism for the static credentials.
+<3> Role bindings are applied when using static credentials.
+
+[IMPORTANT]
+====
+When impersonation is disabled, the static credentials specified in the `kafka.sasl` block are used to authenticate with Kafka. Ensure that these credentials have the necessary ACLs in Redpanda.
+====
+
+=== Migrate from Google OIDC
+
+In v3, the Google OIDC configuration has been simplified and the `login` stanza has been replaced by the `authentication` stanza. Below is an example showing how to migrate from Google OIDC in v2 to v3.
+
+NOTE: OIDC-based group authorization is no longer available in Redpanda Console. With the move to unified authentication, RBAC is now managed directly in Redpanda, which does not support OIDC groups.
+
+[.side-by-side]
+--
+.V2 Google OIDC
+[source,yaml,role="no-wrap"]
+----
+login:
+  enabled: true
+  jwtSecret: "old-google-secret"
+  oidc:
+    enabled: true
+    clientId: "google-client-id-v2"
+    clientSecret: "google-client-secret-v2"
+    issuerUrl: "https://accounts.google.com"
+    # issuerTls, displayName, and userIdentifyingClaimKey may be present in v2 but are omitted here for brevity.
+----
+
+.V3 Google OIDC
+[source,yaml,role="no-wrap"]
+----
+kafka:
+  sasl:
+    enabled: true
+    impersonateUser: true <1>
+authentication: <2>
+  jwtSigningSecret: "old-google-secret"
+  useSecureCookies: true
+  oidc: <3>
+    enabled: true
+    issuerUrl: "https://accounts.google.com"
+    clientId: "google-client-id-v2"
+    clientSecret: "google-client-secret-v2"
+----
+--
+<1> When using user impersonation, the credentials from the logged-in user are forwarded to the Kafka API. As a result, any static role binding settings are ignored for impersonated API calls. Ensure your Redpanda cluster has SASL/OAUTHBEARER authentication enabled.
+<2> The `authentication` stanza replaces the `login` stanza in v3. Use this stanza to configure authentication settings.
+<3> The `oidc` block enables OIDC authentication for Redpanda Console. See xref:console:config/security/authentication.adoc[].
+
+
+
+Additionally, Redpanda requires a JWT-encoded access token for authentication. While most identity providers issue JWTs, some (like Google) follow the OAuth spec and issue opaque tokens instead. Since Redpanda relies on JWTs to introspect the audience and subject, providers that do not support JWT access tokens cannot be used for authentication.
+
+=== Migrate from GitHub OIDC
+
+In v3, the GitHub OIDC configuration has been simplified and the `login` stanza has been replaced by the `authentication` stanza. Below is an example showing how to migrate from GitHub OIDC in v2 to v3.
+
+NOTE: OIDC-based group authorization is no longer available in Redpanda Console. With the move to unified authentication, RBAC is now managed directly in Redpanda, which does not support OIDC groups. As a result, GitHub team synchronization or group-based authorization through OIDC groups is no longer supported.
+
+[.side-by-side]
+--
+.V2 GitHub OIDC
+[source,yaml,role="no-wrap"]
+----
+login:
+  enabled: true
+  jwtSecret: "old-github-secret"
+  github:
+    enabled: true
+    clientId: "github-client-id-v2"
+    clientSecret: "github-client-secret-v2"
+    # The directory configuration for GitHub teams was available in v2 but is no longer supported.
+----
+
+.V3 GitHub OIDC
+[source,yaml,role="no-wrap"]
+----
+kafka:
+  sasl:
+    enabled: true
+    impersonateUser: true <1>
+authentication: <2>
+  jwtSigningSecret: "old-github-secret"
+  useSecureCookies: true
+  oidc: <3>
+    enabled: true
+    clientId: "github-client-id-v2"
+    clientSecret: "github-client-secret-v2"
+----
+--
+<1> When using user impersonation, the credentials from the logged-in user are forwarded to the Kafka API. As a result, any static role binding settings are ignored for impersonated API calls. Ensure your Redpanda cluster has SASL/OAUTHBEARER authentication enabled.
+<2> The `authentication` stanza replaces the `login` stanza in v3. Use this stanza to configure authentication settings.
+<3> The `oidc` block enables OIDC authentication for Redpanda Console. See xref:console:config/security/authentication.adoc[].
+
+=== Migrate from Keycloak OIDC
+
+In v3, the Keycloak OIDC configuration has been simplified and the `login` stanza has been replaced by the `authentication` stanza. Below is an example showing how to migrate from Keycloak OIDC in v2 to v3.
+
+NOTE: OIDC-based group authorization is no longer available in Redpanda Console. With the move to unified authentication, RBAC is now managed directly in Redpanda, which does not support OIDC groups. As a result, Keycloak group synchronization or group-based authorization through OIDC groups is no longer supported.
+
+[.side-by-side]
+--
+.V2 Keycloak OIDC
+[source,yaml,role="no-wrap"]
+----
+login:
+  enabled: true
+  jwtSecret: "old-keycloak-secret"
+  keycloak:
+    enabled: true
+    url: "https://keycloak.internal.company.com"
+    realm: "old-realm-v2"
+    clientId: "keycloak-client-id-v2"
+    clientSecret: "keycloak-client-secret-v2"
+    # The directory configuration for syncing Keycloak groups was included in v2 but is no longer supported.
+----
+
+.V3 Keycloak OIDC
+[source,yaml,role="no-wrap"]
+----
+kafka:
+  sasl:
+    enabled: true
+    impersonateUser: true <1>
+authentication: <2>
+  jwtSigningSecret: "old-keycloak-secret"
+  useSecureCookies: true
+  oidc: <3>
+    enabled: true
+    url: "https://keycloak.internal.company.com"
+    realm: "old-realm-v2"
+    clientId: "keycloak-client-id-v2"
+    clientSecret: "keycloak-client-secret-v2"
+----
+--
+<1> When using user impersonation, the credentials from the logged-in user are forwarded to the Kafka API. As a result, any static role binding settings are ignored for impersonated API calls. Ensure your Redpanda cluster has SASL/OAUTHBEARER authentication enabled.
+<2> The `authentication` stanza replaces the `login` stanza in v3. Use this stanza to configure authentication settings.
+<3> The `oidc` block enables OIDC authentication for Redpanda Console. See xref:console:config/security/authentication.adoc[].
+
+=== Role bindings
+
+In v2, role bindings could be configured in a separate file or within the `enterprise` stanza. In v3, the `enterprise` stanza is deprecated, and role bindings must now be configured directly in your main configuration under the `authorization.roleBindings` stanza.
+
+[.side-by-side]
+--
+.V2 role bindings
+[source,yaml,role="no-wrap"]
+----
+enterprise:
+  rbac:
+    enabled: true
+    roleBindingsFilepath: "/path/to/roleBindings.yaml"
+# v2: Role bindings configured in a separate file.
+roleBindings:
+  - roleName: admin
+    metadata:
+      name: Developers
+      creator: John Doe
+    subjects:
+      - kind: user
+        provider: Plain
+        name: alice
+----
+
+.V3 role bindings
+[source,yaml,role="no-wrap"]
+----
+authorization:
+  roleBindings:
+    - roleName: admin
+      users:
+        - loginType: basic
+          name: alice
+----
+--
+
+== Schema Registry migration
+
+In v2, the Schema Registry configuration was nested under the `kafka` stanza. In v3, this configuration is now a top-level stanza.
+
+[.side-by-side]
+--
+.V2 Schema Registry
+[source,yaml,role="no-wrap"]
+----
+kafka:
+  brokers:
+    - "broker-0.mycompany.com:19092"
+  schemaRegistry:
+    enabled: true
+    urls:
+      - "http://schema-registry.mycompany.com:8081"
+    # Basic authentication:
+    username: "example-user"
+    password: "example-password"
+    # Bearer token:
+    bearerToken: "example-bearer-token"
+    # TLS configuration:
+    tls:
+      enabled: false
+      caFilepath: "/path/to/ca-cert.pem"
+      certFilepath: "/path/to/client-cert.pem"
+      keyFilepath: "/path/to/client-key.pem"
+      insecureSkipTlsVerify: false
+----
+
+.V3 Schema Registry
+[source,yaml,role="no-wrap"]
+----
+schemaRegistry:
+  enabled: true
+  urls:
+    - "http://schema-registry.mycompany.com:8081"
+  authentication:
+    impersonateUser: false
+    basic:
+      username: "example-user"
+      password: "example-password"
+    bearerToken: "example-bearer-token"
+  tls:
+    enabled: false
+    caFilepath: "/path/to/ca-cert.pem"
+    certFilepath: "/path/to/client-cert.pem"
+    keyFilepath: "/path/to/client-key.pem"
+    insecureSkipTlsVerify: false
+----
+--
+
+== Serde and Kafka Connect migration
+
+In v3, all serialization settings are consolidated under the `serde` stanza. The connect configuration has been renamed to `kafkaConnect`, and the `console.maxDeserializationPayloadSize` setting is now part of the `serde` configuration.
+
+[.side-by-side]
+--
+.V2 serde and Kafka Connect
+[source,yaml,role="no-wrap"]
+----
+kafka:
+  protobuf:
+    enabled: false
+    mappings: []
+  cbor:
+    enabled: false
+  messagePack:
+    enabled: false
+console:
+  maxDeserializationPayloadSize: 20480
+connect:
+  enabled: false
+  clusters: []
+----
+
+.V3 serde and Kafka Connect
+[source,yaml,role="no-wrap"]
+----
+serde:
+  protobuf:
+    enabled: false
+    mappings: []
+  cbor:
+    enabled: false
+  messagePack:
+    enabled: false
+  console:
+    maxDeserializationPayloadSize: 20480
+kafkaConnect:
+  enabled: false
+  clusters: []
+----
+--
+
+== Validate migration
+
+After updating your configuration, verify that:
+
+- Users can log in using the new authentication settings.
+- API calls to Kafka, Schema Registry, and the Admin API are authenticated correctly.
+
+== Suggested reading
+
+- xref:console:config/security/authentication.adoc[]
+- xref:console:config/security/index.adoc[]
