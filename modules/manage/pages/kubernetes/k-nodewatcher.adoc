@@ -1,7 +1,7 @@
-= Install the Nodewatcher Controller
+= Install the PVCUnbinder Sidecar
 :page-categories: Management
 :env-kubernetes: true
-:description: pass:q[The Nodewatcher controller is an emergency backstop for Redpanda clusters that use PersistentVolumes (PVs) for the Redpanda data directory. When a node running a Redpanda Pod suddenly goes offline, Nodewatcher detects the lost node, retains the associated PV, and removes the corresponding PersistentVolumeClaim (PVC). This workflow allows the Redpanda Pod to be rescheduled on a new node without losing critical data.]
+:description: pass:q[The PVCUnbinder sidecar is an emergency backstop for Redpanda clusters that use PersistentVolumes (PVs) for the Redpanda data directory. When a node running a Redpanda Pod suddenly goes offline, the PVCUnbinder detects the lost node, retains the associated PV, and removes the corresponding PersistentVolumeClaim (PVC). This workflow allows the Redpanda Pod to be rescheduled on a new node without losing critical data.]
 
 {description}
 
@@ -9,18 +9,18 @@
 
 [WARNING]
 ====
-The Nodewatcher controller is intended only for emergency scenarios (for example, node hardware or infrastructure failures). *Never use the Nodewatcher controller as a routine method for removing brokers.* If you want to remove brokers, see xref:manage:kubernetes/k-decommission-brokers.adoc[Decommission brokers] for the correct procedure.
+The PVCUnbinder sidecar is intended only for emergency scenarios (for example, node hardware or infrastructure failures). *Never use the PVCUnbinder sidecar as a routine method for removing brokers.* If you want to remove brokers, see xref:manage:kubernetes/k-decommission-brokers.adoc[Decommission brokers] for the correct procedure.
 ====
 
 :warning-caption: Warning
 
-== Why use Nodewatcher?
+== Why use the PVCUnbinder sidecar?
 
-If a worker node hosting a Redpanda Pod suddenly fails or disappears, Kubernetes might leave the associated PV and PVC in an _attached_ or _in-use_ state. Without Nodewatcher (or manual intervention), the Redpanda Pod cannot safely reschedule to another node because the volume is still recognized as occupied. Also, the default reclaim policy might delete the volume, risking data loss. Nodewatcher automates the steps needed to retain the volume and remove the stale PVC, so Redpanda Pods can move to healthy nodes without losing the data in the original PV.
+If a worker node hosting a Redpanda Pod suddenly fails or disappears, Kubernetes might leave the associated PV and PVC in an _attached_ or _in-use_ state. Without the PVCUnbinder (or manual intervention), the Redpanda Pod cannot safely reschedule to another node because the volume is still recognized as occupied. Also, the default reclaim policy might delete the volume, risking data loss. The PVCUnbinder sidecar automates the steps needed to retain the volume and remove the stale PVC, so Redpanda Pods can move to healthy nodes without losing the data in the original PV.
 
-== How Nodewatcher works
+== How the PVCUnbinder sidecar works
 
-When the controller detects events that indicate a Node resource is no longer available, it does the following:
+When the PVCUnbinder detects events that indicate a Node resource is no longer available, it does the following:
 
 - For each Redpanda Pod on that Node, it identifies the PVC (if any) the Pod was using for its storage.
 - It sets the reclaim policy of the affected PersistentVolume (PV) to `Retain`.
@@ -41,7 +41,7 @@ flowchart TB
 ....
 
 
-== Install Nodewatcher
+== Install the PVCUnbinder sidecar
 
 [tabs]
 ======
@@ -49,49 +49,10 @@ Operator::
 +
 --
 
-You can install the Nodewatcher controller as part of the Redpanda Operator or as a sidecar on each Pod that runs a Redpanda broker. When you install the controller as part of the Redpanda Operator, the controller monitors all Redpanda clusters running in the same namespace as the Redpanda Operator. If you want the controller to manage only a single Redpanda cluster, install it as a sidecar on each Pod that runs a Redpanda broker, using the Redpanda resource.
+To install the PVCUnbinder:
 
-To install the Nodewatcher controller as part of the Redpanda Operator:
-
-. Deploy the Redpanda Operator with the Nodewatcher controller:
-+
-[,bash,subs="attributes+",lines=7+8]
-----
-helm repo add redpanda https://charts.redpanda.com
-helm repo update
-helm upgrade --install redpanda-controller redpanda/operator \
-  --namespace <namespace> \
-  --set image.tag={latest-operator-version} \
-  --create-namespace \
-  --set additionalCmdFlags={--additional-controllers="nodeWatcher"} \
-  --set rbac.createAdditionalControllerCRs=true
-----
-+
-- `--additional-controllers="nodeWatcher"`: Enables the Nodewatcher controller.
-- `--rbac.createAdditionalControllerCRs=true`: Creates the required RBAC rules for the Redpanda Operator to monitor the Node resources and update PVCs and PVs.
-
-. Deploy a Redpanda resource:
-+
 .`redpanda-cluster.yaml`
 [,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec: {}
-----
-+
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
-To install the Decommission controller as a sidecar:
-
-.`redpanda-cluster.yaml`
-[,yaml,lines=11+13+15]
 ----
 apiVersion: cluster.redpanda.com/v1alpha2
 kind: Redpanda
@@ -102,17 +63,16 @@ spec:
   clusterSpec:
     statefulset:
       sideCars:
-        controllers:
-          enabled: true
-          run:
-            - "nodeWatcher"
+        pvcUnbinder:
+          enabled: true <1>
+          unbindAfter: 60s <2>
     rbac:
-      enabled: true
+      enabled: true <3>
 ----
 
-- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
-- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
-- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
+<1> `statefulset.sideCars.pvcUnbinder.enabled`: Enables the PVCUnbinder sidecar.
+<2> `statefulset.sideCars.pvcUnbinder.unbindAfter`: Sets the time in seconds after which the PVCUnbinder sidecar removes the PVC after the Node resource is deleted.
+<3> `rbac.enabled`: Creates the required RBAC rules for the PVCUnbinder to monitor the Node resources and update PVCs and PVs.
 
 --
 Helm::
@@ -122,46 +82,45 @@ Helm::
 ====
 --values::
 +
-.`decommission-controller.yaml`
-[,yaml,lines=4+6+8]
+.`pvcunbinder.yaml`
+[,yaml]
 ----
 statefulset:
   sideCars:
-    controllers:
-      enabled: true
-      run:
-        - "nodeWatcher"
+    pvcUnbinder:
+      enabled: true <1>
+      unbindAfter: 60s <2>
 rbac:
-  enabled: true
+  enabled: true <3>
 ----
 +
-- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
-- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
-- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
+<1> `statefulset.sideCars.pvcUnbinder.enabled`: Enables the PVCUnbinder sidecar.
+<2> `statefulset.sideCars.pvcUnbinder.unbindAfter`: Sets the time in seconds after which the PVCUnbinder sidecar removes the PVC after the Node resource is deleted.
+<3> `rbac.enabled`: Creates the required RBAC rules for the PVCUnbinder to monitor the Node resources and update PVCs and PVs.
 
 --set::
 +
-[,bash,lines=4-6]
+[,bash]
 ----
 helm upgrade --install redpanda redpanda/redpanda \
   --namespace <namespace> \
   --create-namespace \
-  --set statefulset.sideCars.controllers.enabled=true \
-  --set statefulset.sideCars.controllers.run={"nodeWatcher"} \
-  --set rbac.enabled=true
+  --set statefulset.sideCars.pvcUnbinder.enabled=true \ <1>
+  --set statefulset.sideCars.pvcUnbinder.unbindAfter=60s\ <2>
+  --set rbac.enabled=true <3>
 ----
 +
-- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
-- `statefulset.sideCars.controllers.run`: Enables the Nodewatcher controller.
-- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the Node resources and update PVCs and PVs.
+<1> `statefulset.sideCars.pvcUnbinder.enabled`: Enables the PVCUnbinder sidecar.
+<2> `statefulset.sideCars.pvcUnbinder.unbindAfter`: Sets the time in seconds after which the PVCUnbinder sidecar removes the PVC after the Node resource is deleted.
+<3> `rbac.enabled`: Creates the required RBAC rules for the PVCUnbinder to monitor the Node resources and update PVCs and PVs.
 
 ====
 --
 ======
 
-== Test the Nodewatcher controller
+== Test the PVCUnbinder sidecar
 
-. Test the Nodewatcher controller by deleting a Node resource:
+. Test the PVCUnbinder sidecar by deleting a Node resource:
 +
 [,bash]
 ----
@@ -170,25 +129,14 @@ kubectl delete node <node-name>
 +
 NOTE: This step is for testing purposes only.
 
-. Monitor the logs of the Nodewatcher controller:
-+
---
-- If you're running the Nodewatcher controller as part of the Redpanda Operator:
+. Monitor the logs of the PVCUnbinder sidecar:
 +
 [,bash]
 ----
-kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
+kubectl logs <pod-name> --namespace <namespace> -c sidecars
 ----
-
-- If you're running the Nodewatcher controller as a sidecar:
 +
-[,bash]
-----
-kubectl logs <pod-name> --namespace <namespace> -c redpanda-controllers
-----
---
-+
-You should see that the controller successfully deleted the PVC of the Pod that was running on the deleted Node resource.
+You should see that the PVCUnbinder successfully deleted the PVC of the Pod that was running on the deleted Node resource.
 +
 [,bash]
 ----
@@ -202,6 +150,6 @@ kubectl get persistentvolumeclaim --namespace <namespace>
 kubectl get persistentvolume --namespace <namespace>
 ----
 
-After the Nodewatcher controller has finished, xref:manage:kubernetes/k-decommission-brokers.adoc[decommission the broker] that was removed from the node. This is necessary to prevent a potential loss of quorum and ensure cluster stability.
+After the PVCUnbinder has finished, xref:manage:kubernetes/k-decommission-brokers.adoc[decommission the broker] that was removed from the node. This is necessary to prevent a potential loss of quorum and ensure cluster stability.
 
 NOTE: Make sure to use the `--force` flag when decommissioning the broker with xref:reference:rpk/rpk-redpanda/rpk-redpanda-admin-brokers-decommission.adoc[`rpk redpanda admin brokers decommission`]. This flag is required when the broker is no longer running.
