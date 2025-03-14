@@ -25,7 +25,7 @@ if [ -d "redpanda-quickstart" ]; then
 else
   echo "Setting up redpanda-quickstart folder..."
   mkdir redpanda-quickstart && cd redpanda-quickstart || exit 1
-  curl -sSL https://docs.redpanda.com/redpanda-quickstart.tar.gz | tar xzf -
+  curl -sSL https://docs.redpanda.com/$REDPANDA_MAJOR_MINOR-redpanda-quickstart.tar.gz | tar xzf -
   cd docker-compose || exit 1
 fi
 
