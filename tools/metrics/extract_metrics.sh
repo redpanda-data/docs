@@ -8,6 +8,7 @@ fi
 
 # Make this tag accessible to docker-compose and Python
 export REDPANDA_VERSION="$TAG"
+REDPANDA_MAJOR_MINOR=$(echo "$TAG" | sed -E 's/^v?([0-9]+\.[0-9]+).*$/\1/')
 
 WORK_DIR="$(pwd)"
 
@@ -18,20 +19,22 @@ function check_docker_containers {
   fi
 }
 
-# Remove existing redpanda-quickstart directory for replayability
 if [ -d "redpanda-quickstart" ]; then
-  rm -rf redpanda-quickstart
+  echo "redpanda-quickstart directory exists, using existing one..."
+  cd redpanda-quickstart/docker-compose || exit 1
+else
+  echo "Setting up redpanda-quickstart folder..."
+  mkdir redpanda-quickstart && cd redpanda-quickstart || exit 1
+  curl -sSL https://docs.redpanda.com/$REDPANDA_MAJOR_MINOR-redpanda-quickstart.tar.gz | tar xzf -
+  cd docker-compose || exit 1
 fi
-
-# Create folder and set up Redpanda quickstart
-echo "Setting up redpanda-quickstart folder..."
-mkdir redpanda-quickstart && cd redpanda-quickstart || exit 1
-curl -sSL https://docs.redpanda.com/redpanda-quickstart.tar.gz | tar xzf -
-cd docker-compose || exit 1
 
 # Check and handle Docker containers
 check_docker_containers
 docker compose up -d
+
+echo "Waiting 60 seconds for containers to initialize..."
+sleep 60
 
 cd "$WORK_DIR" || {
   echo "Failed to navigate back to the working directory: $WORK_DIR. Exiting."
@@ -70,3 +73,11 @@ if [ -f "$WORK_DIR/metrics.py" ]; then
 else
   echo "metrics.py not found in $WORK_DIR. Please ensure it exists."
 fi
+
+# Tear down Docker containers after the script has run
+echo "Tearing down Docker containers..."
+cd redpanda-quickstart/docker-compose || {
+  echo "Failed to navigate to docker-compose directory. Exiting.";
+  exit 1;
+}
+docker compose down --volumes
