@@ -15,7 +15,7 @@ def fetch_metrics(url):
         response.raise_for_status()
         return response.text
     except requests.RequestException as e:
-        logging.error(f"Error fetching metrics: {e}")
+        logging.error(f"Error fetching metrics from {url}: {e}")
         return None
 
 def parse_metrics(metrics_text):
@@ -65,11 +65,12 @@ def output_asciidoc(metrics, adoc_file):
         for name, data in metrics.items():
             f.write(f"=== {name}\n\n")
             f.write(f"{data['description']}\n\n")
-            f.write(f"*Type*: {data['type']}\n\n")
+            f.write(f"*Type*: {data['type']}")
             if data["labels"]:
-                f.write(f"*Labels*:\n")
+                f.write("\n\n*Labels*:\n")
                 for label in data["labels"]:
-                    f.write(f"\n- `{label}`\n\n---\n\n")
+                    f.write(f"\n- `{label}`")
+            f.write("\n\n---\n\n")
     logging.info(f"AsciiDoc output written to {adoc_file}")
 
 def output_json(metrics, json_file):
@@ -98,15 +99,14 @@ def find_largest_version_in_gen(gen_path):
     if not dirs:
         return None
 
-    # Sort as "semantic versions" by splitting on dots
+    # Sort as semantic versions by splitting on dots
     def version_tuple(v):
         return tuple(map(int, v.split(".")))
     dirs.sort(key=version_tuple)  # sorts ascending
     return dirs[-1]  # largest version
 
 if __name__ == "__main__":
-    # Read the tag from script
-    # If none provided, assume "latest"
+    # Read the tag from the script; if none provided, assume "latest"
     tag = "latest"
     if len(sys.argv) > 1:
         tag = sys.argv[1]
@@ -116,10 +116,8 @@ if __name__ == "__main__":
     if tag.lower() != "latest":
         parts = tag.split(".")
         if len(parts) >= 2:
-            # remove the last part
             tag_modified = ".".join(parts[:-1])
         else:
-            # fallback if only "24" was passed
             tag_modified = tag
     else:
         tag_modified = None
@@ -143,17 +141,35 @@ if __name__ == "__main__":
     output_dir = os.path.join(gen_path, tag_modified, "metrics")
     ensure_directory_exists(output_dir)
 
+    # Fetch and process public metrics
     METRICS_URL = "http://localhost:19644/public_metrics/"
     metrics_text = fetch_metrics(METRICS_URL)
 
     if not metrics_text:
-        logging.error("No metrics retrieved. Exiting.")
+        logging.error("No public metrics retrieved. Exiting.")
         sys.exit(1)
 
-    metrics = parse_metrics(metrics_text)
+    public_metrics = parse_metrics(metrics_text)
+
+    # Fetch and process internal metrics from /metrics endpoint
+    INTERNAL_METRICS_URL = "http://localhost:19644/metrics/"
+    internal_metrics_text = fetch_metrics(INTERNAL_METRICS_URL)
+    if internal_metrics_text:
+        internal_metrics = parse_metrics(internal_metrics_text)
+    else:
+        logging.error("No internal metrics retrieved.")
+        internal_metrics = {}
+
+    # Merge public and internal metrics into one JSON structure
+    merged_metrics = {
+        "public": public_metrics,
+        "internal": internal_metrics
+    }
 
     JSON_OUTPUT_FILE = os.path.join(output_dir, "metrics.json")
     ASCIIDOC_OUTPUT_FILE = os.path.join(output_dir, "metrics.adoc")
+    INTERNAL_ASCIIDOC_OUTPUT_FILE = os.path.join(output_dir, "internal-metrics.adoc")
 
-    output_json(metrics, JSON_OUTPUT_FILE)
-    output_asciidoc(metrics, ASCIIDOC_OUTPUT_FILE)
+    output_json(merged_metrics, JSON_OUTPUT_FILE)
+    output_asciidoc(public_metrics, ASCIIDOC_OUTPUT_FILE)
+    output_asciidoc(internal_metrics, INTERNAL_ASCIIDOC_OUTPUT_FILE)
