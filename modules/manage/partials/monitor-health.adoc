@@ -209,18 +209,136 @@ Leaderless partitions can be caused by unresponsive brokers. When an alert on `r
 
 Redpanda's Raft implementation exchanges periodic status RPCs between a broker and its peers. The xref:reference:public-metrics-reference.adoc#redpanda_node_status_rpcs_timed_out[`redpanda_node_status_rpcs_timed_out`] gauge increases when a status RPC times out for a peer, which indicates that a peer may be unresponsive and may lead to problems with partition replication that Raft manages. Monitor for non-zero values of this gauge, and correlate it with any logged errors or changes in partition replication.
 
-=== Consumers
+[[consumers]]
+=== Consumer group lag
 
-==== Consumer group lag
+Consumer group lag is an important performance indicator that measures the difference between the broker's latest (max) offset and the consumer group's last committed offset. The lag is a performance indicator of how fresh the data being consumed is. A higher lag means consumers are falling behind producers.
 
-When working with Kafka consumer groups, the consumer group lag&mdash;the difference between the broker's latest (max) offset and the group's last committed offset&mdash;is a performance indicator of how fresh the data being consumed is. While higher lag for archival consumers is expected, high lag for real-time consumers could indicate that the consumers are overloaded and thus may need their topics to be partitioned more, or to spread the load to more consumers.
+While a higher lag may be acceptable for archival consumers, a high lag for real-time consumers suggests that they might be overloaded. In such cases, you may need to repartition topics or increase the number of consumers to distribute the load more evenly.
 
-To monitor consumer group lag, create a query with the xref:reference:public-metrics-reference.adoc#redpanda_kafka_max_offset[`redpanda_kafka_max_offset`] and xref:reference:public-metrics-reference.adoc#redpanda_kafka_consumer_group_committed_offset[`redpanda_kafka_consumer_group_committed_offset`] gauges:
+Redpanda provides the following methods for monitoring consumer group lag:
+
+- <<dedicated-gauges, Dedicated gauges>>: Redpanda can internally calculate consumer group lag and expose it as two dedicated gauges. These gauges simplify monitoring by providing direct lag metrics without the need for complex calculations. This method is recommended for environments where observability platforms may not support complex queries.
+- <<offset-based-calculation, Offset-based calculation>>: You can use your observability platform to calculate consumer group lag by combining two offset metrics: `redpanda_kafka_max_offset` and `redpanda_kafka_consumer_group_committed_offset`. This method requires complex queries to calculate lag and may not be supported in all observability platforms.
+
+==== Dedicated gauges
+
+Redpanda can internally calculate consumer group lag and expose it as two dedicated gauges:
+
+- xref:reference:public-metrics-reference.adoc#redpanda_kafka_consumer_group_lag_max[`redpanda_kafka_consumer_group_lag_max`]:
+A gauge reporting the maximum lag observed among all partitions for a consumer group. This metric helps pinpoint the partition with the greatest delay, indicating potential bottlenecks.
+
+- xref:reference:public-metrics-reference.adoc#redpanda_kafka_consumer_group_lag_sum[`redpanda_kafka_consumer_group_lag_sum`]:
+A gauge that aggregates the lag across all partitions, providing an overall view of data consumption delay for the consumer group.
+
+Using these gauges eliminates the need for complicated calculations in your observability tool.
+
+To have these dedicated gauges available, you must enable consumer group metrics in your cluster properties. Add the following settings to your Redpanda configuration:
+
+- xref:reference:properties/cluster-properties.adoc#enable_consumer_group_metrics[`enable_consumer_group_metrics`]: A list of properties to enable for consumer group metrics. You must add the `consumer_lag` property to enable consumer group lag metrics.
+- xref:reference:properties/cluster-properties.adoc#consumer_group_lag_collection_interval_sec[`consumer_group_lag_collection_interval_sec`] (optional): The interval in seconds for collecting consumer group lag metrics. The default is 60 seconds.
+
+For example:
+
+ifndef::env-kubernetes[]
+[,bash]
+----
+rpk cluster config set enable_consumer_group_metrics '["group", "partition", "consumer_lag"]'
+----
+endif::[]
+
+ifdef::env-kubernetes[]
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    config:
+      cluster:
+        enable_consumer_group_metrics:
+          - group
+          - partition
+          - consumer_lag
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`enable-consumer-metrics.yaml`
+[,yaml]
+----
+config:
+  cluster:
+    enable_consumer_group_metrics:
+      - group
+      - partition
+      - consumer_lag
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+--values enable-consumer-metrics.yaml --reuse-values
+```
+
+--set::
++
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda \
+  --namespace <namespace> \
+  --create-namespace \
+  --set config.cluster.enable_consumer_group_metrics[0]=group \
+  --set config.cluster.enable_consumer_group_metrics[1]=partition \
+  --set config.cluster.enable_consumer_group_metrics[2]=consumer_lag
+----
+
+====
+--
+======
+endif::[]
+
+When these properties are enabled, Redpanda computes and exposes the `redpanda_kafka_consumer_group_lag_max` and `redpanda_kafka_consumer_group_lag_sum` gauges in the public metrics endpoint.
+
+Enabling these additional metrics may add extra processing overhead to the broker, especially in environments with a very high number of consumer groups or partitions.
+The increased frequency of metric collection could result in higher resource utilization.
+If your environment is sensitive to performance overhead or if you prefer to avoid any additional load, you may use the <<offset-based-calculation, offset-based calculation method>>. Otherwise, enabling these properties can simplify monitoring and improve the accuracy of consumer group lag measurements across diverse observability platforms.
+
+==== Offset-based calculation
+
+If you prefer not to enable the <<dedicated-gauges, dedicated gauges>>, you can calculate consumer group lag using offset metrics.
+
+Redpanda provides two metrics to calculate consumer group lag:
+
+- xref:reference:public-metrics-reference.adoc#redpanda_kafka_max_offset[`redpanda_kafka_max_offset`]: The broker's latest offset for a partition.
+- xref:reference:public-metrics-reference.adoc#redpanda_kafka_consumer_group_committed_offset[`redpanda_kafka_consumer_group_committed_offset`]: The last committed offset for a consumer group on that partition.
+
+For example, here's a typical query to compute consumer lag:
 
 [,promql]
 ----
 max by(redpanda_namespace, redpanda_topic, redpanda_partition)(redpanda_kafka_max_offset{redpanda_namespace="kafka"}) - on(redpanda_topic, redpanda_partition) group_right max by(redpanda_group, redpanda_topic, redpanda_partition)(redpanda_kafka_consumer_group_committed_offset)
 ----
+
+This approach works well if your observability platform supports functions, such as `max()`, on calculated values. However, it may not be suitable for all platforms, as some may not support complex queries or functions. In such cases, consider enabling the <<dedicated gauges, dedicated gauges>> for a simpler and more accurate monitoring experience.
 
 === Services
 
