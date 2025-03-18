@@ -1133,6 +1133,35 @@ rpk topic alter-config <topic_name> --set redpanda.remote.read=true
 
 See also: xref:{topic-recovery-link}[Topic Recovery], xref:manage:kubernetes/k-remote-read-replicas.adoc[Remote Read Replicas]
 
+== Safe pause and resume
+
+When running Tiered Storage, you can safely pause and resume uploads to cloud storage without risking data consistency or loss. To pause or resume segment uploads to cloud storage, use the `cloud_storage_enable_segment_uploads` configuration property (default is `true`), which allows segment uploads to proceed normally after the pause completes and uploads resume.
+
+While uploads are paused, data accumulates locally, which can lead to full disks if the pause is prolonged. In such cases, Redpanda throttles produce requests, and rejects new Kafka produce requests to prevent data from being written. Additionally, this pauses cloud storage housekeeping, meaning segments are neither uploaded nor removed from cloud storage. However, it is still possible to consume data from cloud storage when you have paused uploads.
+
+When you set `cloud_storage_enable_segment_uploads` to `false`, all in-flight segment uploads will complete, but no new segment uploads will commence until after the value is set back to `true`. During this pause, Tiered Storage enforces consistency by ensuring that no segment in local storage is deleted until it is successfully uploaded to cloud storage. This means that when uploads are resumed, no user intervention is needed, and no data gaps are created.
+
+Use the `redpanda_cloud_storage_paused_archivers` metric to monitor the status of paused uploads. It displays a non-zero value whenever uploads are paused.
+
+NOTE: Do not use `redpanda.remote.read` or `redpanda.remote.write` to pause and resume segment uploads. Doing so can lead to a gap between local data and the data in the cloud storage that cannot be re-enabled without additional user intervention. Also, in such cases, it is possible that the oldest segment is not aligned with the last uploaded segment due to the gap.
+
+In cases where you must pause uploads but you cannot afford to accumulate data on disk and lose availability (which, for some applications where the newest data is more valuable than historical data, this can be worse than data loss), there are a couple of less safe pause and resume mechanisms:
+
+- Set the `cloud_storage_enable_remote_allow_gaps` cluster configuration property to `true`, which allows gaps for all topics in the cluster.
+- Set the `redpanda.remote.allow_gaps` configuration (both topic and cluster) property to `true`, which allows gaps for one specific topic.
+
+When you pause uploads and set one of these properties to `true`, gaps may result. However, you can seamlessly resume uploads by specifying `*allow_gaps` to `true` at either the cluster or topic level. Otherwise, if set to `false`,
+uploads could stall if a gap occurs.
+
+To pause and resume Tiered Storage uploads, but allow for gaps:
+
+1. Set `cloud_storage_enable_segment_uploads` to `false`.
+2. Enable gaps by setting `redpanda.remote.allowgaps` to `true` for the topic, or by setting `cloud_storage_enable_remote_allow_gaps` to `true` for the entire cluster.
+3. Troubleshoot the issue that required you to pause uploads.
+4. Resume uploads by specifying `cloud_storage_enable_segment_uploads` to `true`.
+5. Wait until you see that the `redpanda_cloud_storage_paused_archivers` metric is equal to zero, indicating that uploads have resumed.
+6. Disable gaps by setting `redpanda.remote.allowgaps` to `false` for the topic, or specifying `cloud_storage_enable_remote_allow_gaps` to `false` for the entire cluster.
+
 == Caching
 
 When a consumer fetches an offset range that isn't available locally in the Redpanda data directory, Redpanda downloads remote segments from object storage. These downloaded segments are stored in the object storage cache.
