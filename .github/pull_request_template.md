@@ -1,6 +1,6 @@
 ## Description
 
-Resolves https://github.com/redpanda-data/documentation-private/issues/<add-your-issue-number-here>
+Resolves https://redpandadata.atlassian.net/browse/<jira-ticket>
 Review deadline:
 
 ## Page previews
