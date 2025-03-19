@@ -1135,7 +1135,7 @@ See also: xref:{topic-recovery-link}[Topic Recovery], xref:manage:kubernetes/k-r
 
 == Safe pause and resume
 
-When running Tiered Storage, you can safely pause and resume uploads to cloud storage without risking data consistency or loss. To pause or resume segment uploads to cloud storage, use the `cloud_storage_enable_segment_uploads` configuration property (default is `true`), which allows segment uploads to proceed normally after the pause completes and uploads resume.
+Starting in version 25.1, when running Tiered Storage, you can safely pause and resume uploads to cloud storage without risking data consistency or loss. To pause or resume segment uploads to cloud storage, use the `cloud_storage_enable_segment_uploads` configuration property (default is `true`), which allows segment uploads to proceed normally after the pause completes and uploads resume.
 
 While uploads are paused, data accumulates locally, which can lead to full disks if the pause is prolonged. In such cases, Redpanda throttles produce requests, and rejects new Kafka produce requests to prevent data from being written. Additionally, this pauses cloud storage housekeeping, meaning segments are neither uploaded nor removed from cloud storage. However, it is still possible to consume data from cloud storage when you have paused uploads.
 
@@ -1143,7 +1143,7 @@ When you set `cloud_storage_enable_segment_uploads` to `false`, all in-flight se
 
 Use the `redpanda_cloud_storage_paused_archivers` metric to monitor the status of paused uploads. It displays a non-zero value whenever uploads are paused.
 
-NOTE: Do not use `redpanda.remote.read` or `redpanda.remote.write` to pause and resume segment uploads. Doing so can lead to a gap between local data and the data in the cloud storage that cannot be re-enabled without additional user intervention. Also, in such cases, it is possible that the oldest segment is not aligned with the last uploaded segment due to the gap.
+NOTE: Do not use `redpanda.remote.read` or `redpanda.remote.write` to pause and resume segment uploads. Doing so can lead to a gap between local data and the data in the cloud storage. In such cases, it is possible that the oldest segment is not aligned with the last uploaded segment due to the gap.
 
 In cases where you must pause uploads but you cannot afford to accumulate data on disk and lose availability (which, for some applications where the newest data is more valuable than historical data, this can be worse than data loss), there are a couple of less safe pause and resume mechanisms:
 
@@ -1152,6 +1152,20 @@ In cases where you must pause uploads but you cannot afford to accumulate data o
 
 When you pause uploads and set one of these properties to `true`, gaps may result. However, you can seamlessly resume uploads by specifying `*allow_gaps` to `true` at either the cluster or topic level. Otherwise, if set to `false`,
 uploads could stall if a gap occurs.
+
+The following example shows a simple pause and resume with no gaps allowed:
+
+```bash
+rpk cluster config set cloud_storage_enable_segment_uploads false
+# Segments are not uploaded to cloud storage, and cloud storage housekeeping is not running.
+# The new data added to the topics with Tiered Storage is not deleted from disk
+# because it can't be uploaded. The disks may fill up eventually.
+# If the disks fill up, produce requests will be rejected.
+...
+
+rpk cluster config set cloud_storage_enable_segment_uploads true
+# At this point the uploads should resume seamlessly and
+# there should not be any data loss.
 
 To pause and resume Tiered Storage uploads, but allow for gaps:
 
