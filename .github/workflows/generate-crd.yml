@@ -1,8 +1,11 @@
----
-name: Generate CRD Reference Docs
+name: Generate Kubernetes Reference Docs
 on:
-  workflow_dispatch:  # Allows manual trigger of the workflow
-  repository_dispatch:  # Allows other repositories to trigger this workflow
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The Operator release tag for which to generate the docs'
+        required: true
+  repository_dispatch:
     types: [generate-crd-docs]
 jobs:
   trigger:
@@ -11,40 +14,103 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Determine operator tag
+        id: set_operator_tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${{ github.event.release.tag_name }}"
+          fi
+          echo "Operator tag: $TAG"
+          echo "OPERATOR_TAG=$TAG" >> $GITHUB_ENV
+
+      # Configure AWS credentials to get the secret for the Redpanda GitHub bot.
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ vars.RP_AWS_CRED_REGION }}
           role-to-assume: arn:aws:iam::${{ secrets.RP_AWS_CRED_ACCOUNT_ID }}:role/${{ vars.RP_AWS_CRED_BASE_ROLE_NAME }}${{ github.event.repository.name }}
+
       - uses: aws-actions/aws-secretsmanager-get-secrets@v2
         with:
           secret-ids: |
             ,sdlc/prod/github/actions_bot_token
           parse-json-secrets: true
-      # Checkout the specified branch from redpanda repository.
-      - name: Checkout redpanda repository
+
+      # Determine which docs branch to use based on the operator tag.
+      - name: Determine docs branch
+        id: set_docs_branch
+        shell: bash
+        run: |
+          TAG="${OPERATOR_TAG}"
+          echo "Operator tag: $TAG"
+
+          if [[ "$TAG" == *"v2.4"* ]]; then
+            echo "Operator tag contains v2.4 - using docs branch v/24.3."
+            if git ls-remote --exit-code --heads https://github.com/redpanda-data/docs.git v/24.3; then
+              DOCS_BRANCH="v/24.3"
+            else
+              echo "Error: Docs branch v/24.3 not found."
+              exit 1
+            fi
+          else
+            # Fetch the latest docs version from the antora.yml file on the main docs branch.
+            ANTORA_VERSION=$(curl -s https://raw.githubusercontent.com/redpanda-data/docs/main/antora.yml | grep '^version:' | sed -E 's/version: *//')
+            echo "Version in docs main branch: $ANTORA_VERSION"
+            # If the operator tag starts with that version, then commit to main.
+            if [[ "$TAG" == "v${ANTORA_VERSION}"* ]]; then
+              DOCS_BRANCH="main"
+            else
+              # Derive the docs branch name from the operator tag.
+              BASE_VERSION=$(echo "$TAG" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')
+              DOCS_BRANCH="v/${BASE_VERSION}"
+              if ! git ls-remote --exit-code --heads https://github.com/redpanda-data/docs.git "$DOCS_BRANCH"; then
+                echo "Error: Docs branch $DOCS_BRANCH not found."
+                exit 1
+              fi
+            fi
+          fi
+
+          echo "DOCS_BRANCH=$DOCS_BRANCH" >> $GITHUB_ENV
+          echo "Using docs branch: $DOCS_BRANCH"
+
+      # Checkout the operator repository at the specified tag.
+      - name: Checkout redpanda operator repository
         uses: actions/checkout@v4
         with:
           repository: redpanda-data/redpanda-operator
-          ref: main
+          ref: ${{ env.OPERATOR_TAG }}
           path: redpanda
           token: ${{ env.ACTIONS_BOT_TOKEN }}
-      # Checkout the redpanda-docs repository based on the FORMATTED_BRANCH.
-      - name: Checkout this repository
+
+      # Checkout the docs repository using the determined docs branch.
+      - name: Checkout redpanda-docs repository
         uses: actions/checkout@v4
         with:
-          ref: main
           repository: redpanda-data/docs
+          ref: ${{ env.DOCS_BRANCH }}
           path: redpanda-docs
           token: ${{ env.ACTIONS_BOT_TOKEN }}
-      # Download crd-ref-docs utility for doc generation.
+
       - name: Download crd-ref-docs
         run: |
           curl -fLO https://github.com/elastic/crd-ref-docs/releases/download/v0.1.0/crd-ref-docs_0.1.0_Linux_x86_64.tar.gz
           tar -xzf crd-ref-docs_0.1.0_Linux_x86_64.tar.gz
           chmod +x crd-ref-docs
           sudo mv crd-ref-docs /usr/local/bin/
-      # Generate Operator CRD documentation.
-      - name: Generate Operator CRD Docs
+
+      - name: Download helm-docs
+        run: |
+          curl -sL https://github.com/norwoodj/helm-docs/releases/download/v1.11.0/helm-docs_1.11.0_Linux_x86_64.tar.gz | tar xz
+          echo "helm-docs" >> $GITHUB_PATH
+          sudo mv helm-docs /usr/local/bin/
+
+      # Install pandoc, a tool to convert between different markup formats.
+      - name: Install pandoc
+        run: |
+          sudo apt-get install pandoc
+
+      - name: Generate Operator CRD docs
         run: |
           crd-ref-docs \
             --source-path=./redpanda/operator/api/redpanda/v1alpha2 \
@@ -53,26 +119,47 @@ jobs:
             --config=./redpanda/operator/crd-ref-docs-config.yaml \
             --renderer=asciidoctor \
             --output-path=./redpanda-docs/modules/reference/pages/k-crd.adoc
-      # Check for any changes made in the documentation.
-      - name: Check if changes were made
-        id: check_changes
+
+      - name: Generate Helm docs
         run: |
-          cd ./redpanda-docs
-          changes=$(git status --porcelain)
-          if [ -z "$changes" ]; then
-            echo "has_changes=false" >> $GITHUB_ENV
-          else
-            echo "has_changes=true" >> $GITHUB_ENV
-          fi
-      # If changes were detected, commit those changes.
-      - name: Commit changes
-        if: env.has_changes == 'true'
+          helm-docs
+        working-directory: ./redpanda
+
+      # Convert the generated Markdown Helm documentation to AsciiDoc format using pandoc.
+      - name: Convert Markdown to AsciiDoc
         run: |
-          cd ./redpanda-docs
-          git config --global user.email "vbotbuildovich@users.noreply.github.com"
-          git config --global user.name "vbotbuildovich"
-          git add .
-          git commit -m "auto-docs: Update CRD reference doc"
-          git push origin main
-        env:
-          ACCESS_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
+          pandoc ./helm-charts/charts/redpanda/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
+          pandoc ./helm-charts/charts/console/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
+          pandoc ./helm-charts/charts/operator/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-operator-helm-spec.adoc
+      - name: Modify third-level headings format
+        run: |
+          sed -i 's/\(\[[0-9]*\)\]\./\1\\]\./g' ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
+          sed -i 's/\(\[[0-9]*\)\]\./\1\\]\./g' ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
+          sed -i 's/\(\[[0-9]*\)\]\]/\1\\]\]/g' ./redpanda-docs/modules/reference/pages/k-operator-helm-spec.adoc
+          sed -i 's/=== \(http\([^[]\|\%5[BbDd]\)*\)\[\([^]]*\)\]/=== link:++\1++\[\3\]/' ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
+          sed -i 's/=== \(http\([^[]\|\%5[BbDd]\)*\)\[\([^]]*\)\]/=== link:++\1++\[\3\]/' ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
+          sed -i 's/=== \(http\([^[]\|\%5[BbDd]\)*\)\[\([^]]*\)\]/=== link:++\1++\[\3\]/' ./redpanda-docs/modules/reference/pages/k-operator-helm-spec.adoc
+      - name: Correct AsciiDoc format
+        run: |
+          # Correct the title format
+          sed -i 's/^== # \(.*\)/= \1/' ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
+          sed -i 's/^== # \(.*\)/= \1/' ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
+          sed -i 's/^== # \(.*\)/= \1/' ./redpanda-docs/modules/reference/pages/k-operator-helm-spec.adoc
+          # Correct the description format
+          sed -i 's/^== description: \(.*\)/:description: \1/' ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
+          sed -i 's/^== description: \(.*\)/:description: \1/' ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
+          sed -i 's/^== description: \(.*\)/:description: \1/' ./redpanda-docs/modules/reference/pages/k-operator-helm-spec.adoc
+
+      # If changes were detected, open a pull request against the determined docs branch.
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "auto-docs: Update CRD reference doc for release ${{ env.OPERATOR_TAG }}"
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
+          path: redpanda-docs
+          branch: auto-docs/update-${{ env.OPERATOR_TAG }}
+          base: ${{ env.DOCS_BRANCH }}
+          title: "auto-docs: Update CRD reference doc for release ${{ env.OPERATOR_TAG }}"
+          body: |
+            This PR updates the CRD reference documentation for operator release ${{ env.OPERATOR_TAG }}.
+          labels: auto-docs
