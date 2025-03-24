@@ -1,0 +1,77 @@
+input:
+  # Use the 'generate' input
+  # https://docs.redpanda.com/redpanda-connect/components/inputs/generate/
+  generate:
+    # The interval at which new records are generated.
+    interval: 1s
+    # The mapping section defines how each generated record is structured.
+    # The language used here is called Bloblang.
+    # https://docs.redpanda.com/redpanda-connect/guides/bloblang/about/
+    mapping: |
+      # Generate a fake first name using the 'first_name' faker function.
+      let first_name = fake("first_name")
+
+      # Generate a fake last name using the 'last_name' faker function.
+      let last_name  = fake("last_name")
+
+      # Define possible subscription levels for users.
+      let subscription_levels = ["Free", "Basic", "Premium"]
+
+      # Define possible notification channels for user preferences.
+      let notifications = ["email", "sms", "push" ]
+
+      # Define supported languages for user preferences.
+      let languages = ["en", "es", "fr", "de", "zh", "jp"]
+
+      # Assign a unique user ID using a UUID digit generator.
+      root.user_id = fake("uuid_digit")
+
+      # Assign the generated first name to the 'first_name' field.
+      root.first_name = $first_name
+
+      # Assign the generated last name to the 'last_name' field.
+      root.last_name = $last_name
+
+      # Construct the user's email by combining the first initial, last name, and a fake domain name.
+      # The email is converted to lowercase for consistency.
+      root.email = ($first_name.slice(0,1) + $last_name + "@" + fake("domain_name")).lowercase()
+
+      # Assign a fake registration date using the 'date' faker function.
+      root.registration_date = fake("date")
+
+      # Assign the current timestamp as the last login time.
+      root.last_login = now()
+
+      # Randomly assign a subscription level by selecting an index from the 'subscription_levels' array.
+      root.subscription_level = $subscription_levels.index(random_int(min: 0, max: 2))
+
+      # Randomly assign a language preference by selecting an index from the 'languages' array.
+      root.preferences.language = $languages.index(random_int(min: 0, max: 5))
+
+      # Randomly assign a notification preference by selecting an index from the 'notifications' array.
+      root.preferences.notifications = $notifications.index(random_int(min: 0, max: 2))
+pipeline:
+  processors:
+    - mapping: |
+        # Set the target topic for the generated records to 'profiles'.
+        meta topic = "profiles"
+
+        # Assign the entire record (root) to be sent to the specified topic.
+        root = this
+output:
+  # Use the 'kafka_franz' output to send the result back to Redpanda
+  # https://docs.redpanda.com/redpanda-connect/components/outputs/kafka_franz/
+  kafka_franz:
+    # Define the list of seed brokers for the Kafka cluster.
+    seed_brokers: [ "localhost:19092", "localhost:29092", "localhost:39092"]
+    # Dynamically assign the topic based on the metadata specified in the processors.
+    # In this case, it resolves to the 'profiles' topic.
+    topic: ${! metadata("topic") }
+    # Configure SASL authentication to securely connect to the Kafka brokers.
+    sasl:
+      - # Specify the SASL mechanism to use for authentication.
+        mechanism: SCRAM-SHA-256
+        # The password for the SASL authentication.
+        password: secretpassword
+        # The username for the SASL authentication.
+        username: superuser
