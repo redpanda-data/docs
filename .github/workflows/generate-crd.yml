@@ -16,14 +16,20 @@ jobs:
     steps:
       - name: Determine operator tag
         id: set_operator_tag
+        shell: bash
         run: |
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             TAG="${{ github.event.inputs.tag }}"
           else
             TAG="${{ github.event.release.tag_name }}"
           fi
-          echo "Operator tag: $TAG"
-          echo "OPERATOR_TAG=$TAG" >> $GITHUB_ENV
+          # Check if the tag has the expected prefix.
+          if [[ "$TAG" =~ ^operator/ ]]; then
+            echo "OPERATOR_TAG=$TAG" >> $GITHUB_ENV
+          else
+            echo "Tag does not have the operator/ prefix. Skipping workflow."
+            exit 0
+          fi
 
       # Configure AWS credentials to get the secret for the Redpanda GitHub bot.
       - uses: aws-actions/configure-aws-credentials@v4
@@ -37,40 +43,54 @@ jobs:
             ,sdlc/prod/github/actions_bot_token
           parse-json-secrets: true
 
-      # Determine which docs branch to use based on the operator tag.
+      - name: Get latest docs version
+        id: antora_version
+        shell: bash
+        run: |
+          ANTORA_VERSION=$(curl -s https://raw.githubusercontent.com/redpanda-data/docs/main/antora.yml | grep '^version:' | sed -E 's/version: *//')
+          echo "Latest docs version is: $ANTORA_VERSION"
+          echo "ANTORA_VERSION=$ANTORA_VERSION" >> $GITHUB_ENV
+
       - name: Determine docs branch
         id: set_docs_branch
         shell: bash
         run: |
           TAG="${OPERATOR_TAG}"
-          echo "Operator tag: $TAG"
+          echo "Original operator tag: $TAG"
 
-          if [[ "$TAG" == *"v2.4"* ]]; then
-            echo "Operator tag contains v2.4 - using docs branch v/24.3."
-            if git ls-remote --exit-code --heads https://github.com/redpanda-data/docs.git v/24.3; then
-              DOCS_BRANCH="v/24.3"
-            else
-              echo "Error: Docs branch v/24.3 not found."
-              exit 1
-            fi
-          else
-            # Fetch the latest docs version from the antora.yml file on the main docs branch.
-            ANTORA_VERSION=$(curl -s https://raw.githubusercontent.com/redpanda-data/docs/main/antora.yml | grep '^version:' | sed -E 's/version: *//')
-            echo "Version in docs main branch: $ANTORA_VERSION"
-            # If the operator tag starts with that version, then commit to main.
-            if [[ "$TAG" == "v${ANTORA_VERSION}"* ]]; then
+          # Filter the tag to include only the vmajor.minor version.
+          # This will remove any "operator/" prefix and any patch version information.
+          FILTERED_TAG=$(echo "$TAG" | sed -E 's/^(operator\/)?(v[0-9]+\.[0-9]+).*/\2/')
+          echo "Filtered tag (vmajor.minor): $FILTERED_TAG"
+
+          if [[ "$FILTERED_TAG" == "v2.4" ]]; then
+            echo "Filtered tag is v2.4. Checking docs version."
+            if [[ "$ANTORA_VERSION" == "25.1" ]]; then
+              echo "Docs main branch version is 25.1, using docs branch 'main'."
               DOCS_BRANCH="main"
             else
-              # Derive the docs branch name from the operator tag.
-              BASE_VERSION=$(echo "$TAG" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')
-              DOCS_BRANCH="v/${BASE_VERSION}"
-              if ! git ls-remote --exit-code --heads https://github.com/redpanda-data/docs.git "$DOCS_BRANCH"; then
-                echo "Error: Docs branch $DOCS_BRANCH not found."
-                exit 1
+              echo "Using docs branch v/24.3 for filtered tag v2.4."
+              if git ls-remote --exit-code --heads https://github.com/redpanda-data/docs.git refs/heads/v/24.3; then
+                DOCS_BRANCH="v/24.3"
+              else
+                echo "Docs branch v/24.3 not found. Skipping."
+                exit 0
+              fi
+            fi
+          else
+            echo "Filtered tag is: $FILTERED_TAG"
+            # For other tags, if the filtered tag matches the latest docs version, then use the main branch.
+            if [[ "$FILTERED_TAG" == "v${ANTORA_VERSION}" ]]; then
+              DOCS_BRANCH="main"
+            else
+              # Otherwise, derive the docs branch from the filtered tag.
+              DOCS_BRANCH="v/${FILTERED_TAG#v}"
+              if ! git ls-remote --exit-code --heads https://github.com/redpanda-data/docs.git refs/heads/"$DOCS_BRANCH"; then
+                echo "Docs branch $DOCS_BRANCH not found."
+                exit 0
               fi
             fi
           fi
-
           echo "DOCS_BRANCH=$DOCS_BRANCH" >> $GITHUB_ENV
           echo "Using docs branch: $DOCS_BRANCH"
 
