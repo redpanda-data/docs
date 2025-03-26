@@ -1,0 +1,192 @@
+= Try v25.1-k8s1-beta
+
+Welcome to the preview of the Redpanda Operator and Redpanda Helm chart **v25.1-k8s1-beta**. This release streamlines deployment and configuration while introducing key improvements and breaking changes to simplify management and enhance reliability.
+
+== What's New in v25.1-k8s1-beta
+
+* **Flux removed:**
+  The operator now completely removes Flux and the `chartRef.useFlux` configuration. This change applies only to the operator and reduces configuration overhead.
+* **Schema validation added:**
+  The Redpanda Custom Resource Definition (CRD) now includes built-in schema validation to ensure configurations conform to expected standards. With schema validation enabled, ensure your Redpanda CRD configurations adhere to the new structure.
+* **Deprecated fields removed:**
+  Outdated and deprecated fields have been removed from the CRD, resulting in a cleaner and more maintainable configuration. If upgrading, review and update your current configurations to remove any deprecated fields.
+* **Connectors subchart removed:**
+  The connectors subchart has been removed from the Helm chart because it is not officially supported. Adjust your deployments accordingly since the connectors subchart has been removed.
+
+* **Updated versioning scheme/policy:**
+  An updated versioning scheme and policy now better supports and tracks compatible Redpanda versions, ensuring smoother upgrades and improved compatibility management.
+
+== Prerequisites
+
+Make sure that your Kubernetes cluster meets the xref:./k-requirements.adoc[requirements].
+
+== Install Redpanda Operator v25.1-k8s1-beta
+
+NOTE: The Redpanda Operator is namespace scoped. You must install the Redpanda Operator in the same namespace as your Redpanda resource (Redpanda cluster).
+
+. Make sure that you have permission to install custom resource definitions (CRDs):
++
+```bash
+kubectl auth can-i create CustomResourceDefinition --all-namespaces
+```
++
+You should see `yes` in the output.
++
+You need these cluster-level permissions to install glossterm:cert-manager[^] and Redpanda Operator CRDs in the next steps.
+
+. Install https://cert-manager.io/docs/installation/helm/[cert-manager^]:
++
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm install cert-manager jetstack/cert-manager \
+  --set crds.enabled=true \
+  --namespace cert-manager  \
+  --create-namespace
+```
++
+The Redpanda Helm chart enables TLS by default and uses cert-manager to manage TLS certificates.
+
+. Install the Redpanda Operator CRDs:
++
+include::deploy:partial$kubernetes/install-crds.adoc[]
+
+. Deploy the Redpanda Operator.
++
+[,bash,subs="attributes+"]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <namespace> \
+  --create-namespace \
+  --version {latest-operator-version} \ <1>
+----
++
+<1> This flag specifies the exact version of the Redpanda Operator Helm chart to use for deployment. By setting this value, you pin the chart to a specific version, which prevents automatic updates that might introduce breaking changes or new features that have not been tested in your environment.
+
+. Ensure that the Deployment is successfully rolled out:
++
+```bash
+kubectl --namespace <namespace> rollout status --watch deployment/redpanda-controller-operator
+```
++
+[.no-copy]
+----
+deployment "redpanda-controller-operator" successfully rolled out
+----
+
+. Install a xref:reference:k-crd.adoc[Redpanda custom resource] to deploy a Redpanda cluster and Redpanda Console.
++
+.`redpanda-cluster.yaml`
+[,yaml,subs="attributes+"]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+----
+
+. If you want to use enterprise features in Redpanda, add the details of a Secret that stores your Enterprise Edition license key.
++
+.`redpanda-cluster.yaml`
+[,yaml,subs="attributes+"]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    enterprise:
+      licenseSecretRef:
+        name: <secret-name>
+        key: <secret-key>
+----
++
+For details, see xref:get-started:licensing/add-license-redpanda/kubernetes.adoc[].
+
+. Apply the Redpanda resource:
++
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
++
+NOTE: The Redpanda resource must be deployed in the same namespace as the Redpanda Operator. Each new deployment of Redpanda requires a separate namespace.
+
+. Wait for the Redpanda Operator to deploy Redpanda using the Helm chart:
++
+```bash
+kubectl get redpanda --namespace <namespace> --watch
+```
++
+[.no-copy]
+----
+NAME       READY   STATUS
+redpanda   True    Redpanda reconciliation succeeded
+----
++
+This step may take a few minutes. You can watch for new Pods to make sure that the deployment is progressing:
++
+```bash
+kubectl get pod --namespace <namespace>
+```
++
+If it's taking too long, see xref:manage:kubernetes/troubleshooting/k-troubleshoot.adoc[Troubleshooting].
+
+
+== Install the Redpanda Helm chart v25.1-k8s1-beta
+
+. Install cert-manager using Helm:
++
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm install cert-manager jetstack/cert-manager \
+  --set crds.enabled=true \
+  --namespace cert-manager  \
+  --create-namespace
+```
++
+The Redpanda Helm chart enables TLS by default and uses cert-manager to manage TLS certificates.
+
+. If you want to use enterprise features in Redpanda, add the details of a Secret that stores your Enterprise Edition license key.
++
+.`redpanda-values.yaml`
+[,yaml]
+----
+enterprise:
+  licenseSecretRef:
+    name: <secret-name>
+    key: <secret-key>
+----
++
+For details, see xref:get-started:licensing/add-license-redpanda/kubernetes.adoc[].
+
+. Install the Redpanda Helm chart to deploy a Redpanda cluster and Redpanda Console.
++
+[source,bash,subs="attributes+"]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm repo update
+helm install redpanda redpanda/redpanda \
+  --version {latest-redpanda-helm-chart-version} \ <1>
+  --namespace <namespace> \ <2>
+  --create-namespace \
+  --values redpanda-values.yaml
+----
++
+<1> This flag specifies the exact version of the Redpanda Helm chart to use for deployment. By setting this value, you <<version-pinning, pin the chart to a specific version>>, which prevents automatic updates that might introduce breaking changes or new features that have not been tested in your environment.
+<2> Each deployment of the Redpanda Helm chart requires a separate namespace. Ensure you choose a unique namespace for each deployment.
+
+. Wait for the Redpanda cluster to be ready:
++
+```bash
+kubectl --namespace <namespace> rollout status statefulset redpanda --watch
+```
++
+When the Redpanda cluster is ready, the output should look similar to the following:
++
+[.no-copy]
+----
+statefulset rolling update complete 3 pods at revision redpanda-8654f645b4...
+----
