@@ -111,16 +111,28 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         tag = sys.argv[1]
 
-    # Convert "24.3.3" -> "24.3"
-    # If tag is not "latest", strip the last dot.number
-    if tag.lower() != "latest":
-        parts = tag.split(".")
-        if len(parts) >= 2:
-            tag_modified = ".".join(parts[:-1])
-        else:
-            tag_modified = tag
-    else:
+    # If tag is "latest", set tag_modified to None
+    if tag.lower() == "latest":
         tag_modified = None
+    else:
+        # Use regex to extract major.minor and optional RC part
+        # This matches strings like:
+        #   "v24.3.3"       -> groups: ("24.3", None)
+        #   "24.3.3"        -> groups: ("24.3", None)
+        #   "v24.3.3-rc4"    -> groups: ("24.3", "-rc4")
+        #   "24.3.3-rc4"     -> groups: ("24.3", "-rc4")
+        pattern = r'^v?(\d+\.\d+)(?:\.\d+)?(-rc\d+)?'
+        m = re.match(pattern, tag, re.IGNORECASE)
+        if m:
+            major_minor = m.group(1)
+            rc = m.group(2) if m.group(2) else ''
+            # Remove the hyphen from the RC part, if present
+            if rc.startswith("-"):
+                rc = rc[1:]
+            tag_modified = major_minor + rc
+        else:
+            # If the tag doesn't match a version pattern, fall back to the original tag
+            tag_modified = tag
 
     gen_path = os.path.join(os.path.dirname(__file__), "..", "..", "gen")
     gen_path = os.path.abspath(gen_path)

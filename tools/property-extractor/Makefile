@@ -4,12 +4,23 @@
 # Default TAG if none is provided
 TAG ?= dev
 
+# Determine the version number from TAG.
+# If TAG matches a version pattern (e.g., v25.1.1 or v25.1.1-rc3), extract the major.minor and optional RC number.
+# Otherwise, use TAG as-is.
+VERSION := $(shell \
+  if echo "$(TAG)" | grep -qE '^v?[0-9]+\.[0-9]+' ; then \
+    echo "$(TAG)" | sed -E 's/^v?([0-9]+\.[0-9]+)(\.[0-9]+)?(-rc[0-9]+)?.*/\1\3/' | sed 's/-rc/rc/'; \
+  else \
+    echo "$(TAG)"; \
+  fi)
+
 # Paths
 TREESITTER_DIR := tools/property-extractor/tree-sitter/tree-sitter-cpp
 TREESITTER_LIB := $(TREESITTER_DIR)/tree-sitter-cpp.so
 VENV := ./tmp/redpanda-property-extractor-venv
 REPO_ROOT := $(shell git rev-parse --show-toplevel)
-OUTPUT_DIR := $(REPO_ROOT)/gen/$(TAG)/properties
+OUTPUT_DIR := $(REPO_ROOT)/gen/$(VERSION)/properties
+
 
 # --- Main Build Target ---
 build: venv redpanda-git treesitter
