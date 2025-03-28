@@ -225,7 +225,7 @@ So the primary limitation consideration is the replication factor of five, meani
 To decommission a broker, you can use one of the following methods:
 
 - <<Manual>>: Use `rpk` to decommission one broker at a time.
-- <<Automated>>: Use the Decommission controller to automatically decommission brokers whenever you reduce the number of StatefulSet replicas.
+- <<Automated>>: Use the BrokerDecommissioner to automatically decommission brokers whenever you reduce the number of StatefulSet replicas.
 
 [[Manual]]
 === Manually decommission a broker
@@ -337,7 +337,7 @@ When scaling in (removing brokers), remove only one broker at a time. If you red
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -391,9 +391,9 @@ This process triggers a rolling restart of each Pod so that each broker has an u
 You can repeat this procedure to continue to scale down.
 
 [[Automated]]
-=== Use the Decommission controller
+=== Use the BrokerDecommissioner
 
-The Decommission controller is responsible for monitoring the StatefulSet for changes in the number replicas. When the number of replicas is reduced, the controller decommissions brokers, starting from the highest Pod ordinal, until the number of brokers matches the number of replicas.
+The BrokerDecommissioner is responsible for monitoring the StatefulSet for changes in the number replicas. When the number of replicas is reduced, the controller decommissions brokers, starting from the highest Pod ordinal, until the number of brokers matches the number of replicas.
 
 [mermaid]
 ....
@@ -414,7 +414,7 @@ flowchart TB
   subgraph Workflow
     direction TB
     A[Start automated scale-in]:::userAction --> B[Decrease StatefulSet<br/>replicas by 1]:::userAction
-    B --> C[Decommission controller<br/>detects reduced replicas]:::systemEvent
+    B --> C[BrokerDecommissioner <br/>detects reduced replicas]:::systemEvent
     C --> D[Controller marks<br/>highest ordinal Pod for removal]:::systemEvent
     D --> E[Controller orchestrates<br/>broker decommission]:::systemEvent
     E --> F[Partitions reallocate<br/>under controller supervision]:::systemEvent
@@ -447,25 +447,17 @@ When you reduce the number of replicas, the controller terminates the Pod with t
 
 NOTE: Always decommission one broker at a time.
 
-. Install the Decommission controller:
+. Enable the BrokerDecommissioner:
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 
-You can install the Decommission controller as part of the Redpanda Operator or as a sidecar on each Pod that runs a Redpanda broker.
-
-When you install the controller as part of the Redpanda Operator, it monitors all Redpanda clusters running in the same namespace as the Redpanda Operator.
-
-If you want the controller to manage only a single Redpanda cluster, install it as a sidecar on each Pod that runs a Redpanda broker, using the Redpanda resource.
-
-To install the Decommission controller as part of the Redpanda Operator:
-
 .. Deploy the Redpanda Operator with the Decommission controller:
 +
-[,bash,subs="attributes+"lines=7+8]
+[,bash,subs="attributes+"]
 ----
 helm repo add redpanda https://charts.redpanda.com
 helm repo update
@@ -483,7 +475,7 @@ helm upgrade --install redpanda-controller redpanda/operator \
 .. Configure a Redpanda resource with seven Redpanda brokers:
 +
 .`redpanda-cluster.yaml`
-[,yaml,lines=9]
+[,yaml]
 ----
 apiVersion: cluster.redpanda.com/v1alpha2
 kind: Redpanda
@@ -497,42 +489,6 @@ spec:
 ----
 +
 - `statefulset.replicas`: This example starts with a seven-broker Redpanda cluster.
-
-.. Apply the Redpanda resource:
-+
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
-To install the Decommission controller as a sidecar:
-
-.. Configure a Redpanda resource with the sidecar controller enabled:
-+
-.`redpanda-cluster.yaml`
-[,yaml,lines=9+12+14+16]
-----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    statefulset:
-      replicas: 7
-      sideCars:
-        controllers:
-          enabled: true
-          run:
-            - "decommission"
-    rbac:
-      enabled: true
-----
-+
-- `statefulset.replicas`: This example starts with a seven-broker Redpanda cluster.
-- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
-- `statefulset.sideCars.controllers.run`: Enables the Decommission controller.
-- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the StatefulSet and update PVCs and PVs.
 
 .. Apply the Redpanda resource:
 +
@@ -544,48 +500,50 @@ kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
 Helm::
 +
 --
-NOTE: If you deploy the Redpanda Helm chart with https://argo-cd.readthedocs.io/en/stable/[Argo CD], you cannot use the Decommission controller.
 
 [tabs]
 ====
 --values::
 +
 .`decommission-controller.yaml`
-[,yaml,lines=2+5+7+9]
+[,yaml]
 ----
 statefulset:
-  replicas: 7
+  replicas: 7 <1>
   sideCars:
-    controllers:
-      enabled: true
-      run:
-        - "decommission"
+    brokerDecommissioner:
+      enabled: true <2>
+      decommissionAfter: 60s <3>
+      decommissionRequeueTimeout: 10s <4>
 rbac:
-  enabled: true
+  enabled: true <5>
 ----
 +
-- `statefulset.replicas`: This example starts with a seven-broker Redpanda cluster.
-- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
-- `statefulset.sideCars.controllers.run`: Enables the Decommission controller.
-- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the StatefulSet and update PVCs and PVs.
+<1> `statefulset.replicas`: This example starts with a seven-broker Redpanda cluster.
+<2> `statefulset.sideCars.brokerDecommissioner.enabled`: Enables the sidecar.
+<3> `statefulset.sideCars.brokerDecommissioner.decommissionAfter`: The sidecar will wait 60 seconds after detecting a failed broker before triggering decommissioning.
+<4> `statefulset.sideCars.brokerDecommissioner.decommissionRequeueTimeout`: How often the sidecar rechecks the cluster for invalid brokers.
+<5> `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the StatefulSet and update PVCs and PVs.
 
 --set::
 +
-[,bash,lines=4-7]
+[,bash]
 ----
 helm upgrade --install redpanda redpanda/redpanda \
   --namespace <namespace> \
   --create-namespace \
-  --set statefulset.replicas=7 \
-  --set statefulset.sideCars.controllers.enabled=true \
-  --set statefulset.sideCars.controllers.run={"decommission"} \
-  --set rbac.enabled=true
+  --set statefulset.replicas=7 \ <1>
+  --set statefulset.sideCars.brokerDecommissioner.enabled=true \ <2>
+  --set statefulset.sideCars.brokerDecommissioner.decommissionAfter=60s \ <3>
+  --set statefulset.sideCars.brokerDecommissioner.decommissionRequeueTimeout=10s \ <4>
+  --set rbac.enabled=true<5>
 ----
 +
-- `statefulset.replicas`: This example starts with a seven-broker Redpanda cluster.
-- `statefulset.sideCars.controllers.enabled`: Enables the controllers sidecar.
-- `statefulset.sideCars.controllers.run`: Enables the Decommission controller.
-- `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the StatefulSet and update PVCs and PVs.
+<1> `statefulset.replicas`: This example starts with a seven-broker Redpanda cluster.
+<2> `statefulset.sideCars.brokerDecommissioner.enabled`: Enables the sidecar.
+<3> `statefulset.sideCars.brokerDecommissioner.decommissionAfter`: The sidecar will wait 60 seconds after detecting a failed broker before triggering decommissioning.
+<4> `statefulset.sideCars.brokerDecommissioner.decommissionRequeueTimeout`: How often the sidecar rechecks the cluster for invalid brokers.
+<5> `rbac.enabled`: Creates the required RBAC rules for the controller to monitor the StatefulSet and update PVCs and PVs.
 
 ====
 --
@@ -608,7 +566,7 @@ When scaling in (removing brokers), remove only one broker at a time. If you red
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -624,10 +582,10 @@ spec:
     statefulset:
       replicas: 6
       sideCars:
-        controllers:
+        brokerDecommissioner:
           enabled: true
-          run:
-            - "decommission"
+          decommissionAfter: 60s
+          decommissionRequeueTimeout: 10s
     rbac:
       enabled: true
 ----
@@ -658,20 +616,17 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 
 --set::
 +
-[,bash,lines=3]
+[,bash]
 ----
 helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --set statefulset.replicas=6 \
-  --set statefulset.sideCars.controllers.enabled=true \
-  --set statefulset.sideCars.controllers.run={"decommission"} \
-  --set rbac.enabled=true
+  --set statefulset.replicas=6
 ----
 
 ====
 --
 ======
 +
-The Decommission controller detects when the number of replicas decreases and decommissions the brokers, starting from the Pod with the highest ordinal. This process triggers a rolling restart of each Pod so that each broker has an up-to-date `seed_servers` configuration to reflect the new list of brokers.
+The BrokerDecommissioner detects when the number of replicas decreases and decommissions the brokers, starting from the Pod with the highest ordinal. This process triggers a rolling restart of each Pod so that each broker has an up-to-date `seed_servers` configuration to reflect the new list of brokers.
 
 . Verify that your cluster is in a healthy state:
 +
@@ -679,20 +634,11 @@ The Decommission controller detects when the number of replicas decreases and de
 kubectl exec redpanda-0 --namespace <namespace> -- rpk cluster health
 ```
 +
-It may take some time for the Decommission controller to reconcile. You can check the progress by looking at the Decommission controller logs:
-+
-If you're running the Decommission controller as part of the Redpanda Operator:
+It may take some time for the BrokerDecommissioner to reconcile. You can check the progress by looking at the logs:
 +
 [,bash]
 ----
-kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
-----
-+
-If you're running the Decommission controller as a sidecar:
-+
-[,bash]
-----
-kubectl logs <pod-name> --namespace <namespace> -c redpanda-controllers
+kubectl logs <pod-name> --namespace <namespace> -c sidecars
 ----
 
 You can repeat this procedure to continue to scale down.
