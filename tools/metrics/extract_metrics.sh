@@ -1,13 +1,22 @@
 #!/bin/bash
 
-# If a TAG was passed as an argument, use it; otherwise default to "latest"
-TAG="$1"
-if [ -z "$TAG" ]; then
-  TAG="latest"
-fi
+# Usage:
+#   ./extract_metrics.sh [redpanda_tag] [redpanda_docker_repo] [redpanda_console_tag] [redpanda_console_docker_repo]
 
-# Make this tag accessible to docker-compose and Python
-export REDPANDA_VERSION="$TAG"
+REDPANDA_TAG="${1:-latest}"
+
+REDPANDA_DOCKER_REPO="${2:-redpanda}"
+
+REDPANDA_CONSOLE_TAG="${3:-latest}"
+
+REDPANDA_CONSOLE_DOCKER_REPO="${4:-console}"
+
+# Export the values so they're accessible to the Docker Compose
+export REDPANDA_VERSION="$REDPANDA_TAG"
+export REDPANDA_DOCKER_REPO="$REDPANDA_DOCKER_REPO"
+export REDPANDA_CONSOLE_VERSION="$REDPANDA_CONSOLE_TAG"
+export REDPANDA_CONSOLE_DOCKER_REPO="$REDPANDA_CONSOLE_DOCKER_REPO"
+
 REDPANDA_MAJOR_MINOR=$(echo "$TAG" | sed -E 's/^v?([0-9]+\.[0-9]+).*$/\1/')
 
 WORK_DIR="$(pwd)"
@@ -19,12 +28,10 @@ function check_docker_containers {
   fi
 }
 
-if [ -d "redpanda-quickstart" ]; then
-  echo "redpanda-quickstart directory exists, using existing one..."
-  cd redpanda-quickstart/docker-compose || exit 1
+if [ -d "docker-compose" ]; then
+  cd docker-compose || exit 1
 else
   echo "Setting up redpanda-quickstart folder..."
-  mkdir redpanda-quickstart && cd redpanda-quickstart || exit 1
   curl -sSL https://docs.redpanda.com/$REDPANDA_MAJOR_MINOR-redpanda-quickstart.tar.gz | tar xzf -
   cd docker-compose || exit 1
 fi
@@ -33,8 +40,8 @@ fi
 check_docker_containers
 docker compose up -d
 
-echo "Waiting 60 seconds for containers to initialize..."
-sleep 60
+echo "Waiting 120 seconds for Redpanda to start..."
+sleep 120
 
 cd "$WORK_DIR" || {
   echo "Failed to navigate back to the working directory: $WORK_DIR. Exiting."
@@ -76,7 +83,7 @@ fi
 
 # Tear down Docker containers after the script has run
 echo "Tearing down Docker containers..."
-cd redpanda-quickstart/docker-compose || {
+cd docker-compose || {
   echo "Failed to navigate to docker-compose directory. Exiting.";
   exit 1;
 }

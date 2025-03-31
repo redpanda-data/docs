@@ -1,11 +1,11 @@
-# Redpanda Public Metrics Extractor
+# Redpanda Metrics Extractor
 
-This automation spins up the enterprise quickstart Docker Compose to create a Redpanda environment, then extracts Redpanda’s public metrics (the `HELP` text) from the `public_metrics` endpoint and stores them as JSON and AsciiDoc files.
+This automation extracts Redpanda’s public and internal metrics (the `HELP` text) from the `public_metrics/` and `metrics/` endpoints and stores them as JSON and AsciiDoc files.
 
 ## How it works
 
-1. Starts a 3-broker Redpanda cluster using the Docker Compose from the Redpanda quickstart.
-2. Fetches metrics from the brokers (`:19644/public_metrics`) and parses out the `# HELP` lines, creating:
+1. Starts a 3-broker Redpanda cluster using a Docker Compose file.
+2. Fetches metrics from the brokers and parses out the `# HELP` lines, creating:
    - `metrics.json`
    - `metrics.adoc`
 
@@ -18,7 +18,7 @@ These output files are stored in a versioned folder under `docs/gen/<version>/me
 
 ## Usage
 
-1. Change into the `docs/tools/metrics/` directory.
+1. Change into the `tools/metrics/` directory.
 
 2. Create a Python virtual environment
    ```bash
@@ -27,6 +27,7 @@ These output files are stored in a versioned folder under `docs/gen/<version>/me
    This command creates a new directory named `venv/` in your project root.
 
 3. Activate the virtual environment:
+
    On macOS/Linux:
    ```bash
    source venv/bin/activate
@@ -47,12 +48,19 @@ These output files are stored in a versioned folder under `docs/gen/<version>/me
 5. Run the script:
 
    ```bash
-   ./extract_metrics.sh [TAG]
+   ./extract_metrics.sh [REDPANDA_TAG] [REDPANDA_DOCKER_REPO] [REDPANDA_CONSOLE_TAG]  [REDPANDA_CONSOLE_DOCKER_REPO]
    ```
 
-TAG is an optional Redpanda image version (e.g., 24.3.1).
+Parameters
 
-If you omit TAG or pass latest, the script pulls the latest Redpanda Docker image, then looks for the largest version folder inside docs/gen to store the extracted metrics.
+- `REDPANDA_TAG` (Optional): Specifies the version tag for the Redpanda image. Default: `latest`.
+
+- `REDPANDA_DOCKER_REPO` (Optional): Specifies the Docker repository for the Redpanda image.
+Default: `redpanda`.
+
+- `REDPANDA_CONSOLE_TAG` (Optional): Specifies the version tag for the Redpanda Console image. Default: `latest`.
+
+- `REDPANDA_CONSOLE_DOCKER_REPO` (Optional): Specifies the Docker repository for the Redpanda Console image. Default: `console`.
 
 ## Examples
 
@@ -62,7 +70,7 @@ If you omit TAG or pass latest, the script pulls the latest Redpanda Docker imag
 ./extract_metrics.sh
 ```
 
-This spins up Redpanda with the latest tag, then stores metrics under docs/gen/<largest_found_version>/metrics/.
+This spins up Redpanda with the latest tag, then stores metrics under `docs/gen/<largest_found_version>/metrics/`.
 
 ### Custom tag
 
@@ -72,9 +80,9 @@ This spins up Redpanda with the latest tag, then stores metrics under docs/gen/<
 
 Docker uses 24.3.3 for the Redpanda image.
 The script truncates the last digit (24.3.3 → 24.3) for output folder naming.
-Metrics are stored in docs/gen/24.3/metrics.
+Metrics are stored in `docs/gen/24.3/metrics`.
 
-## Clean Up
+## Clean up
 
 When you’re done:
 
@@ -90,28 +98,18 @@ When you’re done:
    docker compose down --volumes
    ```
 
-   Or rerun `./extract_metrics.sh` to reset and recreate the environment.
+## Beta versions
 
-## Caveats
+This automation assumes extraction for GA versions of Redpanda. To extract metrics for unreleased versions of Redpanda, set the `REDPANDA_DOCKER_REPO` parameter.
 
-This automation assumes extraction for GA versions of Redpanda. If you wish to extract metrics for unreleased versions of Redpanda, modify the docker-compose.yml from:
-
-```yaml
-image: "docker.redpanda.com/redpandadata/redpanda:${REDPANDA_VERSION:-latest}"
-```
-
-to:
+This example runs on the v25.1.1-rc3 version of Redpanda:
 
 ```yaml
-image: "docker.redpanda.com/redpandadata/redpanda-unstable:${REDPANDA_VERSION:-latest}"
+./extract_metrics.sh v25.1.1-rc3 redpanda-unstable
 ```
 
 Check which version you want to use at [Docker Hub - Unstable](https://hub.docker.com/r/redpandadata/redpanda-unstable/tags).
 
-or:
-
-```yaml
-image: "docker.redpanda.com/redpandadata/redpanda-nightly:${REDPANDA_VERSION:-latest}"
-```
+For nightly releases use the `redpanda-nightly` repo.
 
 Check which version you want to use at [Docker Hub - Nightly](https://hub.docker.com/r/redpandadata/redpanda-nightly/tags).

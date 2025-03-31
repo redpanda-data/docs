@@ -34,7 +34,7 @@ services:
       # Tells Seastar (the framework Redpanda uses under the hood) to use 1 core on the system.
       - --smp 1
       - --default-log-level=info
-    image: "docker.redpanda.com/redpandadata/redpanda:${REDPANDA_VERSION:-latest}"
+    image: docker.redpanda.com/redpandadata/${REDPANDA_DOCKER_REPO:-redpanda}:${REDPANDA_VERSION:-latest}
     container_name: redpanda-0
     # Sets the username and password of the bootstrap SCRAM superuser
     # See https://docs.redpanda.com/current/deploy/deployment-option/self-hosted/manual/production/production-deployment/#bootstrap-a-user-account
@@ -42,7 +42,7 @@ services:
       RP_BOOTSTRAP_USER: "superuser:secretpassword"
     volumes:
       - redpanda-0:/var/lib/redpanda/data
-      - ../bootstrap.yml:/etc/redpanda/.bootstrap.yaml
+      - ./bootstrap.yml:/etc/redpanda/.bootstrap.yaml
     networks:
       - redpanda_network
     ports:
@@ -53,10 +53,11 @@ services:
     healthcheck:
       test: ["CMD", "rpk", "cluster", "info", "-X", "user=superuser", "-X", "pass=secretpassword"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 15s
+      retries: 10
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
   redpanda-1:
     command:
       - redpanda
@@ -72,7 +73,7 @@ services:
       - --smp 1
       - --default-log-level=info
       - --seeds redpanda-0:33145
-    image: docker.redpanda.com/redpandadata/redpanda:latest
+    image: docker.redpanda.com/redpandadata/${REDPANDA_DOCKER_REPO:-redpanda}:${REDPANDA_VERSION:-latest}
     container_name: redpanda-1
     environment:
       RP_BOOTSTRAP_USER: "superuser:secretpassword"
@@ -104,7 +105,7 @@ services:
       - --smp 1
       - --default-log-level=info
       - --seeds redpanda-0:33145
-    image: docker.redpanda.com/redpandadata/redpanda:latest
+    image: docker.redpanda.com/redpandadata/${REDPANDA_DOCKER_REPO:-redpanda}:${REDPANDA_VERSION:-latest}
     container_name: redpanda-2
     environment:
       RP_BOOTSTRAP_USER: "superuser:secretpassword"
@@ -130,7 +131,7 @@ services:
     networks:
       - redpanda_network
     entrypoint: /bin/sh
-    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml && echo "$$CONSOLE_ROLEBINDINGS_CONFIG_FILE" > /tmp/role-bindings.yml && /app/console'
+    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml && /app/console'
     volumes:
       - ./config:/tmp/config/
     environment:
@@ -140,20 +141,23 @@ services:
         # See https://docs.redpanda.com/current/console/config/connect-to-redpanda/
         kafka:
           brokers: ["redpanda-0:9092"]
-          schemaRegistry:
-            enabled: true
-            urls: ["http://redpanda-0:8081","http://redpanda-1:8081","http://redpanda-2:8081"]
           sasl:
             enabled: true
-            username: superuser
-            password: secretpassword
-            mechanism: SCRAM-SHA-256
+            impersonateUser: true
+        schemaRegistry:
+          enabled: true
+          urls: ["http://redpanda-0:8081","http://redpanda-1:8081","http://redpanda-2:8081"]
+          authentication:
+            impersonateUser: true
         redpanda:
           adminApi:
             enabled: true
             urls: ["http://redpanda-0:9644","http://redpanda-1:9644","http://redpanda-2:9644"]
-            username: superuser
-            password: secretpassword
+            authentication:
+              basic:
+                username: superuser
+                password: secretpassword
+              impersonateUser: false
         console:
           # Configures Redpanda Console to fetch topic documentation from GitHub and display it in the UI.
           # See https://docs.redpanda.com/current/console/config/topic-documentation/
@@ -164,42 +168,17 @@ services:
               repository:
                 url: https://github.com/redpanda-data/docs
                 branch: main
-                baseDirectory: modules/console/test-resources
-        login:
-          enabled: true
-          jwtSecret: change-this-to-something-secret
-          useSecureCookies: false
-          # Enabled plain login authentication (for development purposes only)
-          # See https://docs.redpanda.com/current/console/config/security/plain/
-          plain:
+                baseDirectory: tests/docker-compose
+        authentication:
+          jwtSigningKey: vazxnT+ZHtxKslK6QlDGovcYnSjTk/lKMmZ+mHrBVE+YdVDkLgSuP6AszAKe9Gvq
+          basic:
             enabled: true
-            credentials:
-            - username: "jane"
-              password: "some-other-secret-password"
-            - username: "john"
-              password: "some-secret-password"
-        enterprise:
-          # Configures role-based access control to data and features in Redpanda Console.
-          # See https://docs.redpanda.com/current/console/config/security/authorization/
-          rbac:
-            enabled: true
-            roleBindingsFilepath: /tmp/role-bindings.yml
-      CONSOLE_ROLEBINDINGS_CONFIG_FILE: |
-        roleBindings:
-        - metadata:
-            name: Platform Ops
-          subjects:
-            - kind: user
-              provider: Plain
-              name: jane
-          roleName: admin
-        - metadata:
-            name: Software Engineers
-          subjects:
-            - kind: user
-              provider: Plain
-              name: john
-          roleName: editor
+        authorization:
+          roleBindings:
+          - roleName: admin
+            users:
+              - loginType: basic
+                name: superuser
     ports:
       - 8080:8080
     depends_on:
@@ -215,11 +194,12 @@ services:
       - redpanda_network
     entrypoint: /bin/sh
     depends_on:
-      - redpanda-0
+      redpanda-0:
+        condition: service_healthy
     command: -c 'echo "$$CONNECT_CFG_FILE" > /tmp/connect.yml; /redpanda-connect -c /tmp/connect.yml'
     environment:
       # This Redpanda Connect configuration creates fake data,
-      # processes it, and randomly writes the output to a set of topics.
+      # processes it, and writes the output to a set of topics.
       #
       # Input:
       #  - Uses Redpanda Connect's generate input to generate fake data.
@@ -285,7 +265,7 @@ services:
       - -X user=superuser
       - -X pass=secretpassword
       - -X brokers=redpanda-0:9092
-    image: docker.redpanda.com/redpandadata/redpanda:latest
+    image: docker.redpanda.com/redpandadata/${REDPANDA_DOCKER_REPO:-redpanda}:${REDPANDA_VERSION:-latest}
     networks:
       - redpanda_network
     depends_on:
@@ -306,15 +286,34 @@ services:
       - -X user=superuser
       - -X pass=secretpassword
       - -X registry.hosts=redpanda-0:8081
-    image: docker.redpanda.com/redpandadata/redpanda:latest
+    image: docker.redpanda.com/redpandadata/${REDPANDA_DOCKER_REPO:-redpanda}:${REDPANDA_VERSION:-latest}
     # Mount the local directory that contains your schema to the container.
     volumes:
-      - ../transactions-schema.json:/etc/redpanda/transactions-schema.json
+      - ./transactions-schema.json:/etc/redpanda/transactions-schema.json
     networks:
       - redpanda_network
     depends_on:
       redpanda-0:
         condition: service_healthy
+  ####################
+  # rpk container to deploy a consumer group #
+  # See https://docs.redpanda.com/current/reference/rpk/rpk-topic/rpk-topic-consume/
+  ####################
+  consumergroup:
+    command:
+      - topic
+      - consume
+      - transactions
+      - --group
+      - transactions-consumer
+      - -X user=superuser
+      - -X pass=secretpassword
+      - -X brokers=redpanda-0:9092
+    image: docker.redpanda.com/redpandadata/${REDPANDA_DOCKER_REPO:-redpanda}:${REDPANDA_VERSION:-latest}
+    networks:
+      - redpanda_network
+    depends_on:
+    - deploytransform
   ####################
   # rpk container to deploy the pre-built data transform #
   # See https://docs.redpanda.com/current/develop/data-transforms/deploy/
@@ -332,9 +331,9 @@ services:
       - -X user=superuser
       - -X pass=secretpassword
       - -X admin.hosts=redpanda-0:9644
-    image: docker.redpanda.com/redpandadata/redpanda:${REDPANDA_VERSION:-latest}
+    image: docker.redpanda.com/redpandadata/${REDPANDA_DOCKER_REPO:-redpanda}:${REDPANDA_VERSION:-latest}
     volumes:
-      - ../transform/regex.wasm:/etc/redpanda/regex.wasm
+      - ./transform/regex.wasm:/etc/redpanda/regex.wasm
     networks:
       - redpanda_network
     depends_on:
@@ -371,9 +370,15 @@ services:
       redpanda_network:
         aliases:
           - redpanda.minio
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
   mc:
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     image: minio/mc
     container_name: mc
     networks:
