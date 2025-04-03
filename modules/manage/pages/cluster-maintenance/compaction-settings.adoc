@@ -18,15 +18,73 @@ IMPORTANT:  When using xref:manage:tiered-storage.adoc[Tiered Storage], compacti
 
 While compaction reduces storage needs, Redpanda's compaction (just like Kafka's) does not guarantee perfect de-duplication of a topic. It represents a best effort mechanism to reduce storage needs but duplicates of a key may still exist within a topic. Compaction is not a complete topic operation, either, since it operates on subsets of each partition within the topic.
 
-== Configure cleanup policy
+== Configure a cleanup policy
 
-Compaction policy may be applied to a cluster or to an individual topic. If both are set, the topic-level policy overrides the cluster-level policy. The cluster-level xref:reference:cluster-properties.adoc#log_cleanup_policy[`log_cleanup_policy`] and the topic-level xref:reference:topic-properties.adoc#cleanuppolicy[`cleanup.policy`] support the following three options:
+A compaction policy may be applied to a cluster or to an individual topic. If both are set, the topic-level policy overrides the cluster-level policy. The cluster-level xref:reference:cluster-properties.adoc#log_cleanup_policy[`log_cleanup_policy`] and the topic-level xref:reference:topic-properties.adoc#cleanuppolicy[`cleanup.policy`] support the following three options:
 
 * `delete`: Records are deleted from the topic once the specified retention period (time and/or size allocations) is exceeded. This is the default mechanism and is analogous to disabling compaction.
 * `compact`: This triggers only cleanup of records with multiple versions. A record that represents the only version for a given key is not deleted.
 * `compact,delete`: This combines both policies, deleting records exceeding the retention period while compacting multiple versions of records.
 
 include::develop:partial$topic-properties-warning.adoc[]
+
+== Tune log compaction with a dirty ratio threshold
+
+Use the dirty ratio to control when log compaction runs in compacted topics. The dirty ratio is the size of dirty segments divided by the total size of closed segments. Dirty segments are closed but un-compacted, meaning they may still contain duplicate keys that exist earlier in the log.
+
+[source]
+----
+dirty_ratio = dirty_segment_bytes / total_closed_segment_bytes
+----
+
+Where:
+
+- *Dirty segments* are closed segments that may contain duplicate keys that haven't yet been compacted.
+- *Closed segments* are all finalized segments in the log.
+
+=== Configuration options
+
+[cols="1a,1a,3a"]
+|===
+| Property
+| Scope
+| Description
+
+| xref:reference:cluster-properties.adoc#min_cleanable_dirty_ratio[`min_cleanable_dirty_ratio`]
+| Cluster
+| The minimum ratio between the number of bytes in dirty segments and the total number of bytes in closed segments that must be reached before a partition's log is eligible for compaction in a compact topic.
+
+| xref:reference:properties/topic-properties.adoc#mincleanabledirtyratio[`min.cleanable.dirty.ratio`]
+| Topic
+| Topic-level override of the cluster-wide dirty ratio threshold.
+
+| xref:reference:cluster-properties.adoc#log_compaction_interval_ms[`log_compaction_interval_ms`]
+| Cluster
+| Compaction frequency in milliseconds.
+|===
+
+Redpanda runs a scan every `log_compaction_interval_ms`. During each scan:
+
+- Logs are evaluated for compaction eligibility using their dirty ratio.
+- Only logs with a dirty ratio greater than the configured threshold are compacted.
+- Logs are compacted in descending order of dirty ratio to maximize efficiency.
+
+=== Use cases for dirty ratio-based compaction
+
+[cols="2a,3a"]
+|===
+| Use Case
+| Recommended Setting
+
+| High-throughput topics with frequent key overwrites
+| Lower `min_cleanable_dirty_ratio` to enable more aggressive compaction.
+
+| Topics with large segment sizes or expensive I/O
+| Raise `min_cleanable_dirty_ratio` to defer compaction until it is more efficient.
+
+| Topics requiring custom tuning
+| Use `min.cleanable.dirty.ratio` to override the cluster setting on specific topics.
+|===
 
 == Tombstone record removal
 
@@ -86,6 +144,8 @@ The various cleanup policy settings rely on proper tuning of a cluster's compact
 
 * xref:reference:cluster-properties.adoc#log_compaction_interval_ms[`log_compaction_interval`]: Defines the compaction frequency in milliseconds. (default: 10,000ms)
 
+* xref:reference:cluster-properties.adoc#min_cleanable_dirty_ratio[`min_cleanable_dirty_ratio`]: Minimum dirty ratio a log must exceed to be eligible for compaction.
+
 * xref:reference:tunable-properties.adoc#compaction_ctrl_backlog_size[`compaction_ctrl_backlog_size`]: Defines the size for the compaction backlog of the backlog controller. (default: 10% of disk capacity)
 
 * xref:reference:tunable-properties.adoc#compaction_ctrl_min_shares[`compaction_ctrl_min_shares`]: Defines the minimum number of I/O and CPU shares the compaction process can use. (default: 10)
@@ -99,6 +159,5 @@ The various cleanup policy settings rely on proper tuning of a cluster's compact
 * xref:reference:tunable-properties.adoc#compacted_log_segment_size[`compacted_log_segment_size`]: Defines the base size for a compacted log segment in bytes. (default: 268435456 [256 MiB])
 
 * xref:reference:tunable-properties.adoc#max_compacted_log_segment_size[`max_compacted_log_segment_size`]: Defines the maximum size after consolidation for a compacted log segment in bytes. (default: 5368709120 [5 GiB])
-
 
 NOTE: Additional xref:reference:tunable-properties.adoc[tunable properties] are available but should only be used with direction from Redpanda support. These properties include xref:reference:tunable-properties.adoc#compaction_ctrl_p_coeff[`compaction_ctrl_p_coeff`], xref:reference:tunable-properties.adoc#compaction_ctrl_i_coeff[`compaction_ctrl_i_coeff`], xref:reference:tunable-properties.adoc#compaction_ctrl_d_coeff[`compaction_ctrl_d_coeff`], and xref:reference:tunable-properties.adoc#compaction_ctrl_update_interval_ms[`compaction_ctrl_update_interval_ms`].
