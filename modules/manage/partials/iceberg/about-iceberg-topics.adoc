@@ -476,6 +476,42 @@ FROM (
 
 You can now insert the transformed record back into the main Iceberg table. Redpanda recommends employing a strategy for exactly-once processing to avoid duplicates when reprocessing records.
 
+== Performance considerations
+
+When you enable Iceberg for any substantial workload and start translating topic data to the Iceberg format, you may see most of your cluster's CPU utilization increase. If this additional workload overwhelms the brokers and causes the Iceberg table lag to exceed the configured target lag, Redpanda automatically applies backpressure to producers to prevent Iceberg tables from lagging further. This ensures that Iceberg tables keep up with the volume of incoming data, but sacrifices ingress throughput of the cluster.
+
+You may need to increase the size of your Redpanda cluster to accommodate the additional workload. To ensure that your cluster is sized appropriately, contact the Redpanda Customer Success team.
+
+=== Use custom partitioning
+
+To improve query performance, consider implementing custom https://iceberg.apache.org/docs/nightly/partitioning/[partitioning^] for the Iceberg topic. Use the xref:reference:properties/topic-properties.adoc#redpanda-iceberg-partition-spec[`redpanda.iceberg.partition.spec`] topic property to define the partitioning scheme:
+
+[,bash,]
+----
+# Create new topic with five topic partitions, replication factor 3, and custom table partitioning for Iceberg
+rpk topic create <new-topic-name> -p5 -r3 -c redpanda.iceberg.mode=value_schema_id_prefix -c "redpanda.iceberg.partition.spec=(<partition-key1>, <partition-key2>, ...)"
+----
+
+Valid `<partition-key>` values include a source column name or a transformation of a column. The columns referenced can be Redpanda-defined (such as `redpanda.timestamp`) or user-defined based on a schema that you register for the topic. The Iceberg table stores records that share different partition key values in separate files based on this specification. 
+
+For example: 
+
+* To partition the table by a single key, such as a column `col1`, use: `redpanda.iceberg.partition.spec=(col1)`. 
+* To partition by multiple columns, use a comma-separated list: `redpanda.iceberg.partition.spec=(col1, col2)`. 
+* To partition by the year of a timestamp column `ts1`, and a string column `col1`, use: `redpanda.iceberg.partition.spec=(year(ts1), col1)`.
+
+To learn more about how partitioning schemes can affect query performance, and for details on the partitioning specification such as allowed transforms, see the https://iceberg.apache.org/spec/#partitioning[Apache Iceberg documentation^].
+
+[TIP]
+====
+* Partition by columns that you frequently use in queries. Columns with relatively few unique values, also known as low cardinality, are also good candidates for partitioning.
+* If you must partition based on columns with high cardinality, for example timestamps, use Iceberg's available transforms such as extracting the year, month, or day to avoid creating too many partitions. Too many partitions can be detrimental to performance because more files need to be scanned and managed.
+====
+
+=== Avoid high column count
+
+A high column count or schema field count results in more overhead when translating topics to the Iceberg table format. Small message sizes can also increase CPU utilization. To minimize the performance impact on your cluster, keep to a low column count and large message size for Iceberg topics.
+
 == Next steps
 
 * xref:manage:iceberg/use-iceberg-catalogs.adoc[]
