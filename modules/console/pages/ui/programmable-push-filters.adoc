@@ -4,56 +4,172 @@
 :description: Learn how to filter Kafka records in {ui} based on your provided JavaScript code.
 // tag::single-source[]
 
-You can use push-down filters in {ui} to search for specific records within a Kafka topic.
+You can use push-down filters in {ui} to search through large Kafka topics that may contain millions of records. Filters are JavaScript functions executed on the backend, evaluating each record individually. Your function must return a boolean:
 
-Push-down filters are TypeScript/JavaScript function bodies that you define in {ui} and that are executed on the backend for
-every individual record in a topic. The code must return a boolean. If your code returns `true`, the backend sends the record to the results in the frontend.
-Otherwise the record is skipped and {ui} continues to consume records until either the selected number
-of maximum search results or the end of the topic has been reached.
+* `true`: record is included in the frontend results.
+* `false`: record is skipped.
 
-On a topic's *Messages* page, click *Add filter* > *JavaScript Filter*.
+Multiple filters combine logically with `AND` conditions.
 
-{ui} can inject the following properties into your function, which you can use in your filter code:
+== Add a JavaScript filter
 
-* `partitionId` - The record's partition ID
-* `offset` - The record's offset within its partition
-* `key` - The record's key in its decoded form
-* `value` - The record's value in its decoded form
-* `headers` - The record's header value in its decoded form
+To add a JavaScript filter:
 
-NOTE: Keys, values, and headers are passed into your JavaScript code in their decoded form. The
-deserialization logic (for example, decode an Avro serialized byte array to a JSON object) is applied first, before injecting it into
-the JavaScript function. If your record is presented as a JSON object in the UI, you can also access it
-like a JavaScript object in your filter code.
+. Navigate to the topic's *Messages* page.
+. Click *Add filter > JavaScript Filter*.
+. Define your JavaScript filtering logic in the provided input area.
 
-Suppose you have a series of Avro, JSON, or Protobuf encoded record values that deserialize to JSON objects like this:
+ifndef::env-cloud[]
+image::ROOT:console:js-filter.png[alt="JavaScript filter in {ui}"]
+endif::[]
 
-[,json]
+== Resource usage and performance
+JavaScript filters are executed on the backend, consuming CPU and network resources. The performance of your filter depends on the complexity of your JavaScript code and the volume of data being processed.
+Complex JavaScript logic or large data volumes may increase CPU load and network usage.
+
+== Available JavaScript properties
+
+{ui} injects these properties into your JavaScript context:
+
+[cols="1a,2a,1a"]
+|===
+| Property         | Description                                      | Type
+
+| `headers`        | Record headers as key-value pairs (ArrayBuffers) | Object
+| `key`            | Decoded record key                               | String
+| `keySchemaID`    | Schema Registry ID for key (if present)          | Number
+| `partitionId`    | Partition ID of the record                       | Number
+| `offset`         | Record offset within partition                   | Number
+| `timestamp`      | Timestamp as JavaScript Date object              | Date
+| `value`          | Decoded record value                             | Object/String
+| `valueSchemaID`  | Schema Registry ID for value (if present)        | Number
+|===
+
+NOTE: Values, keys, and headers are deserialized before being injected into your script.
+
+== JavaScript filter examples
+
+=== Filter by header value
+
+*Scenario:* Records tagged with headers specifying customer plan type.
+
+.Sample header data (string value)
+[source,json]
+----
+headers: {
+  "plan_type": "premium"
+}
+----
+
+.JavaScript filter
+[source,javascript]
+----
+let headerValue = headers["plan_type"];
+if (headerValue) {
+  let stringValue = String.fromCharCode(...new Uint8Array(headerValue));
+  return stringValue === "premium";
+}
+return false;
+----
+
+*Scenario:* Records include a header with JSON-encoded customer metadata.
+
+.Sample header data (JSON value)
+[source,json]
+----
+headers: {
+"customer": "{"orgID":"123-abc","name":"ACME Inc."}"
+}
+----
+
+.JavaScript filter
+[source,javascript]
+----
+let headerValue = headers["customer"];
+if (headerValue) {
+  let stringValue = String.fromCharCode(headerValue);
+  let valueObj = JSON.parse(stringValue);
+  return valueObj["orgID"] === "123-abc";
+}
+return false;
+----
+
+=== Filter by timestamp
+
+*Scenario:* Retrieve records from a promotional event.
+
+.JavaScript filter
+[source,javascript]
+----
+return timestamp.getMonth() === 10 && timestamp.getDate() === 24;
+----
+
+=== Filter by schema ID
+
+*Scenario:* Filter customer activity records based on Avro schema version.
+
+.JavaScript filter
+[source,javascript]
+----
+return valueSchemaID === 204;
+----
+
+=== Filter JSON record values
+
+*Scenario:* Filter transactions by customer ID.
+
+.Sample JSON record
+[source,json]
 ----
 {
-  "event_type": "BASKET_ITEM_ADDED",
-  "event_id": "777036dd-1bac-499c-993a-8cc86cee3ccc"
-  "item": {
-    "id": "895e443a-f1b7-4fe5-ad66-b9adfe5420b9",
-    "name": "milk"
+  "transaction_id": "abc123",
+  "customer_id": "cust789",
+  "amount": 59.99
+}
+----
+
+.JavaScript filter (top-level property)
+[source,javascript]
+----
+return value.customer_id === "cust789";
+----
+
+*Scenario:* Filter orders by item availability.
+
+.Sample JSON record
+[source,json]
+----
+{
+  "order_id": "ord456",
+  "inventory": {
+    "item_id": "itm001",
+    "status": "in_stock"
   }
 }
 ----
 
-[,ts]
+.JavaScript filter (nested property)
+[source,javascript]
 ----
-return value.item.id == "895e443a-f1b7-4fe5-ad66-b9adfe5420b9"
+return value.inventory.status === "in_stock";
 ----
 
-When the filter function returns `true`, the record is sent to the front end. If you use more than one filter function at the same time, filters are combined with a logical `AND`, so records must pass every filter. The offset specified also is effectively combined using an `AND` operator.
+*Scenario:* Filter products missing price information.
 
-== Resource usage and performance
+.JavaScript filter (property absence)
+[source,javascript]
+----
+return !value.hasOwnProperty("price");
+----
 
-You can use the filter engine against topics with millions of records, as the filter code is evaluated in the backend
-where more resources are available. However, while the filter engine is fairly efficient, it could potentially consume all available CPU
-resources and cause significant network traffic due to the number of consumed Kafka records.
+=== Filter string keys
 
-Usually, performance is constrained by available CPU resources. Depending on the JavaScript code and the records, the expected
-performance is around 15,000 -20,000 filtered records per second for each available core. The request is only processed on a single instance of {ui} and
-cannot be shared across multiple instances.
+*Scenario:* Filter sensor data records by IoT device ID.
+
+.JavaScript filter
+[source,javascript]
+----
+return key === "sensor-device-1234";
+----
+
 // end::single-source[]

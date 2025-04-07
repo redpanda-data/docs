@@ -3,6 +3,14 @@ const GetLatestRedpandaVersion = require('../../../node_modules/@redpanda-data/d
 const yaml = require('../../../node_modules/js-yaml/index.js');
 const fs = require('fs');
 
+if (process.argv.length > 3) {
+  const overrideDockerRepo = process.argv[2];
+  const overrideVersion = process.argv[3];
+  console.log(`REDPANDA_DOCKER_REPO=${overrideDockerRepo}`);
+  console.log(`REDPANDA_VERSION=${overrideVersion}`);
+  process.exit(0);
+}
+
 // Fetch the latest release version from GitHub
 const owner = 'redpanda-data';
 function getPrereleaseFromAntora() {

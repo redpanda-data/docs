@@ -13,6 +13,7 @@ Different Redpanda APIs support different authentication methods. You can config
 |
 - SASL
 ** SASL/SCRAM
+** SASL/PLAIN
 ** SASL/OAUTHBEARER (OIDC)
 ifndef::env-kubernetes[** SASL/GSSAPI (Kerberos)]
 ifndef::env-kubernetes[- mTLS]
@@ -112,7 +113,7 @@ kubectl --namespace <namespace> create secret generic redpanda-superusers --from
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -190,7 +191,7 @@ If you leave this placeholder empty, the Helm chart uses the default authenticat
 
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -296,7 +297,7 @@ The xref:reference:k-redpanda-helm-spec.adoc#statefulset-sidecars-configwatcher-
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -468,6 +469,8 @@ ifndef::env-kubernetes[- <<mTLS>> (Mutual Transport Layer Security)]
 SASL provides a flexible and adaptable framework for implementing various authentication mechanisms. Redpanda supports these SASL mechanisms:
 
 - <<scram,SASL/SCRAM>>
+
+- <<plain,SASL/PLAIN>>
 
 - <<oidc,SASL/OAUTHBEARER>> (OpenID Connect, also known as OIDC)
 
@@ -687,6 +690,120 @@ pandaproxy_client:
 ----
 endif::[]
 
+[[plain]]
+==== SASL/PLAIN
+
+You can configure Kafka clients to authenticate using either SASL/SCRAM or SASL/PLAIN with a
+single account using the same username and password. Unlike SASL/SCRAM, which uses a challenge response with hashed
+credentials, SASL/PLAIN transmits plaintext passwords. While not required, it is recommended that you use TLS for external encryption when using SASL/PLAIN authentication.
+
+If you have existing PLAIN Kafka clients and applications, you can migrate to Redpanda without updating
+your application by creating local Redpanda SCRAM accounts and enabling PLAIN as an authentication mechanism.
+
+NOTE: Clusters configured with _only_ a SASL/PLAIN mechanism are not supported.
+
+===== Enable SASL/PLAIN
+
+You must enable SASL/PLAIN explicitly by appending PLAIN to the list of SASL mechanisms:
+
+ifdef::env-kubernetes[]
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    auth:
+      sasl:
+        enabled: true
+      secretRef: redpanda-superusers
+    config:
+      cluster:
+        sasl_mechanisms:
+          - "SCRAM"
+          - "PLAIN"
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`enable-sasl.yaml`
+[,yaml]
+----
+auth:
+  sasl:
+    enabled: true
+  secretRef: redpanda-superusers
+config:
+  cluster:
+    sasl_mechanisms:
+      - "SCRAM"
+      - "PLAIN"
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values sasl-enable.yaml --reuse-values
+```
+
+--set::
++
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set auth.sasl.enabled=true \
+  --set auth.sasl.secretRef=redpanda-superusers \
+  --set "config.cluster.sasl_mechanisms[0]=SCRAM" \
+  --set "config.cluster.sasl_mechanisms[1]=PLAIN" \
+----
+
+====
+--
+======
+endif::[]
+ifndef::env-kubernetes[]
+[,bash]
+----
+rpk cluster config get sasl_mechanisms
+
+- SCRAM
+
+rpk cluster config set sasl_mechanisms '["SCRAM","PLAIN"]'
+----
+
+To enable SASL/PLAIN authentication for the Kafka API, set the `authentication_method` property of the Kafka listeners to `sasl`.
+
+In `redpanda.yaml`, enter:
+
+[,yaml,lines=6]
+----
+redpanda:
+  kafka_api:
+    - address: 0.0.0.0
+      port: 9092
+      name: sasl_plain_listener
+      authentication_method: sasl
+----
+endif::[]
+
 [[oidc]]
 ==== OAUTHBEARER (OIDC)
 
@@ -780,7 +897,7 @@ ifdef::env-kubernetes[]
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -979,7 +1096,7 @@ To configure Kerberos authentication, use a keytab, which contains credentials f
 .. Ensure that host names are fully qualified domain names (FQDN).
 .. Ensure that each broker has a http://web.mit.edu/Kerberos/krb5-latest/doc/admin/conf_files/krb5_conf.html[Kerberos configuration file^] (`krb5.conf`) set to use Active Directory or another corporate key distribution center (KDC). The default is at `/etc/krb5.conf`.
 .. Ensure that the KDC has a valid Kerberos service principal name (SPN) for each broker in the form `primary/<FQDN>@<REALM>`.
-.. Ensure that each broker has a keytab containing the SPN for that broker. This must be located at an identical file path on each Redpanda broker. The dfault is `/var/lib/redpanda/redpanda.keytab`.
+.. Ensure that each broker has a keytab containing the SPN for that broker. This must be located at an identical file path on each Redpanda broker. The default is `/var/lib/redpanda/redpanda.keytab`.
 
 . <<enable-authentication, Enable SASL authentication>> if it's not already enabled.
 
@@ -1202,7 +1319,7 @@ To enable basic authentication for the Admin API:
 
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -1400,7 +1517,7 @@ To enable OIDC for the HTTP API listeners as well as basic authentication, inclu
 ifdef::env-kubernetes[]
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -1585,7 +1702,7 @@ To disable authentication for a listener, set `authentication_method` to `none`:
 ifdef::env-kubernetes[]
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`

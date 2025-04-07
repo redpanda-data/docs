@@ -1,61 +1,363 @@
 = Authentication
-:description: Redpanda Console supports authentication using OAuth 2.0 or OIDC for external identity providers.
-:page-aliases: console:single-sign-on/authentication.adoc, manage:security/console/authentication.adoc
-:page-categories: Management, Security, Redpanda Console
+:description: Authentication in Redpanda Console enables users to log in and optionally forward their credentials to the connected Redpanda cluster, ensuring all API requests are executed under the user's identity.
+:page-aliases: console:single-sign-on/authentication.adoc, manage:security/console/authentication.adoc, console:config/security/plain.adoc, console:config/security/okta.adoc, console:config/security/generic-oidc.adoc, console:config/security/keycloak.adoc, console:config/security/github.adoc, console:config/security/google.adoc, console:config/security/azure-ad.adoc
+
+// ========================AUTOMATED TESTS===================================
+// The comments in this file are used to run automated tests of the documented steps. Tests are run using GitHub Actions on each pull request that changes this file in the upstream repository. For more details about the testing tool we use, see https://doc-detective.com/.
+
+// (test start {"id": "console-authentication", "description": "Generate screenshot of Console login screen"})
+// (step {"action":"runShell", "command": "docker compose up -d --wait", "workingDirectory": "../console-login", "timeout": 50000, "exitCodes": [0,1]})
+// (step {"action":"wait", "duration": 20000})
+// (step {"action":"goTo", "url": "http://localhost:8080/login"})
+// (step {"action":"wait", "duration": 10000})
+// (step {"action":"saveScreenshot", "path": "login.png", "directory": "../../modules/console/images", "overwrite": "byVariation", "crop": {"selector": ".chakra-stack", "padding": 10}})
+// (step {"action":"runShell", "command": "docker compose down -v", "workingDirectory": "../console-login"})
+// (test end)
 
 [NOTE]
 ====
 include::shared:partial$enterprise-and-console.adoc[]
 ====
 
-Redpanda Console supports authentication using OAuth 2.0 or OIDC for external identity providers, such as:
+This topic describes how to enable authentication in Redpanda Console and explains how it interacts with the Kafka API, Admin API, and Schema Registry API in Redpanda.
 
-* xref:./azure-ad.adoc[Microsoft Entra ID]
-* xref:./google.adoc[Google]
-* xref:./github.adoc[GitHub]
-* xref:./keycloak.adoc[Keycloak]
-* xref:./okta.adoc[Okta]
-* xref:./generic-oidc.adoc[Generic OIDC]
+Authentication in Redpanda Console lets users log in and optionally forward credentials to the connected cluster, ensuring API requests run under the user's identity. Redpanda Console supports two authentication methods:
 
-You can use one or more login providers at the same time. To enable SSO authentication,
-you must create an OAuth application for your organization first. Refer to the respective
-documentation page for guidance to set up your desired identity provider in Redpanda Console.
-Afterwards, you can configure your identity provider in Redpanda Console by providing the
-clientId and clientSecret in the configuration block for your provider. The configuration
-to add Google login support looks like this:
+* **OIDC (OpenID Connect):**
+  Uses external identity providers, such as Google, to facilitate single sign-on (SSO).
+* **Basic authentication:**
+  Provides a traditional username and password login.
+
+image::console:login.png[]
+
+== How authentication works in Redpanda Console
+
+Redpanda Console can authenticate to the Kafka, Admin, and Schema Registry APIs (Redpanda APIs) using two methods:
+
+- *User impersonation*: Redpanda Console uses the same credentials you use to log into Redpanda Console to authenticate API requests to Redpanda. This authentication method ensures accurate audit trails in xref:manage:audit-logging.adoc[Redpanda audit logs] and unified authorization across both Redpanda and Redpanda Console. Your credentials authenticate with any <<api-authentication, API where `impersonateUser` is `true`>>.
+
+- *Static credentials*: For services such as Kafka Connect and Git, or optionally for Redpanda APIs, Redpanda Console uses static credentials defined in the configuration.
+
+[mermaid,width=450px]
+....
+flowchart TD
+    A((User authenticates with<br/>OIDC or SASL credentials)) --> B[Redpanda Console]
+
+    B --> C["Re-use OIDC token or basic credentials<br/>(if configured)"]
+    B --> D[Get credentials<br/>from Console config]
+
+    C --> E[Kafka API]
+    C --> F[Admin API]
+    C --> G[Schema API]
+    E & F & G --> H((Redpanda))
+
+    D --> J[Kafka Connect API]
+    D --> L[Git]
+....
+
+Upon successful login, Redpanda Console creates a secure session by generating a JSON Web Token (JWT). Signed with `authentication.jwtSigningKey` and optionally stored as a secure cookie, the JWT encapsulates your credentials (an OIDC ID token or username/password) to authenticate API requests.
+
+=== OIDC authentication
+
+With OIDC, users are redirected to an external identity provider, such as Google, for authentication. After login, the provider issues an ID token that is encapsulated in a JWT. This token is used in the following ways:
+
+* **Kafka authentication:**
+  The ID token is mapped to SASL-OAUTHBEARER, allowing Kafka to authenticate requests under the user's identity.
+
+* **HTTP API authentication:**
+  The ID token is used in header-based authentication (`Authorization: Bearer <id-token>`) in the Schema Registry and Admin API.
+
+Redpanda must be configured with OIDC authentication for its APIs. The OIDC configurations across these APIs must match. Using a consistent identity provider avoids authentication mismatches and ensures seamless integration.
+
+=== Basic authentication
+
+For basic authentication, the user submits a username and password directly to Redpanda Console. These credentials are validated and encapsulated within a JWT, which is then used as follows:
+
+* **Kafka authentication:**
+  The provided credentials are mapped to SASL-SCRAM, ensuring that Kafka operations execute with the correct user identity.
+
+* **HTTP API authentication:**
+  The JWT supports HTTP Basic authentication for other APIs.
+
+== Prerequisites
+
+Your credentials must correspond to an existing user in your Redpanda cluster. Redpanda Console verifies access by confirming whether your credentials authenticate with the Kafka API. As a result, the authentication mechanism configured in Redpanda Console must match the Kafka API's configuration. For example:
+
+- *OIDC:* If you want to log into Redpanda Console with OIDC, you must have SASL-OAUTHBEARER authentication configured for the Kafka API.
+- *Basic:* If you want to log into Redpanda Console with basic authentication (username/password), you must have SASL-SCRAM authentication configured for the Kafka API.
+
+See xref:manage:security/authentication.adoc[Configure Authentication for Redpanda].
+
+[[enable-authentication]]
+== Enable authentication for Redpanda Console
+
+Enable OIDC and basic authentication in Redpanda Console. OIDC offers secure single sign-on for production, while basic authentication provides a simple login option.
+
+You can enable both OIDC and basic authentication simultaneously. If you enable both, Redpanda Console presents users with a choice of login methods.
+
+=== Enable OIDC authentication
+
+To enable OIDC authentication, configure your OIDC settings in the Redpanda Console configuration file. You can obtain an OIDC token using one of the following modes:
+
+* **Runtime acquisition mode:** Configure `clientId`, `clientSecret`, `tokenEndpoint`, and `scope` to have Redpanda Console acquire a token at runtime.
+* **Static token mode:** Supply only a pre-acquired token directly using the `token` field.
+
+Here is an example configuration for **runtime acquisition mode**:
 
 [,yaml]
 ----
-login:
-  enabled: true
-
-  # jwtSecret is the secret key you must use to sign and encrypt the JSON
-  # web token used to store user sessions. This secret key is
-  # critical for the security of Redpanda Console's authentication and
-  # authorization system. Use a long, complex key with a combination of
-  # numbers, letters, and special characters. While you must use a minimum of
-  # 10 characters, Redpanda recommends using more than 32
-  # characters. For additional security, use a different secret key for
-  # each environment. jwtSecret can be securely generated with the following
-  # command: LC_ALL=C tr -dc '[:alnum:]' < /dev/random | head -c32
-  #
-  # If you update this secret key, any users who are
-  # already logged in to Redpanda Console will be logged out and will have
-  # to log in again.
-  jwtSecret: ""
-
-  google:
-    enabled: true
-    clientId: redacted.apps.googleusercontent.com
-    clientSecret: redacted # can be set with an environment variable
-    # The directory config is optional. You have to configure it if you want to use
-    # Google groups in your RBAC role bindings.
-    # directory:
-    #  serviceAccountFilepath: /etc/secrets/google-sa.json
-    #  # targetPrincipal is the user that shall be impersonated
-    #  # for the Google Admin API calls.
-    #  targetPrincipal: admin@mycompany.com
+authentication:
+  jwtSigningSecret: "<secret-key>"  <1>
+  useSecureCookies: true  <2>
+  oidc:
+    enabled: true  <3>
+    issuerUrl: "https://accounts.google.com"  <4>
+    clientId: "<oidc-client-id>"  <5>
+    clientSecret: "<oidc-client-secret>"  <6>
+    issuerTls:
+      enabled: true  <7>
+      caFilepath: "/path/to/ca.pem"
+      certFilepath: "/path/to/issuer-cert.pem"
+      keyFilepath: "/path/to/issuer-key.pem"
+      insecureSkipTlsVerify: false
+    redirectUrl: "http://localhost:8080/auth/callbacks/oidc" <8>
+    accessType: "offline"  <9>
+    prompt: "consent"  <10>
 ----
 
-By default, users don't have any permissions in Redpanda Console, including permission
-to log in. After you set up authentication, continue with the authorization configuration by reading about xref:./authorization.adoc[RBAC-based authorization].
+<1> `authentication.jwtSigningSecret` (required): The secret key for signing JWTs. Keep it confidential. It must be at least 32 characters long. Use xref:console:config/configure-console.adoc#environment-variables[environment variables] or command-line flags for sensitive data.
+<2> `authentication.useSecureCookies`: A boolean flag indicating whether session cookies should be marked as secure. This should be set to true in production environments to enforce HTTPS.
+<3> `authentication.oidc.enabled` (required): Enables OIDC-based authentication. When enabled, external identity providers can be used for single sign-on.
+<4> `authentication.oidc.issuerUrl` (required): The URL of the OIDC identity provider.
+<5> `authentication.oidc.clientId` (required): The client identifier registered with the OIDC provider during the client registration process.
+<6> `authentication.oidc.clientSecret` (required): The client secret associated with the registered client identifier. This secret is used to authenticate the client to the OIDC provider. Use xref:console:config/configure-console.adoc#environment-variables[environment variables] or command-line flags for sensitive data.
+<7> `authentication.oidc.issuerTls`: TLS configuration for securely connecting to the identity provider. Configure the CA certificate (and optionally a client certificate and key) to ensure secure communication. You need to configure TLS only if you require mTLS or if you use a self-signed certificate for your identity provider.
+<8> `authentication.oidc.redirectUrl`: The URL where the identity provider redirects users after successful authentication. This URL must be registered with your IDP and must point to the `/auth/callbacks/oidc` path in Redpanda Console. If this URL is not configured, Redpanda Console constructs the URL by using the base URL from the request and adding the `/auth/callbacks/oidc` path. You may want to configure this URL if you use xref:console:config/http-path-rewrites.adoc[HTTP path rewrites].
+<9> `authentication.oidc.accessType`: Controls whether a refresh token is requested. You can set it to `offline` (default) to request a refresh token for long-lived sessions. Set it to `online` if you don't want a refresh token.
+<10> `authentication.oidc.prompt`: Determines how the authorization prompt is displayed. Use `consent` (default) to force the consent screen to appear even if the user has previously authorized the application. Alternatives include `none` (no prompt) or `select_account` to allow the user to choose an account. Some IDPs require `consent` to issue a refresh token.
+
+Here is an example configuration for **static token mode**:
+
+[,yaml]
+----
+authentication:
+  jwtSigningSecret: "<secret-key>"
+  useSecureCookies: true
+  oidc:
+    enabled: true
+    issuerUrl: "https://accounts.google.com"
+    token: "<static-token>" <1>
+    issuerTls:
+      enabled: true
+      caFilepath: "/path/to/ca.pem"
+      certFilepath: "/path/to/issuer-cert.pem"
+      keyFilepath: "/path/to/issuer-key.pem"
+      insecureSkipTlsVerify: false
+    redirectUrl: "http://localhost:8080/auth/callbacks/oidc"
+    accessType: "offline"
+    prompt: "consent"
+----
+
+<1> `authentication.oidc.token`: In static token mode, the `token` field supplies a pre-acquired OIDC token. This token is used to authenticate with the OIDC provider. Keep this token secret to ensure the integrity and security of user sessions.
+
+Then, <<api-authentication, configure API authentication>> for specific APIs.
+
+=== Enable basic authentication
+
+To enable basic authentication, configure your authentication settings in the Redpanda Console configuration file.
+
+[, yaml]
+----
+authentication:
+  jwtSigningKey: <signing key> <1>
+  useSecureCookies: false <2>
+  # Basic auth logins are mapped to SASL-SCRAM for Kafka.
+  basic:
+    enabled: true <3>
+----
+<1> `authentication.jwtSigningSecret` (required): The secret key for signing JWTs. Keep it confidential. Minimum 32 characters. Use xref:console:config/configure-console.adoc#environment-variables[environment variables] or command-line flags for sensitive data.
+<2> `authentication.useSecureCookies`: A boolean flag indicating whether the JWT cookie should be marked as secure. Set to true in production to enforce HTTPS.
+<3> `authentication.basic.enabled` (required): Enables or disables basic (username/password) authentication. When enabled, credentials are mapped to SASL-SCRAM for Kafka.
+
+Then, <<api-authentication, configure API authentication>> for specific APIs.
+
+[[api-authentication]]
+== Configure API authentication
+
+After you <<enable-authentication, enable authentication>> for Redpanda Console, you must configure how Redpanda Console authenticates to the following APIs in your Redpanda cluster:
+
+* **Kafka API:** Enables core messaging operations and authenticates requests to your Kafka cluster.
+* **Schema Registry API:** Allows Redpanda Console to manage and display schema information.
+* **Admin API:** Unlocks management features such as viewing cluster details, managing users, and generating debug bundles.
+
+Choose one of the following authentication methods for each API:
+
+* **User impersonation:**
+  Redpanda Console uses the same credentials you use to log into Redpanda Console to authenticate API requests to Redpanda. This authentication method ensures accurate audit trails in xref:manage:audit-logging.adoc[Redpanda audit logs] and unified authorization across both Redpanda and Redpanda Console. Your credentials authenticate with any <<api-authentication, API where `impersonateUser` is `true`>>.
+  +
+  In this mode, Redpanda Console's role-based access control (RBAC) is bypassed for the impersonated API calls.
+
+* **Static credentials:**
+  Use preconfigured credentials to authenticate to Redpanda and use role bindings for access control in Redpanda Console. This authentication method is useful when impersonation is disabled or when you need to separate Redpanda Console RBAC from the logged-in user's identity in Redpanda.
+
+=== Kafka API
+
+When user impersonation is enabled, the logged-in user's credentials are used for authentication.
+
+User impersonation example:
+
+[source,yaml]
+----
+kafka:
+  brokers: ["broker1.example.com:9092"]
+  sasl:
+    enabled: true
+    impersonateUser: true <1>
+authentication: <2>
+  jwtSigningKey: "secret-key"
+  basic:
+    enabled: true
+----
+<1> `kafka.sasl.impersonateUser`: When set to `true`, Redpanda Console impersonates the user who is logged in when making requests to the Kafka API.
+<2> `authentication`: Enables users to log into Redpanda Console using basic authentication. You could also enable OIDC for login.
+
+When impersonation is disabled, you must supply static credentials and role bindings to define the access permissions.
+
+NOTE: Redanda Console still authenticates to the Kafka API using the logged-in user's credentials. The static credentials are used only for authenticating Kafka API calls after the user is logged in.
+
+Static credentials example:
+
+[,yaml]
+----
+kafka:
+  brokers: ["broker1.example.com:9092"]
+  sasl:
+    enabled: true
+    impersonateUser: false <1>
+    username: "static-kafka-user" <2>
+    password: "static-kafka-pass" <3>
+    mechanism: "SCRAM-SHA-256" <4>
+authentication:
+  jwtSigningKey: "secret-key"
+  basic:
+    enabled: true
+authorization:
+  roleBindings: <5>
+  - roleName: viewer
+    users:
+      - loginType: basic
+        name: "static-kafka-user"
+----
+<1> `kafka.sasl.impersonateUser`: When set to `false`, Redpanda Console does not impersonate the user who is logged in when making requests to the Kafka API.
+<2> `kafka.sasl.username`: Specifies the static Kafka username.
+<3> `kafka.sasl.password`: Specifies the static Kafka password. Use xref:console:config/configure-console.adoc#environment-variables[environment variables] or command-line flags for sensitive data.
+<4> `kafka.sasl.mechanism`: Specifies the SASL mechanism to use for authentication. Use `SCRAM-SHA-256` or `SCRAM-SHA-512`.
+<5> `authorization.roleBindings`: Defines the role bindings that grant permissions to users.
++
+The role binding in the configuration does not need to match the static Kafka user. In practice, most users log in using their own identity, not the static Kafka credentials. The static credentials are used only for authenticating Kafka API calls when impersonation is disabled, while role bindings govern access within Redpanda Console. This separation allows you to use a generic Kafka identity (`static-kafka-user`) without tying it to the individual login identities that benefit from personalized role-based permissions.
++
+For more information on role bindings, see xref:console:config/security/authorization.adoc[].
+
+=== Schema Registry API
+
+With impersonation enabled, the Schema Registry API uses the logged-in user's credentials.
+
+User impersonation example:
+
+[source,yaml]
+----
+schemaRegistry:
+  urls: ["http://broker1.example.com:8081"]
+  authentication:
+    enabled: true
+    impersonateUser: true
+authentication:
+  jwtSigningKey: "secret-key"
+  basic:
+    enabled: true
+----
+
+When impersonation is disabled and the Schema Registry API in Redpanda requires authentication, you must supply static credentials and role bindings to define the access permissions.
+
+Static credentials example:
+
+[source,yaml]
+----
+schemaRegistry:
+  urls: ["http://broker1.example.com:8081"]
+  authentication:
+    enabled: true
+    impersonateUser: false
+    username: "static-sr-user"
+    password: "static-sr-pass"
+authentication:
+  jwtSigningKey: "secret-key"
+  basic:
+    enabled: true
+authorization:
+  roleBindings:
+  - roleName: editor
+    users:
+      - loginType: basic
+        name: "static-sr-user"
+----
+
+Use xref:console:config/configure-console.adoc#environment-variables[environment variables] or command-line flags for sensitive data.
+
+For more information on role bindings, see xref:console:config/security/authorization.adoc[].
+
+=== Admin API
+
+When impersonation is enabled, Admin API calls are made using the logged-in user's credentials.
+
+User impersonation example:
+
+[source,yaml]
+----
+redpanda:
+  adminApi:
+    enabled: true
+    urls: ["http://broker1.example.com:9644"]
+    authentication:
+      impersonateUser: true
+authentication:
+  jwtSigningKey: "secret-key"
+  basic:
+    enabled: true
+----
+
+When impersonation is disabled and the Admin API in Redpanda requires authentication, you must supply static credentials and role bindings to define the access permissions.
+
+Static credentials example:
+
+[source,yaml]
+----
+redpanda:
+  adminApi:
+    enabled: true
+    urls: ["http://broker1.example.com:9644"]
+    authentication:
+      impersonateUser: false
+      basic:
+        username: "static-admin-user"
+        password: "static-admin-pass"
+authentication:
+  jwtSigningKey: "secret-key"
+  basic:
+    enabled: true
+authorization:
+  roleBindings:
+  - roleName: admin
+    users:
+      - loginType: basic
+        name: "static-admin-user"
+----
+
+Use xref:console:config/configure-console.adoc#environment-variables[environment variables] or command-line flags for sensitive data.
+
+For more information on role bindings, see xref:console:config/security/authorization.adoc[].
+
+== Next steps
+
+- xref:console:config/security/authorization.adoc[Redpanda Console Authorization]
+
