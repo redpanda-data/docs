@@ -11,13 +11,19 @@ include::shared:partial$enterprise-license.adoc[]
 ====
 endif::[]
 
-In xref:manage:iceberg/about-iceberg-topics.adoc[Iceberg-enabled clusters], the `redpanda.iceberg.mode` topic property determines how Redpanda maps topic data to the Iceberg table structure. You can have the generated Iceberg table match the structure of an Avro or Protobuf schema in the Schema Registry, or you can use the `key_value` mode where Redpanda stores the record values as-is in the table. 
+In xref:manage:iceberg/about-iceberg-topics.adoc#enable-iceberg-integration[Iceberg-enabled clusters], the `redpanda.iceberg.mode` topic property determines how Redpanda maps topic data to the Iceberg table structure. You can have the generated Iceberg table match the structure of an Avro or Protobuf schema in the Schema Registry, or you can use the `key_value` mode where Redpanda stores the record values as-is in the table. 
 
 NOTE: The JSON Schema format is not supported for Iceberg topics. If your topic data is in JSON, use the `key_value` mode. 
 
 == Supported Iceberg modes
 
+ifndef::env-cloud[]
+Redpanda supports the following xref:reference:properties/topic-properties.adoc#redpanda-iceberg-mode[modes] for Iceberg topics:
+endif::[]
+
+ifdef::env-cloud[]
 Redpanda supports the following modes for Iceberg topics:
+endif::[]
 
 === key_value
 
@@ -27,33 +33,29 @@ Creates an Iceberg table using a simple schema, consisting of two columns, one f
 
 Creates an Iceberg table whose structure matches the Redpanda schema for the topic, with columns corresponding to each field. You must register a schema in the xref:manage:schema-reg/schema-reg-overview.adoc[Schema Registry] and producers must write to the topic using the Schema Registry wire format.
 
-ifndef::env-cloud[]
-In the Schema Registry wire format, a "magic byte" and schema ID are embedded in the message payload header. Producers to the topic must use the wire format in the serialization process so Redpanda can determine the schema used for each record, use the schema to define the Iceberg table, and store the topic values in the corresponding table columns. See also: xref:{schema-id-val-doc}[] and 
-the https://www.redpanda.com/blog/schema-registry-kafka-streaming#how-does-serialization-work-with-schema-registry-in-kafka[Understanding Apache Kafka Schema Registry^] blog post.
-
-ifdef::env-cloud[]
-In the Schema Registry wire format, a "magic byte" and schema ID are embedded in the message payload header. Producers to the topic must use the wire format in the serialization process so Redpanda can determine the schema used for each record, use the schema to define the Iceberg table, and store the topic values in the corresponding table columns. See also: the https://www.redpanda.com/blog/schema-registry-kafka-streaming#how-does-serialization-work-with-schema-registry-in-kafka[Understanding Apache Kafka Schema Registry^] blog post.
-endif::[]
+In the xref:manage:schema-reg/schema-reg-overview.adoc#serialization-and-deserialization[Schema Registry wire format], a "magic byte" and schema ID are embedded in the message payload header. Producers to the topic must use the wire format in the serialization process so Redpanda can determine the schema used for each record, use the schema to define the Iceberg table, and store the topic values in the corresponding table columns.
 
 === value_schema_latest
 
-Creates an Iceberg table whose structure matches the latest schema registered for the subject in the Schema Registry. You must register a schema in the xref:manage:schema-reg/schema-reg-overview.adoc[Schema Registry]. Unlike the `value_schema_id_prefix` mode,  `value_schema_latest` does not require that producers use the wire format.
+Creates an Iceberg table whose structure matches the latest schema registered for the subject in the Schema Registry. You must register a schema in the Schema Registry. Unlike the `value_schema_id_prefix` mode, `value_schema_latest` does not require that producers use the wire format.
+
+The latest schema is cached periodically. The cache period is defined by the cluster property `iceberg_latest_schema_cache_ttl_ms` (default: 5 minutes).
 
 === disabled
 
 Default for `redpanda.iceberg.mode`. Disables writing to an Iceberg table for the topic.
 
-== Configure Iceberg mode for topic
+== Configure Iceberg mode for a topic
 
 You can set the Iceberg mode for a topic when you create the topic, or you can update the mode for an existing topic.
 
-.Create a new topic and set `redpanda.iceberg.mode`:
+.Option 1. Create a new topic and set `redpanda.iceberg.mode`:
 [,bash]
 ----
 rpk topic create <topic-name> --topic-config=redpanda.iceberg.mode=<iceberg-mode>
 ----
 
-.Set `redpanda.iceberg.mode` for an existing topic:
+.Option 2. Set `redpanda.iceberg.mode` for an existing topic:
 [,bash]
 ----
 rpk topic alter-config <new-topic-name> --set redpanda.iceberg.mode=<iceberg-mode>
@@ -62,7 +64,15 @@ rpk topic alter-config <new-topic-name> --set redpanda.iceberg.mode=<iceberg-mod
 [[override-value-schema-latest-default]]
 === Override `value_schema_latest` default
 
-In `value_schema_latest` mode, only the string `value_schema_latest` is required in the property value. This sets `value_schema_latest` mode to its default behavior, which derives the subject for the topic using xref:manage:schema-reg/schema-id-validation.adoc#set-subject-name-strategy-per-topic[TopicNameStrategy]. For Protobuf data, the default behavior also deserializes records using the first message within the corresponding Protobuf schema in the Schema Registry.
+ifndef::env-cloud[]
+In `value_schema_latest` mode, you only need to set the property value to the string `value_schema_latest`. This enables the default behavior of `value_schema_latest` mode, which determines the subject for the topic using the xref:manage:schema-reg/schema-id-validation.adoc#set-subject-name-strategy-per-topic[TopicNameStrategy]. For Protobuf data, the default behavior also deserializes records using the first message defined in the corresponding Protobuf schema stored in the Schema Registry.
+endif::[]
+
+ifdef::env-cloud[]
+In `value_schema_latest` mode, you only need to set the property value to the string `value_schema_latest`. This enables the default behavior of `value_schema_latest` mode, which determines the subject for the topic using the TopicNameStrategy. For Protobuf data, the default behavior also deserializes records using the first message defined in the corresponding Protobuf schema stored in the Schema Registry.
+endif::[]
+
+If you use a different strategy other than the topic name to derive the subject name, you can override the default behavior of `value_schema_latest` mode and explicitly set the subject name.
 
 To override the default behavior, use the following optional syntax:
 

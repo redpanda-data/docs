@@ -4,7 +4,7 @@
 // tag::single-source[]
 :description: Redpanda's Schema Registry provides the interface to store and manage event schemas.
 
-In Redpanda, the messages exchanged between producers and consumers contain raw bytes. Schemas enable producers and consumers to share the information needed to serialize and deserialize those messages. They register and retrieve the schemas they use in the Schema Registry to ensure data verification. 
+In Redpanda, the messages exchanged between producers and consumers contain raw bytes. Schemas enable producers and consumers to share the information needed to <<serialization-and-deserialization,serialize and deserialize>> those messages. They register and retrieve the schemas they use in the Schema Registry to ensure data verification.
 
 Schemas are versioned, and the registry supports configurable compatibility modes between schema versions. When a producer or a consumer requests to register a schema change, the registry checks for schema compatibility and returns an error for an incompatible change. Compatibility modes can ensure that data flowing through a system is well-structured and easily evolves. 
 
@@ -33,7 +33,39 @@ See the xref:reference:cluster-properties.adoc#kafka_nodelete_topics[kafka_nodel
 
 endif::[]
 
-Redpanda Schema Registry uses the default port 8081. 
+Redpanda Schema Registry uses the default port 8081.
+
+== Serialization and deserialization
+
+With Schema Registry, producers and consumers can use a specific message format, called the wire format. The wire format facilitates a seamless transfer of data by ensuring that clients easily access the correct schema in the Schema Registry for a message.
+
+The wire format is a sequence of bytes consisting of the following:
+
+. The "magic byte," a single byte that always contains the value of 0.
+. A four-byte integer containing the schema ID.
+. The rest of the serialized message.
+
+image::shared:schema-registry-wire-format.png[alt="Schema Registry wire format"]
+
+ifndef::env-cloud[]
+In the serialization process, the producer hands over the message to a key/value serializer that is part of the respective language-specific SDK. The serializer first checks whether the schema ID for the given subject exists in the local schema cache. The serializer derives the subject name based on several xref:manage:schema-reg/schema-id-validation.adoc#set-subject-name-strategy-per-topic[strategies], such as the topic name. You can also explicitly set the subject name.
+endif::[]
+
+ifdef::env-cloud[]
+In the serialization process, the producer hands over the message to a key/value serializer that is part of the respective language-specific SDK. The serializer first checks whether the schema ID for the given subject exists in the local schema cache. The serializer derives the subject name based on several strategies, such as the topic name. You can also explicitly set the subject name.
+endif::[]
+
+If the schema ID isn’t in the cache, the serializer registers the schema in the Schema Registry and collects the resulting schema ID in the response.
+
+In either case, when the serializer has the schema ID, it pads the beginning of the message with the magic byte and the encoded schema ID, and returns the byte sequence to the producer to write to the topic.
+
+In the deserialization process, the consumer fetches messages from the broker and hands them over to a deserializer. The deserializer first checks the presence of the magic byte and rejects the message if it doesn't follow the wire format.
+
+The deserializer then reads the schema ID and checks whether that schema exists in its local cache. If it finds the schema, it deserializes the message according to that schema. Otherwise, the deserializer retrieves the schema from the Schema Registry using the schema ID, then the deserializer proceeds with deserialization.
+
+ifndef::env-cloud[]
+See also: xref:manage:schema-reg/schema-id-validation.adoc[]
+endif::[]
 
 == Schema examples
 
