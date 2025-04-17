@@ -6,13 +6,13 @@
 
 == Overview
 
-All messages within Redpanda are organized by glossterm:topic[]. Messages within a topic are divided between partitions, where each glossterm:partition[] holds a subset of the messages. For example, if a topic has 5 partitions, it would be likely (though not guaranteed) that each partition holds about 20% of the messages.
+In Redpanda, all messages are organized by glossterm:topic[] and distributed across multiple partitions. Each glossterm:partition[] holds a subset of the messages. For example, if a topic has five partitions, it would be likely (though not guaranteed) that each partition holds about 20% of the messages.
 
 Within a partition, each message (once accepted and acknowledged by the partition leader) is permanently assigned a unique sequence number called an glossterm:offset[]. Offsets enable consumers to resume processing from a specific point, such as after an application outage. If an outage prevents your application from receiving events, you can use the consumer offset to retrieve only the events that occurred during the downtime. By default, the first message in a partition is assigned offset 0, the next is offset 1, and so on. You can manually specify a specific start value for offsets if needed. Once assigned, offsets are immutable, ensuring that the order of messages within a partition is preserved.
 
-As a consumer reads messages from Redpanda, it can save its progress by “committing the offset” (known as an glossterm:offset commit[]), an action initiated by the consumer, not by Redpanda. Kafka client libraries provide an API for committing offsets, which communicates with Redpanda using the glossterm:consumer group[] API. Each committed offset is stored as a message in the `pass:[__consumer_offsets]` topic, which is a private Redpanda broker topic that stores committed offsets from each Kafka consumer attached to Redpanda, allowing the consumer to resume processing from the last committed point. Note that Redpanda exposes the `pass:[__consumer_offsets]` key to enable the many tools in the Kafka ecosystem that rely on this value for their operation, providing greater ecosystem interoperability with environments and applications.
+As a consumer reads messages from Redpanda, it can save its progress by “committing the offset” (known as an glossterm:offset commit[]), an action initiated by the consumer, not Redpanda. Kafka client libraries provide an API for committing offsets, which communicates with Redpanda using the glossterm:consumer group[] API. Each committed offset is stored as a message in the `pass:[__consumer_offsets]` topic, which is a private Redpanda topic that stores committed offsets from each Kafka consumer attached to Redpanda, allowing the consumer to resume processing from the last committed point. Redpanda exposes the `pass:[__consumer_offsets]` key to enable the many tools in the Kafka ecosystem that rely on this value for their operation, providing greater ecosystem interoperability with environments and applications.
 
-When a glossterm:consumer group[]) works together to consume data from topics, the partitions are divided among the consumers in the group. For example, if a topic has 12 partitions, and there are 2 consumers, each consumer would be assigned 6 partitions to consume. If a new consumer starts later and joins this consumer group, a rebalance occurs, such that each consumer ends up with 4 partitions to consume. You specify a consumer group by setting the `group.id` configuration parameter to a unique name for the group.
+When a consumer group works together to consume data from topics, the partitions are divided among the consumers in the group. For example, if a topic has 12 partitions, and there are 2 consumers, each consumer would be assigned 6 partitions to consume. If a new consumer starts later and joins this consumer group, a rebalance occurs, such that each consumer ends up with 4 partitions to consume. You specify a consumer group by setting the `group.id` property to a unique name for the group.
 
 Kafka consumer tracks the maximum offset it has consumed in each partition and can commit offsets to ensure it can resume processing from the same point in the event of a restart. Kafka allows offsets for a consumer group to be stored on a designated broker, known as the "group coordinator". All consumers in the group send their offset commits and fetch requests to this group coordinator.
 
@@ -26,13 +26,13 @@ The coordinator also caches the offsets in an in-memory table to serve offset fe
 
 == Commit strategies
 
-There are multiple commit strategies available. The most common follow.
+There are several strategies for managing offset commits:
 
 === Auto commit
 
 Auto commit is the default commit strategy, where the client automatically commits offsets at regular intervals. You can enable this by setting `enable.auto.commit` to `true`. The client will then commit offsets every `auto.commit.interval.ms` milliseconds.
 
-The primary advantage of the auto commit approach is its simplicity. Once configured, the consumer requires no additional effort, as commits are managed in the background. However, this "hands-off" approach has a drawback: the consumer is unaware of what was committed or when. As a result, after an application restart, some messages may be reprocessed (since consumption resumes from the last committed offset, which may include already processed messages). The behavior provides an “at least once” delivery guarantee.
+The primary advantage of the auto commit approach is its simplicity. After it is configured, the consumer requires no additional effort. Commits are managed in the background. However, the consumer is unaware of what was committed or when. As a result, after an application restart, some messages may be reprocessed (since consumption resumes from the last committed offset, which may include already processed messages). The strategy guarantees at-least-once delivery.
 
 === Manual offset commit
 
@@ -40,7 +40,7 @@ The manual offset commit strategy gives consumers greater control over when comm
 
 ==== Synchronous commit
 
-The advantage of synchronous commits is that consumers can take appropriate action before continuing to consume messages, albeit at the expense of increased latency (while waiting for the commit to return). The commit (`commitSync`) will also retry automatically, until it either succeeds or receives an unrecoverable error. The following pseudocode shows an example of synchronous commit:
+The advantage of synchronous commits is that consumers can take appropriate action before continuing to consume messages, albeit at the expense of increased latency (while waiting for the commit to return). The commit (`commitSync`) will also retry automatically, until it either succeeds or receives an unrecoverable error. The following example shows a synchronous commit:
 
 [source,java]
 ----
@@ -58,7 +58,7 @@ while (true) {
 
 ==== Asynchronous commit
 
-The advantage of asynchronous commits is lower latency, because the consumer does not pause to wait for the commit response. However, a disadvantage is that there is no automatic retry of the commit (`commitAsync`) if it fails. There is also increased coding complexity (due to the asynchronous callbacks) to consider. The following pseudocode shows an example of an asynchronous commit in which the consumer will not block. Instead, the commit call registers a callback, which is executed once the commit returns:
+The advantage of asynchronous commits is lower latency, because the consumer does not pause to wait for the commit response. However, there is no automatic retry of the commit (`commitAsync`) if it fails. There is also increased coding complexity (due to the asynchronous callbacks). The following example shows an asynchronous commit in which the consumer will not block. Instead, the commit call registers a callback, which is executed once the commit returns:
 
 [source,java]
 ----
@@ -103,17 +103,17 @@ The hybrid offset management strategy allows consumers to handle their own consu
 
 Follow these best practices to optimize offset commits.
 
-=== Do not commit too frequently
+=== Avoid over-committing
 
 The purpose of a commit is to save consumer progress. More frequent commits reduce the amount of data to re-read after an application restart, as the commit interval directly affects the Recovery Point Objective (RPO). Because a lower RPO is desirable, application designers may believe that committing frequently is a good design choice.
 
-However, committing too frequently can result in adverse consequences. While individually small, each commit still results in a message being written to the `pass:[__consumer_offsets]` topic because the position of the consumer against every partition must be recorded. At high commit rates, this workload can become a bottleneck for both the client and the server. Additionally, many Kafka client implementations do not coalesce offset commits, meaning redundant commits in a backlog still need to be processed.
+However, committing too frequently can result in adverse consequences. While individually small, each commit still results in a message being written to the `pass:[__consumer_offsets]` topic, because the position of the consumer against every partition must be recorded. At high commit rates, this workload can become a bottleneck for both the client and the server. Additionally, many Kafka client implementations do not coalesce offset commits, meaning redundant commits in a backlog still need to be processed.
 
 In many Kafka client implementations, offset commits aren't coalesced at the client; so if a backlog of commits forms (when using the asynchronous commit API), the earlier commits still need to be processed, even though they are effectively redundant.
 
-*Best practice*: Monitor commit latency to ensure commits are timely and consider reducing commit frequency if performance issues arise.
+*Best practice*: Monitor commit latency to ensure commits are timely. If you notice performance issues, commit less frequently.
 
-=== Do not reuse consumer groups
+=== Use unique consumer groups
 
 Like many topics, the consumer group topic has multiple partitions to help with performance. When writing commit messages, Redpanda groups all of the commits for a consumer group into a specific partition to maintain ordering. Reusing a consumer group across multiple applications, even for different topics, forces all commits to use a single partition, negating the benefits of partitioning.
 
@@ -121,7 +121,7 @@ Like many topics, the consumer group topic has multiple partitions to help with 
 
 === Tune the consumer group
 
-In highly parallel applications, frequent consumer group heartbeats can create unnecessary overhead. For example, 3,200 consumers checking every 500ms generate 6,400 heartbeats per second. You can optimize this behavior by increasing the `heartbeat.interval.ms` (along with `session.timeout.ms`).
+In highly parallel applications, frequent consumer group heartbeats can create unnecessary overhead. For example, 3,200 consumers checking every 500 milliseconds generate 6,400 heartbeats per second. You can optimize this behavior by increasing the `heartbeat.interval.ms` (along with `session.timeout.ms`).
 
 *Best practice*: Adjust heartbeat and session timeout settings to reduce unnecessary overhead in large-scale applications.
 
