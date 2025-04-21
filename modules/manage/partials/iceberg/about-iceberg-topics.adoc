@@ -52,13 +52,6 @@ endif::[]
 * It is not possible to append topic data to an existing Iceberg table that is not created by Redpanda.
 * If you enable the Iceberg integration on an existing Redpanda topic, Redpanda does not backfill the generated Iceberg table with topic data.
 * JSON schemas are not currently supported. If the topic data is in JSON, use the `key_value` mode to store the JSON in Iceberg, which then can be parsed by most query engines.
-ifndef::env-cloud[]
-* If you're using Avro or Protobuf data, you must use the Schema Registry wire format, where producers include the magic byte and schema ID in the message payload header. See also: xref:{schema-id-val-doc}[] and 
-the https://www.redpanda.com/blog/schema-registry-kafka-streaming#how-does-serialization-work-with-schema-registry-in-kafka[Understanding Apache Kafka Schema Registry^] blog post to learn more.
-endif::[]
-ifdef::env-cloud[]
-* If you're using Avro or Protobuf data, you must use the Schema Registry wire format, where producers include the magic byte and schema ID in the message payload header. See also: the https://www.redpanda.com/blog/schema-registry-kafka-streaming#how-does-serialization-work-with-schema-registry-in-kafka[Understanding Apache Kafka Schema Registry^] blog post to learn more.
-endif::[]
 
 == Enable Iceberg integration
 
@@ -120,37 +113,13 @@ rpk topic create <new-topic-name>
 TOPIC              STATUS
 <new-topic-name>   OK
 ----
-+
-ifndef::env-cloud[]
-To improve query performance, consider implementing custom https://iceberg.apache.org/docs/nightly/partitioning/[partitioning^] for the Iceberg topic. Use the xref:reference:properties/topic-properties.adoc#redpanda-iceberg-partition-spec[`redpanda.iceberg.partition.spec`] topic property to define the partitioning scheme:
-endif::[]
-ifdef::env-cloud[]
-To improve query performance, consider implementing custom https://iceberg.apache.org/docs/nightly/partitioning/[partitioning^] for the Iceberg topic. Use the `redpanda.iceberg.partition.spec` topic property to define the partitioning scheme:
-endif::[]
-+
-[,bash,]
-----
-# Create new topic with five topic partitions, replication factor 1, and custom table partitioning for Iceberg
-rpk topic create <new-topic-name> -p5 -r1 -c "redpanda.iceberg.partition.spec=(<partition-key1>, <partition-key2>, ...)"
-----
-+
-Valid `<partition-key>` values include a source column name or a transformation of a column. The columns referenced can be Redpanda-defined (such as `redpanda.timestamp`) or user-defined based on a schema that you register for the topic. The Iceberg table stores records that share the same partition key values in the same files based on this specification. 
-+
-For example: 
-+
---
-* To partition the table by a single key, such as a column `col1`, use: `redpanda.iceberg.partition.spec=(col1)`. 
-* To partition by multiple columns, use a comma-separated list: `redpanda.iceberg.partition.spec=(col1, col2)`. 
-* To partition by the year of a timestamp column `ts1`, and a string column `col1`, use: `redpanda.iceberg.partition.spec=(year(ts1), col1)`.
-
-For details on the partitioning specification, including allowed transforms, see the https://iceberg.apache.org/spec/#partitioning[Apache Iceberg documentation^].
---
 
 . Configure `redpanda.iceberg.mode` for the topic. You can choose one of the following modes:
 +
 --
 * `key_value`: Creates an Iceberg table using a simple schema, consisting of two columns, one for the record metadata including the key, and another binary column for the record's value.
-* `value_schema_id_prefix`: Creates an Iceberg table whose structure matches the Redpanda schema for this topic, with columns corresponding to each field. You must register a schema in the Schema Registry (see next step), and producers must write to the topic using the Schema Registry wire format. Redpanda parses the schema used by the record based on the schema ID encoded in the payload header and stores the topic values in the corresponding table columns. 
+* `value_schema_id_prefix`: Creates an Iceberg table whose structure matches the Redpanda schema for this topic, with columns corresponding to each field. You must register a schema in the Schema Registry (see next step), and producers must write to the topic using the Schema Registry wire format.
+* `value_schema_latest`: Creates an Iceberg table whose structure matches the latest schema registered for the subject in the Schema Registry.
 * `disabled` (default): Disables writing to an Iceberg table for this topic.
 --
 +
@@ -164,8 +133,10 @@ rpk topic alter-config <new-topic-name> --set redpanda.iceberg.mode=<topic-icebe
 TOPIC              STATUS
 <new-topic-name>   OK
 ----
++
+See also: xref:manage:iceberg/choose-iceberg-mode.adoc[].
 
-. Register a schema for the topic. This step is required for the `value_schema_id_prefix` mode, but is optional otherwise.
+. Register a schema for the topic. This step is required for the `value_schema_id_prefix` and `value_schema_latest` modes.
 +
 [,bash]
 ----
@@ -190,158 +161,11 @@ To query the Iceberg table, you need access to the object storage bucket or cont
 |===
 endif::[]
 
-The Iceberg table resides in a namespace called `redpanda` and has the same name as the Redpanda topic name. As you produce records to the topic, the data also becomes available in object storage for Iceberg-compatible clients to consume. You can use the same analytical tools to xref:manage:iceberg/query-iceberg-topics.adoc[read the Iceberg topic data] in a data lake as you would for a relational database.
+As you produce records to the topic, the data also becomes available in object storage for Iceberg-compatible clients to consume. You can use the same analytical tools to xref:manage:iceberg/query-iceberg-topics.adoc[read the Iceberg topic data] in a data lake as you would for a relational database.
 
-== About schema support and translation to Iceberg format
+See also: xref:manage:iceberg/choose-iceberg-mode.adoc#schema-types-translation[Schema types translation].
 
-ifndef::env-cloud[]
-The xref:reference:properties/topic-properties.adoc#redpanda-iceberg-mode[`redpanda.iceberg.mode`] topic property determines how Redpanda maps the topic data to the Iceberg table structure. You can have the generated Iceberg table match the structure of a Avro or Protobuf schema in the Schema Registry, or you can use the `key_value` mode where Redpanda stores the record values as-is in the table. 
-endif::[]
-ifdef::env-cloud[]
-The `redpanda.iceberg.mode` topic property determines how Redpanda maps the topic data to the Iceberg table structure. You can have the generated Iceberg table match the structure of a Avro or Protobuf schema in the Schema Registry, or you can use the `key_value` mode where Redpanda stores the record values as-is in the table. 
-endif::[]
-
-The JSON Schema format is not supported. If your topic data is in JSON, use the `key_value` mode.
-
-=== Iceberg modes and table schemas
-
-For both `key_value` and `value_schema_id_prefix` modes, Redpanda writes to a `redpanda` table column that stores a single Iceberg https://iceberg.apache.org/spec/#nested-types[struct^] per record, containing nested columns of the metadata from each record, including the record key, headers, timestamp, the partition it belongs to, and its offset. 
-
-For example, if you produce to a topic according to the following Avro schema:
-
-[,avro]
-----
-{
-    "type": "record",
-    "name": "ClickEvent",
-    "fields": [
-        {
-            "name": "user_id",
-            "type": "int"
-        },
-        {
-            "name": "event_type",
-            "type": "string"
-        },
-        {
-            "name": "ts",
-            "type": "string"
-        }
-    ]
-}
-----
-
-The `key_value` mode writes to the following table format:
-
-[,sql]
-----
-CREATE TABLE ClickEvent (
-    redpanda struct<
-        partition: integer NOT NULL,
-        timestamp: timestamp NOT NULL,
-        offset:    long NOT NULL,
-        headers:   array<struct<key: binary NOT NULL, value: binary>>,
-        key:       binary
-    >,
-    value binary
-)
-----
-
-Consider this approach if the topic data is in JSON, or if you can use the Iceberg data in its semi-structured format.
-
-The `value_schema_id_prefix` mode translates to the following table format:
-
-[,sql]
-----
-CREATE TABLE ClickEvent (
-    redpanda struct<
-        partition: integer NOT NULL,
-        timestamp: timestamp NOT NULL,
-        offset:    long NOT NULL,
-        headers:   array<struct<key: binary NOT NULL, value: binary>>,
-        key:       binary
-    >,
-    user_id integer NOT NULL,
-    event_type string,
-    ts string
-)
-----
-
-With schema integration, Redpanda uses the schema ID prefix embedded in each record to find the matching schema in the Schema Registry. Producers to the topic must use the schema ID prefix in the serialization process so Redpanda can determine the schema used for each record, parse the record according to that schema, and use the schema for the Iceberg table as well.
-
-If Redpanda fails to translate the record to the columnar format as defined by the schema, it writes the record to a dead-letter queue (DLQ) table. See <<manage-dead-letter-queue,Manage dead-letter queue>> for more information.
-
-=== Schema types translation
-
-Redpanda supports direct translations of the following types to Iceberg value domains:
-
-[tabs]
-======
-Avro::
-+
---
-|===
-| Avro type | Iceberg type
-
-| boolean | boolean
-| int | int
-| long | long
-| float | float
-| double | double
-| bytes | binary
-| string | string
-| record | struct
-| array | list
-| maps | list
-| fixed | fixed
-| decimal | decimal
-| uuid | uuid
-| date | date
-| time | time
-| timestamp | timestamp
-|===
-
-* Different flavors of time (such as `time-millis`) and timestamp (such as `timestamp-millis`) types are translated to the same Iceberg `time` and `timestamp` types, respectively.
-* Avro unions are flattened to Iceberg structs with optional fields. For example:
-** The union `["int", "long", "float"]` is represented as an Iceberg struct `struct<0 INT NULLABLE, 1 LONG  NULLABLE, 2 FLOAT NULLABLE>`.
-** The union `["int", null, "float"]` is represented as an Iceberg struct `struct<0 INT NULLABLE, 1 FLOAT NULLABLE>`.
-* All fields are required by default. (Avro always sets a default in binary representation.)
-* The Avro duration logical type is ignored.
-* The Avro null type is ignored and not represented in the Iceberg schema.
-* Recursive types are not supported.
---
-
-Protobuf::
-+
---
-|===
-| Protobuf type | Iceberg type
-
-| bool | boolean
-| double | double
-| float | float
-| int32 | int
-| sint32 | int
-| int64 | long
-| sint64 | long
-| sfixed32 | int
-| sfixed64 | int
-| string | string
-| bytes | binary
-| map | map
-|===
-
-* Repeated values are translated into Iceberg `array` types.
-* Enums are translated into Iceberg `int` types based on the integer value of the enumerated type.
-* `uint32` and `fixed32` are translated into Iceberg `long` types as that is the existing semantic for unsigned 32-bit values in Iceberg.
-* `uint64` and `fixed64` values are translated into their Base-10 string representation.
-* The `timestamp` type in Protobuf is translated into `timestamp` in Iceberg.
-* Messages are converted into Iceberg structs.
-* Recursive types are not supported.
---
-======
-
-=== Schema evolution
+== Schema evolution
 
 Redpanda supports schema evolution for Avro and Protobuf schemas in accordance with the https://iceberg.apache.org/spec/#schema-evolution[Iceberg specification^]. Permitted schema evolutions include reordering fields and promoting field types. When you update the schema in Schema Registry, Redpanda automatically updates the Iceberg table schema to match the new schema.
 
