@@ -4,44 +4,55 @@ on:
   workflow_dispatch:
   repository_dispatch:
     types: [trigger-npm-update]
+
 jobs:
   update-dependency:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
+      contents: write
+      pull-requests: write
     strategy:
       matrix:
-        branch: [main, 'v/24.1', 'v/23.3', api]
+        branch: [main, 'v24.3', 'v/24.2', 'v/24.1', api]
+
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ vars.RP_AWS_CRED_REGION }}
           role-to-assume: arn:aws:iam::${{ secrets.RP_AWS_CRED_ACCOUNT_ID }}:role/${{ vars.RP_AWS_CRED_BASE_ROLE_NAME }}${{ github.event.repository.name }}
+
       - uses: aws-actions/aws-secretsmanager-get-secrets@v2
         with:
           secret-ids: |
             ,sdlc/prod/github/actions_bot_token
           parse-json-secrets: true
+
       - name: Checkout the repository
         uses: actions/checkout@v4
         with:
           ref: ${{ matrix.branch }}
           token: ${{ env.ACTIONS_BOT_TOKEN }}
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+
       - name: Install dependencies
         run: npm install
+
       - name: Update @redpanda-data/docs-extensions-and-macros
         run: npm update @redpanda-data/docs-extensions-and-macros
-      - name: Commit changes
-        run: |
-          git config --global user.name "vbotbuildovich"
-          git config --global user.email "vbotbuildovich@users.noreply.github.com"
-          git add package.json package-lock.json
-          git commit -m "auto-docs: Update @redpanda-data/docs-extensions-and-macros"
-          git push origin ${{ matrix.branch }}
-        env:
-          ACCESS_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
+          commit-message: auto-docs: Update @redpanda-data/docs-extensions-and-macros
+          labels: auto-docs
+          title: auto-docs: Update @redpanda-data/docs-extensions-and-macros
+          body: |
+            This PR updates `@redpanda-data/docs-extensions-and-macros` using `npm update`.
+          branch: update/docs-extensions-and-macros-${{ matrix.branch }}
+          base: ${{ matrix.branch }}
