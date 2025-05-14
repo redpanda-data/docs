@@ -34,6 +34,37 @@ ifndef::env-kubernetes[- mTLS]
 - OIDC
 |===
 
+== Users, principals, and superusers
+
+When you configure authentication and authorization in Redpanda, it's important to understand the distinction between *users*, *principals*, and *superusers*:
+
+- A user refers to a stored credential within Redpanda, typically a username/password stored in the internal SASL credential store. These are created using commands such as `rpk security user create`.
+
+- A principal is the authenticated identity string associated with a client session. It's what Redpanda uses for access control, ACLs, and superuser assignment.
+
+- A superuser is a privileged principal that has unrestricted access to xref:manage:security/authorization/index.adoc#operations[all operations] in a Redpanda cluster.
+
+Superusers can:
+
+- Grant or revoke permissions to other users through ACLs.
+- Access all Admin API endpoints.
+- Create, modify, or delete topics and consumer groups.
+- View and manage the cluster's internal state.
+
+Depending on how a client authenticates, the principal might be:
+
+- The SCRAM username
+- A claim from a JWT
+- A certificate DN
+- A Kerberos identity
+
+You assign ACLs and superuser roles to principals, not users. Even if a user exists, it has no access unless its associated principal is granted permissions.
+
+For example, with OIDC:
+
+- If your token's `sub` claim is `example@company.com`, then your principal is `user:OIDC:example@company.com`.
+- This value must appear in the `superusers` list or ACL rules to have access.
+
 ifdef::env-kubernetes[]
 == Prerequisites
 
@@ -61,9 +92,7 @@ When you enable authentication in the Redpanda Helm chart:
 - Basic authentication is enabled for the HTTP Proxy and Schema Registry listeners
 - Authorization is enabled
 
-When enabling authentication, you must create at least one superuser. A superuser is a special user that has xref:manage:security/authorization/index.adoc#operations[all permissions] in the cluster. They can grant permissions to other users through access control lists (ACLs).
-
-Without a superuser, you can create other users, but you can't grant them permissions to the cluster.
+When enabling authentication, you must create at least one superuser. Without a superuser, you can create other users, but you can't grant them permissions to the cluster.
 
 CAUTION: Do not enable authorization without a superuser. Without a superuser, you may be locked out of the cluster and lose the ability to manage cluster settings or users.
 
@@ -370,9 +399,7 @@ endif::[]
 ifndef::env-kubernetes[]
 === Create superusers
 
-Before enabling authorization in Redpanda, which can happen implicitly when you enable authentication, you must create a superuser. A superuser is a special user that has xref:manage:security/authorization/index.adoc#operations[all permissions] on the cluster. They can grant permissions to other users through access control lists (ACLs).
-
-Without a superuser, you can create other users, but you can't grant them permissions to the cluster.
+Before enabling authorization in Redpanda, which can happen implicitly when you enable authentication, you must create a superuser. Without a superuser, you can create other users, but you can't grant them permissions to the cluster.
 
 IMPORTANT: Enabling authorization without a superuser can result in being locked out of the cluster, as you would not have the necessary permissions to manage the cluster's settings or users.
 
@@ -1310,41 +1337,43 @@ Each of the HTTP APIs implements its own permission model with different levels 
 
 The Admin API primarily requires superuser privileges, with a few exceptions for read-only status endpoints.
 
+==== Admin API permissions
+
+The Admin API primarily requires superuser privileges, with a few exceptions for specific user-accessible endpoints.
+
 [cols="3,1,1"]
 |===
 |API Category / Operation |Regular Authenticated User |Superuser
-|*Authentication*
-|
-|
 
-|Verify identity of current user
-|✅
-|✅
+|*Transaction management* | |
 
-|Reload keys from identity provider
-|❌
-|✅
+|Get all transactions |✅ |✅
 
-|Reload keys and disconnect clients
-|❌
-|✅
+|Find transaction coordinator |✅ |✅
 
-|*Recovery status*
-|
-|
+|Delete partition from transaction |✅ |✅
 
-|Get Raft recovery status
-|✅
-|✅
+|Unsafe abort group transaction |✅ |✅
 
-|Get transaction manager migration status
-|✅
-|✅
+|*Topic management* | |
 
-|*All other Admin API operations*
-|❌
-|✅
+|List mountable topics |❌ |✅
+
+|Mount topics |❌ |✅
+
+|Unmount topics |❌ |✅
+
+|*Security management* | |
+
+|Create, delete, or update users |❌ |✅
+
+|List user roles |✅ |✅
+
+|Create, delete, or update roles |❌ |✅
+
+|*All other Admin API operations* |❌ |✅
 |===
+
 
 For a complete list of all Admin API endpoints, see see xref:api:ROOT:admin-api.adoc[].
 
@@ -1361,6 +1390,7 @@ The HTTP Proxy API impersonates the authenticated user when making Kafka API cal
 [cols="3,1,1"]
 |===
 |Operation |Regular Authenticated User |Superuser
+
 |Get brokers
 |❌
 |✅
