@@ -1,5 +1,5 @@
 = Authorization
-:description: Redpanda Console uses role-based access control (RBAC) to restrict system access to authorized users.
+:description: Redpanda Console uses role-based access control (RBAC) to restrict system access to authorized users. This page is intended for cluster administrators who manage Redpanda Console access and need to configure UI-based authorization.
 :page-aliases: console:single-sign-on/authorization.adoc, manage:security/console/authorization.adoc, console:features/role-bindings.adoc, console:reference/role-bindings.adoc, reference:console/role-bindings.adoc
 
 [NOTE]
@@ -7,30 +7,120 @@
 include::shared:partial$enterprise-and-console.adoc[]
 ====
 
+{description}
+
 Redpanda Console supports two authorization modes, depending on whether *user impersonation* is enabled in the authentication configuration:
 
 [cols="1,2"]
 |===
 | Mode | Who Evaluates Permissions?
 
-| **Impersonation enabled** (`impersonateUser: true`)
-| Redpanda authorizes requests based on internal RBAC and ACLs.
-`roleBindings` in the Redpanda Console configuration are ignored.
+| Impersonation disabled (`impersonateUser: false`)
+| Redpanda Console evaluates permissions using roleBindings defined in its configuration. Redpanda sees all requests as coming from a static service account.
 
-| **Impersonation disabled** (`impersonateUser: false`)
-| Redpanda Console enforces access using static `roleBindings` from the Redpanda Console configuration file.
-Redpanda treats all requests as coming from a single service account.
+| Impersonation enabled (`impersonateUser: true`)
+| Redpanda evaluates permissions using its internal RBAC and ACLs. The `roleBindings` section of the Redpanda Console configuration is ignored.
 |===
 
-Even when using Redpanda Console roles, users must still have ACLs in Redpanda if they are interacting with Redpanda through the UI.
+For more information about authentication options, see the xref:console:config/security/authentication.adoc[Redpanda Console authentication].
 
-For more information about authentication options, see the xref:console:config/security/authentication.adoc[authentication configuration].
+== Modes of service account usage
+
+When impersonation is disabled, Redpanda Console uses a static service account to connect to Redpanda APIs. This service account must be listed as a superuser principal in the Redpanda `superusers` configuration.
+
+In Redpanda, a principal is the authenticated identity (such as a username or OIDC subject) used for access control. For details, see xref:manage:security/authentication.adoc#principals[Users, Principals, and Superusers].
+
+There are two ways to use this service account:
+
+=== Static service account only (no login)
+
+Use this mode to connect Redpanda Console to Redpanda with a static account and *no user login*.
+
+- No login screen.
+- All users share the same access level.
+- Redpanda Console roles and RBAC are not enforced.
+- Useful for internal tools.
+
+.Example
+[source,yaml]
+----
+authentication:
+  basic:
+    enabled: false
+  oidc:
+    enabled: false
+
+kafka:
+  sasl:
+    enabled: true
+    impersonateUser: false
+    username: "console-superuser"
+    password: "secret"
+----
+
+=== Static service account with user login
+
+Use this mode to allow users to log in, while still having all API calls executed under a single service account.
+
+- Users authenticate to the UI using basic or OIDC login.
+- All backend communication to Redpanda APIs uses the service account.
+- Redpanda Console roles (`roleBindings`) determine what users can see or do in the UI.
+- Redpanda authorization is evaluated against the service account.
+
+.Example
+[source,yaml]
+----
+authentication:
+  basic:
+    enabled: true
+
+kafka:
+  sasl:
+    enabled: true
+    impersonateUser: false
+    username: "console-superuser"
+    password: "secret"
+
+authorization:
+  roleBindings:
+    - roleName: admin
+      users:
+        - loginType: basic
+          name: alice
+----
+
+This model is recommended if you want to manage RBAC in Redpanda Console, but still want to use a service account for API calls.
 
 == Roles
 
-Roles in Redpanda Console determine the actions users can perform in the UI. These roles are defined independently from Redpanda roles and only apply when impersonation is disabled. When impersonation is enabled, user permissions are derived entirely from Redpanda's internal role and ACL configuration.
+Roles in Redpanda Console determine which UI features users can access. These roles are configured in the `roleBindings` stanza of the Redpanda Console configuration file and are evaluated only when impersonation is disabled.
 
-For example, even if a user is assigned the Admin role in Console, they must also have the appropriate Redpanda ACLs to successfully perform protected actions.
+.When impersonation is enabled, Redpanda authorizes requests, not Redpanda Console
+[%collapsible]
+====
+When impersonation is enabled, the user's identity is forwarded to Redpanda, which then authorizes access based on RBAC and ACL rules. Redpanda Console roles are not used in this mode.
+
+To successfully log in and access the UI, users must have valid Redpanda credentials and ACLs that permit access to the Kafka API.
+
+To access full Redpanda Console functionality (for example, downloading debug bundles or viewing broker configs), the user must also be a superuser in Redpanda.
+
+For information on assigning ACLs and superuser status, see xref:manage:security/authorization/acl.adoc[].
+====
+
+When impersonation is disabled, Redpanda Console authorizes access to features in the UI based on the configured roles in `roleBindings`. However:
+
+- Redpanda Console roles are not shown in the *Roles* tab on the *Security* page.
+
+- Redpanda Console roles do not grant access to Redpanda APIs (such as the Kafka API).
+
+- A Redpanda Console Admin is not a Redpanda superuser by default.
+
+To perform protected actions (for example, creating topics, managing ACLs, or accessing the Admin API), users must be granted corresponding permissions in Redpanda.
+
+[IMPORTANT]
+====
+If you're running Console with impersonation disabled, ensure the Redpanda Console service account is listed as a superuser in Redpanda. Otherwise, Redpanda Console cannot perform administrative actions on behalf of logged in users.
+====
 
 Redpanda Console provides the following predefined roles:
 
@@ -63,67 +153,78 @@ Redpanda Console provides the following predefined roles:
 | No limitations
 |===
 
-[NOTE]
-====
-Redpanda Console roles are not visible in the *Roles* tab on the Security page. That section displays only roles managed by Redpanda.
-====
-
 == Grant permissions through role bindings
 
-To assign roles when impersonation is disabled, define `roleBindings` in the Redpanda Console configuration. Each binding associates one or more users with a specific role.
+When impersonation is disabled, Redpanda Console connects to Redpanda APIs using the service account defined in:
 
-.Example: Assign the Viewer role to a user
+- `kafka.sasl`: For the Kafka API
+- `schemaRegistry.authentication`: For the Schema Registry API
+- `redpanda.adminApi.authentication`: For the Admin API
+
+The Redpanda Console service account must be a superuser principal in Redpanda. Without superuser privileges, Redpanda Console is unable to perform actions such as listing topics, retrieving cluster metrics, managing ACLs, or accessing administrative endpoints.
+
+To grant superuser permissions to the service account:
+
+[,bash]
+----
+rpk cluster config set superusers '["console-superuser"]' \
+  -X user=<existing-superuser> -X pass=<password>
+----
+
+Before login, Redpanda Console authenticates the user by validating their credentials against the Kafka API. If the user does not exist in Redpanda (for example, if they have not been created or their identity is not mapped through OIDC), login fails.
+
+After login, all API communication is performed using the service account's credentials, not the end-user's. This ensures Redpanda Console can act on the user's behalf. As such, the service account must have sufficient privileges to cover the actions users are allowed to perform in the UI.
+
+=== Example: Assign the Viewer role
+
+This example grants the Viewer role to a user named `matt`. The Redpanda Console service account (`console-superuser`) is used to authenticate to all Redpanda services.
+
 [,yaml]
 ----
 kafka:
   brokers: ["broker1.example.com:9092"]
   sasl:
     enabled: true
-    impersonateUser: false <1>
-    username: "static-kafka-user"
-    password: "static-pass"
+    impersonateUser: false
+    username: "console-superuser" # <1>
+    password: "secret-password"
     mechanism: "SCRAM-SHA-256"
-authorization:
-  roleBindings: <2>
-  - roleName: viewer
-    users:
-      - loginType: basic
-        name: static-kafka-user
-----
-<1> User impersonation is disabled, so role bindings are used for authorization.
-<2> The roleBindings section maps users to roles using their login type and username.
-
-== When impersonation is enabled
-
-When impersonation is enabled, Redpanda Console does not evaluate any role bindings defined in the configuration. Instead, the user identity is forwarded to Redpanda, and Redpanda authorizes the request based on its own RBAC rules and access control lists (ACLs). To access Redpanda Console in this mode, the user must be registered in Redpanda and have ACLs that permit access to the Kafka API. Without these permissions, the user cannot successfully log into Redpanda Console.
-
-To access all functionality in Redpanda Console, such as generating debug bundles, the user must also have superuser permissions assigned in Redpanda.
-
-For detailed steps to create ACLs, see xref:manage:security/authorization/acl.adoc[].
-
-.Example: Role bindings ignored when impersonating users
-[,yaml]
-----
-kafka:
-  brokers: ["broker1.example.com:9092"]
-  sasl:
+schemaRegistry:
+  enabled: true
+  urls:
+    - "http://broker1.example.com:8081"
+    - "http://broker2.example.com:8081"
+  authentication:
+    impersonateUser: false
+    basic:
+      username: "console-superuser" # <1>
+      password: "secret-password"
+redpanda:
+  adminApi:
     enabled: true
-    impersonateUser: true <1>
+    urls:
+      - "http://broker1.example.com:9644"
+      - "http://broker2.example.com:9644"
+    authentication:
+      impersonateUser: false
+      basic:
+        username: "console-superuser" # <1>
+        password: "secret-password"
 authentication:
-  jwtSigningKey: secret-key
-  useSecureCookies: false
+  jwtSigningKey: "<secret-key>"
   basic:
-    enabled: true <2>
+    enabled: true
 authorization:
-  roleBindings:
-  - roleName: admin
-    users:
-      - loginType: basic
-        name: Peter <3>
+  roleBindings:                        # <2>
+    - roleName: viewer
+      users:
+        - loginType: basic
+          name: matt
 ----
-<1> User impersonation is enabled for Kafka API requests.
-<2> Users authenticate with basic authentication.
-<3> This role binding has no effect because Redpanda authorizes the request.
+<1> With impersonation disabled, Redpanda Console uses the static service account (`console-superuser`) to connect to the Redpanda APIs.
+<2> Role bindings map UI users to Redpanda Console roles. This does not grant Redpanda-level permissions. The user (`matt`) must also exist in Redpanda.
+
+All APIs must be accessible using a superuser principal. If the service account lacks superuser status, Redpanda Console may not be able to fetch cluster status, access the Admin API, or interact with the Schema Registry.
 
 == Multiple roles and duplicate bindings
 
@@ -150,5 +251,9 @@ Duplicate role assignments do not cause errors. If the same role is assigned mor
 
 == Suggested reading
 
-* xref:manage:security/authorization/rbac.adoc[Redpanda RBAC]
+For details on how to assign Redpanda-level permissions through ACLs or RBAC, see:
+
+- xref:manage:security/authorization/acl.adoc[]
+- xref:manage:security/authorization/rbac.adoc[]
+
 
