@@ -7,24 +7,30 @@
 include::shared:partial$enterprise-license.adoc[]
 ====
 
+// tag::single-source[]
+
 This guide walks you through querying Redpanda topics as Iceberg tables in https://docs.snowflake.com/en/user-guide/tables-iceberg[Snowflake^], with AWS S3 as object storage and a catalog integration using https://other-docs.snowflake.com/en/opencatalog/overview[Open Catalog^].
 
 == Prerequisites
 
+ifdef::env-cloud[]
+* `rpk` or familiarity with the Redpanda Cloud API to use secrets in your cluster configuration. For `rpk`, see xref:manage:rpk/rpk-install.adoc[]. For the Cloud API, you must xref:manage:api/cloud-api-authentication.adoc[authenticate] using a service account.
+endif::[]
+ifndef::env-cloud[]
 * xref:manage:tiered-storage.adoc#configure-object-storage[Object storage configured] for your cluster and xref:manage:tiered-storage.adoc#enable-tiered-storage[Tiered Storage enabled] for the topics for which you want to generate Iceberg tables.
 +
-You need the S3 bucket URI, so you can configure it as external storage for Open Catalog.
+You need the S3 bucket URI to configure it as external storage for Open Catalog.
+endif::[]
 * A Snowflake account.
 * An Open Catalog account. To https://other-docs.snowflake.com/en/opencatalog/create-open-catalog-account[create an Open Catalog account^], you require ORGADMIN access in Snowflake.
 * An internal catalog created in Open Catalog with your Tiered Storage AWS S3 bucket configured as external storage.
 +
 Follow this guide to https://other-docs.snowflake.com/en/opencatalog/create-catalog#create-a-catalog-using-amazon-simple-storage-service-amazon-s3[create a catalog^] with the S3 bucket configured as external storage. You require admin permissions to carry out these steps in AWS:
 +
---
 . If you don't already have one, create an IAM policy that gives Open Catalog read and write access to your S3 bucket.
 . Create an IAM role and attach the IAM policy to the role.
 . After creating a new catalog in Open Catalog, grant the catalog's AWS IAM user access to the S3 bucket.
---
++
 * A Snowflake https://docs.snowflake.com/en/user-guide/tables-iceberg-configure-external-volume[external volume^] set up using the Tiered Storage bucket. 
 +
 Follow this guide to https://docs.snowflake.com/en/user-guide/tables-iceberg-configure-external-volume-s3[configure the external volume with S3^]. You can use the same IAM policy as the catalog for the external volume's IAM role and user. 
@@ -58,6 +64,43 @@ Grant privileges to the principal created in the previous step:
 
 To configure your Redpanda cluster to enable Iceberg on a topic and integrate with Open Catalog:
 
+ifdef::env-cloud[]
+. xref:manage:iceberg/use-iceberg-catalogs.adoc#store-a-secret-for-rest-catalog-authentication[Store the Open Catalog client secret in your cluster] using `rpk` or the Data Plane API.
+. Edit your cluster configuration to set the `iceberg_enabled` property to `true`, and set the catalog integration properties listed in the example below using `rpk` or the Control Plane API. For example, to use `rpk cluster config set`, run:
++
+[,bash]
+----
+rpk cluster config set \
+  iceberg_enabled=true \
+  iceberg_catalog_type=rest \
+  iceberg_rest_catalog_endpoint=https://<snowflake-orgname>-<open-catalog-account-name>.snowflakecomputing.com/polaris/api/catalog \
+  iceberg_rest_catalog_authentication_mode=oauth2 \
+  iceberg_rest_catalog_client_id=<open-catalog-connection-client-id> \
+  iceberg_rest_catalog_client_secret=${secrets.<open-catalog-client-secret-name>} \
+  iceberg_rest_catalog_prefix=<open-catalog-name>
+
+# Optional properties:
+# iceberg_translation_interval_ms_default=1000
+# iceberg_catalog_commit_interval_ms=1000
+----
++
+Use your own values for the following placeholders:
++
+--
+- `<snowflake-orgname>` and `<open-catalog-account-name>`: Your https://docs.snowflake.com/en/sql-reference/sql/create-catalog-integration-open-catalog#required-parameters[Open Catalog account URI^] is composed of these values.
++
+TIP: In Snowflake, navigate to **Admin**, then **Accounts**. Click the ellipsis near your Open Catalog account name, and select **Manage URLs**. The **Current URL** contains `<snowflake-orgname>` and `<open-catalog-account-name>`.
+- `<open-catalog-connection-client-id>`: The client ID of the service connection you created in an earlier step.
+- `<open-catalog-client-secret-name>`: The name of the secret you created in the previous step. You must pass the secret name to the `${secrets.<secret-name>}` placeholder, not the secret value itself.
+- `<open-catalog-name>`: The name of your catalog in Open Catalog.
+--
++
+[,bash,role=no-copy]
+----
+Successfully updated configuration. New configuration version is 2.
+----
+endif::[]
+ifndef::env-cloud[]
 . Edit your cluster configuration to set the `iceberg_enabled` property to `true`, and set the catalog integration properties listed in the example below. You must restart your cluster if you change this configuration for a running cluster. You can run `rpk cluster config edit` to update these properties:
 +
 [,bash]
@@ -77,14 +120,12 @@ iceberg_catalog_commit_interval_ms: 1000
 +
 Use your own values for the following placeholders:
 +
---
 - `<snowflake-orgname>` and `<open-catalog-account-name>`: Your https://docs.snowflake.com/en/sql-reference/sql/create-catalog-integration-open-catalog#required-parameters[Open Catalog account URI^] is composed of these values.
 +
 TIP: In Snowflake, navigate to **Admin**, then **Accounts**. Click the ellipsis near your Open Catalog account name, and select **Manage URLs**. The **Current URL** contains `<snowflake-orgname>` and `<open-catalog-account-name>`.
 - `<open-catalog-connection-client-id>`: The client ID of the service connection you created in an earlier step.
 - `<open-catalog-connection-client-secret>`: The client secret of the service connection you created in an earlier step.
 - `<open-catalog-name>`: The name of your catalog in Open Catalog.
---
 +
 [,bash,role=no-copy]
 ----
@@ -92,8 +133,19 @@ Successfully updated configuration. New configuration version is 2.
 ----
 
 . You must restart your cluster so that the configuration changes take effect.
+endif::[]
 
-. Enable the integration for a topic by configuring the topic property `redpanda.iceberg.mode`. This mode creates an Iceberg table for the topic consisting of two columns, one for the record metadata including the key, and another binary column for the record's value. See xref:manage:iceberg/about-iceberg-topics.adoc#enable-iceberg-integration[Enable Iceberg integration] for more details on Iceberg modes. The following examples show  how to use xref:get-started:rpk-install.adoc[`rpk`] to either create a new topic, or alter the configuration for an existing topic, to set the Iceberg mode to `key_value`.  
+. Enable the integration for a topic by configuring the topic property `redpanda.iceberg.mode`. This mode creates an Iceberg table for the topic consisting of two columns: one for the record metadata including the key, and another binary column for the record's value. See xref:manage:iceberg/about-iceberg-topics.adoc#enable-iceberg-integration[Enable Iceberg integration] for more details on Iceberg modes.
+ifdef::env-cloud[]
++
+Use any of the following to set `redpanda.iceberg.mode`:
++
+* `rpk`. See the following examples to run `rpk topic` commands.
+* The Cloud UI. Navigate to *Topics* to create a new topic and specify `redpanda.iceberg.mode` in *Additional Configuration*, or edit an existing topic under the topic's *Configuration* tab.
+* The Data Plane API to xref:api:ROOT:cloud-dataplane-api.adoc#post-/v1/topics[create a new topic] or xref:api:ROOT:cloud-dataplane-api.adoc#patch-/v1/topics/-topic_name-/configurations[update a property for an existing topic]. Specify the key-value pair for `redpanda.iceberg.mode` in the request body.
+endif::[]
++
+The following examples show how to use `rpk` to create a new topic or alter the configuration for an existing topic, setting the Iceberg mode to `key_value`.  
 +
 .Create a new topic and set `redpanda.iceberg.mode`:
 [,bash]
@@ -218,3 +270,5 @@ Your query results should look like the following:
 +--------------------------------------------------------------------------------------------------------------+------------+
 
 ----
+
+// end::single-source[]
