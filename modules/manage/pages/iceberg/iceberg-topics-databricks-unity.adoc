@@ -22,17 +22,29 @@ You need the AWS S3 bucket URI, so you can configure it as an external location 
 endif::[]
 * A Databricks workspace in the same region as your S3 bucket. See the https://docs.databricks.com/aws/en/resources/supported-regions#supported-regions-list[list of supported AWS regions^].
 * Unity Catalog enabled in your Databricks workspace. See the https://docs.databricks.com/aws/en/data-governance/unity-catalog/get-started[official Databricks documentation^] to set up Unity Catalog for your workspace.
-* Predictive optimization enabled for Unity Catalog.
-* External data access enabled in your metastore.
-* Workspace admin privileges to complete the steps to create a Unity Catalog storage credential and external location that connects your Tiered Storage bucket to Databricks.
+* https://docs.databricks.com/aws/en/optimizations/predictive-optimization#enable-predictive-optimization[Predictive optimization^] enabled for Unity Catalog.
+* https://docs.databricks.com/aws/en/external-access/admin[External data access^] enabled in your metastore.
+* Workspace admin privileges to complete the steps to create a Unity Catalog storage credential and external location that connects your cluster's Tiered Storage bucket to Databricks.
 
 == Limitations
 
-* The Managed Iceberg Tables feature in Databricks does not currently support partition evolution. This means that when you define a xref:manage:iceberg/about-iceberg-topics.adoc#use-custom-partitioning[custom partitioning] scheme for an Iceberg topic, you cannot change it later. You must create a new topic with the desired new partitioning and migrate the topic data.
+* Databricks Managed Iceberg tables do not currently support partition evolution. If you define a xref:manage:iceberg/about-iceberg-topics.adoc#use-custom-partitioning[custom partitioning] scheme for an Iceberg topic, you must not change it later. 
++
+The cluster property config_ref:iceberg_default_partition_spec,true,properties/cluster-properties[`iceberg_default_partition_spec`] defines the cluster-wide partitioning scheme, by default configured to `(hour(redpanda.timestamp))`. To use a different cluster-wide default, configure this property before creating any Iceberg-enabled topics. You must only override the default partitioning scheme on the topic level for new Iceberg topics that do not yet contain data.  
 * The following data types are not currently supported for managed Iceberg tables:
-** UUID
-** Fixed(L)
-** Time
++
+--
+|===
+| Iceberg type | Equivalent Avro type
+
+| uuid | uuid
+| fixed(L) | fixed
+| time | time-millis, time-micros
+
+|===
+--
++
+There are no limitations for Protobuf types.
 
 == Create a Unity Catalog storage credential
 
@@ -46,7 +58,7 @@ Follow the steps in the https://docs.databricks.com/aws/en/connect/unity-catalog
 
 == Create a Unity Catalog external location
 
-The external location points to the location of the Iceberg data in your cluster's S3 bucket. 
+The external location stores the Unity Catalog-managed Iceberg metadata, and the Iceberg data written by Redpanda. You must use the same bucket configured for glossterm:Tiered Storage[] for your Redpanda cluster.
 
 ifdef::env-cloud[]
 For BYOC clusters, the bucket name is `redpanda-cloud-storage-<cluster-id>`, where `<cluster-id>` is the ID of your Redpanda cluster.
@@ -56,10 +68,7 @@ Follow the steps in the https://docs.databricks.com/aws/en/connect/unity-catalog
 
 == Create a new catalog
 
-Follow the steps in the official Databricks documentation to https://docs.databricks.com/aws/en/catalogs/create-catalog[create a standard catalog^]. When you create the catalog, specify the following as the storage location:
-
-* The external location you created in the previous step.
-* In the subpath field, enter `redpanda-iceberg-catalog`.
+Follow the steps in the official Databricks documentation to https://docs.databricks.com/aws/en/catalogs/create-catalog[create a standard catalog^]. When you create the catalog, specify the external location you created in the previous step as the storage location.
 
 You use the catalog name when you set the Iceberg cluster configuration properties in Redpanda in a later step.
 
@@ -147,7 +156,7 @@ ifndef::env-cloud[]
 . You must restart your cluster if you change the configuration for a running cluster. 
 endif::[]
 
-. Enable the integration for a topic by configuring the topic property `redpanda.iceberg.mode`. This mode creates an Iceberg table for the topic consisting of two columns, one for the record metadata including the key, and another binary column for the record's value. See xref:manage:iceberg/about-iceberg-topics.adoc#enable-iceberg-integration[Enable Iceberg integration] for more details on Iceberg modes. The following examples show how to use xref:get-started:rpk-install.adoc[`rpk`] to either create a new topic, or alter the configuration for an existing topic, to set the Iceberg mode to `key_value`:  
+. Enable the integration for a topic by configuring the topic property `redpanda.iceberg.mode`. The following examples show how to use xref:get-started:rpk-install.adoc[`rpk`] to either create a new topic or alter the configuration for an existing topic and set the Iceberg mode to `key_value`:  
 +
 .Create a new topic and set `redpanda.iceberg.mode`:
 [,bash]
@@ -160,6 +169,8 @@ rpk topic create <topic-name> --topic-config=redpanda.iceberg.mode=key_value
 ----
 rpk topic alter-config <topic-name> --set redpanda.iceberg.mode=key_value
 ----
++
+Th `key_value` mode creates an Iceberg table for the topic consisting of two columns, one for the record metadata including the key, and another binary column for the record's value. See xref:manage:iceberg/choose-iceberg-mode.adoc[] for more details on Iceberg modes. 
 
 . Produce to the topic. For example, 
 +
@@ -168,7 +179,7 @@ rpk topic alter-config <topic-name> --set redpanda.iceberg.mode=key_value
 echo "hello world\nfoo bar\nbaz qux" | rpk topic produce <topic-name> --format='%k %v\n'
 ----
 
-You should see the topic as a table in Unity Catalog.
+You should see the topic as a table with data in Unity Catalog. The data may take some time to become visible, depending on your config_ref:iceberg_target_lag_ms,true,properties/cluster-properties[`iceberg_target_lag_ms`] setting.
 
 . In Catalog Explorer, open your catalog. You should see a `redpanda` schema, in addition to `default` and `information_schema`.
 . The `redpanda` schema and the table residing within this schema are automatically added for you. The table name is the same as the topic name. 
@@ -192,7 +203,7 @@ Your query results should look like the following:
 +
 [,sql,role="no-copy no-wrap"]
 ----
-# Example for redpanda.iceberg.mode=key_value with 1 record produced to topic
+-- Example for redpanda.iceberg.mode=key_value with 1 record produced to topic
 +----------------------------------------------------------------------+------------+-------------------------+
 | redpanda                                                                 | value      | redpanda.timestamp_hour |
 +----------------------------------------------------------------------+------------+-------------------------+
