@@ -81,18 +81,9 @@ Redpanda Console supports enabling both OIDC and basic authentication simultaneo
 
 === Enable OIDC authentication
 
-To configure OIDC, choose one of two modes:
-
-* *Runtime acquisition mode:* Redpanda Console obtains a token from the IdP.
-* *Static token mode:* You provide a pre-acquired OIDC token.
+When you enable OIDC authentication, Redpanda Console uses an external IdP to authenticate users. This allows for single sign-on (SSO) and centralized user management.
 
 Redpanda and Redpanda Console require OAuth 2.0-compliant JWT tokens for user authentication. When using OIDC, your IdP must issue JWTs. Redpanda Console uses these tokens to authenticate to Redpanda APIs through SASL/OAUTHBEARER or Bearer headers.
-
-include::manage:partial$security/oidc/limitations.adoc[leveloffset=+2]
-
-IMPORTANT: For any secret values, xref:console:config/configure-console.adoc[use environment variables] instead of hardcoding them in the configuration file. For example, use `AUTHENTICATION_OIDC_CLIENTSECRET` for the client secret.
-
-==== Enable runtime acquisition mode
 
 [,yaml]
 ----
@@ -131,26 +122,9 @@ authentication:
 <11> Optional. Determines how the authorization prompt appears. Use `consent` (default) to force re-consent. Other options include `none` and `select_account`. Some IdPs require `consent` to issue a refresh token.
 <12> Optional. Extracts and optionally transforms a claim from the OIDC token to use as the user's identity in Redpanda Console role bindings. The default is `"$.sub"`, which uses the `sub` (subject) claim from the token. This value is then compared to the `name` field in your `authorization.roleBindings` configuration. For full syntax and transformation examples, see xref:console:config/security/authorization.adoc#_transform_identities_with_principal_mappings[Transform identities with principal mappings].
 
-==== Enable static token mode
+IMPORTANT: For any secret values, xref:console:config/configure-console.adoc[use environment variables] instead of hardcoding them in the configuration file. For example, use `AUTHENTICATION_OIDC_CLIENTSECRET` for the client secret.
 
-[,yaml]
-----
-authentication:
-  jwtSigningKey: "<secret-key>"
-  useSecureCookies: true
-  oidc:
-    enabled: true
-    issuerUrl: "https://accounts.google.com"
-    token: "<static-token>" # <1>
-    issuerTls:
-      enabled: true
-      caFilepath: "/path/to/ca.pem"
-    redirectUrl: "http://localhost:8080/auth/callbacks/oidc"
-    accessType: "offline"
-    prompt: "consent"
-----
-
-<1> A pre-acquired OIDC token. Keep this secure. You can also use the `AUTHENTICATION_OIDC_TOKEN` environment variable.
+include::manage:partial$security/oidc/limitations.adoc[leveloffset=+2]
 
 ==== Supported identity providers
 
@@ -239,9 +213,19 @@ Choose one method per API:
 
 TIP: Redpanda Data recommends user impersonation so that access control is fine-grained and centralized within Redpanda. This way, audit logs are also more accurate, as they reflect the actual user identity.
 
+[NOTE]
+====
+When using OIDC with static credentials, Redpanda Console authenticates to Redpanda as the OIDC client itself (usually a service principal). In this case, Redpanda evaluates access based on the `sub` claim in the token. Ensure you grant ACLs for your principals. For help creating ACLs, see xref:manage:security/authorization/acl.adoc[].
+====
+
 === Kafka API examples
 
-.User impersonation
+This section provides examples of how to configure authentication for communicating with the Kafka API from Redpanda Console. You can choose between user impersonation or static credentials.
+
+==== User impersonation
+
+This option is useful when you want to use the same login credentials to authenticate Kafka API requests in Redpanda. This ensures accurate audit logs and enforces unified identity.
+
 [,yaml]
 ----
 kafka:
@@ -251,7 +235,10 @@ kafka:
     impersonateUser: true
 ----
 
-.Static credentials with SCRAM
+==== Static credentials with SCRAM
+
+This option is useful when you want to use basic authentication. Redpanda Console uses the provided credentials for authentication.
+
 [,yaml]
 ----
 kafka:
@@ -270,7 +257,10 @@ authorization:
         name: "matt"
 ----
 
-.Static credentials with OIDC
+==== Static credentials with OIDC (token acquired at runtime)
+
+This option is useful when you want to use OIDC. This configuration instructs Redpanda Console to fetch an OAuth 2.0 access token at runtime using the client credentials grant flow.
+
 [,yaml]
 ----
 kafka:
@@ -280,26 +270,60 @@ kafka:
     impersonateUser: false
     mechanism: OAUTHBEARER
     oauth:
-      clientId: "<oidc-client-id>"
-      clientSecret: "<oidc-client-secret>"
-      tokenEndpoint: "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token"
-      scope: "api://<oidc-client-id>/.default"
-authorization:
-  roleBindings:
-  - roleName: viewer
-    users:
-      - loginType: oidc
-        name: "<sub-from-token>" # such as "ae775e64-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      clientId: "<oidc-client-id>" # <1>
+      clientSecret: "<oidc-client-secret>" # <2>
+      tokenEndpoint: "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token" # <3>
+      scope: "api://<oidc-client-id>/.default" # <4>
 ----
+<1> Client ID registered with the identity provider (IdP).
+<2> Client secret associated with the client ID. Store securely using an environment variable, such as `KAFKA_SASL_OAUTH_CLIENTSECRET`.
+<3> OAuth 2.0 token endpoint URL provided by the IdP.
+<4> Requested scope to authorize access. Required by some IdPs, such as Azure Entra ID.
 
-[NOTE]
-====
-When using OIDC without impersonation, Redpanda Console authenticates to Redpanda as the OIDC client itself (usually a service principal). In this case, Redpanda evaluates access based on the `sub` claim in the token. Be sure to set `oidc_principal_mapping: "$.sub"` in your Redpanda configuration and grant ACLs for that value. For detailed steps to create ACLs, see xref:manage:security/authorization/acl.adoc[]
-====
+==== Static credentials with OIDC (pre-acquired token)
+
+This option is suitable when a token is issued externally and injected into the environment (for example, through CI/CD, Vault, or other automation workflows). Redpanda Console does not attempt to refresh or renew the token.
+
+[,yaml]
+----
+kafka:
+  brokers: ["broker1:9092"]
+  sasl:
+    enabled: true
+    impersonateUser: false
+    mechanism: OAUTHBEARER
+    oauth:
+      token: "<static-jwt-token>" # <1>
+----
+<1> A valid OAuth 2.0 JWT. Redpanda Console uses this token when authenticating to Kafka. To avoid hardcoding sensitive data, provide this value using the `KAFKA_SASL_OAUTH_TOKEN` environment variable.
+
+==== Static credentials with OIDC (token from file)
+
+This option is useful when running Redpanda Console in Kubernetes, where a service account token is mounted to the Pod filesystem. Redpanda Console reads this token at startup and uses it for authentication.
+
+Redpanda Console does not monitor the token file for changes after startup. To ensure the token is refreshed, restart the Console periodically or implement a sidecar that triggers restarts on token rotation.
+
+[,yaml]
+----
+kafka:
+  brokers: ["broker1:9092"]
+  sasl:
+    enabled: true
+    impersonateUser: false
+    mechanism: OAUTHBEARER
+    oauth:
+      tokenFilepath: "/var/run/secrets/kafka/serviceaccount/token" # <1>
+----
+<1> Path to a file containing a valid OAuth 2.0 JWT token. Redpanda Console reads this file at startup and uses its contents as the access token.
 
 === Schema Registry API examples
 
-.User impersonation
+This section provides examples of how to configure authentication for communicating with the Schema Registry API from Redpanda Console. You can choose between user impersonation or static credentials.
+
+==== User impersonation
+
+This option is useful when you want to use the same login credentials to authenticate API requests in the Schema Registry. This ensures accurate audit logs and enforces unified identity.
+
 [,yaml]
 ----
 schemaRegistry:
@@ -309,7 +333,10 @@ schemaRegistry:
     impersonateUser: true
 ----
 
-.Static credentials with basic auth
+==== Static credentials with basic auth
+
+This option is useful when you want to use basic authentication. Redpanda Console uses the provided credentials for authentication.
+
 [,yaml]
 ----
 schemaRegistry:
@@ -328,7 +355,10 @@ authorization:
         name: "matt"
 ----
 
-.Static credentials with OIDC bearer token
+==== Static credentials with OIDC bearer token
+
+This option is useful when you want to use OIDC but do not want to implement a custom token refresh mechanism. Redpanda Console uses a pre-fetched token for authentication.
+
 [,yaml]
 ----
 schemaRegistry:
@@ -352,7 +382,12 @@ You can supply a static bearer token here, but this token must be refreshed manu
 
 === Admin API examples
 
-.User impersonation
+This section provides examples of how to configure authentication for communicating with the Admin API from Redpanda Console. You can choose between user impersonation or static credentials.
+
+==== User impersonation
+
+This option is useful when you want to use the same login credentials to authenticate API requests in the Admin API. This ensures accurate audit logs and enforces unified identity.
+
 [,yaml]
 ----
 redpanda:
@@ -363,7 +398,10 @@ redpanda:
       impersonateUser: true
 ----
 
-.Static credentials with basic auth
+==== Static credentials with basic auth
+
+This option is useful when you want to use basic authentication. Redpanda Console uses the provided credentials for authentication.
+
 [,yaml]
 ----
 redpanda:
@@ -383,7 +421,10 @@ authorization:
         name: "matt"
 ----
 
-.Static credentials with OIDC bearer token
+==== Static credentials with OIDC bearer token
+
+This option is useful when you want to use OIDC but do not want to implement a custom token refresh mechanism. Redpanda Console uses a pre-fetched token for authentication.
+
 [,yaml]
 ----
 redpanda:
@@ -400,11 +441,6 @@ authorization:
       - loginType: oidc
         name: "<sub-from-token>"
 ----
-
-[NOTE]
-====
-When impersonation is disabled, Redpanda Console executes Admin API requests as the service identity represented in the token. This is typically the `sub` from the client credentials flow, and must match an ACL or RBAC binding.
-====
 
 == Next steps
 
