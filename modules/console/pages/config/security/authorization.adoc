@@ -1,4 +1,4 @@
-= Authorization
+= Authorization in Redpanda Console
 :description: Redpanda Console supports role-based access control (RBAC) to restrict system access to authorized users. This page is intended for cluster administrators who manage Redpanda Console access and need to configure UI-based authorization.
 :page-aliases: console:single-sign-on/authorization.adoc, manage:security/console/authorization.adoc, console:features/role-bindings.adoc, console:reference/role-bindings.adoc, reference:console/role-bindings.adoc
 :page-categories: Security, Management, Redpanda Console
@@ -8,7 +8,7 @@
 include::shared:partial$enterprise-and-console.adoc[]
 ====
 
-{description}
+Authentication allows users to log in, but authorization determines what they can do once authenticated.
 
 Redpanda Console supports two authorization modes, depending on whether *user impersonation* is enabled in the authentication configuration:
 
@@ -20,7 +20,7 @@ Redpanda Console supports two authorization modes, depending on whether *user im
 | Redpanda Console evaluates permissions using role bindings defined in its configuration. Redpanda sees all requests as coming from a static service account.
 
 | Impersonation enabled (`impersonateUser: true`)
-| Redpanda evaluates permissions using its internal RBAC and ACLs. Any role bindings in the Redpanda Console configuration are ignored.
+| Redpanda evaluates permissions using its internal glossterm:RBAC[] and ACLs. Any role bindings in the Redpanda Console configuration are ignored.
 |===
 
 For more information about authentication options, see the xref:console:config/security/authentication.adoc[Redpanda Console authentication].
@@ -76,6 +76,8 @@ Use this mode to allow users to log in, while still having all API calls execute
 authentication:
   basic:
     enabled: true
+  oidc:
+    enabled: true
 
 kafka:
   sasl:
@@ -101,7 +103,7 @@ Roles in Redpanda Console determine which UI features users can access. These ro
 .Do you have user impersonation enabled?
 [%collapsible]
 ====
-Redpanda Console roles are not used when user impersonation is enabled for an API. When impersonation is enabled, the user's identity is forwarded to Redpanda, which then authorizes access based on RBAC and ACL rules. 
+Redpanda Console roles are not used when user impersonation is enabled for an API. When impersonation is enabled, the user's identity is forwarded to Redpanda, which then authorizes access based on RBAC and ACL rules.
 
 To successfully log in and access the UI, users must have valid Redpanda credentials and ACLs that permit access to the Kafka API.
 
@@ -228,6 +230,67 @@ authorization:
 <2> Role bindings map UI users to Redpanda Console roles. This does not grant Redpanda-level permissions. The user (`matt`) must also exist in Redpanda.
 
 All APIs must be accessible using a superuser principal. If the service account lacks superuser status, Redpanda Console may not be able to fetch cluster status, access the Admin API, or interact with the Schema Registry.
+
+=== Transform identities with principal mappings
+
+If you use OIDC login, the identity in the JWT token is extracted using a JSONPath expression. By default, this expression is `$.sub`, which means the value of the `sub` claim is used as the username. You can override this expression using the `principalMapping` option to transform or extract a different claim to match the `name` values in your `roleBindings` configuration.
+
+To keep authorization consistent between Console and Redpanda, set `principalMapping` to match Redpanda's cluster configuration value for xref:reference:properties/cluster-properties.adoc#oidc_principal_mapping[`oidc_principal_mapping`].
+
+.Example: Map email to local username
+[,yaml,lines=9]
+----
+authentication:
+  oidc:
+    enabled: true
+    issuerUrl: https://auth.dev.cloud.redpanda.com/
+    clientId: R1iX7Pls9UMXiUoYBOn4NcIUTbaGX4JG
+    clientSecret: redacted
+    redirectUrl: http://localhost:9090/auth/callbacks/oidc
+    successfulLoginRedirectUrl: http://localhost:3000
+    principalMapping: $.email/([^@]+)@example.com/$1/L
+----
+
+This example:
+
+* Extracts the `email` field from the OIDC token
+* Uses a regular expression to capture the username part
+* Replaces the value with the captured group `$1`
+* Converts the result to lowercase (`L` modifier)
+
+As a result, the user identity becomes `matt` when the email is `matt@example.com`.
+
+You can then define role bindings like this:
+
+[,yaml]
+----
+authorization:
+  roleBindings:
+    - roleName: admin
+      users:
+        - loginType: oidc
+          name: matt
+----
+
+==== Match syntax and modifiers
+
+The `principalMapping` syntax uses this format:
+
+----
+<jsonpath>/<regex>/<replacement>/<modifiers>
+----
+
+* `jsonpath`: Path to the claim field in the token (such as `$.email`)
+* `regex`: A regular expression to extract part of the claim
+* `replacement`: A replacement string using a captured group (such as `$1`)
+* `modifiers`: Optional flags, such as:
+  - `L` — convert to lowercase
+  - `U` — convert to uppercase
+
+[NOTE]
+====
+If `principalMapping` is not set, Redpanda Console defaults to using the `sub` claim as the user identity.
+====
 
 == Multiple roles and duplicate bindings
 
