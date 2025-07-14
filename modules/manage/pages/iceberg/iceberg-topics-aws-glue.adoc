@@ -1,0 +1,79 @@
+= Query Iceberg Topics using AWS Glue
+:description: Add Redpanda topics as Iceberg tables that you can query in from AWS Glue Data Catalog.
+:page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+// tag::single-source[]
+
+== Prerequisites
+
+* Redpanda version 25.1.7 or later.
+* A database in AWS Glue Data Catalog.
+
+== Limitations
+
+=== Nested partition spec support
+
+Glue does not support partitioning on nested fields. If Redpanda detects that
+the default partitioning `(hour(redpanda.timestamp))` is in use, it will instead apply an empty partition spec `()`, which means the table will not be partitioned.
+
+If you want to use partitioning, specify your custom partition spec using your own partition columns (columns thatare not nested).
+
+== Update cluster configuration
+
+=== Enable Iceberg using the Glue REST catalog
+
+Set `iceberg_enabled: true` and for the topic set `redpanda.iceberg.enabled=true`.
+
+Set `iceberg_catalog_type: "rest"` and `iceberg_rest_catalog_endpoint: "https://glue.<region>.amazonaws.com"`.
+Make note of the region used in the endpoint, as it must match the region configured for credentials.
+
+=== Configure authentication and credentials
+
+Set `iceberg_rest_catalog_authentication_mode: "aws_sigv4"`, the only value supported for AWS Glue.
+
+There is a configuration property `iceberg_rest_catalog_aws_service_name`. Its default value is `"glue"`. This configuration property exists to reserve configuration in case Redpanda needs to support other services in the future, because knowing the service name is necessary for AWS SigV4 authentication. You do not need to modify this property.
+
+Credentials can be specified in two ways:
+
+* Specify the `cloud_storage_*` credentials as one would for S3, and
+then Iceberg will use those same credentials in the same way as object storage
+* If you want to configure authentication to AWS Glue differently
+than authentication to S3, there are equivalent credential configuration properties named `iceberg_rest_catalog_*`. These credential-related configuration properties only apply to REST catalog authentication, and never to S3 authentication.
+
+* `iceberg_rest_catalog_aws_access_key` overrides `cloud_storage_access_key`
+* `iceberg_rest_catalog_aws_secret_key` overrides `cloud_storage_secret_key`
+* `iceberg_rest_catalog_aws_region` overrides `cloud_storage_region`
+* `iceberg_rest_catalog_aws_credentials_source` overrides `cloud_storage_credentials_source`
+
+=== Special aspects of Glue data catalog
+
+==== Base location
+
+AWS Glue requires you to specify the base location of the catalog. The configuration property `iceberg_rest_catalog_base_location` sets this location. You must use
+an S3 URI like `s3://your-bucket/path`.
+
+=== Example minimal valid configuration of Glue as a REST catalog
+
+[,bash]
+----
+rpk cluster config set \
+  iceberg_enabled: true \
+  iceberg_catalog_type: rest \
+  iceberg_rest_catalog_endpoint: 'https://glue.us-west-2.amazonaws.com/iceberg' \
+  iceberg_rest_catalog_authentication_mode: 'aws_sigv4' \
+  iceberg_rest_catalog_aws_region: 'us-west-2' \
+  // iceberg_rest_catalog_aws_access_key: 'MYACCESSKEY' \ # Redacted
+  iceberg_rest_catalog_aws_access_key: ${secrets.<aws_access_key>} \ 
+  // iceberg_rest_catalog_aws_secret_key: 'MYSECRETKEY' \ # Redacted
+  iceberg_rest_catalog_aws_secret_key: ${secrets.<aws_secret_key>} \ 
+  iceberg_rest_catalog_base_location: 's3://wdberkeley-test'
+----
+
+The cloud_storage_* properties are used for Iceberg catalog authentication as well.
+
+// end::single-source[]
