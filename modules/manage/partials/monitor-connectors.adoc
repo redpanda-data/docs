@@ -7,21 +7,25 @@ metrics that are exported through a Prometheus endpoint at the default port 9404
 
 == Prerequisites
 
-- A Kubernetes cluster. You must have `kubectl` with at least version {supported-kubernetes-version}.
+- A Kubernetes cluster with `kubectl` installed at least version {supported-kubernetes-version}.
 +
 To check if you have `kubectl` installed:
 +
-```bash
+[,bash]
+----
 kubectl version --short --client
-```
+----
 
 - https://helm.sh/docs/intro/install/[Helm^] installed with at least version {supported-helm-version}.
 +
 To check if you have Helm installed:
 +
-```bash
+[,bash]
+----
 helm version
-```
+----
+
+- xref:deploy:deployment-option/self-hosted/kubernetes/k-deploy-connectors.adoc[Kafka Connect deployed] with monitoring enabled.
 
 endif::[]
 
@@ -44,17 +48,59 @@ connectors. However, when a connector does not create a task (for
 example, an empty topic list), the dashboard will not show metrics for
 that connector.
 
+ifdef::env-kubernetes[]
+
+== Verify monitoring is enabled
+
+Before configuring Prometheus, verify that Kafka Connect is exposing metrics:
+
+. Check that the connectors service exposes port 9404:
++
+[,bash]
+----
+kubectl get service --namespace <namespace> <release-name>-connectors
+----
++
+Expected output should include `9404/TCP`:
++
+[,bash,.no-copy]
+----
+NAME                  TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)             AGE
+redpanda-connectors   ClusterIP   10.96.78.129    <none>        8083/TCP,9404/TCP   1h
+----
+
+. Test that metrics are being exported:
++
+[,bash]
+----
+POD_NAME=$(kubectl get pod -l app.kubernetes.io/name=connectors --namespace <namespace> -o jsonpath='{.items[0].metadata.name}')
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:9404/metrics | head -10
+----
++
+Expected output should show Prometheus metrics:
++
+[,bash,.no-copy]
+----
+# HELP jmx_exporter_build_info A metric with a constant '1' value labeled with the version of the JMX exporter.
+# TYPE jmx_exporter_build_info gauge
+jmx_exporter_build_info{version="0.20.0",name="jmx_prometheus_javaagent",} 1.0
+# HELP kafka_producer_iotime_total Kafka producer JMX metric type producer
+# TYPE kafka_producer_iotime_total gauge
+----
+
 == Configure Prometheus
 
 https://prometheus.io/[Prometheus^] is a system monitoring and alerting tool. It collects and stores metrics as time-series data identified by a metric name and key/value pairs.
 
 ifdef::env-kubernetes[]
 
-To configure Prometheus to monitor Redpanda metrics in Kubernetes, you can use the https://prometheus-operator.dev/[Prometheus Operator^]:
+To configure Prometheus to monitor Kafka Connect metrics in Kubernetes, you can use the https://prometheus-operator.dev/[Prometheus Operator^].
+
+The Prometheus Operator provides Kubernetes-native deployment and management of Prometheus and related monitoring components.
 
 . Follow the steps to https://prometheus-operator.dev/docs/getting-started/installation/[deploy the Prometheus Operator^].
-+
-Make sure to configure the Prometheus resource to target your Pods that are running Kafka Connect:
+
+. Configure the Prometheus resource to target your Pods running Kafka Connect:
 +
 .`prometheus.yaml`
 [,yaml,lines=9+12]
@@ -63,6 +109,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: Prometheus
 metadata:
   name: prometheus
+  namespace: <namespace>
 spec:
   serviceAccountName: prometheus
   podMonitorNamespaceSelector:
@@ -77,38 +124,13 @@ spec:
   enableAdminAPI: false
 ----
 +
-- `podMonitorNamespaceSelector.matchLabels.name`: The namespace in which Redpanda is deployed. The Prometheus Operator looks for PodMonitor resources in this namespace.
-- `podMonitorSelector.matchLabels.app.kubernetes.io/name`: The value of `fullnameOverride` in your Redpanda Helm chart. The default is `connectors`. The Redpanda Helm chart creates the PodMonitor resource with this label.
+- `podMonitorNamespaceSelector.matchLabels.name`: The namespace where Redpanda is deployed.
+- `podMonitorSelector.matchLabels.app.kubernetes.io/name`: Must match the label on your connectors Pods (default is `connectors`).
 
-. Deploy the Redpanda Connectors subchart with monitoring enabled to deploy the PodMonitor resource:
+. Deploy the standalone Kafka Connect chart with monitoring enabled. This will automatically create a PodMonitor resource:
 +
 [tabs]
 ======
-Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml,lines=8-12]
-----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    connectors:
-      enabled: true
-      monitoring:
-        enabled: true
-        scrapeInterval: 30s
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
 Helm::
 +
 --
@@ -116,67 +138,99 @@ Helm::
 ====
 --values::
 +
-.`prometheus-monitoring.yaml`
+.`connectors-monitoring.yaml`
 [,yaml]
 ----
-connectors:
+monitoring:
   enabled: true
-  monitoring:
-    enabled: true
-    scrapeInterval: 30s
+  scrapeInterval: 30s
 ----
 +
 ```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
---values prometheus-monitoring.yaml --reuse-values
+helm upgrade --install redpanda-connectors redpanda/connectors --namespace <namespace> --create-namespace \
+--values connectors-monitoring.yaml
 ```
 
 --set::
 +
-[,bash,lines=4-6]
+[,bash,lines=3-4]
 ----
-helm upgrade --install redpanda redpanda/redpanda \
+helm upgrade --install redpanda-connectors redpanda/connectors \
   --namespace <namespace> \
   --create-namespace \
-  --set connectors.enabled=true \
-  --set connectors.monitoring.enabled=true \
-  --set connectors.monitoring.scrapeInterval="30s"
+  --set monitoring.enabled=true \
+  --set monitoring.scrapeInterval=30s
 ----
 
 ====
 --
 ======
 
-. Wait until all Pods are running:
+. Wait until the connectors deployment is ready:
 +
 [,bash]
 ----
-kubectl -n <namespace> rollout status statefulset redpanda --watch
+kubectl --namespace <namespace> rollout status deployment <release-name>-connectors --watch
 ----
 
-. Ensure that the PodMonitor was deployed:
+. Verify that the PodMonitor was automatically created:
 +
 [,bash]
 ----
 kubectl get podmonitor --namespace <namespace>
 ----
++
+Expected output:
++
+[,bash,.no-copy]
+----
+NAME                  AGE
+redpanda-connectors   30s
+----
 
-. Ensure that you've https://prometheus-operator.dev/docs/user-guides/getting-started/#exposing-the-prometheus-service[exposed the Prometheus Service^].
-
-. Expose the Prometheus server to your localhost:
+. Verify that Prometheus is scraping the metrics:
 +
 [,bash]
 ----
-kubectl port-forward svc/prometheus 9090
+kubectl port-forward svc/prometheus-operator-kube-p-prometheus 9090:9090 --namespace <namespace>
 ----
++
+Then navigate to http://localhost:9090/targets to verify that the Kafka Connect targets are being scraped.
 
-. http://localhost:9090/graph[Open Prometheus^], and verify that Prometheus is scraping metrics from your endpoints.
+== Important metrics to monitor
+
+The most important Kafka Connect metrics to monitor with alerts are:
+
+* **Connector task status**: `kafka_connect_connector_status` and `kafka_connect_task_status`
+* **Connector task failures**: `kafka_connect_task_error_count`
+* **Consumer lag**: `kafka_consumer_lag_max` (for sink connectors)
+* **Producer record send rate**: `kafka_producer_record_send_rate` (for source connectors)
+* **Error rates**: `kafka_connect_connector_failed_task_count`
+
+=== Example queries
+
+Important Prometheus queries for monitoring:
+
+[,promql]
+----
+# Failed connector tasks
+kafka_connect_connector_failed_task_count > 0
+
+# Connector status (should be "running")
+kafka_connect_connector_status{status!="running"}
+
+# High consumer lag
+kafka_consumer_lag_max > 1000
+
+# Low throughput for source connectors
+rate(kafka_producer_record_send_total[5m]) < 1
+----
 
 endif::[]
 
 ifndef::env-kubernetes[]
 
-NOTE: You can quickly get
+NOTE: You can get
 https://github.com/redpanda-data/observability/tree/main/cloud[Prometheus
 and Grafana running locally^], but not for production instances. For
 production instances, deploy Prometheus and Grafana as a standalone or
@@ -390,7 +444,10 @@ ifdef::env-kubernetes[]
 
 == Next steps
 
-xref:manage:kubernetes/k-manage-connectors.adoc[].
+- xref:manage:kubernetes/k-manage-connectors.adoc[Create and manage Kafka Connect connectors]
+- Set up Grafana dashboards using the https://github.com/redpanda-data/observability/blob/main/grafana-dashboards/Connectors.json[Redpanda connectors dashboard^]
+- Configure alerting rules for critical connector metrics
+- Learn about xref:deploy:deployment-option/self-hosted/kubernetes/k-deploy-connectors.adoc#scaling[scaling connector deployments]
 
 endif::[]
 
