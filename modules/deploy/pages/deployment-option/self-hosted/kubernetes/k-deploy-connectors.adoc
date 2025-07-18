@@ -1,18 +1,16 @@
 = Deploy Kafka Connect in Kubernetes
-:description: Learn how to deploy and configure Kafka Connect using Helm.
+:description: pass:q[Learn how to deploy and configure Kafka Connect using the standalone `connectors` Helm chart.]
 :link-dockerhub: https://hub.docker.com/r/redpandadata/connectors/tags
-:page-context-links: [{"name": "Docker", "to": "deploy:deployment-option/self-hosted/docker-image.adoc" },{"name": "Kubernetes", "to": "deploy:deployment-option/self-hosted/kubernetes/k-deploy-connectors.adoc" } ]
 :page-toclevels: 1
 :env-kubernetes: true
 :page-categories: Deployment
 :page-aliases: deploy:deployment-option/cloud/managed-connectors.adoc
 
-This topic describes how to use the Redpanda Helm chart to configure and deploy Kafka Connect in Kubernetes.
+This topic describes how to deploy Kafka Connect in Kubernetes using the standalone `connectors` Helm chart.
 
 include::shared:partial$community-supported-connectors.adoc[]
 
-The Redpanda Connectors Helm chart includes a pre-configured instance of https://redpanda.com/guides/kafka-tutorial/what-is-kafka-connect[Kafka Connect] that works
-with Redpanda. The underlying Docker image contains _only_ the MirrorMaker2 connector but you can build a custom image to install additional connectors.
+The `connectors` Helm chart is a standalone chart that deploys an instance of https://redpanda.com/guides/kafka-tutorial/what-is-kafka-connect[Kafka Connect]. The underlying Docker image contains _only_ the MirrorMaker2 connector but you can build a custom image to install additional connectors.
 
 TIP: Try xref:redpanda-connect:home:index.adoc[Redpanda Connect] for a faster way to build streaming data pipelines. It's fully compatible with the Kafka API but eliminates the complex setup and maintenance of Kafka Connect. Redpanda Connect also comes with built-in connectors to support AI integrations.
 
@@ -51,465 +49,517 @@ To check if you have Helm installed:
 helm version
 ```
 
-- For better readability, you need https://stedolan.github.io/jq/download/[jq^] to parse JSON results when using the Kafka Connect REST API.
+- You need https://stedolan.github.io/jq/download/[jq^] to parse JSON results when using the Kafka Connect REST API.
 
 - An understanding of https://kafka.apache.org/20/documentation.html#connect_overview[Kafka Connect].
 
-== Limitations
+== Migrating from the subchart
 
-*No TLS or SASL support for the Kafka Connect REST API*: All incoming traffic to Kafka Connect, such as from Redpanda Console, is unauthenticated and sent in plain text. Although Kafka Connect supports TLS for network encryption and SASL for authentication, the Redpanda Connectors subchart does not. Outgoing traffic from Kafka Connect to Redpanda brokers does support TLS and SASL.
+If you're currently using the connectors subchart (part of the Redpanda Helm chart), you need to migrate to the standalone connectors chart. Follow these steps:
 
-== Deploy the Helm chart
+NOTE: The example values assume a Redpanda deployment named `redpanda` in the `default` namespace. Adjust the values according to your actual deployment.
 
-The Redpanda Helm chart includes Kafka Connect (the Redpanda Connectors Helm chart) as a subchart so that you can deploy a Redpanda cluster, Kafka Connect, and Redpanda Console using a single chart. You can enable and configure the subchart in the `connectors` section of the Helm values.
-
-The subchart includes a Pod that runs Kafka Connect and the built-in connectors. The Pod is managed by a Deployment that you can configure in the Helm values under `connectors.deployment`. Redpanda Console connects to Kafka Connect through the default `redpanda-connectors` Service. Kafka Connect connects to the Redpanda brokers through the default `redpanda` Service.
-
-image::shared:k-connectors-architecture.png['Redpanda Connectors deployed in a Kubernetes cluster with three worker nodes.']
-
-NOTE: Do not schedule Pods that run Kafka Connect on the same nodes as Redpanda brokers. Redpanda brokers require access to all node resources. See <<Tolerations>> and <<Affinity rules>>.
-
-When deploying Kafka Connect with Helm, you can choose between two modes:
-
-[cols="1a,2a,2a", options="header"]
-|===
-|Mode |Description |Recommended For
-
-|<<Automatic mode>>
-|
-When `connectors.deployment.create` is `false`, the chart automatically configures and creates the Deployment resource with the following:
-
-- The URLs of Redpanda brokers that Kafka Connect should connect to
-- TLS settings for Redpanda brokers that have TLS enabled
-- SASL authentication settings for Redpanda brokers that have SASL enabled
-
-|A streamlined deployment with the option to modify specific configurations.
-
-|<<Manual mode>>
-|
-When `connectors.deployment.create` is `true`, you are responsible for configuring all aspects of the Deployment resource using the Helm values.
-
-|Full control over the Deployment resource and its configurations.
-|===
-
-=== Automatic mode
-
-In automatic mode, the subchart is automatically configured using the values in the Redpanda Helm chart. You don't need to add any additional configuration. The chart automatically configures the Deployment resource with the values needed for Kafka Connect to communicate with your Redpanda cluster and for Redpanda Console to communicate with Kafka Connect.
-
-NOTE: All incoming traffic to Kafka Connect, such as from Redpanda Console, is unauthenticated (no SASL) and sent in plain text (no TLS). See <<Limitations>>.
-
-. Deploy the Redpanda Helm chart with connectors enabled.
+. Copy your existing connectors configuration from your Redpanda values file:
 +
-Configure any additional Helm values that you want to override in the `clusterSpec` settings. See <<Configuration advice>> for details.
+Extract the `connectors` section from your current Redpanda Helm values and create a new values file for the standalone chart.
 +
-[tabs]
-======
-Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    connectors:
-      enabled: true
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-
-[tabs]
-====
---values::
-+
-.`redpanda-connectors.yaml`
+.Example migration
 [source,yaml]
 ----
+# Before (in Redpanda values.yaml)
 connectors:
   enabled: true
-----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values redpanda-connectors.yaml --reuse-values
-```
-
---set::
-+
-[,bash]
-----
-helm upgrade --install redpanda redpanda/redpanda \
-  --namespace <namespace> \
-  --create-namespace \
-  --set connectors.enabled=true
-----
-
-====
---
-======
-
-. <<Verify the deployment>> using Redpanda Console or the Kafka Connect REST API.
-
-=== Manual mode
-
-In manual mode, you are responsible for configuring the subchart using the `connectors.connectors` and `connectors.deployment` settings in the Helm values.
-
-In this mode, you have full control over the Deployment resource and its configurations. However, no configurations are provided for you automatically.
-
-. Deploy the Redpanda Helm chart with connectors enabled.
-+
-Make sure to configure the following:
-+
---
-- `connectors.connectors.bootstrapServers`: Kafka API endpoints on the Redpanda brokers for Kafka Connect to connect to.
-- `connectors.connectors.brokerTLS` (if `tls.enabled` is `true`): The brokers' TLS settings.
-- `connectors.auth.sasl` (if `auth.sasl.enabled` is `true`): The brokers' SASL authentication settings.
---
-+
-See <<Configuration advice>> for details.
-+
-[tabs]
-======
-Operator::
-+
---
-.`redpanda-cluster.yaml`
-[,yaml]
-----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    connectors:
-      enabled: true
-      deployment:
-        create: true
-      connectors:
-        bootstrapServers: ""
-        #brokerTLS:
-      #auth:
-        #sasl:
-----
-
-```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
-```
-
---
-Helm::
-+
---
-
-[tabs]
-====
---values::
-+
-.`redpanda-connectors.yaml`
-[source,yaml]
-----
-connectors:
-  enabled: true
-  deployment:
-    create: true
-  connectors:
-    bootstrapServers: ""
-    #brokerTLS
-  #auth:
-    #sasl:
-----
-+
-```bash
-helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
-  --values redpanda-connectors.yaml --reuse-values
-```
-
---set::
-+
-[,bash]
-----
-helm upgrade --install redpanda redpanda/redpanda \
-  --namespace <namespace> \
-  --create-namespace \
-  --set connectors.enabled=true \
-  --set connectors.deployment.create=true \
-  --set connectors.connectors.bootstrapServers=""
-----
-
-====
---
-======
-
-. <<Verify the deployment>> using Redpanda Console or the Kafka Connect REST API.
-
-== Configuration advice
-
-This section provides advice for configuring the Redpanda Connectors subchart. All settings are nested in the `connectors` property of the Redpanda Helm chart. For all available settings, see xref:reference:k-connector-helm-spec.adoc[].
-
-=== Name overrides
-
-Deploying multiple instances of the same Helm chart in a Kubernetes cluster can lead to naming conflicts. Using `nameOverride` and `fullnameOverride` helps differentiate between them. If you have a production and staging environment, different names help to avoid confusion.
-
-- Use `nameOverride` to customize:
-
-** The default labels `app.kubernetes.io/component=<nameOverride>` and `app.kubernetes.io/name=<nameOverride>`
-** The suffix in the name of the resources `redpanda-<nameOverride>`
-- Use `fullnameOverride` to customize the full name of the resources such as the Deployment and Services.
-
-[source,yaml]
-----
-connectors:
-  nameOverride: 'redpanda-connector-production'
-  fullnameOverride: 'redpanda-connector-instance-prod'
-----
-
-For all available settings, see the xref:reference:k-connector-helm-spec.adoc#nameoverride[Helm specification].
-
-=== Labels
-
-Kubernetes labels help you to organize, query, and manage your resources. Use labels to categorize Kubernetes resources in different deployments by environment, purpose, or team.
-
-[source,yaml]
-----
-connectors:
-  commonLabels:
-    env: 'production'
-----
-
-For all available settings, see the xref:reference:k-connector-helm-spec.adoc#commonlabels[Helm specification].
-
-=== Tolerations
-
-Tolerations and taints allow Pods to be scheduled onto nodes where they otherwise wouldn't. If you have nodes dedicated to Kafka Connect with a taint `dedicated=redpanda-connectors:NoSchedule`, the following toleration allows the Pods to be scheduled on them.
-
-[source,yaml]
-----
-connectors:
-  tolerations:
-  - key: "dedicated"
-    operator: "Equal"
-    value: "redpanda-connectors"
-    effect: "NoSchedule"
-----
-
-For all available settings, see the xref:reference:k-connector-helm-spec.adoc#tolerations[Helm specification].
-
-=== Docker image
-
-You can specify the image tag to deploy a known version of the Docker image. Avoid using the `latest` tag, which can lead to unexpected changes.
-
-If you're using a private repository, always ensure your nodes have the necessary credentials to pull the image.
-
-[source,yaml]
-----
-connectors:
-  image:
-    repository: "redpanda/connectors"
-    tag: "1.2.3"
-----
-
-For all available settings, see the xref:reference:k-connector-helm-spec.adoc#image[Helm specification].
-
-=== Kafka Connect
-
-You can configure Kafka Connect using the `connectors` settings.
-
-Change the default REST API port only if it conflicts with an existing port.
-
-The `bootstrapServers` setting should point to the Kafka API endpoints on your Redpanda brokers.
-
-NOTE: If you install the chart in automatic mode, `bootstrapServers` is set automatically.
-
-If you want to use Schema Registry, ensure the URL is set to the IP address or domain name of a Redpanda broker and that it includes the Schema Registry port.
-
-[source,yaml]
-----
-connectors:
-  connectors:
-    restPort: 8082
-    bootstrapServers: "redpanda-broker-0:9092"
-    schemaRegistryURL: "http://schema-registry.default.svc.cluster.local:8081"
-----
-
-For all available settings, see the xref:reference:k-connector-helm-spec.adoc#connectors[Helm specification].
-
-=== Authentication
-
-If your Redpanda cluster has SASL enabled, configure SASL authentication for secure communication with your Kafka connectors. If you install the Redpanda Helm chart in automatic mode, SASL authentication is configured automatically.
-
-[source,yaml]
-----
-connectors:
   auth:
     sasl:
       enabled: true
-      mechanism: "SCRAM-SHA-512"
-      userName: "admin"
-      secretRef: "sasl-password-secret"
+  brokerTLS:
+    enabled: true
+
+# After (in new connectors-values.yaml)
+connectors:
+  bootstrapServers: "redpanda-0.redpanda.default.svc.cluster.local:9093,redpanda-1.redpanda.default.svc.cluster.local:9093,redpanda-2.redpanda.default.svc.cluster.local:9093"
+auth:
+  sasl:
+    enabled: true
+brokerTLS:
+  enabled: true
+----
+
+. Remove the connectors configuration from your Redpanda values file:
++
+[source,yaml]
+----
+# Remove or comment out the entire connectors section
+# connectors:
+#   enabled: true
+#   ...
+----
+
+. Upgrade your Redpanda deployment:
++
+[,bash]
+----
+helm upgrade redpanda redpanda/redpanda \
+  --namespace <namespace> \
+  --values redpanda-values.yaml
+----
++
+This will remove the connectors subchart deployment.
+
+. Deploy the standalone connectors chart:
++
+[,bash]
+----
+helm install redpanda-connectors redpanda/connectors \
+  --namespace <namespace> \
+  --values connectors-values.yaml
+----
+
+. <<console, Update your Redpanda Console configuration>> to point to the new service name if needed.
+
+== Deploy the standalone Helm chart
+
+The `connectors` Helm chart is a standalone chart that you deploy separately from your Redpanda cluster.
+
+The chart includes a Pod that runs Kafka Connect and the built-in connectors. The Pod is managed by a Deployment that you configure through Helm values. To connect Redpanda Console to your Kafka Connect deployment, you'll need to configure Redpanda Console with the appropriate service endpoint.
+
+image::shared:k-connectors-architecture.png[Redpanda Connectors deployed in a Kubernetes cluster with three worker nodes.]
+
+NOTE: Do not schedule Pods that run Kafka Connect on the same nodes as Redpanda brokers. Redpanda brokers require access to all node resources. See <<Tolerations>> and <<Affinity rules>>.
+
+=== Deploy Kafka Connect
+
+To deploy Kafka Connect using the standalone chart, you need to configure connection settings to your Redpanda cluster.
+
+. Create a values file for the connectors chart:
++
+.`connectors-values.yaml`
+[source,yaml]
+----
+# Connection to Redpanda brokers
+connectors:
+  bootstrapServers: "<bootstrap-server>"
+
+# Configure TLS if your Redpanda cluster has TLS enabled
+brokerTLS:
+  enabled: true
+  ca:
+    secretRef: "redpanda-default-cert"
+    secretNameOverwrite: "ca.crt"
+
+# Configure SASL if your Redpanda cluster has SASL enabled
+auth:
+  sasl:
+    enabled: false
+    mechanism: "scram-sha-512"
+    userName: ""
+    secretRef: ""
+----
++
+[NOTE]
+====
+To get the correct bootstrap servers for your Redpanda cluster, run:
+
+```bash
+kubectl run -it --restart=Never --rm --image busybox busybox -- ash -c 'nslookup -type=srv _kafka._tcp.<release-name>.<namespace>.svc.cluster.local | tail -n +4 | head -n -1 | awk '"'"'{print $7 ":" $6}'"'"''
+```
+
+Replace `<release-name>` and `<namespace>` with your actual release name and namespace.
+====
+
+. Deploy the connectors chart:
++
+[,bash]
+----
+helm upgrade --install redpanda-connectors redpanda/connectors \
+  --namespace <namespace> \
+  --create-namespace \
+  --values connectors-values.yaml
+----
++
+Replace `<namespace>` with the namespace where you want to deploy Kafka Connect.
+
+. <<Verify the deployment>> using the Kafka Connect REST API or by configuring Redpanda Console.
+
+=== Example values file
+
+Here's a complete example values file that shows common configuration options:
+
+.`connectors-values.yaml`
+[source,yaml]
+----
+# Connection to Redpanda brokers
+connectors:
+  bootstrapServers: "redpanda-0.redpanda.redpanda.svc.cluster.local:9093"
+
+# TLS configuration (disabled for local testing)
+brokerTLS:
+  enabled: false
+
+# SASL authentication (disabled for local testing)
+auth:
+  sasl:
+    enabled: false
+
+# Resource configuration for local testing
+container:
+  resources:
+    request:
+      cpu: "0.5"
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+    javaMaxHeapSize: 512M
+
+# Single replica for local testing (testing scaling to 2)
+deployment:
+  replicas: 2
+
+# Monitoring disabled for local testing
+monitoring:
+  enabled: false
+
+# Logging
+logging:
+  level: "info"
+----
+
+[[console]]
+== Configure Redpanda Console to connect to Kafka Connect
+
+To use Redpanda Console to manage your Kafka Connect deployment, you need to configure Redpanda Console to connect to the Kafka Connect service.
+
+=== Check your Redpanda Console version
+
+Redpanda Console configuration syntax varies by major version. Before configuring, determine which version you're using:
+
+[,bash]
+----
+# Check console version from deployment
+kubectl get deployment -n <namespace> redpanda-console -o jsonpath='{.spec.template.spec.containers[0].image}'
+
+# Or check from running pod
+kubectl get pod -n <namespace> -l app.kubernetes.io/name=console -o jsonpath='{.items[0].spec.containers[0].image}'
+
+# Or check from console logs
+kubectl logs -n <namespace> -l app.kubernetes.io/name=console | grep "started Redpanda Console"
+----
+
+If you see output like `redpandadata/console:v2.8.0`, you're using Console v2.x. If you see `redpandadata/console:v3.0.0`, you're using Console v3.x.
+
+=== Redpanda Console deployed as part of Redpanda chart
+
+If the Redpanda Console is deployed as part of the Redpanda Helm chart (the default), add the following configuration to your Redpanda values:
+
+[tabs]
+======
+Console v2.x::
++
+[source,yaml]
+----
+console:
+  enabled: true
+  console:
+    config:
+      connect:
+        enabled: true
+        clusters:
+          - name: "redpanda-connectors"
+            url: "http://redpanda-connectors:8083"
+            tls:
+              enabled: false
+----
+
+Console v3.x::
++
+[source,yaml]
+----
+console:
+  enabled: true
+  console:
+    config:
+      kafkaConnect:
+        enabled: true
+        clusters:
+          - name: "redpanda-connectors"
+            url: "http://redpanda-connectors:8083"
+            tls:
+              enabled: false
+----
+======
+
+NOTE: If you deployed the connectors chart with a different release name, update the URL accordingly. The service name follows the pattern `<release-name>:8083`.
+
+If Redpanda Console is deployed in a different namespace than Kafka Connect, use the fully qualified service name:
+
+[tabs]
+======
+Console v2.x::
++
+[source,yaml]
+----
+console:
+  enabled: true
+  console:
+    config:
+      connect:
+        enabled: true
+        clusters:
+          - name: "redpanda-connectors"
+            url: "http://redpanda-connectors.<connectors-namespace>.svc.cluster.local:8083"
+            tls:
+              enabled: false
+----
+
+Console v3.x::
++
+[source,yaml]
+----
+console:
+  enabled: true
+  console:
+    config:
+      kafkaConnect:
+        enabled: true
+        clusters:
+          - name: "redpanda-connectors"
+            url: "http://redpanda-connectors.<connectors-namespace>.svc.cluster.local:8083"
+            tls:
+              enabled: false
+----
+======
+
+Update your Redpanda deployment:
+
+[,bash]
+----
+helm upgrade redpanda redpanda/redpanda \
+  --namespace <namespace> \
+  --values redpanda-values.yaml
+----
+
+=== Troubleshooting Redpanda Console connectivity
+
+If you see "Kafka Connect is not configured in Redpanda Console" or cannot access connectors:
+
+. Ensure you're using the correct configuration syntax for your Redpanda Console version (see <<Check your Redpanda Console version>>).
+
+. Check if Redpanda Console can connect to Kafka Connect:
++
+[,bash]
+----
+kubectl logs -n <namespace> -l app.kubernetes.io/name=console --tail=20
+----
++
+Look for these successful connection messages:
++
+----
+"creating Kafka connect HTTP clients and testing connectivity to all clusters"
+"tested Kafka connect cluster connectivity","successful_clusters":1,"failed_clusters":0"
+"successfully create Kafka connect service"
+----
+
+. Verify Redpanda Console can reach Kafka Connect service:
++
+[,bash]
+----
+kubectl exec -n <namespace> deployment/redpanda-console -- curl -s http://redpanda-connectors.<namespace>.svc.cluster.local:8083
+----
++
+This should return Kafka Connect version information.
+
+. Verify the connector service exists and is accessible:
++
+[,bash]
+----
+kubectl get svc -n <namespace> | grep connectors
+----
+
+. If configuration changes aren't taking effect:
++
+[,bash]
+----
+kubectl delete pod -n <namespace> -l app.kubernetes.io/name=console
+----
+
+=== Verification test
+
+After you've deployed the connectors chart, you can verify everything is working with this test:
+
+. Get the connector Pod name:
++
+[,bash]
+----
+POD_NAME=$(kubectl get pod -l app.kubernetes.io/name=connectors --namespace <namespace> -o jsonpath='{.items[0].metadata.name}')
+----
+
+. Test basic connectivity:
++
+[,bash]
+----
+echo "Testing Kafka Connect REST API..."
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083 | jq '.version'
+----
+
+. List available connector plugins:
++
+[,bash]
+----
+echo "Available connector plugins:"
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083/connector-plugins | jq '.[].class'
+----
+
+. Test cluster connectivity:
++
+[,bash]
+----
+echo "Testing Redpanda cluster connectivity..."
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083/connectors
+----
+
+If all commands completed without errors, Kafka Connect is working correctly
+
+If any command fails, refer to the <<Troubleshoot common issues>> section.
+
+== Configuration advice
+
+This section provides advice for configuring the standalone `connectors` Helm chart. For all available settings, see xref:reference:k-connector-helm-spec.adoc[].
+
+[[security-configuration]]
+=== Security configuration
+
+This section covers security-related configuration for the `connectors` Helm chart.
+
+==== Authentication
+
+If your Redpanda cluster has SASL enabled, configure SASL authentication for secure communication with your Kafka connectors.
+
+[source,yaml]
+----
+auth:
+  sasl:
+    enabled: true
+    mechanism: "SCRAM-SHA-512"
+    userName: "admin"
+    secretRef: "sasl-password-secret"
 ----
 
 For all available settings, see the xref:reference:k-connector-helm-spec.adoc#auth[Helm specification].
 
-=== Container resources
+==== TLS configuration
 
-Specify resource requests and limits. Ensure that `javaMaxHeapSize` is not greater than `container.resources.limits.memory`.
-
-[source,yaml]
-----
-connectors:
-  container:
-    resources:
-      requests:
-        cpu: 1
-        memory: 1Gi
-      limits:
-        cpu: 2
-        memory: 2Gi
-      javaMaxHeapSize: 2G
-    javaGCLogEnabled: false
-----
-
-For all available settings, see the xref:reference:k-connector-helm-spec.adoc#container[Helm specification].
-
-=== Logging
-
-In production, use the `info` logging level to avoid overwhelming the storage. For debugging purposes, temporarily change the logging level to `debug`.
+If your Redpanda cluster has TLS enabled, configure TLS settings for secure communication:
 
 [source,yaml]
 ----
-connectors:
-  logging:
-    level: "info"
+brokerTLS:
+  enabled: true
+  ca:
+    secretRef: "redpanda-default-cert"
+    secretNameOverwrite: "ca.crt"
 ----
 
-For all available settings, see the xref:reference:k-connector-helm-spec.adoc#logging[Helm specification].
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#brokertls[Helm specification].
 
-=== Monitoring
+==== Service account
 
-If you have the https://prometheus-operator.dev/[Prometheus Operator], enable monitoring to deploy a PodMonitor resource for Kafka Connect. Observability is essential in production environments.
+Restricting permissions is a best practice. Assign a dedicated service account for each deployment or app.
 
 [source,yaml]
 ----
-connectors:
-  monitoring:
-    enabled: true
+serviceAccount:
+  create: true
+  name: "redpanda-connector-service-account"
 ----
 
-For all available settings, see the xref:reference:k-connector-helm-spec.adoc#monitoring[Helm specification].
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#serviceaccount[Helm specification].
 
-See also: xref:manage:kubernetes/monitoring/k-monitor-connectors.adoc[]
+[[scalability-and-reliability]]
+=== Scalability and reliability
 
-=== Number of replicas
+This section covers configuration for scalable and reliable deployments.
+
+==== Number of replicas
 
 You can scale the Kafka Connect Pods by modifying the `deployment.replicas` parameter in the Helm values. This parameter allows you to handle varying workloads by increasing or decreasing the number of running instances.
 
 ```yml
-connectors:
-  enabled: true
-  deployment:
-    create: true
-    replicas: 3
+deployment:
+  replicas: 3
 ```
 
 The `replicas: 3` setting ensures that three instances of the Kafka Connect Pod will be running. You can adjust this number based on your needs.
 
 TIP: Redpanda Data recommends using an autoscaler such as https://keda.sh/[Keda] to increase the number of Pod replicas automatically when certain conditions, such as high CPU or memory usage, are met.
 
-=== Deployment strategy
+==== Container resources
+
+Specify resource requests and limits. Ensure that `javaMaxHeapSize` is not greater than `container.resources.limits.memory`.
+
+[source,yaml]
+----
+container:
+  resources:
+    request:
+      cpu: 1
+      memory: 1Gi
+    limits:
+      cpu: 2
+      memory: 2Gi
+    javaMaxHeapSize: 2G
+  javaGCLogEnabled: false
+----
+
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#container[Helm specification].
+
+==== Deployment strategy
 
 For smooth and uninterrupted updates, use the default `RollingUpdate` strategy. Additionally, set a budget to ensure a certain number of Pod replicas remain available during the update.
 
 [source,yaml]
 ----
-connectors:
-  deployment:
-    strategy:
-      type: "RollingUpdate"
-    updateStrategy:
-      type: "RollingUpdate"
-    budget:
-      maxUnavailable: 1
+deployment:
+  strategy:
+    type: "RollingUpdate"
+  updateStrategy:
+    type: "RollingUpdate"
+  budget:
+    maxUnavailable: 1
 ----
 
 For all available settings, see the xref:reference:k-connector-helm-spec.adoc#deployment[Helm specification].
 
-=== Probes
-
-Probes determine the health and readiness of your Pods. Configure them based on the startup behavior of your connectors.
-
-[source,yaml]
-----
-connectors:
-  deployment:
-    livenessProbe:
-      initialDelaySeconds: 60
-      periodSeconds: 10
-    readinessProbe:
-      initialDelaySeconds: 30
-      periodSeconds: 10
-----
-
-For all available settings, see the xref:reference:k-connector-helm-spec.adoc#deployment[Helm specification].
-
-=== Deployment history
-
-Keeping track of your deployment's history is beneficial for rollback scenarios. Adjust the `revisionHistoryLimit` according to your storage considerations.
-
-[source,yaml]
-----
-connectors:
-  deployment:
-    progressDeadlineSeconds: 600
-    revisionHistoryLimit: 10
-----
-
-For all available settings, see the xref:reference:k-connector-helm-spec.adoc#deployment[Helm specification].
-
-=== Affinity rules
+==== Affinity rules
 
 Affinities control Pod placement in the cluster based on various conditions. Set these according to your high availability and infrastructure needs.
 
 [source,yaml,lines=8+16]
 ----
-connectors:
-  deployment:
-    podAntiAffinity:
-      topologyKey: kubernetes.io/hostname
-      type: hard
-      weight: 100
-      custom:
-        requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
+deployment:
+  podAntiAffinity:
+    topologyKey: kubernetes.io/hostname
+    type: hard
+    weight: 100
+    custom:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+          - key: "app"
+            operator: "In"
+            values:
+            - "redpanda-connector"
+        topologyKey: "kubernetes.io/hostname"
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
             matchExpressions:
             - key: "app"
               operator: "In"
               values:
               - "redpanda-connector"
-          topologyKey: "kubernetes.io/hostname"
-        preferredDuringSchedulingIgnoredDuringExecution:
-        - weight: 100
-          podAffinityTerm:
-            labelSelector:
-              matchExpressions:
-              - key: "app"
-                operator: "In"
-                values:
-                - "redpanda-connector"
-            topologyKey: "kubernetes.io/zone"
+          topologyKey: "kubernetes.io/zone"
 ----
 
 In this example:
@@ -520,34 +570,129 @@ In this example:
 
 For all available settings, see the xref:reference:k-connector-helm-spec.adoc#deployment[Helm specification].
 
-=== Graceful shutdown
+==== Tolerations
+
+Tolerations and taints allow Pods to be scheduled onto nodes where they otherwise wouldn't. If you have nodes dedicated to Kafka Connect with a taint `dedicated=redpanda-connectors:NoSchedule`, the following toleration allows the Pods to be scheduled on them.
+
+[source,yaml]
+----
+tolerations:
+  - key: "dedicated"
+    operator: "Equal"
+    value: "redpanda-connectors"
+    effect: "NoSchedule"
+----
+
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#tolerations[Helm specification].
+
+==== Node selection
+
+Use node selectors to ensure connectors are scheduled on appropriate nodes and avoid scheduling on Redpanda broker nodes:
+
+[source,yaml]
+----
+# Example: Schedule on nodes with specific labels
+nodeSelector:
+  workload-type: "kafka-connect"
+
+# Or use node affinity for more complex selection
+deployment:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: "kubernetes.io/hostname"
+          operator: "NotIn"
+          values: ["redpanda-node-1", "redpanda-node-2", "redpanda-node-3"]
+----
+
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#nodeselector[Helm specification].
+
+==== Graceful shutdown
 
 If your connectors require additional time for a graceful shutdown, modify the `terminationGracePeriodSeconds`.
 
 [source,yaml]
 ----
-connectors:
-  deployment:
-    terminationGracePeriodSeconds: 30
+deployment:
+  terminationGracePeriodSeconds: 30
 ----
 
 For all available settings, see the xref:reference:k-connector-helm-spec.adoc#deployment[Helm specification].
 
-=== Service account
+[[monitoring-and-observability]]
+=== Monitoring and observability
 
-Restricting permissions is a best practice. Assign a dedicated service account for each deployment or app.
+This section covers monitoring, logging, and health check configuration.
+
+==== Monitoring
+
+If you have the https://prometheus-operator.dev/[Prometheus Operator], enable monitoring to deploy a PodMonitor resource for Kafka Connect.
+
+[source,yaml]
+----
+monitoring:
+  enabled: true
+----
+
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#monitoring[Helm specification].
+
+See also: xref:manage:kubernetes/monitoring/k-monitor-connectors.adoc[]
+
+==== Logging
+
+Use the `info` logging level to avoid overwhelming the storage. For debugging purposes, temporarily change the logging level to `debug`.
+
+[source,yaml]
+----
+logging:
+  level: "info"
+----
+
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#logging[Helm specification].
+
+==== Probes
+
+Probes determine the health and readiness of your Pods. Configure them based on the startup behavior of your connectors.
+
+[source,yaml]
+----
+deployment:
+  livenessProbe:
+    initialDelaySeconds: 60
+    periodSeconds: 10
+  readinessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+----
+
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#deployment[Helm specification].
+
+[[data-management]]
+=== Data management
+
+This section covers configuration related to data handling and topic management.
+
+==== Topics
+
+Kafka Connect leverages internal topics to track processed data, enhancing its fault tolerance:
+
+* The offset topic logs the last processed position from the external data source.
+* In events like failures or restarts, the connector uses this logged position to resume operations, ensuring no data duplication or omission.
 
 [source,yaml]
 ----
 connectors:
-  serviceAccount:
-    create: true
-    name: "redpanda-connector-service-account"
+  storage:
+    topic:
+      offset: _internal_connectors_offsets
 ----
 
-For all available settings, see the xref:reference:k-connector-helm-spec.adoc#serviceaccount[Helm specification].
+Here, `_internal_connectors_offsets` is the dedicated Kafka topic where Kafka Connect persists the offsets of the source connector.
 
-=== Producers
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#connectors[Helm specification].
+
+==== Producers
 
 When a source connector retrieves data from an external system for Redpanda, it assumes the role of a producer:
 
@@ -559,59 +704,97 @@ The `producerBatchSize` and `producerLingerMS` settings specify how Kafka Connec
 [source,yaml]
 ----
 connectors:
-  connectors:
-    producerBatchSize: 131072
-    producerLingerMS: 1
+  producerBatchSize: 131072
+  producerLingerMS: 1
 ----
 
 For all available settings, see the xref:reference:k-connector-helm-spec.adoc#connectors[Helm specification].
 
-=== Topics
+=== General configuration
 
-Kafka Connect leverages internal topics to track processed data, enhancing its fault tolerance:
+This section covers other important configuration settings.
 
-* The offset topic logs the last processed position from the external data source.
-* In events like failures or restarts, the connector uses this logged position to resume operations, ensuring no data duplication or omission.
+==== Name overrides
+
+Deploying multiple instances of the same Helm chart in a Kubernetes cluster can lead to naming conflicts. Using `nameOverride` and `fullnameOverride` helps differentiate between them. If you have a production and staging environment, different names help to avoid confusion.
+
+- Use `nameOverride` to customize:
+
+** The default labels `app.kubernetes.io/component=<nameOverride>` and `app.kubernetes.io/name=<nameOverride>`
+** The suffix in the name of the resources `redpanda-<nameOverride>`
+- Use `fullnameOverride` to customize the full name of the resources such as the Deployment and Services.
+
+[source,yaml]
+----
+nameOverride: 'redpanda-connector-production'
+fullnameOverride: 'redpanda-connector-instance-prod'
+----
+
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#nameoverride[Helm specification].
+
+==== Labels
+
+Kubernetes labels help you to organize, query, and manage your resources. Use labels to categorize Kubernetes resources in different deployments by environment, purpose, or team.
+
+[source,yaml]
+----
+commonLabels:
+  env: 'production'
+----
+
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#commonlabels[Helm specification].
+
+==== Docker image
+
+You can specify the image tag to deploy a known version of the Docker image. Avoid using the `latest` tag, which can lead to unexpected changes.
+
+If you're using a private repository, always ensure your nodes have the necessary credentials to pull the image.
+
+[source,yaml]
+----
+image:
+  repository: "redpanda/connectors"
+  tag: "1.2.3"
+----
+
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#image[Helm specification].
+
+==== Kafka Connect configuration
+
+You can configure Kafka Connect connection settings.
+
+Change the default REST API port only if it conflicts with an existing port.
+
+The `bootstrapServers` setting should point to the Kafka API endpoints on your Redpanda brokers.
+
+If you want to use Schema Registry, ensure the URL is set to the IP address or domain name of a Redpanda broker and that it includes the Schema Registry port.
 
 [source,yaml]
 ----
 connectors:
-  connectors:
-    storage:
-      topic:
-        offset: _internal_connectors_offsets
+  restPort: 8082
+  bootstrapServers: "redpanda-broker-0:9092"
+  schemaRegistryURL: "http://schema-registry.default.svc.cluster.local:8081"
 ----
-
-Here, `_internal_connectors_offsets` is the dedicated Kafka topic where Kafka Connect persists the offsets of the source connector.
 
 For all available settings, see the xref:reference:k-connector-helm-spec.adoc#connectors[Helm specification].
 
+==== Deployment history
+
+Keeping track of your deployment's history is beneficial for rollback scenarios. Adjust the `revisionHistoryLimit` according to your storage considerations.
+
+[source,yaml]
+----
+deployment:
+  progressDeadlineSeconds: 600
+  revisionHistoryLimit: 10
+----
+
+For all available settings, see the xref:reference:k-connector-helm-spec.adoc#deployment[Helm specification].
+
 == Verify the deployment
 
-To verify that the deployment was successful, you can use either Redpanda Console or the Kafka Connect REST API:
-
-=== Verify in Redpanda Console
-
-. Expose Redpanda Console to your localhost:
-+
-[,bash]
-----
-kubectl --namespace <namespace> port-forward svc/redpanda-console 8080:8080
-----
-+
-This command actively runs in the command-line window. To execute other commands while the command is running, open another command-line window.
-
-. Open Redpanda Console on http://localhost:8080.
-
-. Go to *Connectors*.
-
-You should see:
-
-- A list of available connectors (types)
-- The address of your Kafka Connect cluster
-- The version of Kafka Connect that you are running
-
-From here, you can create and configure instances of your connectors.
+To verify that the deployment was successful, you can use the Kafka Connect REST API or check the deployment in Redpanda Console (if configured).
 
 === Verify with the Kafka Connect REST API
 
@@ -620,6 +803,29 @@ From here, you can create and configure instances of your connectors.
 [,bash]
 ----
 kubectl get pod -l app.kubernetes.io/name=connectors --namespace <namespace>
+----
++
+Expected output should show pods in `Running` status:
++
+[,bash,.no-copy]
+----
+NAME                                   READY   STATUS    RESTARTS   AGE
+redpanda-connectors-6d64b948f6-dk484   1/1     Running   0          5m
+----
+
+. Check if the Kafka Connect service is accessible:
++
+[,bash]
+----
+kubectl get svc -l app.kubernetes.io/name=connectors --namespace <namespace>
+----
++
+Expected output:
++
+[,bash,.no-copy]
+----
+NAME                  TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+redpanda-connectors   ClusterIP   10.96.123.45    <none>        8083/TCP   5m
 ----
 
 . View the version of Kafka Connect:
@@ -635,9 +841,9 @@ kubectl exec <pod-name> --namespace <namespace> -- curl localhost:8083 | jq
 [,json,.no-copy]
 ----
 {
-  "version": "3.5.1",
-  "commit": "2c6fb6c54472e90a",
-  "kafka_cluster_id": "redpanda.58d6bd99-7f7c-4732-a398-b44bf892979a"
+  "version": "3.8.0",
+  "commit": "771b9576b00ecf5b",
+  "kafka_cluster_id": "redpanda.3e2649b0-f84c-4c03-b5e3-d6d1643f65b2"
 }
 ----
 ====
@@ -646,7 +852,7 @@ kubectl exec <pod-name> --namespace <namespace> -- curl localhost:8083 | jq
 +
 [,bash]
 ----
-curl localhost:8083/connector-plugins | jq
+kubectl exec <pod-name> --namespace <namespace> -- curl localhost:8083/connector-plugins | jq
 ----
 +
 .Example output
@@ -658,21 +864,124 @@ curl localhost:8083/connector-plugins | jq
   {
     "class": "org.apache.kafka.connect.mirror.MirrorCheckpointConnector",
     "type": "source",
-    "version": "3.5.1"
+    "version": "3.8.0"
   },
   {
     "class": "org.apache.kafka.connect.mirror.MirrorHeartbeatConnector",
     "type": "source",
-    "version": "3.5.1"
+    "version": "3.8.0"
   },
   {
     "class": "org.apache.kafka.connect.mirror.MirrorSourceConnector",
     "type": "source",
-    "version": "3.5.1"
+    "version": "3.8.0"
   }
 ]
 ----
 ====
+
+. Test connectivity to your Redpanda cluster:
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- curl localhost:8083/connectors
+----
++
+This should return an empty array `[]` if no connectors are configured, indicating that Kafka Connect can communicate with your Redpanda cluster.
+
+=== Troubleshoot common issues
+
+If the deployment isn't working as expected, check these common issues:
+
+==== Pod not starting or crashing
+
+. Check pod logs for error messages:
++
+[,bash]
+----
+kubectl logs -l app.kubernetes.io/name=connectors --namespace <namespace> --tail=50
+----
+
+. Check for resource constraints:
++
+[,bash]
+----
+kubectl describe pod -l app.kubernetes.io/name=connectors --namespace <namespace>
+----
+
+Common issues and solutions:
+
+* **"You must set either bootstrap.servers or bootstrap.controllers"**: The `connectors.bootstrapServers` configuration is missing or incorrectly formatted.
+* **OutOfMemoryError**: Increase memory limits or reduce `javaMaxHeapSize`.
+* **Connection refused to Redpanda brokers**: Verify the bootstrap servers addresses and ensure Redpanda is running.
+
+==== Testing network connectivity
+
+. Test if the connector can reach Redpanda brokers:
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- nslookup <redpanda-service-name>
+----
+
+. Test port connectivity:
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- nc -zv <redpanda-broker> 9093
+----
+
+==== Verify with Redpanda Console
+
+If you have Redpanda Console configured to connect to Kafka Connect:
+
+. Access Console through port-forward:
++
+[,bash]
+----
+kubectl port-forward svc/redpanda-console 8080:8080 --namespace <namespace>
+----
+
+. Open http://localhost:8080 in your browser
+
+. Navigate to *Connect*
+
+
+If the Connectors page shows "No clusters configured" or connection errors, verify your Console configuration includes the correct Kafka Connect service URL.
+
+=== Health checks and monitoring
+
+The connectors chart includes built-in health checks that you can use to monitor the status:
+
+. **Liveness probe**: Checks if Kafka Connect is responsive
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- curl -f localhost:8083/
+----
+
+. **Readiness probe**: Checks if Kafka Connect is ready to accept requests
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- curl -f localhost:8083/connectors
+----
+
+. **View connector worker information**:
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- curl localhost:8083/admin/workers | jq
+----
+
+. **Check cluster information**:
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- curl localhost:8083/admin/cluster | jq
+----
+
+These endpoints help you verify that Kafka Connect is not only running but also properly connected to your Redpanda cluster and ready to manage connectors.
 
 == Install a new connector
 
@@ -737,18 +1046,26 @@ docker push <repo>/connectors:<version>
 
 === Deploy the Helm chart with your custom Docker image
 
-. Modify the Helm values in the Redpanda Helm chart to use your new Docker image to deploy the Redpanda Connectors Helm chart:
+. Modify your values file to use your new Docker image:
 +
 [,yaml]
 ----
-connectors:
-  image:
-    repository: <repo>/connectors
-    tag: <version>
-    pullPolicy: IfNotPresent
+image:
+  repository: <repo>/connectors
+  tag: <version>
+  pullPolicy: IfNotPresent
 ----
 +
 Kafka Connect should discover the new connector automatically on startup.
+
+. Update your deployment:
++
+[,bash]
+----
+helm upgrade redpanda-connectors redpanda/connectors \
+  --namespace <namespace> \
+  --values connectors-values.yaml
+----
 
 . Get the name of the Pod that's running Kafka Connect:
 +
@@ -770,4 +1087,3 @@ You should see your new connector in the list.
 
 - xref:manage:kubernetes/k-manage-connectors.adoc[]
 - xref:manage:kubernetes/monitoring/k-monitor-connectors.adoc[]
-
