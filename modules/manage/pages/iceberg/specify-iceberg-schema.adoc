@@ -1,7 +1,9 @@
-= Choose an Iceberg Mode
+= Specify Iceberg Schema
 :description: Learn about supported Iceberg modes and how you can integrate schemas with Iceberg topics.
 :page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
+:page-aliases: manage:iceberg/choose-iceberg-mode.adoc 
 :schema-id-val-doc: manage:schema-reg/schema-id-validation.adoc
+
 // tag::single-source[]
 
 ifndef::env-cloud[]
@@ -11,9 +13,7 @@ include::shared:partial$enterprise-license.adoc[]
 ====
 endif::[]
 
-In xref:manage:iceberg/about-iceberg-topics.adoc#enable-iceberg-integration[Iceberg-enabled clusters], the `redpanda.iceberg.mode` topic property determines how Redpanda maps topic data to the Iceberg table structure. You can have the generated Iceberg table match the structure of an Avro or Protobuf schema in the Schema Registry, or you can use the `key_value` mode where Redpanda stores the record values as-is in the table. 
-
-NOTE: The JSON Schema format is not supported for Iceberg topics. If your topic data is in JSON, use the `key_value` mode. 
+In xref:manage:iceberg/about-iceberg-topics.adoc#enable-iceberg-integration[Iceberg-enabled clusters], the `redpanda.iceberg.mode` topic property determines how Redpanda maps topic data to the Iceberg table structure. You can have the generated Iceberg table match the structure of a schema in the Schema Registry, or you can use the `key_value` mode where Redpanda stores the record values as-is in the table. 
 
 == Supported Iceberg modes
 
@@ -37,7 +37,11 @@ In the xref:manage:schema-reg/schema-reg-overview.adoc#wire-format[Schema Regist
 
 === value_schema_latest
 
-Creates an Iceberg table whose structure matches the latest schema registered for the subject in the Schema Registry. You must register a schema in the Schema Registry. Unlike the `value_schema_id_prefix` mode, `value_schema_latest` does not require that producers use the wire format.
+Creates an Iceberg table whose structure matches the latest schema registered for the subject in the Schema Registry. You must register a schema in the Schema Registry.
+
+Producers cannot use the wire format in `value_schema_latest` mode. Redpanda expects the serialized message as-is without the magic byte or schema ID prefix in the record value.
+
+NOTE: The `value_schema_latest` mode is not compatible with the xref:reference:rpk/rpk-topic/rpk-topic-produce[`rpk topic produce`] command which embeds the wire format header. You must use your own producer code to produce to topics in `value_schema_latest` mode.
 
 The latest schema is cached periodically. The cache period is defined by the cluster property `iceberg_latest_schema_cache_ttl_ms` (default: 5 minutes).
 
@@ -58,7 +62,7 @@ rpk topic create <topic-name> --topic-config=redpanda.iceberg.mode=<iceberg-mode
 .Option 2. Set `redpanda.iceberg.mode` for an existing topic:
 [,bash]
 ----
-rpk topic alter-config <new-topic-name> --set redpanda.iceberg.mode=<iceberg-mode>
+rpk topic alter-config <topic-name> --set redpanda.iceberg.mode=<iceberg-mode>
 ----
 
 [[override-value-schema-latest-default]]
@@ -83,8 +87,14 @@ value_schema_latest:subject=<subject-name>,protobuf_name=<protobuf-message-full-
 
 * For both Avro and Protobuf, specify a different subject name by using the key-value pair `subject=<subject-name>`, for example `value_schema_latest:subject=sensor-data`.
 * For Protobuf only:
-** Specify a different message definition by using a key-value pair `protobuf_name=<message-name>`, for example: `value_schema_latest:protobuf_name=com.example.manufacturing.SensorData`.
++
+--
+** Specify a different message definition by using a key-value pair `protobuf_name=<message-full-name>`. You must use the fully qualified name, which includes the package name, for example, `value_schema_latest:protobuf_name=com.example.manufacturing.SensorData`.
 ** To specify both a different subject and message definition, separate the key-value pairs with a comma, for example: `value_schema_latest:subject=my_protobuf_schema,protobuf_name=com.example.manufacturing.SensorData`.
+--
++
+NOTE: If you don't specify the fully qualified Protobuf message name, Redpanda pauses the data translation to the Iceberg table until you fix the topic misconfiguration.
+
 
 == How Iceberg modes translate to table format
 
@@ -130,7 +140,7 @@ CREATE TABLE ClickEvent (
 )
 ----
 
-Use `key_value` mode if the topic data is in JSON or if you are able to use the Iceberg data in its semi-structured format.
+Use `key_value` mode if you want to use the Iceberg data in its semi-structured format.
 
 The `value_schema_id_prefix` and `value_schema_latest` modes can use the schema to translate to the following table format:
 
@@ -152,7 +162,7 @@ CREATE TABLE ClickEvent (
 
 As you produce records to the topic, the data also becomes available in object storage for Iceberg-compatible clients to consume. You can use the same analytical tools to xref:manage:iceberg/query-iceberg-topics.adoc[read the Iceberg topic data] in a data lake as you would for a relational database.
 
-If Redpanda fails to translate the record to the columnar format as defined by the schema, it writes the record to a dead-letter queue (DLQ) table. See xref:manage:iceberg/about-iceberg-topics.adoc#manage-dead-letter-queue[Manage dead-letter queue] for more information.
+If Redpanda fails to translate the record to the columnar format as defined by the schema, it writes the record to a dead-letter queue (DLQ) table. See xref:manage:iceberg/about-iceberg-topics.adoc#troubleshoot-errors[Troubleshoot errors] for more information.
 
 === Schema types translation
 
@@ -175,7 +185,7 @@ Avro::
 | string | string
 | record | struct
 | array | list
-| maps | map
+| map | map
 | fixed | fixed*
 | decimal | decimal
 | uuid | uuid*
@@ -224,7 +234,7 @@ Protobuf::
 
 There are some cases where the Protobuf type does not map directly to an Iceberg type and Redpanda applies the following transformations:
 
-* Repeated values are translated into Iceberg `array` types.
+* Repeated values are translated into Iceberg `list` types.
 * Enums are translated into Iceberg `int` types based on the integer value of the enumerated type.
 * `uint32` and `fixed32` are translated into Iceberg `long` types as that is the existing semantic for unsigned 32-bit values in Iceberg.
 * `uint64` and `fixed64` values are translated into their Base-10 string representation.
@@ -232,6 +242,89 @@ There are some cases where the Protobuf type does not map directly to an Iceberg
 
 Recursive types are not supported.
 --
+
+JSON Schema::
++
+--
+Requirements:
+
+- Only JSON Schema Draft-07 is currently supported.
+- You must declare the JSON Schema dialect using the `$schema` keyword, for example `"$schema": "http://json-schema.org/draft-07/schema#"`.
+- You must use a JSON Schema that constrains JSON documents to a strict type in order for Redpanda to translate to Iceberg; that is, each subschema must use the `type` keyword.
+
+.Valid JSON Schema example
+[,json]
+----
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "productId": {
+      "type": "integer"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
+----
+
+|===
+| JSON type | Iceberg type | Notes
+
+| array 
+| list 
+| The keywords `items` and `additionalItems` must be used to constrain element types.
+
+| boolean 
+| boolean
+|
+
+| null 
+| 
+| The `null` type is not supported except when it is paired with another type to indicate nullability.
+
+| number 
+| double
+|
+
+| integer 
+| long 
+|
+
+| string 
+| string
+| The `format` keyword can be used for custom Iceberg types. See <<format-translation,`format` annotation translation>> for details.
+
+| object 
+| struct
+| The `properties` keyword must be used to define `struct` fields and constrain their types. The `additionalProperties` keyword is accepted only when it is set to `false`.
+ 
+|===
+
+[[format-translation]]
+.`format` annotation translation
+|===
+| `format` value | Iceberg type
+
+| date-time | timestamptz
+| date | date
+| time | time
+
+|===
+
+The following are not supported for JSON Schema:
+
+* Relative and absolute (including external) references using `$ref` and `$dynamicRef` keywords
+* The `default` keyword 
+* Conditional typing (`if`, `then`, `else`, `dependent` keywords)
+* Boolean JSON Schema combinations (`allOf`, `anyOf`, `oneOf` keywords)
+* Dynamic object members (`patternProperties` and `additionalProperties` (except when it is set to `false`) keywords)
+--
+
 ======
 
 // end::single-source[]
