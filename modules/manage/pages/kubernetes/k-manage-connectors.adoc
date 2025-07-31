@@ -12,8 +12,58 @@ include::shared:partial$community-supported-connectors.adoc[]
 
 - xref:deploy:deployment-option/self-hosted/kubernetes/kubernetes-deploy.adoc[Deploy a Redpanda cluster with Redpanda Console].
 - xref:deploy:deployment-option/self-hosted/kubernetes/k-deploy-connectors.adoc[Deploy Kafka Connect].
+- Ensure Redpanda Console is configured to connect to Kafka Connect (see the xref:deploy:deployment-option/self-hosted/kubernetes/k-deploy-connectors.adoc#configure-redpanda-console-to-connect-to-kafka-connect[Redpanda Console configuration] in the deployment guide).
+
+== Verify Kafka Connect is accessible
+
+Before managing connectors, verify that Kafka Connect is running and accessible:
+
+. Check the Pod status:
++
+[,bash]
+----
+kubectl get pod -l app.kubernetes.io/name=connectors --namespace <namespace>
+----
++
+Expected output:
++
+[,bash,.no-copy]
+----
+NAME                                   READY   STATUS    RESTARTS   AGE
+redpanda-connectors-6d64b948f6-dk484   1/1     Running   0          5m
+----
+
+. Test the Kafka Connect REST API:
++
+[,bash]
+----
+POD_NAME=$(kubectl get pod -l app.kubernetes.io/name=connectors --namespace <namespace> -o jsonpath='{.items[0].metadata.name}')
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083 | jq '.version'
+----
++
+This should return the Kafka Connect version.
+
+. Verify the available connector plugins:
++
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083/connector-plugins | jq '.[].class'
+----
++
+Expected output should include the MirrorMaker2 connectors:
++
+[,bash,.no-copy]
+----
+"org.apache.kafka.connect.mirror.MirrorCheckpointConnector"
+"org.apache.kafka.connect.mirror.MirrorHeartbeatConnector"
+"org.apache.kafka.connect.mirror.MirrorSourceConnector"
+----
 
 == Manage connectors in Redpanda Console
+
+Redpanda Console provides a web interface for managing Kafka Connect connectors. This is the recommended approach for most users as it provides a user-friendly interface and validation.
+
+=== Access Redpanda Console
 
 By default, Redpanda Console is deployed with a ClusterIP Service. To access Redpanda Console, you can use the `kubectl port-forward` command to forward one of your local ports to the Pod.
 
@@ -30,87 +80,298 @@ This command actively runs in the command-line window. To execute other commands
 
 . Open Redpanda Console on http://localhost:8080.
 
-You can create and manage connectors by clicking *Connectors* in the navigation menu.
+=== Using the Connect interface
+
+When you have access to Redpanda Console:
+
+. Navigate to *Connect* in the left menu.
+
+. If Kafka Connect is properly configured, you should see:
++
+- The Kafka Connect cluster
+- A list of available connector types
+- Any existing tasks
+
+From here, you can:
+
+- View connector status and health
+- Pause/resume connectors
+- View connector configuration
+- Delete connectors
+- View connector logs and metrics
+
+=== Troubleshoot Redpanda Console connectivity
+
+If you see "Kafka Connect is not configured":
+
+. Verify the Redpanda Console configuration includes Kafka Connect settings (see xref:deploy:deployment-option/self-hosted/kubernetes/k-deploy-connectors.adoc#troubleshooting-console-connectivity[deployment guide troubleshooting])
+
+. Check the Redpanda Console logs for connection errors:
++
+[,bash]
+----
+kubectl logs -n <namespace> -l app.kubernetes.io/name=console --tail=20
+----
+
+. Look for successful connection messages:
++
+----
+"creating Kafka connect HTTP clients and testing connectivity to all clusters"
+"tested Kafka connect cluster connectivity","successful_clusters":1,"failed_clusters":0"
+----
 
 == Manage connectors with the REST API
 
-This section provides examples of requesting data from the REST API using cURL. Execute all cURL commands in the Pod that's running Kafka Connect.
+This section provides examples of managing connectors using the Kafka Connect REST API with cURL. This approach is useful for automation, scripting, and CI/CD pipelines.
 
-To view the name of the Pod that's running Kafka Connect:
+All REST API commands should be executed from within the Kafka Connect Pod or through `kubectl exec`. For comprehensive REST API documentation, see the https://kafka.apache.org/documentation/#connect_rest[Kafka Connect REST API reference^].
+
+TIP: For complex connector configurations and production deployments, consider using the xref:reference:k-connector-helm-spec.adoc[Helm chart configuration options] to manage connector settings.
+
+=== Get connector Pod information
+
+Get the Pod name and verify connectivity:
 
 [,bash]
 ----
-kubectl get pod -l app.kubernetes.io/name=connectors --namespace <namespace>
+# Get the connector Pod name
+POD_NAME=$(kubectl get pod -l app.kubernetes.io/name=connectors --namespace <namespace> -o jsonpath='{.items[0].metadata.name}')
+echo "Using pod: $POD_NAME"
+
+# Test basic connectivity
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083
 ----
 
 === View version of Kafka Connect
 
-To view the version of Kafka Connect, run:
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083 | jq
+----
 
-```bash
-curl localhost:8083 | jq
-```
+Expected output:
 
-=== View a list of connectors
+[,json,.no-copy]
+----
+{
+  "version": "3.8.0",
+  "commit": "771b9576b00ecf5b",
+  "kafka_cluster_id": "redpanda.3e2649b0-f84c-4c03-b5e3-d6d1643f65b2"
+}
+----
 
-To view all available connectors, run:
+=== View available connector plugins
 
-```bash
-curl localhost:8083/connector-plugins | jq
-```
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083/connector-plugins | jq
+----
 
-=== View active connectors
+=== View cluster worker information
 
-To view all active connectors, run:
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083 | jq
+----
 
-```bash
-curl 'http://localhost:8083/connectors?expand=status&expand=info' | jq
-```
+This returns basic cluster information including version and Kafka cluster ID.
+
+=== View all connectors
+
+[,bash]
+----
+# List connector names only
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083/connectors | jq
+
+# View connectors with detailed status and configuration
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s 'localhost:8083/connectors?expand=status&expand=info' | jq
+----
 
 === Create a connector
 
-To create a connector, run:
+To create a connector, use a POST request with JSON configuration:
 
-```bash
-curl "localhost:8083/connectors" -H 'Content-Type: application/json' --data-raw '<connector-config>'
-```
-
-For example:
-
-```bash
-curl "localhost:8083/connectors" \
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s "localhost:8083/connectors" \
   -H 'Content-Type: application/json' \
-  --data-raw '{ "name": "heartbeat-connector", "config": { "connector.class": "org.apache.kafka.connect.mirror.MirrorHeartbeatConnector", "heartbeats.topic.replication.factor": "1", "replication.factor": "1", "source.cluster.alias": "source", "source.cluster.bootstrap.servers": "redpanda:29092", "target.cluster.bootstrap.servers": "redpanda:29092"}}'
-```
+  --data-raw '{
+    "name": "heartbeat-connector",
+    "config": {
+      "connector.class": "org.apache.kafka.connect.mirror.MirrorHeartbeatConnector",
+      "heartbeats.topic.replication.factor": "1",
+      "replication.factor": "1",
+      "source.cluster.alias": "source",
+      "target.cluster.alias": "target",
+      "source.cluster.bootstrap.servers": "redpanda.redpanda.svc.cluster.local:9093",
+      "target.cluster.bootstrap.servers": "redpanda.redpanda.svc.cluster.local:9093",
+      "emit.heartbeats.interval.seconds": "30"
+    }
+  }' | jq
+----
 
-=== View connector status
+Example for MirrorSourceConnector:
 
-To view the status of a connector, run:
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s "localhost:8083/connectors" \
+  -H 'Content-Type: application/json' \
+  --data-raw '{
+    "name": "mirror-source-connector",
+    "config": {
+      "connector.class": "org.apache.kafka.connect.mirror.MirrorSourceConnector",
+      "source.cluster.alias": "source",
+      "target.cluster.alias": "target",
+      "source.cluster.bootstrap.servers": "source-cluster:9092",
+      "target.cluster.bootstrap.servers": "redpanda.redpanda.svc.cluster.local:9093",
+      "topics": "my-topic",
+      "replication.factor": "1"
+    }
+  }' | jq
+----
 
-```bash
-curl localhost:8083/connectors/<connector-name>/status
-```
+=== View connector details
 
-For example:
+[,bash]
+----
+# View connector configuration
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083/connectors/<connector-name>/config | jq
 
-```bash
-curl localhost:8083/connectors/heartbeat-connector/status
-```
+# View connector status
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083/connectors/<connector-name>/status | jq
+
+# View connector tasks
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083/connectors/<connector-name>/tasks | jq
+----
+
+Example:
+
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083/connectors/heartbeat-connector/status | jq
+----
+
+=== Update connector configuration
+
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s "localhost:8083/connectors/<connector-name>/config" \
+  -H 'Content-Type: application/json' \
+  -X PUT \
+  --data-raw '{
+    "connector.class": "org.apache.kafka.connect.mirror.MirrorHeartbeatConnector",
+    "heartbeats.topic.replication.factor": "1",
+    "replication.factor": "1",
+    "source.cluster.alias": "source",
+    "target.cluster.alias": "target",
+    "source.cluster.bootstrap.servers": "redpanda.redpanda.svc.cluster.local:9093",
+    "target.cluster.bootstrap.servers": "redpanda.redpanda.svc.cluster.local:9093",
+    "emit.heartbeats.interval.seconds": "60"
+  }' | jq
+----
+
+=== Pause and resume connectors
+
+[,bash]
+----
+# Pause a connector
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s "localhost:8083/connectors/<connector-name>/pause" -X PUT
+
+# Resume a connector
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s "localhost:8083/connectors/<connector-name>/resume" -X PUT
+
+# Restart a connector
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s "localhost:8083/connectors/<connector-name>/restart" -X POST
+----
 
 === Delete a connector
 
-To delete a connector, run:
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s "localhost:8083/connectors/<connector-name>" -X DELETE
+----
 
-```bash
-curl "localhost:8083/connectors/<connector-name>" -X 'DELETE'
-```
+Example:
 
-For example:
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s "localhost:8083/connectors/heartbeat-connector" -X DELETE
+----
 
-```bash
-curl "localhost:8083/connectors/heartbeat-connector" -X 'DELETE'
-```
+=== Troubleshoot REST API issues
+
+==== Common error responses
+
+* **404 Not Found**: Connector doesn't exist
+* **409 Conflict**: Connector with the same name already exists
+* **400 Bad Request**: Invalid configuration
+
+==== Debugging connector failures
+
+. Check connector status for error details:
++
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083/connectors/<connector-name>/status | jq '.connector.trace'
+----
+
+. View task-level errors:
++
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s localhost:8083/connectors/<connector-name>/status | jq '.tasks[].trace'
+----
+
+. Check Kafka Connect logs:
++
+[,bash]
+----
+kubectl logs -n <namespace> -l app.kubernetes.io/name=connectors --tail=50
+----
++
+For more detailed logging configuration, see xref:deploy:deployment-option/self-hosted/kubernetes/k-deploy-connectors.adoc#logging[logging configuration] in the deployment guide.
+
+=== Connector management best practices
+
+==== Configuration validation
+
+Before creating a connector, validate the configuration:
+
+[,bash]
+----
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s "localhost:8083/connector-plugins/<connector-class>/config/validate" \
+  -H 'Content-Type: application/json' \
+  -X PUT \
+  --data-raw '{"connector.class": "<connector-class>", ...}' | jq
+----
+
+==== Monitoring connector health
+
+Regularly check connector status:
+
+[,bash]
+----
+# Check all connectors at once
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s 'localhost:8083/connectors?expand=status' | \
+  jq '.[] | {name: .status.name, state: .status.connector.state, tasks: [.status.tasks[].state]}'
+----
+
+For comprehensive monitoring and alerting, see xref:manage:kubernetes/monitoring/k-monitor-connectors.adoc[Kafka Connect monitoring guide].
+
+==== Backup connector configurations
+
+Save connector configurations for disaster recovery:
+
+[,bash]
+----
+# Export all connector configs
+kubectl exec $POD_NAME --namespace <namespace> -- curl -s 'localhost:8083/connectors?expand=info' | \
+  jq '.[] | {name: .info.name, config: .info.config}' > connectors-backup.json
+----
 
 == Next steps
 
-- xref:manage:kubernetes/monitoring/k-monitor-connectors.adoc[]
+- xref:manage:kubernetes/monitoring/k-monitor-connectors.adoc[Monitor Kafka Connect performance and health]
+- xref:deploy:deployment-option/self-hosted/kubernetes/k-deploy-connectors.adoc#install-a-new-connector[Install additional connector plugins]
+- xref:reference:k-connector-helm-spec.adoc[Configure advanced Kafka Connect settings]
+- Explore xref:redpanda-connect:home:index.adoc[Redpanda Connect] for simpler data pipeline creation
