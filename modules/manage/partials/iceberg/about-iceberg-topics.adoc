@@ -52,7 +52,7 @@ endif::[]
 
 * It is not possible to append topic data to an existing Iceberg table that is not created by Redpanda.
 * If you enable the Iceberg integration on an existing Redpanda topic, Redpanda does not backfill the generated Iceberg table with topic data.
-* JSON schemas are not currently supported. If the topic data is in JSON, use the `key_value` mode to store the JSON in Iceberg, which then can be parsed by most query engines.
+* JSON schemas are supported starting with Redpanda version 25.2.
 
 == Enable Iceberg integration
 
@@ -231,7 +231,7 @@ Data in an Iceberg-enabled topic is consumable from Kafka based on the configure
 
 == Schema evolution
 
-Redpanda supports schema evolution for Avro and Protobuf schemas in accordance with the https://iceberg.apache.org/spec/#schema-evolution[Iceberg specification^]. Permitted schema evolutions include reordering fields and promoting field types. When you update the schema in Schema Registry, Redpanda automatically updates the Iceberg table schema to match the new schema.
+Redpanda supports schema evolution in accordance with the https://iceberg.apache.org/spec/#schema-evolution[Iceberg specification^]. Permitted schema evolutions include reordering fields and promoting field types. When you update the schema in Schema Registry, Redpanda automatically updates the Iceberg table schema to match the new schema.
 
 For example, if you produce records to a topic `demo-topic` with the following Avro schema:
 
@@ -310,22 +310,21 @@ Querying the Iceberg table for `demo-topic` includes the new column `ts`:
 +---------+--------------+--------------------------+
 ----
 
-== Manage dead-letter queue
+== Troubleshoot errors
 
-Errors may occur when translating records in the `value_schema_id_prefix` mode to the Iceberg table format; for example, if you do not use the Schema Registry wire format with the magic byte, if the schema ID in the record is not found in the Schema Registry, or if an Avro or Protobuf data type cannot be translated to an Iceberg type.
+If Redpanda encounters an error while writing a record to the Iceberg table, Redpanda by default writes the record to a separate dead-letter queue (DLQ) Iceberg table named `<topic-name>~dlq`. The following can cause errors to occur when translating records in the `value_schema_id_prefix` and `value_schema_latest` modes to the Iceberg table format:
 
-ifndef::env-cloud[]
-If Redpanda encounters an error while writing a record to the Iceberg table, Redpanda writes the record to a separate dead-letter queue (DLQ) Iceberg table named `<topic-name>~dlq`. To disable the default behavior for a topic and drop the record, set the xref:reference:properties/topic-properties.adoc#redpanda-iceberg-invalid-record-action[`redpanda.iceberg.invalid.record.action`] topic property to `drop`. You can also configure the default cluster-wide behavior for invalid records by setting the `iceberg_invalid_record_action` property.
-endif::[]
-ifdef::env-cloud[]
-If Redpanda encounters an error while writing a record to the Iceberg table, Redpanda writes the record to a separate dead-letter queue (DLQ) Iceberg table named `<topic-name>~dlq`. To disable the default behavior for a topic and drop the record, set the `redpanda.iceberg.invalid.record.action` topic property to `drop`. You can also configure the default cluster-wide behavior for invalid records by setting the `iceberg_invalid_record_action` property.
-endif::[]
+- Redpanda cannot find the embedded schema ID in the Schema Registry.
+- Redpanda fails to translate one or more schema data types to an Iceberg type.
+- In `value_schema_id_prefix` mode, you do not use the Schema Registry wire format with the magic byte.
 
 The DLQ table itself uses the `key_value` schema, consisting of two columns: the record metadata including the key, and a binary column for the record's value.
 
-You can inspect the DLQ table for records that failed to write to the Iceberg table, and you can take further action on these records, such as transforming and reprocessing them, or debugging issues that occurred upstream.
+NOTE: Topic property misconfiguration, such as xref:manage:iceberg/specify-iceberg-schema.adoc#override-value-schema-latest-default[overriding the default behavior of `value_schema_latest` mode] but not specifying the fully qualified Protobuf message name, does not cause records to be written to the DLQ table. Instead, Redpanda pauses the topic data translation to the Iceberg table until you fix the misconfiguration.
 
-=== Reprocess DLQ records
+=== Inspect DLQ table
+
+You can inspect the DLQ table for records that failed to write to the Iceberg table, and you can take further action on these records, such as transforming and reprocessing them, or debugging issues that occurred upstream.
 
 The following example produces a record to a topic named `ClickEvent` and does not use the Schema Registry wire format that includes the magic byte and schema ID:
 
@@ -356,7 +355,9 @@ FROM <catalog-name>."ClickEvent~dlq"; -- Fully qualified table name
 +-------------------------------------------------+
 ----
 
-The data is in binary format, and the first byte is not `0x00`, indicating that it was not produced with a schema. 
+The data is in binary format, and the first byte is not `0x00`, indicating that it was not produced with a schema.
+
+=== Reprocess DLQ records
 
 You can apply a transformation and reprocess the record in your data lakehouse to the original Iceberg table. In this case, you have a JSON value represented as a UTF-8 binary. Depending on your query engine, you might need to decode the binary value first before extracting the JSON fields. Some engines may automatically decode the binary value for you:
 
@@ -384,6 +385,15 @@ FROM (
 ----
 
 You can now insert the transformed record back into the main Iceberg table. Redpanda recommends employing a strategy for exactly-once processing to avoid duplicates when reprocessing records.
+
+=== Drop invalid records
+
+ifndef::env-cloud[]
+To disable the default behavior and drop an invalid record, set the xref:reference:properties/topic-properties.adoc#redpanda-iceberg-invalid-record-action[`redpanda.iceberg.invalid.record.action`] topic property to `drop`. You can also configure the default cluster-wide behavior for invalid records by setting the `iceberg_invalid_record_action` property.
+endif::[]
+ifdef::env-cloud[]
+To disable the default behavior and drop an invalid record, set the `redpanda.iceberg.invalid.record.action` topic property to `drop`. You can also configure the default cluster-wide behavior for invalid records by setting the `iceberg_invalid_record_action` property.
+endif::[]
 
 == Performance considerations
 

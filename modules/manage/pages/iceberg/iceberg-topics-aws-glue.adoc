@@ -1,0 +1,203 @@
+= Query Iceberg Topics using AWS Glue
+:description: Add Redpanda topics as Iceberg tables that you can query from AWS Glue Data Catalog.
+:page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
+:page-beta: true
+ifdef::env-cloud[]
+:rpk-install-doc: manage:rpk/rpk-install.adoc
+endif::[]
+ifndef::env-cloud[]
+:rpk-install-doc: get-started:rpk-install.adoc
+endif::[]
+
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+// tag::single-source[]
+
+This guide walks you through querying Redpanda topics as Iceberg tables stored in AWS S3, using a catalog integration with https://docs.aws.amazon.com/glue/latest/dg/components-overview.html#data-catalog-intro[AWS Glue^]. For general information about Iceberg catalog integrations in Redpanda, see xref:manage:iceberg/use-iceberg-catalogs.adoc[].
+
+== Prerequisites
+
+* Redpanda version 25.1.7 or later.
+* xref:{rpk-install-doc}[`rpk`] installed or updated to the latest version.
+ifdef::env-cloud[]
+** You can also use the Redpanda Cloud API to xref:manage:cluster-maintenance/config-cluster.adoc#set-cluster-configuration-properties[reference secrets in your cluster configuration].
+endif::[]
+ifndef::env-cloud[]
+* xref:manage:tiered-storage.adoc#configure-object-storage[Object storage configured] for your cluster and xref:manage:tiered-storage.adoc#enable-tiered-storage[Tiered Storage enabled] for the topics for which you want to generate Iceberg tables.
++
+You also use the S3 bucket URI to set the base location for AWS Glue Data Catalog.
+endif::[]
+* Admin permissions to create IAM policies and roles in AWS.
+
+== Limitations
+
+=== Nested partition spec support
+
+AWS Glue does not support partitioning on nested fields. If Redpanda detects that
+the default partitioning `(hour(redpanda.timestamp))` is in use, it will instead apply an empty partition spec `()`, which means the table will not be partitioned.
+
+If you want to use partitioning, you must specify a custom partition specification using your own partition columns (columns that are not nested).
+
+== Authorize access to AWS Glue
+
+You must allow Redpanda access to AWS Glue services in your AWS account. You can use the same access credentials that you configured for S3 (IAM role, access keys, and KMS key), as long as you have also added read and write access to AWS Glue Data Catalog.
+
+For example, you could create a separate IAM policy that manages access to AWS Glue, and attach it to the IAM role that Redpanda also uses to access S3. It is recommended to add all AWS Glue API actions in the policy (`"glue:*"`) on the following resources:
+
+- Root catalog (`catalog`)
+- All databases (`database/*`)
+- All tables (`table/\*/*`)
+
+Your policy should include a statement similar to the following:
+
+[,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "glue:*"
+      ],
+      "Resource": [
+        "arn:aws:glue:<aws-region>:<aws-account-id>:catalog",
+        "arn:aws:glue:<aws-region>:<aws-account-id>:database/*",
+        "arn:aws:glue:<aws-region>:<aws-account-id>:table/*/*"
+        ]
+    }
+  ]
+}
+----
+
+For more information on configuring IAM permissions, see the https://docs.aws.amazon.com/glue/latest/dg/configure-iam-for-glue.html[AWS Glue documentation^].
+
+== Configure authentication and credentials
+
+You can configure credentials for the AWS Glue Data Catalog integration in either of the following ways:
+
+* Allow Redpanda to use the same `cloud_storage_*` credential properties configured for S3. If you do not configure the overrides listed below, Redpanda uses the same credentials for both S3 and AWS Glue. This is the recommended approach.
+* If you want to configure authentication to AWS Glue separately from authentication to S3, there are equivalent credential configuration properties named `iceberg_rest_catalog_aws_*` that override the object storage credentials. These properties only apply to REST catalog authentication, and never to S3 authentication:
+** config_ref:iceberg_rest_catalog_aws_access_key,true,properties/cluster-properties[`iceberg_rest_catalog_aws_access_key`] overrides config_ref:cloud_storage_access_key,true,properties/cluster-properties[`cloud_storage_access_key`]
+** config_ref:iceberg_rest_catalog_aws_secret_key,true,properties/cluster-properties[`iceberg_rest_catalog_aws_secret_key`] overrides config_ref:cloud_storage_secret_key,true,properties/cluster-properties[`cloud_storage_secret_key`]
+** config_ref:iceberg_rest_catalog_aws_region,true,properties/cluster-properties[`iceberg_rest_catalog_aws_region`] overrides config_ref:cloud_storage_region,true,properties/cluster-properties[`cloud_storage_region`]
+** config_ref:iceberg_rest_catalog_aws_credentials_source,true,properties/cluster-properties[`iceberg_rest_catalog_aws_credentials_source`] overrides config_ref:cloud_storage_credentials_source,true,properties/cluster-properties[`cloud_storage_credentials_source`]
+
+== Update cluster configuration
+
+To configure your Redpanda cluster to enable Iceberg on a topic and integrate with the AWS Glue Data Catalog:
+
+. Edit your cluster configuration to set the `iceberg_enabled` property to `true`, and set the catalog integration properties listed in the example below.
+ifndef::env-cloud[]
++
+Run `rpk cluster config edit` to update these properties:
++
+[,bash]
+----
+iceberg_enabled: true 
+iceberg_catalog_type: rest
+iceberg_rest_catalog_endpoint: https://glue.<aws-region>.amazonaws.com/iceberg
+iceberg_rest_catalog_authentication_mode: aws_sigv4
+iceberg_rest_catalog_base_location: s3://<bucket-name>/<warehouse-path>
+----
+endif::[]
+ifdef::env-cloud[]
+Use `rpk` like in the following example, or use the Cloud API to xref:manage:cluster-maintenance/config-cluster.adoc#set-cluster-configuration-properties[update these cluster properties]. The update might take several minutes to complete.
++
+To reference a secret in a cluster property, you must first xref:manage:iceberg/use-iceberg-catalogs.adoc#store-a-secret-for-rest-catalog-authentication[store the secret value]. 
++
+[,bash]
+----
+rpk cloud login
+
+rpk profile create --from-cloud <cluster-id>
+
+rpk cluster config set \
+  iceberg_enabled=true \
+  iceberg_catalog_type=rest \
+  iceberg_rest_catalog_endpoint=https://glue.<aws-region>.amazonaws.com/iceberg \
+  iceberg_rest_catalog_authentication_mode=aws_sigv4 \
+  iceberg_rest_catalog_base_location=s3://<bucket-name>/<warehouse-path>
+
+----
+endif::[]
++
+Use your own values for the following placeholders:
++
+--
+- `<aws-region>`: The AWS region where your Data Catalog is located. The region in the AWS Glue endpoint must match the region specified in either your config_ref:cloud_storage_region,true,properties/cluster-properties[`cloud_storage_region`] or config_ref:iceberg_rest_catalog_aws_region,true,properties/cluster-properties[`iceberg_rest_catalog_aws_region`] property.
+- `<bucket-name>` and `<warehouse-path>`: AWS Glue requires you to specify the base location where Redpanda stores Iceberg data and metadata files. You must use an S3 URI; for example, `s3://<bucket-name>/iceberg`. As a security best practice, Redpanda Data recommends specifying a subfolder (using prefixes) rather than the root of the bucket.
+--
++
+[,bash,role=no-copy]
+----
+Successfully updated configuration. New configuration version is 2.
+----
+
+ifndef::env-cloud[]
+. If you change the configuration for a running cluster, you must restart that cluster now. 
+endif::[]
+
+. Enable the integration for a topic by configuring the topic property `redpanda.iceberg.mode`. The following examples show how to use xref:get-started:rpk-install.adoc[`rpk`] to either create a new topic or alter the configuration for an existing topic and set the Iceberg mode to `key_value`. The `key_value` mode creates a two-column Iceberg table for the topic, with one column for the record metadata including the key, and another binary column for the record's value. See xref:manage:iceberg/choose-iceberg-mode.adoc[] for more details on Iceberg modes.  
++
+.Create a new topic and set `redpanda.iceberg.mode`:
+[,bash]
+----
+rpk topic create <topic-name> --topic-config=redpanda.iceberg.mode=key_value
+----
++
+.Set `redpanda.iceberg.mode` for an existing topic:
+[,bash]
+----
+rpk topic alter-config <topic-name> --set redpanda.iceberg.mode=key_value
+---- 
+
+. Produce to the topic. For example, 
++
+[,bash]
+----
+echo "hello world\nfoo bar\nbaz qux" | rpk topic produce <topic-name> --format='%k %v\n'
+----
+
+You should see the topic as a table with data in AWS Glue Data Catalog. The data may take some time to become visible, depending on your config_ref:iceberg_target_lag_ms,true,properties/cluster-properties[`iceberg_target_lag_ms`] setting.
+
+. In AWS Glue Studio, go to Databases. 
+. Select the `redpanda` database. The `redpanda` database and the table within are automatically added for you. The table name is the same as the topic name.
+
+== Query Iceberg table
+
+You can query the Iceberg table using different engines, such as Amazon Athena, PyIceberg, or Apache Spark. To query the table or view the table data in AWS Glue, ensure that your account has the necessary permissions to access the catalog, database, and table.
+
+To query the table in Amazon Athena:
+
+. On the list of tables in AWS Glue Studio, click "Table data" under the *View data* column. 
+. Click "Proceed" to be redirected to the Athena query editor. 
+. In the query editor, select AwsDataCatalog as the data source, and select the `redpanda` database.
+. The SQL query editor should be pre-populated with a query that selects 10 rows from the Iceberg table. Run the query to see a preview of the table data.
++
+[,sql]
+----
+SELECT * FROM "AwsDataCatalog"."redpanda"."<table-name>" limit 1;
+----
++
+Your query results should look like the following:
++
+[,sql,role="no-copy no-wrap"]
+----
++-----------------------------------------------------+----------------+
+| redpanda                                            | value          |
++-----------------------------------------------------+----------------+
+| {partition=0, offset=0, timestamp=2025-07-21        | 77 6f 72 6c 64 |
+| 18:11:25.070000, headers=null, key=[B@1900af31}     |                |
++-----------------------------------------------------+----------------+
+----
+
+== See also
+
+- xref:manage:iceberg/query-iceberg-topics.adoc[]
+
+// end::single-source[]
