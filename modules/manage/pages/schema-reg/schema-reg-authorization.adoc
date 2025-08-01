@@ -1,0 +1,385 @@
+= Schema Registry Authorization
+:page-categories: Management, Schema Registry, rpk, Security
+:page-aliases: manage:schema-reg-authorization.adoc
+:description: Learn how to set up and manage Schema Registry Authorization using ACL definitions that control user access to specific Schema Registry operations.
+// tag::single-source[]
+
+Schema Registry Authorization enables fine-grained restriction of operations to Schema Registry resources by user or role through access control lists (ACLs).
+
+ifndef::env-cloud[]
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+endif::[]
+
+== About Schema Registry Authorization
+
+Schema Registry Authorization allows you to control which users and applications can perform specific operations within the Redpanda Schema Registry. This ensures that only authorized entities can read, write, modify, delete, or configure schemas and their settings.
+
+Before v25.2, Schema Registry supported authentication, but once a user was authenticated, they had full access to all Schema Registry operations, including reading, modifying, and deleting schemas and configuration both per-subject and globally.
+
+Starting in v25.2, Schema Registry Authorization provides fine-grained access control through ACLs. You can now restrict access to specific subjects and operations.
+
+=== How to manage Schema Registry Authorization
+
+You can manage Schema Registry Authorization in two ways:
+
+- **Using rpk**: Use the xref:reference:rpk/rpk-security/rpk-security-acl-create.adoc[`rpk security acl create`] command, just like you would for other Kafka ACLs.
+- **Using the API**: Use the xref:api:ROOT:schema-registry-api.adoc#get-/security/acls[Redpanda Schema Registry API] endpoints.
+
+=== Schema Registry ACL resource types
+
+Schema Registry Authorization introduces two new ACL resource types in addition to the standard Kafka ACL resources (`topic`, `group`, `cluster`, and `transactional_id`):
+
+* `registry`: Controls whether or not to grant ACL access to global, or top-level Schema Registry operations. Specify using the flag `registry-global`.
+* `subject`: Controls ACL access for specific Schema Registry subjects. Specify using the flag `registry-subject`.
+
+== Supported operations
+
+Redpanda Schema Registry ACLs support the following specific subset of Schema Registry endpoints and operations:
+
+[NOTE]
+====
+Not all Kafka operations are supported when using Redpanda Schema Registry ACLs.
+====
+
+|===
+| Endpoint | HTTP method | Operation | Resource
+
+| `/config`
+| `GET`
+| `describe_configs`
+| `registry`
+
+| `/config`
+| `PUT`
+| `alter_configs`
+| `registry`
+
+| `/config/\{subject}`
+| `GET`
+| `describe_configs`
+| `subject`
+
+| `/config/\{subject}`
+| `PUT`
+| `alter_configs`
+| `subject`
+
+| `/config/\{subject}`
+| `DELETE`
+| `alter_configs`
+| `subject`
+
+| `/mode`
+| `GET`
+| `describe_configs`
+| `registry`
+
+| `/mode`
+| `PUT`
+| `alter_configs`
+| `registry`
+
+| `/mode/\{subject}`
+| `GET`
+| `describe_configs`
+| `subject`
+
+| `/mode/\{subject}`
+| `PUT`
+| `alter_configs`
+| `subject`
+
+| `/mode/\{subject}`
+| `DELETE`
+| `alter_configs`
+| `subject`
+
+| `/schemas/types`
+| `GET`
+| none/open
+| -
+
+| `/schema/ids/\{id}`
+| `GET`
+| `read`
+| `subject`
+
+| `/schema/ids/\{versions}`
+| `GET`
+| `describe`
+| `registry`
+
+| `/schema/ids/\{subjects}`
+| `GET`
+| `describe`
+| `subject`
+
+| `/subjects`
+| `GET`
+| `describe`
+| `subject`
+
+| `/subjects/\{subject}`
+| `POST`
+| `read`
+| `subject`
+
+| `/subjects/\{subject}`
+| `DELETE`
+| `delete`
+| `subject`
+
+| `/subjects/\{subject}/versions`
+| `GET`
+| `describe`
+| `subject`
+
+| `/subjects/\{subject}/versions`
+| `POST`
+| `write`
+| `subject`
+
+| `/subjects/\{subject}/versions/\{version}`
+| `GET`
+| `read`
+| `subject`
+
+| `/subjects/\{subject}/versions/\{version}`
+| `DELETE`
+| `delete`
+| `subject`
+
+| `/subjects/\{subject}/versions/schema`
+| `GET`
+| `read`
+| `subject`
+
+| `/subjects/\{subject}/versions/referencedby`
+| `GET`
+| `describe`
+| `registry`
+
+| `compatibility/subjects/\{subject}/versions/\{version}`
+| `POST`
+| `read`
+| `subject`
+
+| `/status/ready`
+| `GET`
+| none/open
+| -
+
+| `/security/acls`
+| `GET`
+| `describe`
+| `cluster`
+
+| `/security/acls`
+| `POST`
+| `alter`
+| `cluster`
+
+| `/security/acls`
+| `DELETE`
+| `alter`
+| `cluster`
+|===
+
+For additional guidance on these operations, see the xref:api:ROOT:schema-registry-api.adoc#get-/security/acls[Redpanda Schema Registry API].
+
+== Enable Schema Registry Authorization
+
+=== Prerequisites
+
+Before you can enable Schema Registry Authorization, you must have:
+
+* A valid Redpanda Enterprise license
+* `rpk` v25.2+
+* Cluster administrator permissions to modify cluster configuration
+
+=== Enable authorization
+
+To enable Schema Registry Authorization for your cluster, run:
+
+[,bash]
+----
+rpk cluster config set schema_registry_enable_authorization true
+----
+
+To enable management of Schema Registry ACLs by the principal `schema_registry_admin`, run:
+
+[,bash]
+----
+rpk security acl create --allow-principal schema_registry_admin --cluster --operation alter
+----
+
+For details, see xref:reference:properties/cluster-properties.adoc#schema_registry_enable_authorization[`schema_registry_enable_authorization`].
+
+== Create and manage Schema Registry ACLs
+
+This section shows you how to create and manage ACLs for Schema Registry resources.
+
+=== Create an ACL for a topic and Schema Registry subject
+
+This example creates an ACL that allows the principal `panda` to read from both the topic `bar` and the Schema Registry subject `bar-value`. This pattern is common when you want to give a user or application access to both the Kafka topic and its associated schema.
+
+[,bash]
+----
+rpk security acl create --allow-principal panda --operation read --topic bar --registry-subject bar-value
+
+PRINCIPAL   HOST  RESOURCE-TYPE  RESOURCE-NAME  RESOURCE-PATTERN-TYPE  OPERATION  PERMISSION  ERROR
+User:panda  *     SUBJECT        bar-value      LITERAL                READ       ALLOW
+User:panda  *     TOPIC          bar            LITERAL                READ       ALLOW
+
+----
+
+=== Create an ACL for global Schema Registry access
+
+This example grants the user `jane` global read and write access to the Schema Registry, plus read and write access to the topic `private`. The `--registry-global` flag creates ACLs for all <<supported-operations,global Schema Registry operations>>.
+
+[,bash]
+----
+rpk security acl create --allow-principal jane --operation read,write --topic private --registry-global
+PRINCIPAL  HOST  RESOURCE-TYPE  RESOURCE-NAME  RESOURCE-PATTERN-TYPE  OPERATION  PERMISSION  ERROR
+User:jane  *     REGISTRY                      LITERAL                READ       ALLOW
+User:jane  *     REGISTRY                      LITERAL                WRITE      ALLOW
+User:jane  *     TOPIC          private        LITERAL                READ       ALLOW
+User:jane  *     TOPIC          private        LITERAL                WRITE      ALLOW
+----
+
+User `jane` now has global `read` and `write` access to the Schema Registry and to the topic `private`.
+
+=== Create a role with Schema Registry ACLs
+
+You can combine Schema Registry ACLs with xref:manage:security/authorization/rbac.adoc[role-based access control (RBAC)] to create reusable roles. This approach simplifies permission management when you need to assign the same set of permissions to multiple users.
+
+This example creates a role called `SoftwareEng` and assigns it ACLs for both topic and Schema Registry access:
+
+[NOTE]
+====
+Redpanda recommends using the topic naming strategy for Schema Registry subjects, where subjects follow the pattern `<topicName>-key` or `<topicName>-value`. For details, see xref:manage:schema-reg/schema-id-validation.adoc#set-subject-name-strategy-per-topic[Set subject name strategy per topic].
+====
+
+[,bash]
+----
+# Create the role
+rpk security role create SoftwareEng
+
+# Create ACLs for the role
+rpk security acl create \
+  --operation read,write \
+  --topic private \
+  --registry-subject private-key,private-value \
+  --allow-role SoftwareEng
+
+# You can add more ACLs to this role later
+rpk security acl create --allow-role "RedpandaRole:SoftwareEng" [additional-acl-flags]
+----
+
+After creating the role, assign it to users:
+
+[,bash]
+----
+
+rpk security role assign SoftwareEng --principal User:john,User:jane
+Successfully assigned role "SoftwareEng" to
+NAME  PRINCIPAL-TYPE
+john  User
+jane  User
+----
+
+=== Troubleshooting ACL creation
+
+When creating ACLs that include Schema Registry subjects, you might encounter errors if the subject doesn't exist or if there are configuration issues.
+
+==== Common error: Subject not found
+
+Sometimes an ACL for a Kafka topic is created successfully, but the Schema Registry subject ACL fails:
+
+[,bash]
+----
+rpk security acl create --allow-principal alice --operation read --topic bar --registry-subject bar-value
+
+PRINCIPAL   HOST  RESOURCE-TYPE  RESOURCE-NAME  RESOURCE-PATTERN-TYPE  OPERATION  PERMISSION  ERROR
+User:alice  *     SUBJECT        bar-value      LITERAL                READ       ALLOW       Not found
+User:alice  *     TOPIC          bar            LITERAL                READ       ALLOW
+----
+
+In this example, the ACL for topic `bar` was created successfully, but the ACL for Schema Registry subject `bar-value` failed with a "Not found" error.
+
+**Common causes:**
+
+* Incorrect Schema Registry URL configuration
+* Using the incorrect version of Redpanda
+
+==== Debugging with verbose output
+
+To get more detailed information about ACL creation failures, use the `-v` flag for verbose logging.
+
+In this case, the user gets a `Not found` error after attempting to create two ACLs, one for the subject and one for the topic:
+
+[,bash]
+----
+rpk security acl create --allow-principal alice --operation read --topic bar --registry-subject bar-value -v
+12:17:33.911 DEBUG opening connection to broker {"addr": "127.0.0.1:9092", "broker": "seed_0"}
+12:17:33.912 DEBUG connection opened to broker {"addr": "127.0.0.1:9092", "broker": "seed_0"}
+12:17:33.912 DEBUG issuing api versions request {"broker": "seed_0", "version": 4}
+12:17:33.912 DEBUG wrote ApiVersions v4 {"broker": "seed_0", "bytes_written": 31, "write_wait": 13.416µs", "time_to_write": "17.75µs", "err": null}
+12:17:33.912 DEBUG read ApiVersions v4 {"broker": "seed_0", "bytes_read": 266, "read_wait": 16.209µs", "time_to_read": "8.360666ms", "err": null}
+12:17:33.920 DEBUG connection initialized successfully {"addr": "127.0.0.1:9092", "broker": "seed_0"}
+12:17:33.920 DEBUG wrote CreateACLs  v2 {"broker": "seed_0", "bytes_written": 43, "write_wait": 9.0985ms, "time_to_write": "14µs", "err": null}
+12:17:33.935 DEBUG read CreateACLs v2 {"broker": "seed_0", "bytes_read": 19, "read_wait": 23.792µs, "time_to_read": "14.323041ms", "err": null}
+12:17:33.935 DEBUG sending request {"method": "POST", "URL: "http://127.0.0.1:8081/security/acls", "has_bearer": false, "has_basic_auth": false}
+PRINCIPAL   HOST  RESOURCE-TYPE  RESOURCE-NAME  RESOURCE-PATTERN-TYPE  OPERATION  PERMISSION  ERROR
+User:alice  *     SUBJECT        bar-value      LITERAL                READ       ALLOW       Not found
+User:alice  *     TOPIC          bar            LITERAL                READ       ALLOW
+----
+
+The `Not found` error occurs in the request: `12:17:33.935 DEBUG sending request {"method": "POST", "URL: "http://127.0.0.1:8081/security/acls", "has_bearer": false, 
+"has_basic_auth": false}`, meaning that the endpoint is not available (because you are using an older Redpanda version). You must upgrade to the current version of Redpanda.
+
+This next error occurs when the user tries to create two ACLs, one for a topic and one for a registry-subject:
+
+[bash]
+----
+$ rpk security acl create --topic private --allow-principal mary --operation read --registry-subject private-key -v
+18:27:05.485  DEBUG  opening connection to broker  {"addr": "127.0.0.1:9092", "broker": "seed_0"}
+18:27:05.485  DEBUG  connection opened to broker  {"addr": "127.0.0.1:9092", "broker": "seed_0"}
+18:27:05.485  DEBUG  issuing api versions request  {"broker": "seed_0", "version": 4}
+18:27:05.485  DEBUG  wrote ApiVersions v4  {"broker": "seed_0", "bytes_written": 31, "write_wait": "14.584µs", "time_to_write": "18.25µs", "err": null}
+18:27:05.487  DEBUG  read ApiVersions v4  {"broker": "seed_0", "bytes_read": 331, "read_wait": "23.583µs", "time_to_read": "1.847542ms", "err": null}
+18:27:05.487  DEBUG  connection initialized successfully  {"addr": "127.0.0.1:9092", "broker": "seed_0"}
+18:27:05.487  DEBUG  wrote CreateACLs v2  {"broker": "seed_0", "bytes_written": 45, "write_wait": "2.564792ms", "time_to_write": "8.75µs", "err": null}
+18:27:05.489  DEBUG  read CreateACLs v2  {"broker": "seed_0", "bytes_read": 19, "read_wait": "20.042µs", "time_to_read": "1.465375ms", "err": null}
+18:27:05.489  DEBUG  sending request  {"method": "POST", "URL": "http://127.0.0.1:8081/security/acls", "has_bearer": false, "has_basic_auth": false}
+PRINCIPAL  HOST  RESOURCE-TYPE  RESOURCE-NAME  RESOURCE-PATTERN-TYPE  OPERATION  PERMISSION  ERROR
+User:mary  *     SUBJECT        private-key    LITERAL                READ       ALLOW       Invalid license: not present
+User:mary  *     TOPIC          private        LITERAL                READ       ALLOW
+----
+
+The `Invalid license: not present` error indicates that the user is trying to create an ACL for a resource that requires a license, but no license is present. See xref:get-started:licensing/overview.adoc[Licensing overview] for details on how to obtain a license.
+
+== Suggested reading
+
+ifndef::env-cloud[]
+* xref:manage:schema-reg/schema-reg-overview.adoc[]
+* xref:reference:rpk/rpk-registry/rpk-registry.adoc[rpk registry]
+* xref:api:ROOT:pandaproxy-schema-registry.adoc[Schema Registry API]
+* xref:reference:node-configuration-sample.adoc[] (search for `schema_registry`)
+* xref:manage:monitoring.adoc#service-level-queries[Monitor Schema Registry service-level metrics]
+* xref:deploy:deployment-option/self-hosted/manual/node-property-configuration.adoc[Configure broker properties for Schema Registry]
+* xref:console:config/deserialization.adoc#schema-registry[Deserialization]
+endif::[]
+ifdef::env-cloud[]
+* xref:manage:schema-reg/schema-reg-overview.adoc[]
+* xref:reference:rpk/rpk-registry/rpk-registry.adoc[rpk registry]
+* xref:api:ROOT:pandaproxy-schema-registry.adoc[Schema Registry API]
+* xref:manage:monitoring.adoc#service-level-queries[Monitor Schema Registry service-level metrics]
+* xref:manage:schema-reg/record-deserialization.adoc#schema-registry[Deserialization]
+
+endif::[]
+
+// end::single-source[]
