@@ -2,13 +2,6 @@
 :description: Add Redpanda topics as Iceberg tables that you can query from AWS Glue Data Catalog.
 :page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
 :page-beta: true
-ifdef::env-cloud[]
-:rpk-install-doc: manage:rpk/rpk-install.adoc
-endif::[]
-ifndef::env-cloud[]
-:rpk-install-doc: get-started:rpk-install.adoc
-endif::[]
-
 
 [NOTE]
 ====
@@ -16,13 +9,22 @@ include::shared:partial$enterprise-license.adoc[]
 ====
 
 // tag::single-source[]
+ifdef::env-cloud[]
+:rp_version: 25.2
+:rpk_install_doc: manage:rpk/rpk-install.adoc
+endif::[]
+
+ifndef::env-cloud[]
+:rp_version: 25.1.7
+:rpk_install_doc: get-started:rpk-install.adoc
+endif::[]
 
 This guide walks you through querying Redpanda topics as Iceberg tables stored in AWS S3, using a catalog integration with https://docs.aws.amazon.com/glue/latest/dg/components-overview.html#data-catalog-intro[AWS Glue^]. For general information about Iceberg catalog integrations in Redpanda, see xref:manage:iceberg/use-iceberg-catalogs.adoc[].
 
 == Prerequisites
 
-* Redpanda version 25.1.7 or later.
-* xref:{rpk-install-doc}[`rpk`] installed or updated to the latest version.
+* Redpanda version {rp_version} or later.
+* xref:{rpk_install_doc}[`rpk`] installed or updated to the latest version.
 ifdef::env-cloud[]
 ** You can also use the Redpanda Cloud API to xref:manage:cluster-maintenance/config-cluster.adoc#set-cluster-configuration-properties[reference secrets in your cluster configuration].
 endif::[]
@@ -44,15 +46,21 @@ If you want to use partitioning, you must specify a custom partition specificati
 
 == Authorize access to AWS Glue
 
+ifndef::env-cloud[]
 You must allow Redpanda access to AWS Glue services in your AWS account. You can use the same access credentials that you configured for S3 (IAM role, access keys, and KMS key), as long as you have also added read and write access to AWS Glue Data Catalog.
 
 For example, you could create a separate IAM policy that manages access to AWS Glue, and attach it to the IAM role that Redpanda also uses to access S3. It is recommended to add all AWS Glue API actions in the policy (`"glue:*"`) on the following resources:
+endif::[]
+
+ifdef::env-cloud[]
+You must allow Redpanda access to AWS Glue services in your AWS account. It is recommended to create a new IAM policy or role that manages access to AWS Glue, allowing all AWS Glue API actions (`"glue:*"`) on the following resources:
+endif::[]
 
 - Root catalog (`catalog`)
 - All databases (`database/*`)
 - All tables (`table/\*/*`)
 
-Your policy should include a statement similar to the following:
+Your IAM policy should include a statement similar to the following:
 
 [,json]
 ----
@@ -78,7 +86,8 @@ For more information on configuring IAM permissions, see the https://docs.aws.am
 
 == Configure authentication and credentials
 
-You can configure credentials for the AWS Glue Data Catalog integration in either of the following ways:
+ifndef::env-cloud[]
+You must configure credentials for the AWS Glue Data Catalog integration in either of the following ways:
 
 * Allow Redpanda to use the same `cloud_storage_*` credential properties configured for S3. If you do not configure the overrides listed below, Redpanda uses the same credentials for both S3 and AWS Glue. This is the recommended approach.
 * If you want to configure authentication to AWS Glue separately from authentication to S3, there are equivalent credential configuration properties named `iceberg_rest_catalog_aws_*` that override the object storage credentials. These properties only apply to REST catalog authentication, and never to S3 authentication:
@@ -86,6 +95,15 @@ You can configure credentials for the AWS Glue Data Catalog integration in eithe
 ** config_ref:iceberg_rest_catalog_aws_secret_key,true,properties/cluster-properties[`iceberg_rest_catalog_aws_secret_key`] overrides config_ref:cloud_storage_secret_key,true,properties/cluster-properties[`cloud_storage_secret_key`]
 ** config_ref:iceberg_rest_catalog_aws_region,true,properties/cluster-properties[`iceberg_rest_catalog_aws_region`] overrides config_ref:cloud_storage_region,true,properties/cluster-properties[`cloud_storage_region`]
 ** config_ref:iceberg_rest_catalog_aws_credentials_source,true,properties/cluster-properties[`iceberg_rest_catalog_aws_credentials_source`] overrides config_ref:cloud_storage_credentials_source,true,properties/cluster-properties[`cloud_storage_credentials_source`]
+endif::[]
+
+ifdef::env-cloud[]
+You must configure credentials for the AWS Glue Data Catalog integration using the following properties:
+
+* config_ref:iceberg_rest_catalog_aws_access_key,true,properties/cluster-properties[`iceberg_rest_catalog_aws_access_key`]
+* config_ref:iceberg_rest_catalog_aws_secret_key,true,properties/cluster-properties[`iceberg_rest_catalog_aws_secret_key`], added as a secret value (see the <<update-cluster-configuration,next section>> for details)
+* config_ref:iceberg_rest_catalog_aws_region,true,properties/cluster-properties[`iceberg_rest_catalog_aws_region`]
+endif::[]
 
 == Update cluster configuration
 
@@ -100,15 +118,30 @@ Run `rpk cluster config edit` to update these properties:
 ----
 iceberg_enabled: true 
 iceberg_catalog_type: rest
-iceberg_rest_catalog_endpoint: https://glue.<aws-region>.amazonaws.com/iceberg
+iceberg_rest_catalog_endpoint: https://glue.<glue-region>.amazonaws.com/iceberg
 iceberg_rest_catalog_authentication_mode: aws_sigv4
 iceberg_rest_catalog_base_location: s3://<bucket-name>/<warehouse-path>
+# Use the iceberg_rest_catalog_aws_* properties if you want to 
+# use separate AWS credentials for the catalog, or delete to reuse S3 
+# (cloud_storage_*) credentials.
+# For access using access keys only, use iceberg_rest_catalog_aws_access_key
+# and iceberg_rest_catalog_aws_secret_key. For access with an IAM role, use 
+# iceberg_rest_catalog_aws_credentials_source only. 
+# iceberg_rest_catalog_aws_region:
+# iceberg_rest_catalog_aws_access_key:
+# iceberg_rest_catalog_aws_secret_key:
+# iceberg_rest_catalog_aws_credentials_source:
 ----
++
+Use your own values for the following placeholders:
++
+--
+- `<glue-region>`: The AWS region where your Data Catalog is located. The region in the AWS Glue endpoint must match the region specified in either your config_ref:cloud_storage_region,true,properties/cluster-properties[`cloud_storage_region`] or config_ref:iceberg_rest_catalog_aws_region,true,properties/cluster-properties[`iceberg_rest_catalog_aws_region`] property.
+- `<bucket-name>` and `<warehouse-path>`: AWS Glue requires you to specify the base location where Redpanda stores Iceberg data and metadata files. You must use an S3 URI; for example, `s3://<bucket-name>/iceberg`. As a security best practice, Redpanda Data recommends specifying a subfolder (using prefixes) rather than the root of the bucket.
+--
 endif::[]
 ifdef::env-cloud[]
 Use `rpk` like in the following example, or use the Cloud API to xref:manage:cluster-maintenance/config-cluster.adoc#set-cluster-configuration-properties[update these cluster properties]. The update might take several minutes to complete.
-+
-To reference a secret in a cluster property, you must first xref:manage:iceberg/use-iceberg-catalogs.adoc#store-a-secret-for-rest-catalog-authentication[store the secret value]. 
 +
 [,bash]
 ----
@@ -119,19 +152,23 @@ rpk profile create --from-cloud <cluster-id>
 rpk cluster config set \
   iceberg_enabled=true \
   iceberg_catalog_type=rest \
-  iceberg_rest_catalog_endpoint=https://glue.<aws-region>.amazonaws.com/iceberg \
+  iceberg_rest_catalog_endpoint=https://glue.<glue-region>.amazonaws.com/iceberg \
   iceberg_rest_catalog_authentication_mode=aws_sigv4 \
   iceberg_rest_catalog_base_location=s3://<bucket-name>/<warehouse-path>
-
+  iceberg_rest_catalog_aws_region=<glue-region>
+  iceberg_rest_catalog_aws_access_key=<glue-access-key>
+  iceberg_rest_catalog_aws_secret_key=${secrets.<glue-secret-key-name>}
 ----
-endif::[]
 +
 Use your own values for the following placeholders:
 +
 --
-- `<aws-region>`: The AWS region where your Data Catalog is located. The region in the AWS Glue endpoint must match the region specified in either your config_ref:cloud_storage_region,true,properties/cluster-properties[`cloud_storage_region`] or config_ref:iceberg_rest_catalog_aws_region,true,properties/cluster-properties[`iceberg_rest_catalog_aws_region`] property.
+- `<glue-region>`: The AWS region where your Data Catalog is located. The region in the AWS Glue endpoint must match the region specified in your config_ref:iceberg_rest_catalog_aws_region,true,properties/cluster-properties[`iceberg_rest_catalog_aws_region`] property.
 - `<bucket-name>` and `<warehouse-path>`: AWS Glue requires you to specify the base location where Redpanda stores Iceberg data and metadata files. You must use an S3 URI; for example, `s3://<bucket-name>/iceberg`. As a security best practice, Redpanda Data recommends specifying a subfolder (using prefixes) rather than the root of the bucket.
+- `<glue-access-key>`: The AWS access key ID for your Glue service account.
+- `<glue-secret-key-name>`: The name of the secret that stores the AWS secret access key for your Glue service account. To reference a secret in a cluster property, for example `iceberg_rest_catalog_aws_secret_key`, you must first xref:manage:iceberg/use-iceberg-catalogs.adoc#store-a-secret-for-rest-catalog-authentication[store the secret value].
 --
+endif::[]
 +
 [,bash,role=no-copy]
 ----
