@@ -13,6 +13,7 @@ Different Redpanda APIs support different authentication methods. You can config
 |
 - SASL
 ** SASL/SCRAM
+** SASL/PLAIN
 ** SASL/OAUTHBEARER (OIDC)
 ifndef::env-kubernetes[** SASL/GSSAPI (Kerberos)]
 ifndef::env-kubernetes[- mTLS]
@@ -33,6 +34,38 @@ ifndef::env-kubernetes[- mTLS]
 - OIDC
 |===
 
+[[principals]]
+== Users, principals, and superusers
+
+When you configure authentication and authorization in Redpanda, it's important to understand the distinction between *users*, *principals*, and *superusers*:
+
+- A user refers to a stored credential within Redpanda, typically a username and password stored in the internal SASL credential store. These are created using commands such as `rpk security user create`.
+
+- A principal is the authenticated identity string associated with a client session. It's what Redpanda uses for access control, ACLs, and superuser assignment.
+
+- A superuser is a privileged principal who has unrestricted access to xref:manage:security/authorization/index.adoc#operations[all operations] in a Redpanda cluster.
+
+Superusers can:
+
+- Grant or revoke permissions to other users through ACLs.
+- Access all Admin API endpoints.
+- Create, modify, or delete topics and consumer groups.
+- View and manage the cluster's internal state.
+
+Depending on how a client authenticates, the principal might be:
+
+- The SCRAM username
+- A claim from a JWT
+- A certificate DN
+- A Kerberos identity
+
+You assign ACLs and superuser roles to principals, not users. Even if a user exists, they have no access unless its associated principal is granted permissions.
+
+For example, with OIDC:
+
+- If your token's `sub` claim is `example@company.com`, then:
+  * In the `superusers` list, specify the principal as `example@company.com`
+  * In ACL rules, specify the principal as `user:OIDC:example@company.com`
 ifdef::env-kubernetes[]
 == Prerequisites
 
@@ -43,6 +76,7 @@ You must have the following:
 * https://kubernetes.io/docs/tasks/tools/#kubectl[Kubectl^]. Ensure you have the `kubectl` command-line tool installed and configured to communicate with your cluster.
 endif::[]
 
+[[enable]]
 == Enable authentication
 
 ifndef::env-kubernetes[]
@@ -59,9 +93,7 @@ When you enable authentication in the Redpanda Helm chart:
 - Basic authentication is enabled for the HTTP Proxy and Schema Registry listeners
 - Authorization is enabled
 
-When enabling authentication, you must create at least one superuser. A superuser is a special user that has xref:manage:security/authorization/index.adoc#operations[all permissions] in the cluster. They can grant permissions to other users through access control lists (ACLs).
-
-Without a superuser, you can create other users, but you can't grant them permissions to the cluster.
+When enabling authentication, you must create at least one superuser. Without a superuser, you can create other users, but you can't grant them permissions to the cluster.
 
 CAUTION: Do not enable authorization without a superuser. Without a superuser, you may be locked out of the cluster and lose the ability to manage cluster settings or users.
 
@@ -111,7 +143,7 @@ kubectl --namespace <namespace> create secret generic redpanda-superusers --from
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -189,7 +221,7 @@ If you leave this placeholder empty, the Helm chart uses the default authenticat
 
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -289,13 +321,13 @@ kubectl create secret generic redpanda-superusers \
   --dry-run=client -o yaml | kubectl apply -f -
 ----
 +
-The xref:reference:k-redpanda-helm-spec.adoc#statefulset-sidecars-configwatcher-enabled[`config-watcher` sidecar] in the Pod polls the Secret resource for changes and triggers a rolling upgrade to add the new superusers to the Redpanda cluster.
+The xref:reference:k-redpanda-helm-spec.adoc#statefulset-sidecars-configwatcher-enabled[`config-watcher` sidecar] in the Pod watches the superusers Secret for changes. When changes are observed, it creates and updates users accordingly.
 
 - If you created superusers using a YAML list, you can update the list:
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -368,9 +400,7 @@ endif::[]
 ifndef::env-kubernetes[]
 === Create superusers
 
-Before enabling authorization in Redpanda, which can happen implicitly when you enable authentication, you must create a superuser. A superuser is a special user that has xref:manage:security/authorization/index.adoc#operations[all permissions] on the cluster. They can grant permissions to other users through access control lists (ACLs).
-
-Without a superuser, you can create other users, but you can't grant them permissions to the cluster.
+Before enabling authorization in Redpanda, which can happen implicitly when you enable authentication, you must create a superuser. Without a superuser, you can create other users, but you can't grant them permissions to the cluster.
 
 IMPORTANT: Enabling authorization without a superuser can result in being locked out of the cluster, as you would not have the necessary permissions to manage the cluster's settings or users.
 
@@ -380,7 +410,7 @@ A superuser can either be a SCRAM user or it can be provided by external authent
 +
 [,bash]
 ----
-rpk cluster config set superusers ['<superuser-username>']
+rpk cluster config set superusers '["superuser-username"]'
 ----
 +
 This can be a new user or an existing user. For example, if you use the superuser named `admin`, then Redpanda allows the `admin` user to do anything, but Redpanda does not create the `admin` user.
@@ -467,6 +497,8 @@ ifndef::env-kubernetes[- <<mTLS>> (Mutual Transport Layer Security)]
 SASL provides a flexible and adaptable framework for implementing various authentication mechanisms. Redpanda supports these SASL mechanisms:
 
 - <<scram,SASL/SCRAM>>
+
+- <<plain,SASL/PLAIN>>
 
 - <<oidc,SASL/OAUTHBEARER>> (OpenID Connect, also known as OIDC)
 
@@ -623,12 +655,17 @@ endif::[]
 [[schema-and-http-to-redpanda]]
 ===== Configure Schema Registry and HTTP Proxy to connect to Redpanda with SASL
 
-Schema Registry and HTTP Proxy connect to Redpanda over the Kafka API. For the Kafka username and password, Redpanda uses ephemeral credentials internal to the cluster. Ephemeral credentials are regular SCRAM credentials, but they're only stored in memory and are lost when a broker restarts. When the Schema Registry or HTTP Proxy start up, they broadcast an ephemeral credential to other brokers over the internal RPC. If authentication fails to a particular broker, new ephemeral credentials are sent to that broker, and the service reconnects.
+Schema Registry and HTTP Proxy connect to Redpanda over the Kafka API.
+
+[IMPORTANT]
+====
+include::shared:partial$http-proxy-ephemeral-credentials-breaking-change.adoc[tags=!*;include-release-notes-link]
+====
 
 Schema Registry and HTTP Proxy support only the SASL/SCRAM mechanism.
 
 ifndef::env-kubernetes[]
-You can override the ephemeral credentials and manually configure Schema Registry and HTTP Proxy to connect to Redpanda with SASL. This approach is particularly useful when you want to apply specific access control through ACLs for the Schema Registry and HTTP Proxy users.
+Starting in Redpanda 25.2, you must manually configure HTTP Proxy to connect to Redpanda with SASL when HTTP Proxy API listeners use `authentication_method: none`. You can also manually configure Schema Registry to connect to Redpanda with SASL. This approach is particularly useful when you want to apply specific access control through ACLs for the Schema Registry and HTTP Proxy users.
 
 . xref:manage:security/authorization/index.adoc[Create appropriate ACLs] for the Schema Registry and HTTP Proxy users to define and restrict their access rights within the Redpanda cluster.
 
@@ -666,7 +703,22 @@ schema_registry_client:
   sasl_mechanism: SCRAM-SHA-256
 ----
 +
-For HTTP Proxy:
+For HTTP Proxy (required when `authentication_method: none` starting in Redpanda 25.2):
++
+[,yaml]
+----
+pandaproxy_client:
+  brokers:
+    - address: 127.0.0.1
+      port: 9092
+  scram_username: <username>
+  scram_password: <password>
+  sasl_mechanism: SCRAM-SHA-256
+----
++
+When HTTP Proxy API listeners use `authentication_method: none`, the HTTP Proxy client uses these credentials to authenticate with the Kafka API. The user specified in `scram_username` must have appropriate permissions to access the required Kafka resources.
++
+If TLS is enabled for the Kafka API, additional configuration is required:
 +
 [,yaml]
 ----
@@ -686,22 +738,137 @@ pandaproxy_client:
 ----
 endif::[]
 
+[[plain]]
+==== SASL/PLAIN
+
+You can configure Kafka clients to authenticate using either SASL/SCRAM or SASL/PLAIN with a
+single account using the same username and password. Unlike SASL/SCRAM, which uses a challenge response with hashed
+credentials, SASL/PLAIN transmits plaintext passwords. While not required, it is recommended that you use TLS for external encryption when using SASL/PLAIN authentication.
+
+If you have existing PLAIN Kafka clients and applications, you can migrate to Redpanda without updating
+your application by creating local Redpanda SCRAM accounts and enabling PLAIN as an authentication mechanism.
+
+NOTE: Clusters configured with _only_ a SASL/PLAIN mechanism are not supported.
+
+===== Enable SASL/PLAIN
+
+You must enable SASL/PLAIN explicitly by appending PLAIN to the list of SASL mechanisms:
+
+ifdef::env-kubernetes[]
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    auth:
+      sasl:
+        enabled: true
+        secretRef: redpanda-superusers
+    config:
+      cluster:
+        sasl_mechanisms:
+          - "SCRAM"
+          - "PLAIN"
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`enable-sasl.yaml`
+[,yaml]
+----
+auth:
+  sasl:
+    enabled: true
+    secretRef: redpanda-superusers
+config:
+  cluster:
+    sasl_mechanisms:
+      - "SCRAM"
+      - "PLAIN"
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values sasl-enable.yaml --reuse-values
+```
+
+--set::
++
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set auth.sasl.enabled=true \
+  --set auth.sasl.secretRef=redpanda-superusers \
+  --set "config.cluster.sasl_mechanisms[0]=SCRAM" \
+  --set "config.cluster.sasl_mechanisms[1]=PLAIN" \
+----
+
+====
+--
+======
+endif::[]
+ifndef::env-kubernetes[]
+[,bash]
+----
+rpk cluster config get sasl_mechanisms
+
+- SCRAM
+
+rpk cluster config set sasl_mechanisms '["SCRAM","PLAIN"]'
+----
+
+To enable SASL/PLAIN authentication for the Kafka API, set the `authentication_method` property of the Kafka listeners to `sasl`.
+
+In `redpanda.yaml`, enter:
+
+[,yaml,lines=6]
+----
+redpanda:
+  kafka_api:
+    - address: 0.0.0.0
+      port: 9092
+      name: sasl_plain_listener
+      authentication_method: sasl
+----
+endif::[]
+
 [[oidc]]
 ==== OAUTHBEARER (OIDC)
 
-NOTE: OpenID Connect (OIDC) authentication requires an xref:get-started:licenses.adoc[Enterprise license].
+NOTE: OpenID Connect (OIDC) authentication requires an xref:get-started:licenses.adoc[enterprise license].
 To upgrade, contact https://redpanda.com/try-redpanda?section=enterprise-trial[Redpanda sales^].
 
 When you enable https://openid.net/developers/how-connect-works/[OIDC^], Redpanda and
 Redpanda Console can delegate the authentication process to an external identity provider
-(IdP) such as Okta, Azure AD, or on-premise Active Directory Federation Service (AD FS).
+(IdP) such as Okta, Microsoft Entra ID, or on-premise Active Directory Federation Service (AD FS).
+
 With OIDC enabled, Redpanda does not need to manage user credentials directly,
 but can instead rely on the trusted authentication capabilities of established IdPs.
 
 Redpanda's implementation of OIDC provides SASL/OAUTHBEARER support for the Kafka API, and supports
 standard OIDC authentication across all other HTTP APIs, including Schema Registry, HTTP Proxy, and the Admin API.
 
-NOTE: OIDC is not supported by `rpk` or Redpanda Cloud. While `rpk` does not support OIDC, it does support configuring Redpanda with OIDC as a SASL mechanism.
+include::manage:partial$security/oidc/limitations.adoc[leveloffset=+3]
 
 ===== OIDC credentials flow and access token validation
 
@@ -779,7 +946,7 @@ ifdef::env-kubernetes[]
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -795,7 +962,7 @@ spec:
     auth:
       sasl:
         enabled: true
-      secretRef: redpanda-superusers
+        secretRef: redpanda-superusers
     config:
       cluster:
         sasl_mechanisms:
@@ -827,7 +994,7 @@ Helm::
 auth:
   sasl:
     enabled: true
-  secretRef: redpanda-superusers
+    secretRef: redpanda-superusers
 config:
   cluster:
     sasl_mechanisms:
@@ -970,7 +1137,7 @@ ifndef::env-kubernetes[]
 [[kerberos]]
 ==== GSSAPI (Kerberos)
 
-NOTE: Kerberos authentication requires an xref:get-started:licenses.adoc[Enterprise license]. To upgrade, contact https://redpanda.com/try-redpanda?section=enterprise-trial[Redpanda sales^].
+NOTE: Kerberos authentication requires an xref:get-started:licenses.adoc[enterprise license]. To upgrade, contact https://redpanda.com/try-redpanda?section=enterprise-trial[Redpanda sales^].
 
 To configure Kerberos authentication, use a keytab, which contains credentials for the service.
 
@@ -978,7 +1145,7 @@ To configure Kerberos authentication, use a keytab, which contains credentials f
 .. Ensure that host names are fully qualified domain names (FQDN).
 .. Ensure that each broker has a http://web.mit.edu/Kerberos/krb5-latest/doc/admin/conf_files/krb5_conf.html[Kerberos configuration file^] (`krb5.conf`) set to use Active Directory or another corporate key distribution center (KDC). The default is at `/etc/krb5.conf`.
 .. Ensure that the KDC has a valid Kerberos service principal name (SPN) for each broker in the form `primary/<FQDN>@<REALM>`.
-.. Ensure that each broker has a keytab containing the SPN for that broker. This must be located at an identical file path on each Redpanda broker. The dfault is `/var/lib/redpanda/redpanda.keytab`.
+.. Ensure that each broker has a keytab containing the SPN for that broker. This must be located at an identical file path on each Redpanda broker. The default is `/var/lib/redpanda/redpanda.keytab`.
 
 . <<enable-authentication, Enable SASL authentication>> if it's not already enabled.
 
@@ -1177,22 +1344,51 @@ endif::[]
 
 == Authentication for the HTTP APIs
 
-The following HTTP APIs support basic authentication and OIDC authentication:
+Redpanda provides the following HTTP APIs that support authentication:
 
-- Admin API
-- Schema Registry
-- HTTP Proxy
+- Admin API: Management and monitoring of the Redpanda cluster
+- Schema Registry API: Management of schemas and schema evolution
+- HTTP Proxy API: RESTful interface for Kafka clients
 
-=== Basic authentication
+=== Permission models
+
+Each of the HTTP APIs implements its own permission model with different levels of access control. This section lists what permissions are available to different user types, and how to enable authentication.
+
+==== Admin API permissions
+
+The Admin API primarily requires superuser privileges, with a few exceptions for read-only status endpoints.
+
+For a complete list of all Admin API endpoints, see see xref:api:ROOT:admin-api.adoc[].
+
+==== Schema Registry API permissions
+
+The Schema Registry implements a granular permission model.
+
+Most read operations require only user-level authentication, while write operations that affect the global state or mode typically require superuser privileges.
+
+==== HTTP Proxy permissions
+
+The HTTP Proxy API impersonates the authenticated user when making Kafka API calls:
+
+
+Regular users are subject to the same ACL restrictions as they would be when using the Kafka API directly.
+
+=== Enable authentication
+
+Redpanda supports authentication for the HTTP APIs using either basic authentication or OIDC (OpenID Connect).
+
+==== Prerequisites
+
+Before enabling authentication for the HTTP APIs, you must <<sasl,enable SASL authentication for the Kafka API>>. This creates the credential store that HTTP authentication will use.
+
+==== Basic authentication
 
 Basic authentication provides a method for securing HTTP endpoints. With basic authentication enabled, HTTP user agents, such as web browsers, must provide a username and password when making a request.
 
-Before you can enable basic authentication for these HTTP APIs, you must <<sasl,enable SASL authentication for the Kafka API>>. Then, both SCRAM users and superusers can use their credentials to access them:
-
-* *HTTP Proxy*: Access to the Kafka API impersonates the user whose credentials were used to authenticate to HTTP Proxy, and the user is subject to authorization restrictions by Redpanda ACLs. To support this design, Redpanda passes the username/password in memory to a SASL-enabled Kafka client.
-* *Schema Registry*: Authorization is "all or nothing": if the user presents a valid user account, then they have full read/write access.
-
 To add users to the Redpanda credential store that HTTP basic authentication uses, create users with xref:reference:rpk/rpk-acl/rpk-acl-user-create.adoc[`rpk security user create`].
+
+The HTTP Proxy API and the Schema Registry API use the same credential store as the Kafka API, so you can use the same credentials for all three APIs.
+The Admin API uses the same credential store as the Kafka API, but it requires superuser credentials to access it.
 
 ifdef::env-kubernetes[]
 When you <<enable-authentication, enable authentication>> in the Redpanda Helm chart, the Schema Registry API and the HTTP Proxy API are configured with basic authentication by default.
@@ -1201,7 +1397,7 @@ To enable basic authentication for the Admin API:
 
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -1217,7 +1413,7 @@ spec:
     auth:
       sasl:
         enabled: true
-      secretRef: redpanda-superusers
+        secretRef: redpanda-superusers
     config:
       cluster:
         admin_api_require_auth: true
@@ -1305,7 +1501,7 @@ schema_registry:
 ----
 endif::[]
 
-==== Connect to the HTTP API
+===== Connect to the HTTP API
 
 ifdef::env-kubernetes[By default, the Redpanda Helm chart configures an internal and external listener for the HTTP Proxy API.]
 
@@ -1345,7 +1541,7 @@ endif::[]
 
 For all available endpoints, see xref:api:ROOT:pandaproxy-rest.adoc[].
 
-==== Connect to the Schema Registry API
+===== Connect to the Schema Registry API
 
 ifdef::env-kubernetes[By default, the Redpanda Helm chart configures an internal and external listener for the Schema Registry API.]
 
@@ -1386,7 +1582,7 @@ endif::[]
 For all available endpoints, see xref:api:ROOT:pandaproxy-schema-registry.adoc[].
 
 [[oidc-http]]
-=== OIDC
+==== OIDC
 
 You can configure the HTTP APIs to authenticate users with the OIDC bearer token. By using OIDC, you can centralize credentials and provide a password-free SSO experience.
 
@@ -1399,7 +1595,7 @@ To enable OIDC for the HTTP API listeners as well as basic authentication, inclu
 ifdef::env-kubernetes[]
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -1497,7 +1693,7 @@ schema_registry:
 ----
 endif::[]
 
-==== Connect to the HTTP API
+===== Connect to the HTTP API
 
 ifdef::env-kubernetes[By default, the Redpanda Helm chart configures an internal and external listener for the HTTP Proxy API.]
 
@@ -1537,7 +1733,7 @@ endif::[]
 
 For all available endpoints, see xref:api:ROOT:pandaproxy-rest.adoc[].
 
-==== Connect to the Schema Registry API
+===== Connect to the Schema Registry API
 
 ifdef::env-kubernetes[By default, the Redpanda Helm chart configures an internal and external listener for the Schema Registry API.]
 
@@ -1581,10 +1777,15 @@ For all available endpoints, see xref:api:ROOT:pandaproxy-schema-registry.adoc[]
 
 To disable authentication for a listener, set `authentication_method` to `none`:
 
+[IMPORTANT]
+====
+include::shared:partial$http-proxy-ephemeral-credentials-breaking-change.adoc[tags=!*;include-release-notes-link]
+====
+
 ifdef::env-kubernetes[]
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -1671,7 +1872,7 @@ schema_registry:
     authentication_method: none
 ----
 
-If authorization is enabled, connections to this listener use the anonymous user.
+If authorization is disabled, connections to this listener use the anonymous user.
 
 To disable authentication on the Kafka API, run:
 

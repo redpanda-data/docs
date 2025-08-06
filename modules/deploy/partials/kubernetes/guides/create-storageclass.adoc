@@ -8,22 +8,24 @@ In this step, you install the recommended https://github.com/metal-stack/csi-dri
 . Install the LVM CSI driver:
 +
 ifdef::env-eks[]
-[,yaml,lines=6]
+[,yaml,lines=4+7]
 ----
 helm repo add metal-stack https://helm.metal-stack.io
 helm repo update
 helm install csi-driver-lvm metal-stack/csi-driver-lvm \
+  --version 0.6.0 \
   --namespace csi-driver-lvm \
   --create-namespace \
   --set lvm.devicePattern='/dev/nvme[1-9]n[0-9]'
 ----
 endif::[]
 ifndef::env-eks[]
-[,yaml,lines=6]
+[,yaml,lines=4+7]
 ----
 helm repo add metal-stack https://helm.metal-stack.io
 helm repo update
 helm install csi-driver-lvm metal-stack/csi-driver-lvm \
+  --version 0.6.0 \
   --namespace csi-driver-lvm \
   --create-namespace \
   --set lvm.devicePattern='/dev/nvme[0-9]n[0-9]'
@@ -31,11 +33,19 @@ helm install csi-driver-lvm metal-stack/csi-driver-lvm \
 endif::[]
 +
 The `lvm.devicePattern` property specifies the pattern that the CSI driver uses to identify available NVMe volumes on your worker nodes.
++
+[NOTE]
+====
+Version 0.6.0 is required to avoid volume-mounting issues caused by recent `mkfs.xfs` updates. Newer versions enable the `-i nrext64=1` option, triggering the following error on default {k8s-managed-service} kernels:
+----
+XFS (dm-0): Superblock has unknown incompatible features (0x20) enabled.
+----
+====
 
 . Create the StorageClass:
 +
 .`csi-driver-lvm-striped-xfs.yaml`
-[,yaml,lines=5-8+10-11]
+[,yaml,lines=5-8+10-12]
 ----
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -48,6 +58,7 @@ allowVolumeExpansion: true
 parameters:
   type: "striped"
   csi.storage.k8s.io/fstype: xfs
+  mkfsParams: "-i nrext64=0"
 ----
 +
 - `provisioner`: The LVM CSI driver responsible for provisioning the volume.
@@ -56,6 +67,7 @@ parameters:
 - `allowVolumeExpansion`: Allows the volume to be expanded after it has been provisioned.
 - `parameters.type`: Combines multiple physical volumes to create a single logical volume. In a striped setup, data is spread across the physical volumes in a way that distributes the I/O load evenly, improving performance by allowing parallel disk I/O operations.
 - `parameters.csi.storage.k8s.io/fstype`: Formats the volumes with the XFS file system. Redpanda Data recommends XFS for its enhanced performance with Redpanda workloads.
+- `parameters.mkfsParams`: Disables the nrext64 feature to ensure compatibility with older kernels.
 
 . Apply the StorageClass:
 +

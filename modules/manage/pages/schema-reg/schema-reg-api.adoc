@@ -1,13 +1,13 @@
 = Use the Schema Registry API
 :page-categories: Management, Schema Registry
-// tag::single-source[]
 :description: Perform common Schema Registry management operations with the API.
+// tag::single-source[]
 
 Schemas provide human-readable documentation for an API. They verify that data conforms to an API, support the generation of serializers for data, and manage the compatibility of evolving APIs, allowing new versions of services to be rolled out independently.
 
 [NOTE]
 ====
-The Schema Registry is built into Redpanda, and you can use it with the API or {ui}. This section describes operations available in the xref:api:ROOT:pandaproxy-schema-registry.adoc[Schema Registry API].
+The Schema Registry is built into Redpanda, and you can use it with the API or the UI. This section describes operations available in the xref:api:ROOT:pandaproxy-schema-registry.adoc[Schema Registry API].
 ====
 
 The Redpanda Schema Registry has API endpoints that allow you to perform the following tasks:
@@ -58,7 +58,7 @@ ifdef::env-cloud[]
 . You need a running Redpanda cluster. If you don't have one, you can xref:get-started:cluster-types/serverless.adoc[create a cluster] using Redpanda Serverless.
 endif::[]
 +
-These examples assume that the Schema Registry is available locally at `http://localhost:8081`. If the Schema Registry is hosted on a different address or port in your cluster, change the URLs in the examples.
+In these examples, it is assumed that the Schema Registry is available locally at `http://localhost:8081`. If the Schema Registry is hosted on a different address or port in your cluster, change the URLs in the examples.
 . Download the https://stedolan.github.io/jq/download/[jq utility^].
 . Install https://curl.se/[curl^] or https://www.python.org/[Python^]. 
 +
@@ -75,6 +75,49 @@ def pretty(text):
 
 base_uri = "http://localhost:8081"
 ----
+
+ifndef::env-cloud[]
+== Manage Schema Registry ACLs
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+You can use ACLs to control access to Schema Registry resources. You can define fine-grained access on a global level, for example, to allow a principal to read all schemas, or on a per-subject basis, for example, to read and modify only the schemas of a specific subject.
+
+See xref:manage:schema-reg/schema-reg-authorization.adoc[] for more details on Schema Registry Authorization.
+
+For example, to xref:api:ROOT:pandaproxy-schema-registry.adoc#post-/security/acls[create ACLs] that allow users with the `admin` role read-only access to all registered schemas, run:
+
+[,bash]
+----
+curl -X POST "http://localhost:8081/security/acls" \
+  -H "Content-Type: application/json" \
+  -d '[
+    {
+      "principal": "RedpandaRole:admin",
+      "resource": "*",
+      "resource_type": "REGISTRY",
+      "pattern_type": "LITERAL",
+      "host": "*",
+      "operation": "DESCRIBE_CONFIGS",
+      "permission": "ALLOW"
+    },
+    {
+      "principal": "RedpandaRole:admin",
+      "resource": "*",
+      "resource_type": "SUBJECT",
+      "pattern_type": "LITERAL",
+      "host": "*",
+      "operation": "READ",
+      "permission": "ALLOW"
+    }
+  ]'
+----
+
+This creates two ACLs: one for registry-level read operations (such as reading global configuration) and another for subject-level read operations (such as reading schemas).
+endif::[]
 
 == Query supported schema formats
 
@@ -135,6 +178,8 @@ curl -s \
   -d '{"schema": "{\"type\":\"record\",\"name\":\"sensor_sample\",\"fields\":[{\"name\":\"timestamp\",\"type\":\"long\",\"logicalType\":\"timestamp-millis\"},{\"name\":\"identifier\",\"type\":\"string\",\"logicalType\":\"uuid\"},{\"name\":\"value\",\"type\":\"long\"}]}"}' \
   | jq
 ```
+
+To normalize the schema, add the query parameter `?normalize=true` to the endpoint.
 --
 Python::
 +
@@ -197,7 +242,7 @@ When you register an evolved schema for an existing subject, the version `id` is
 
 == Retrieve a schema
 
-To retrieve a registered schema from the registry, make a GET request to the `/schemas/ids/<id>` endpoint:
+To retrieve a registered schema from the registry, make a GET request to the `/schemas/ids/\{id}` endpoint:
 
 [tabs]
 ====
@@ -290,7 +335,7 @@ This returns the subject:
 
 == Retrieve schema versions of a subject
 
-To query the schema versions of a subject, make a GET request to the `/subjects/<subject-name>/versions` endpoint.
+To query the schema versions of a subject, make a GET request to the `/subjects/\{subject}/versions` endpoint.
 
 For example, to get the schema versions of the `sensor-value` subject:
 
@@ -323,9 +368,9 @@ This returns the version ID:
 ]
 ```
 
-== Retrieve a schema of a subject
+== Retrieve a subject's specific version of a schema
 
-To retrieve a schema associated with a subject, make a GET request to the `/subjects/<subject-name>/versions/<version-id>` endpoint:
+To retrieve a specific version of a schema associated with a subject, make a GET request to the `/subjects/\{subject}/versions/\{version}` endpoint:
 
 [tabs]
 ====
@@ -460,7 +505,7 @@ As applications change and their schemas evolve, you may find that producer sche
 
 include::manage:partial$schema-compatibility.adoc[]
 
-To set the compatibility type for a subject, make a PUT request to `/config/<subject-name>` with the specific compatibility type:
+To set the compatibility type for a subject, make a PUT request to `/config/\{subject}` with the specific compatibility type:
 
 [tabs]
 ====
@@ -715,8 +760,8 @@ curl -H 'Content-type: application/vnd.schemaregistry.v1+json' http://127.0.0.1:
 
 The Schema Registry API provides DELETE endpoints for deleting a single schema or all schemas of a subject: 
 
-- `/subjects/<subject>/versions/<version>`
-- `/subjects/<subject>`
+- `/subjects/\{subject}/versions/\{version}`
+- `/subjects/\{subject}`
 
 Schemas cannot be deleted if any other schemas reference it. 
 
@@ -849,7 +894,7 @@ Redpanda doesn't recommend hard (permanently) deleting schemas in a production s
 The DELETE APIs are primarily used during the development phase, when schemas are being iterated and revised.
 ====
 
-To hard delete a schema, use the `--permanent` flag with the `rpk registry schema delete` command, or for curl or Python, make two DELETE requests with the second request setting the `permanent` parameter to `true` (`/subjects/<subject>/versions/<version>?permanent=true`):
+To hard delete a schema, use the `--permanent` flag with the `rpk registry schema delete` command, or for curl or Python, make two DELETE requests with the second request setting the `permanent` parameter to `true` (`/subjects/\{subject}/versions/\{version}?permanent=true`):
 
 [tabs]
 ====
@@ -933,7 +978,7 @@ Curl::
 
 == Use READONLY mode for disaster recovery
 
-The `/mode` endpoint allows you to put Schema Registry in read-only or read-write mode. A read-only Schema Registry does not accept direct writes. An active production cluster can replicate schemas to a read-only Schema Registry to keep it in sync, for example using Redpanda's https://github.com/redpanda-data/schema-migration/[Schema Migration tool^]. Users in the disaster recovery (DR) site cannot update schemas directly, so the DR cluster has an exact replica of the schemas in production. In a failover due to a disaster or outage, you can set Schema Registry to read-write mode, taking over for the failed cluster and ensuring availability. 
+The `/mode` endpoint allows you to put Schema Registry in read-only or read-write mode. A read-only Schema Registry does not accept direct writes. An active production cluster can replicate schemas to a read-only Schema Registry to keep it in sync, for example using Redpanda's https://github.com/redpanda-data/schema-migration/[Schema Migration tool^]. Users in the disaster recovery (DR) site cannot update schemas directly, so the DR cluster has an exact replica of the schemas in production. In a failover due to a disaster or outage, you can set Schema Registry to read-write mode, taking over for the failed cluster and ensuring availability.
 
 If authentication is enabled on Schema Registry, only superusers can change global and subject-level modes.
 
@@ -977,6 +1022,34 @@ This request returns the mode that is enforced. If the subject is set to a speci
 ```bash
 curl -X PUT -H "Content-Type: application/vnd.schemaregistry.v1+json" --data '{"mode": "READONLY"}' http://localhost:8081/mode/<subject>
 ```
+
+== Retrieve serialized schemas
+
+Starting in Redpanda version 25.2, the following endpoints return serialized schemas (Protobuf only) using the `format=serialized` query parameter:
+
+[cols="1,1"]
+|===
+|Operation |Path
+
+| <<retrieve-a-schema>>
+|`GET /schemas/ids/\{id}?format=serialized`
+
+| Check if a schema is already registered for a subject
+|`POST /subjects/\{subject}?format=serialized`
+
+|<<retrieve-a-subjects-specific-version-of-a-schema>>
+|`GET /subjects/\{subject}/versions/\{version}?format=serialized`
+
+| Get the unescaped schema only for a subject
+|`GET /subjects/\{subject}/versions/\{version}/schema?format=serialized`
+|===
+
+The `serialized` format returns the Protobuf schema in its wire binary format in Base64.
+
+- Passing an empty string (`format=''`) returns the schema in the current (default) format.
+- For Avro, `resolved` is a valid value, but it is not currently supported and returns a 501 Not Implemented error.
+- For Protobuf, `serialized` and `ignore_extensions` are valid, but only `serialized` is currently supported; passing `ignore_extensions` returns a 501 Not Implemented error.
+- Cross-schema conditions such as `resolved` with Protobuf or `serialized` with Avro are ignored and the schema is returned in the default format.
 
 == Suggested reading
 ifndef::env-cloud[]

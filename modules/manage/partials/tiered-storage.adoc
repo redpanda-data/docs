@@ -16,11 +16,6 @@ The following image illustrates the Tiered Storage architecture: remote write up
 
 image::shared:tiered_storage1.png[Tiered Storage architecture]
 
-[IMPORTANT]
-====
-When upgrading Redpanda, uploads to object storage are paused until all brokers in the cluster are upgraded. If the cluster gets stuck while upgrading, roll it back to the original version. In a mixed-version state, the cluster could run out of disk space. If you need to force a mixed-version cluster to upload, move partition leadership to brokers running the original version.
-====
-
 == Prerequisites
 
 include::shared:partial$enterprise-license.adoc[]
@@ -36,8 +31,9 @@ rpk cluster license info
 
 - Migrating topics from one object storage provider to another is not supported.
 - Migrating topics from one bucket or container to another is not supported.
+- Multi-region buckets or containers are not supported.
 
-CAUTION: Redpanda strongly recommends that you do not re-enable Tiered Storage after previously enabling and disabling it. Re-enabling Tiered Storage can result in inconsistent data and data gaps in Tiered Storage for a topic.
+CAUTION: Redpanda Data recommends that you do not re-enable Tiered Storage after previously enabling and disabling it. Re-enabling Tiered Storage can result in inconsistent data and data gaps in Tiered Storage for a topic.
 
 == Set up Tiered Storage
 
@@ -54,13 +50,20 @@ Redpanda natively supports Tiered Storage with Amazon Simple Storage Service (S3
 ifdef::env-kubernetes[]
 ==== Amazon S3
 
-TIP: If deploying Redpanda on an AWS Auto-Scaling group (ASG), keep in mind that the ASG controller terminates nodes and spins up replacements if the nodes saturate and are unable to heartbeat the controller (based on the EC2 health check). For more information, see the https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/monitoring-system-instance-status-check.html#types-of-instance-status-checks[AWS documentation^]. Redpanda recommends deploying on Linux or Kubernetes. For more information, see xref:deploy:deployment-option/self-hosted/index.adoc[Deploy Redpanda].
+[NOTE]
+====
+If you deploy Redpanda directly on AWS EC2 instances managed by an Auto-Scaling Group (ASG), be aware that ASG may terminate and replace instances based on system-level health checks. This can result in unexpected Redpanda broker terminations, risking availability or data loss.
+
+Redpanda Data recommends deploying on Kubernetes or using other orchestrators that understand Redpanda's stateful nature and can handle Pod lifecycle and storage gracefully.
+
+See xref:deploy:deployment-option/self-hosted/index.adoc[Deploy Redpanda] for deployment best practices.
+====
 
 You can configure access to Amazon S3 with either an IAM role attached to the instance or with access keys.
 
-===== Use IAM roles
+If you need to manage and store encryption keys separately from your cloud provider, you can <<configure-access-with-an-aws-kms-key,configure access to an AWS S3 bucket that Redpanda Tiered Storage uses to leverage your AWS KMS key (SSE-KMS)>> instead of the default AWS S3-managed key (SSE-S3). This option enables you to segregate data from different teams or departments and remove that data at will by removing the encryption keys.
 
-To configure access to an S3 bucket with an IAM role:
+===== **Configure access with an IAM role**
 
 . Configure an xref:manage:security/iam-roles.adoc#configuring-iam-roles[IAM role].
 
@@ -68,7 +71,7 @@ To configure access to an S3 bucket with an IAM role:
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -136,13 +139,13 @@ Replace the following placeholders:
 - `<region>`: The region of your S3 bucket.
 - `<redpanda-bucket-name>`: The name of your S3 bucket.
 +
-CAUTION: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value.
+include::manage:partial$kubernetes/reset-object-storage-properties.adoc[]
 
-===== Use access keys
+include::manage:partial$kubernetes/extraclusterconfig.adoc[]
 
-To configure access to an S3 bucket with access keys instead of an IAM role:
+===== **Configure access with access keys**
 
-. Grant an IAM user the following permissions to read and create objects in your buckets:
+. In AWS, grant an IAM user the following permissions to read and create objects in your buckets:
 - `GetObject`
 - `DeleteObject`
 - `PutObject`
@@ -171,7 +174,7 @@ data:
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -256,22 +259,24 @@ Replace the following placeholders:
 - `<region>`: The region of your S3 bucket.
 - `<redpanda-bucket-name>`: The name of your S3 bucket.
 +
-CAUTION: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value.
+include::manage:partial$kubernetes/reset-object-storage-properties.adoc[]
+
+include::manage:partial$kubernetes/extraclusterconfig.adoc[]
+
+include::manage:partial$tiered-storage/aws-kms-key.adoc[leveloffset=+4]
 
 ==== Google Cloud Storage
 
-You can configure access to Google Cloud Storage with either an IAM role attached to the instance or with access keys.
+Configure access to Google Cloud Storage with either an IAM role attached to the instance, with access keys, or with customer-managed keys.
 
-===== Use IAM roles
-
-To configure access to Google Cloud Storage with an IAM role:
+===== **Configure access with an IAM role**
 
 . Configure an xref:manage:security/iam-roles.adoc#configuring-iam-roles[IAM role].
 . Override the following required cluster properties in the Helm chart:
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -340,10 +345,12 @@ Replace the following placeholders:
 +
 - `<region>`: The region of your bucket.
 - `<redpanda-bucket-name>`: The name of your bucket.
++
+include::manage:partial$kubernetes/reset-object-storage-properties.adoc[]
 
-CAUTION: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value.
+include::manage:partial$kubernetes/extraclusterconfig.adoc[]
 
-===== Use access keys
+===== **Configure access with access keys**
 
 To configure access to Google Cloud Storage with access keys instead of an IAM role:
 
@@ -372,7 +379,7 @@ data:
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -460,7 +467,11 @@ Replace the following placeholders:
 - `<region>`: The region of your bucket.
 - `<redpanda-bucket-name>`: The name of your bucket.
 +
-CAUTION: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value.
+include::manage:partial$kubernetes/reset-object-storage-properties.adoc[]
+
+include::manage:partial$kubernetes/extraclusterconfig.adoc[]
+
+include::manage:partial$tiered-storage/gcp-kms-key.adoc[leveloffset=+4]
 
 ==== Microsoft ABS/ADLS
 
@@ -468,16 +479,14 @@ You can configure access to Azure Blob Storage with either account access keys o
 
 include::manage:partial$azure-blob-limitations.adoc[]
 
-===== Use managed identities
-
-To configure access to an Azure container with a managed identity in AKS:
+===== **Configure access with a managed identity**
 
 . Configure an xref:manage:security/iam-roles.adoc#configuring-iam-roles[Azure managed identity].
 . Override the following required cluster properties in the Helm chart:
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -565,14 +574,14 @@ Replace the following placeholders:
 - `<container-name>`: The name of the Azure container in your Azure account.
 - `<managed-identity-client-id>`: The client ID for your Azure managed identity.
 --
++
+include::manage:partial$kubernetes/reset-object-storage-properties.adoc[]
 
-NOTE: The `serviceAccount` annotations and the `statefulset` Pod labels are essential for the Azure webhook to inject the necessary Azure-specific environment variables and the projected service account token volume into the pods. For more information, visit https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview?tabs=dotnet[Microsoft Entra Workload ID with Azure Kubernetes Service (AKS)^].
+The `serviceAccount` annotations and the `statefulset` Pod labels are essential for the Azure webhook to inject the necessary Azure-specific environment variables and the projected service account token volume into the pods. For more information, visit https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview?tabs=dotnet[Microsoft Entra Workload ID with Azure Kubernetes Service (AKS)^].
 
-CAUTION: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value.
+include::manage:partial$kubernetes/extraclusterconfig.adoc[]
 
-===== Use access keys
-
-To configure access to ABS/ADLS with account access keys:
+===== **Configure access with account access keys**
 
 . Get an account access key for the Azure container that Redpanda will run on. For information on how to view your account access keys, see the https://learn.microsoft.com/en-us/azure/storage/common/storage-account-keys-manage?toc=%2Fazure%2Fstorage%2Fblobs%2Ftoc.json&bc=%2Fazure%2Fstorage%2Fblobs%2Fbreadcrumb%2Ftoc.json&tabs=azure-portal#view-account-access-keys[Azure documentation^].
 . Create a Secret in which to store the access key.
@@ -594,7 +603,7 @@ data:
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -671,7 +680,9 @@ Replace the following placeholders:
 - `<account-name>`: The name of your Azure account.
 - `<container-name>`: The name of the Azure container in your Azure account.
 +
-CAUTION: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value.
+include::manage:partial$kubernetes/reset-object-storage-properties.adoc[]
+
+include::manage:partial$kubernetes/extraclusterconfig.adoc[]
 
 - For information about how to grant access from an internet IP range (if you need to open additional routes/ports between your broker nodes and Azure Blob Storage; for example, in a hybrid cloud deployment), see the https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security?toc=%2Fazure%2Fstorage%2Fblobs%2Ftoc.json&bc=%2Fazure%2Fstorage%2Fblobs%2Fbreadcrumb%2Ftoc.json&tabs=azure-portal#grant-access-from-an-internet-ip-range[Microsoft documentation^].
 
@@ -688,9 +699,14 @@ Amazon S3::
 
 TIP: If deploying Redpanda on an AWS Auto-Scaling group (ASG), keep in mind that the ASG controller terminates nodes and spins up replacements if the nodes saturate and are unable to heartbeat the controller (based on the EC2 health check). For more information, see the https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/monitoring-system-instance-status-check.html#types-of-instance-status-checks[AWS documentation^]. Redpanda recommends deploying on Linux or Kubernetes. For more information, see xref:deploy:deployment-option/self-hosted/index.adoc[Deploy Redpanda].
 
-Configure access to Amazon S3 with either an IAM role attached to the instance or with access keys.
+Configure access to Amazon S3 with either an IAM role attached to the instance, with access keys, or with customer-managed keys.
 
-To configure access to an S3 bucket with an IAM role:
+[TIP]
+====
+If you need to manage and store encryption keys separately from your cloud provider, you can <<configure-access-with-an-aws-kms-key,configure access to an AWS S3 bucket that Redpanda Tiered Storage uses to leverage your AWS KMS key (SSE-KMS)>> instead of the default AWS S3-managed key (SSE-S3). This option enables you to segregate data from different teams or departments and remove that data at will by removing the encryption keys.
+====
+
+**Configure access with an IAM role**
 
 . Configure an xref:manage:security/iam-roles.adoc#configuring-iam-roles[IAM role].
 . Run the `rpk cluster config edit` command, then edit the following required properties:
@@ -707,7 +723,7 @@ Replace `<placeholders>` with your own values.
 
 CAUTION: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value. To reset a property to its default value, run `rpk cluster config force-reset <config-name>` or remove that line from the cluster configuration with `rpk cluster config edit`.
 
-To configure access to an S3 bucket with access keys instead of an IAM role:
+**Configure access with access keys**
 
 . Grant a user the following permissions to read and create objects on the bucket to be used with the cluster (or on all buckets): `GetObject`, `DeleteObject`, `PutObject`, `PutObjectTagging`, `ListBucket`.
 . Copy the access key and secret key for the `cloud_storage_access_key` and `cloud_storage_secret_key` cluster properties.
@@ -726,13 +742,15 @@ Replace `<placeholders>` with your own values.
 +
 CAUTION: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value. To reset a property to its default value, run `rpk cluster config force-reset <config-name>` or remove that line from the cluster configuration with `rpk cluster config edit`.
 
+include::manage:partial$tiered-storage/aws-kms-key.adoc[leveloffset=+3]
+
 --
 Google Cloud Storage::
 +
 --
-Configure access to Google Cloud Storage with either an IAM role attached to the instance or with access keys.
+Configure access to Google Cloud Storage with either an IAM role attached to the instance, with access keys, or with customer-managed keys.
 
-To configure access to Google Cloud Storage with an IAM role:
+**Configure access with an IAM role**
 
 . Configure an xref:manage:security/iam-roles.adoc#configuring-iam-roles[IAM role].
 . Run the `rpk cluster config edit` command, then edit the following required properties:
@@ -750,7 +768,7 @@ Replace `<placeholders>` with your own values.
 +
 CAUTION: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value. To reset a property to its default value, run `rpk cluster config force-reset <config-name>` or remove that line from the cluster configuration with `rpk cluster config edit`.
 
-To configure access to Google Cloud Storage with access keys instead of an IAM role:
+**Configure access with access keys**
 
 . Choose a uniform access control when you create the bucket.
 . Use a Google-managed encryption key.
@@ -772,6 +790,8 @@ Replace `<placeholders>` with your own values.
 +
 CAUTION: Do not set an object storage property to an empty string `""` or to `null` as a way to reset it to its default value. To reset a property to its default value, run `rpk cluster config force-reset <config-name>` or remove that line from the cluster configuration with `rpk cluster config edit`.
 
+include::manage:partial$tiered-storage/gcp-kms-key.adoc[leveloffset=+3]
+
 --
 Microsoft ABS/ADLS::
 +
@@ -779,7 +799,7 @@ Microsoft ABS/ADLS::
 
 include::manage:partial$azure-blob-limitations.adoc[]
 
-To configure access to an Azure container with a managed identity:
+**Configure access with managed identities**
 
 . Configure an xref:manage:security/iam-roles.adoc#azure-prerequisites[Azure managed identity].
 +
@@ -805,7 +825,7 @@ cloud_storage_azure_container: <container-name>
 +
 Replace `<placeholders>` with your own values.
 
-To configure access to Azure Blob Storage with account access keys:
+**Configure access with account access keys**
 
 . Copy an account access key for the Azure container you want Redpanda to use and enter it in the `cloud_storage_azure_shared_key` property. For information on how to view your account access keys, see the https://learn.microsoft.com/en-us/azure/storage/common/storage-account-keys-manage?toc=%2Fazure%2Fstorage%2Fblobs%2Ftoc.json&bc=%2Fazure%2Fstorage%2Fblobs%2Fbreadcrumb%2Ftoc.json&tabs=azure-portal#view-account-access-keys[Azure documentation^].
 . Run the `rpk cluster config edit` command, then edit the following required properties:
@@ -849,7 +869,7 @@ To enable Tiered Storage for a cluster (in addition to setting `cloud_storage_en
 * config_ref:cloud_storage_enable_remote_write,true,properties/object-storage-properties[]
 * config_ref:cloud_storage_enable_remote_read,true,properties/object-storage-properties[]
 
-When you enable Tiered Storage for a cluster, you enable it for all existing topics in the cluster. When cluster-level properties are changed, the changes apply only to new topics, not existing topics.
+When you enable Tiered Storage for a cluster, you enable it for all existing topics in the cluster. When cluster-level properties are changed, the changes apply only to new topics, not existing topics. You must restart your cluster after enabling Tiered Storage.
 
 NOTE: The `cloud_storage_enable_remote_write` and `cloud_storage_enable_remote_read` cluster-level properties are essentially creation-time defaults for the `redpanda.remote.write` and `redpanda.remote.read` topic-level properties.
 
@@ -992,7 +1012,7 @@ At topic creation with Tiered Storage enabled:
 * If `retention.ms` or `retention.bytes` is set, Redpanda initializes the `retention.local.target.*` properties.
 * If `retention.local.target.ms` or `retention.local.target.bytes` is set, Redpanda initializes the `min(retention.bytes, retention.local.target.bytes)` and `max(retention.ms, retention.local.target.ms)` properties.
 * If properties are not specified:
-** Starting in version 22.3, new topics use the default retention values of one day for local storage (`retention_local_target_ms_default`) and seven days for all storage, including object storage (`delete_retention_ms`).
+** Starting in version 22.3, new topics use the default retention values of one day for local storage (config_ref:retention_local_target_ms_default,true,cluster-properties[]) and seven days for all storage, including object storage (config_ref:log_retention_ms,true,cluster-properties[]).
 ** Upgraded topics retain their historical defaults of infinite retention.
 
 After topic configuration, if Tiered Storage was disabled and must be enabled, or was enabled and must be disabled, Redpanda uses the local retention properties set for the topic. It is strongly recommended that you do not re-enable Tiered Storage after previously enabling and disabling it. Re-enabling Tiered Storage can result in inconsistent data and data gaps in Tiered Storage for a topic.
@@ -1092,6 +1112,8 @@ Data archiving requires a <<set-up-tiered-storage,Tiered Storage configuration>>
 
 To recover a topic from object storage, use xref:{topic-recovery-link}[single topic recovery].
 
+include::manage:partial$topic-recovery-warning.adoc[]
+
 ==== Stop data archiving
 
 To cancel archiving jobs, disable remote write.
@@ -1121,6 +1143,76 @@ rpk topic alter-config <topic_name> --set redpanda.remote.read=true
 ----
 
 See also: xref:{topic-recovery-link}[Topic Recovery], xref:manage:kubernetes/k-remote-read-replicas.adoc[Remote Read Replicas]
+
+== Pause and resume uploads
+
+IMPORTANT: Redpanda strongly recommends using pause and resume only under the guidance of https://support.redpanda.com/hc/en-us/requests/new[Redpanda Support^] or a member of your account team. 
+
+Starting in version 25.1, you can troubleshoot issues your cluster has interacting with object storage by pausing and resuming uploads. You can do this with no risk of data consistency or data loss. To pause or resume segment uploads to object storage, use the xref:reference:properties/object-storage-properties.adoc#cloud_storage_enable_segment_uploads[`cloud_storage_enable_segment_uploads`] configuration property (default is `true`). This allows segment uploads to proceed after the pause completes and uploads resume.
+
+While uploads are paused, data accumulates locally, which can lead to full disks if the pause is prolonged. If the disks fill, Redpanda throttles produce requests and rejects new Kafka produce requests to prevent data from being written. Additionally, this pauses object storage housekeeping, meaning segments are neither uploaded nor removed from object storage. However, it is still possible to consume data from object storage while uploads are paused.
+
+When you set `cloud_storage_enable_segment_uploads` to `false`, all in-flight segment uploads complete, but no new segment uploads begin until the value is set back to `true`. During this pause, Tiered Storage enforces consistency by ensuring that no segment in local storage is deleted until it successfully uploads to object storage. This means that when uploads are resumed, no user intervention is needed, and no data gaps are created.
+
+Use the `redpanda_cloud_storage_paused_archivers` metric to monitor the status of paused uploads. It displays a non-zero value whenever uploads are paused.
+
+[WARNING]
+====
+Do not use `redpanda.remote.read` or `redpanda.remote.write` to pause and resume segment uploads. Doing so can lead to a gap between local data and data in object storage. In such cases, it is possible that the oldest segment is not aligned with the last uploaded segment. Given that these settings are unsafe, if you choose to set either `redpanda.remote.write` or the cluster configuration setting `cloud_storage_enable_remote_write` to `false`, you receive a warning:
+
+[source,bash]
+----
+Warning: disabling Tiered Storage may lead to data loss. If you only want to pause Tiered Storage temporarily, use the `cloud_storage_enable_segment_uploads` option. Abort?
+# The default is Yes.
+----
+====
+
+
+The following example shows a simple pause and resume with no gaps allowed:
+
+```bash
+rpk cluster config set cloud_storage_enable_segment_uploads false
+# Segments are not uploaded to cloud storage, and cloud storage housekeeping is not running.
+# The new data added to the topics with Tiered Storage is not deleted from disk
+# because it can't be uploaded. The disks may fill up eventually.
+# If the disks fill up, produce requests will be rejected.
+...
+
+rpk cluster config set cloud_storage_enable_segment_uploads true
+# At this point the uploads should resume seamlessly and
+# there should not be any data loss.
+```
+
+For some applications, where the newest data is more valuable than historical data, data accumulation can be worse than data loss. In such cases, where you cannot afford to lose the most recently-produced data by rejecting produce requests after producers have filled the local disks during the period of paused uploads, there is a less safe pause and resume mechanism. This mechanism prioritizes the ability to receive new data over retaining data that cannot be uploaded when disks are full:
+
+- Set the xref:reference:properties/object-storage-properties.adoc#cloud_storage_enable_remote_allow_gaps[`cloud_storage_enable_remote_allow_gaps`] cluster configuration property to `true`. This allows for gaps in the logs of all Tiered Storage topics in the cluster.
+- Set the `redpanda.remote.allow_gaps` configuration property to `true`. This allows gaps for one specific topic. This topic-level configuration option overrides the cluster-level default. 
+
+When you pause uploads and set one of these properties to `true`, there may be gaps in the range of offsets stored in object storage. You can seamlessly resume uploads by setting `*allow_gaps` to `true` at either the cluster or topic level. If set to `false`, disk space could be depleted and produce requests would be throttled.
+
+The following example shows how to pause and resume Tiered Storage uploads while allowing for gaps:
+
+```bash
+rpk cluster config set cloud_storage_enable_segment_uploads false
+# Segment uploads are paused and cloud storage housekeeping is not running.
+# New data is stored on the local volume, which may overflow.
+# To avoid overflow when allowing gaps in the log.
+# In this example, data that is not uploaded to cloud storage may be
+# deleted if a disk fills before uploads are resumed.
+
+rpk topic alter-config $topic-name --set redpanda.remote.allowgaps=true
+# Uploads are paused and gaps are allowed. Local retention is allowed
+# to delete data before it's uploaded, therefore some data loss is possible.
+...
+
+rpk cluster config set cloud_storage_enable_segment_uploads true
+# Uploads are resumed but there could be gaps in the offsets.
+# Wait until you see that the `redpanda_cloud_storage_paused_archivers` 
+# metric is equal to zero, indicating that uploads have resumed.
+
+# Disable the gap allowance previously set for the topic.
+rpk topic alter-config $topic-name --set redpanda.remote.allowgaps=false
+```
 
 == Caching
 
@@ -1172,7 +1264,7 @@ This StorageClass is marked as the default, which means that this class is used 
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -1244,7 +1336,7 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -1326,7 +1418,7 @@ When you use a static provisioner, an existing PersistentVolume in the cluster i
 +
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -1408,7 +1500,7 @@ include::manage:partial$kubernetes/init-container.adoc[]
 
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -1498,7 +1590,6 @@ Cache trimming helps to balance optimal cache use with the need to avoid blockin
 
 - config_ref:cloud_storage_cache_trim_threshold_percent_objects,true,properties/object-storage-properties[]
 - config_ref:cloud_storage_cache_trim_threshold_percent_size,true,properties/object-storage-properties[]
-- config_ref:cloud_storage_cache_trim_carryover_bytes,true,properties/object-storage-properties[]
 - config_ref:cloud_storage_cache_trim_walk_concurrency,true,properties/object-storage-properties[]
 
 *Recommendations*:
@@ -1555,9 +1646,6 @@ If both this property and `cloud_storage_cache_size` are set, Redpanda uses the 
 | config_ref:cloud_storage_cache_size,true,properties/object-storage-properties[]
 | Maximum size (in bytes) of the disk cache used by Tiered Storage. +
 If both this property and `cloud_storage_cache_size_percent` are set, Redpanda uses the minimum of the two.
-
-| config_ref:cloud_storage_cache_trim_carryover_bytes,true,properties/object-storage-properties[]
-| The cache performs a recursive directory inspection during the cache trim. The information obtained during the inspection can be carried over to the next trim operation. This property sets a limit on the memory occupied by objects that can be carried over from one trim to next, and it allows the cache to quickly unblock readers before starting the directory inspection.
 
 | config_ref:cloud_storage_cache_trim_threshold_percent_objects,true,properties/object-storage-properties[]
 | Trigger cache trimming when the number of objects in the cache reaches this percentage relative to its maximum object count. If unset, the default behavior is to start trimming when the cache is full.

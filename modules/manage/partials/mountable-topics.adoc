@@ -1,0 +1,411 @@
+== Prerequisites
+
+
+ifndef::env-cloud[]
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+* xref:get-started:rpk-install.adoc[Install `rpk`], or ensure that you have access to the Admin API.
+* Enable xref:manage:tiered-storage.adoc[Tiered Storage] for specific topics, or for the entire cluster (all topics).
+endif::[]
+ifdef::env-cloud[]
+xref:manage:rpk/rpk-install.adoc[Install `rpk`] or xref:manage:api/cloud-api-authentication.adoc[authenticate] to the Cloud API.
+
+If using the API, make sure that you have the correct xref:manage:api/cloud-dataplane-api.adoc#get-data-plane-api-url[Data Plane API URL].
+endif::[]
+
+== Unmount a topic from a cluster to object storage
+
+When you unmount a topic, all incoming writes to the topic are blocked as Redpanda unmounts the topic from the cluster to object storage. Producers and consumers of the topic receive a message in the protocol replies indicating that the topic is no longer available:
+
+- Produce requests receive an `invalid_topic_exception` or `resource_is_being_migrated` response from the broker.
+- Consume requests receive an `invalid_topic_exception` response from the broker.
+
+An unmounted topic in object storage is detached from all clusters. The original cluster releases ownership of the topic.
+
+NOTE: The unmounted topic is deleted in the source cluster, but can be mounted back again from object storage.
+
+[tabs]
+======
+rpk::
++
+--
+In your cluster, run this command to unmount a topic to object storage:
+
+```
+rpk cluster storage unmount <namespace>/<topic-name>
+```
+--
+ifndef::env-cloud[]
+Admin API::
++
+--
+To unmount topics from a cluster using the Admin API, make a POST request to the `/v1/topics/unmount` endpoint.  Specify the names of the desired topics in the request body:
+
+```
+curl -X POST http://localhost:9644/v1/topics/unmount -d {
+  "topics": [
+    {
+      "topic": "<topic-1-name>"
+    }, 
+    {
+      "topic": "<topic-2-name>"
+    }, 
+    {
+      "topic": "<topic-3-name>"
+    }
+  ]
+}
+```
+
+You may optionally include the topic namespace (`ns`). Only `kafka` is supported.
+--
+endif::[]
+ifdef::env-cloud[]
+Cloud API::
++
+--
+To unmount topics from a cluster using the Cloud API, issue a POST request to the `/v1alpha2/cloud-storage/unmount` endpoint.  Specify the names of the desired topics in the request body:
+
+[,bash]
+----
+curl -X POST "<dataplane-api-url>/v1alpha2/cloud-storage/topics/unmount" \
+ -H "Authorization: Bearer <token>" \
+ -H "accept: application/json" \
+ -H "content-type: application/json" \
+ -d '{"topics":"<topic-name>"}'
+----
+
+--
+endif::[]
+======
+
+You can use the ID returned by the command to <<monitor-progress,monitor the progress>> of the unmount operation using `rpk` or the API.
+
+== Mount a topic to a cluster
+
+[tabs]
+======
+rpk::
++
+--
+. In your target cluster, run this command to list the topics that are available to mount from object storage:
++
+```
+rpk cluster storage list-mountable
+```
++
+The command output returns a `LOCATION` value in the format `<topic-name>/<cluster-uuid>/<initial-revision>`. Redpanda assigns an `initial-revision` number to a topic upon creation.
++
+The location value uniquely identifies a topic in object storage if multiple topics had the same name when they were unmounted from different origin clusters. For example:
++
+```
+TOPIC      NAMESPACE  LOCATION
+testtopic  kafka      testtopic/67f5505a-32f3-4677-bcad-3c75a1a702a6/10
+```
++
+You can use the location as the topic reference instead of just the topic name to uniquely identify a topic to mount in the next step. 
+
+. Mount a topic from object storage:
++
+```
+rpk cluster storage mount <topic-reference>
+```
++
+Replace `<topic-reference>` with the name of the topic to mount. If there are multiple topics wih the same name in object storage, you are required to use the location value from `rpk cluster storage list-mountable` to uniquely identify a topic.
++
+You can also specify a new name for the topic as you mount it to the target cluster:
++
+```
+rpk cluster storage mount <topic-reference> --to <new-topic-name>
+```
++
+You only use the new name for the topic in the target cluster. This name does not persist if you unmount this topic again. Redpanda keeps the original name in object storage if you remount the topic later.
+--
+ifndef::env-cloud[]
+Admin API::
++
+--
+. List the topics that are available to mount from object storage by making a GET request to the `v1/topics/mountable` endpoint.
++
+```
+curl http://localhost:9644/v1/topics/mountable 
+```
++
+The response object contains an array of topics:
++
+[,bash]
+----
+"topics": [
+  {
+    "topic_location": "topic-1-name/<cluster-1-uuid>/<initial-revision>",
+    "topic": "topic-1-name"
+  },
+  {
+    "topic_location": "topic-2-name/<cluster-1-uuid>/<initial-revision>",
+    "topic": "topic-2-name"
+  }
+]
+----
++
+The `topic_location` is the unique topic location in object storage, in the format `<topic-name>/<cluster-uuid>/<initial-revision>`. Redpanda assigns the number `initial-revision` to a topic upon creation. You can use `topic-location` as the topic reference instead of just the topic name to identify a unique topic to mount in the next step.
+
+. To mount topics to a target cluster using the Admin API, make a POST request to the `/v1/topics/mount` endpoint. Specify the names of the topics in the request body:
++
+```
+curl -X POST http://localhost:9644/v1/topics/mount -d {
+  "topics": [
+    {
+      "source_topic_reference": {"ns": "kafka", "topic": "<topic-1-name>/<cluster-1-uuid>/<initial-revision>"}, 
+      "alias": {"topic": "<new-topic-1-name>"}
+    }, 
+    {
+      "source_topic_reference": {"ns": "kafka", "topic": "<topic-2-name>"}
+    }
+  ]
+}
+```
++
+* `ns` is the topic namespace. This field is optional and only `kafka` is supported.
+* You may have multiple topics with the same name that are available to mount from object storage. This can happen if you have unmounted topics using the same name in different clusters. To uniquely identify a source topic, use `<topic-name>/<cluster-uuid>/<initial-revision>` as the topic reference.
+* To rename a topic in the target cluster, use the optional `alias` object in the request body. The following example shows how to specify a new name for topic 1 in the target cluster, while topic 2 retains its original name in the target cluster.
+
+--
+endif::[]
+ifdef::env-cloud[]
+Cloud API::
++
+--
+. List the topics that are available to mount from object storage by making a GET request to the `/v1alpha2/cloud-storage/topics/mountable` endpoint.
++
+```
+curl "<dataplane-api-url>/v1alpha2/cloud-storage/topics/mountable" 
+```
++
+The response object contains an array of topics:
++
+[,bash,role=no-placeholders]
+----
+"topics": [
+  {
+    "name": "topic-1-name",
+    "topic_location": "topic-1-name/<cluster-1-uuid>/<initial-revision>"
+  },
+  {
+    "name": "topic-2-name",
+    "topic_location": "topic-2-name/<cluster-1-uuid>/<initial-revision>"
+  }
+]
+----
++
+The `topic_location` is the unique topic location in object storage, in the format `<topic-name>/<cluster-uuid>/<initial-revision>`. Redpanda assigns the number `initial-revision` to a topic upon creation. You can use `topic-location` as the topic reference instead of just the topic name to identify a unique topic to mount in the next step.
+
+. To mount topics to a target cluster using the Cloud API, make a POST request to the `/cloud-storage/topics/mount` endpoint. Specify the names of the topics in the request body:
++
+```
+curl -X POST "<dataplane-api-url>/v1alpha2/cloud-storage/topics/mount" -d {
+  "topics": [
+    {
+      "alias": "<new-topic-1-name>",
+      "source_topic_reference": "<topic-1-name>/<cluster-1-uuid>/<initial-revision>"
+    }, 
+    {
+      "source_topic_reference": "<topic-2-name>"
+    }
+  ]
+}
+```
++
+* You may have multiple topics with the same name that are available to mount from object storage. This can happen if you have unmounted topics with this name from different clusters. To uniquely identify a source topic, use `<topic-name>/<cluster-uuid>/<initial-revision>` as the topic reference.
+* To rename a topic in the target cluster, use the optional `alias` object in the request body. The following example shows how to specify a new name for topic 1 in the target cluster, while topic 2 retains its original name in the target cluster.
+
+--
+endif::[]
+
+======
+
+You can use the ID returned by the operation to <<monitor-progress,monitor its progress>> using `rpk` or the API.
+
+When the mount operation is complete, the target cluster handles produce and consume workloads for the topics.
+
+== Monitor progress
+
+[tabs]
+======
+rpk::
++
+--
+To list active mount and unmount operations, run the command:
+
+```
+rpk cluster storage list-mount
+```
+--
+
+ifndef::env-cloud[]
+Admin API::
++
+--
+Issue a GET request to the `/migrations` endpoint to view the status of topic mount and unmount operations:
+
+```
+curl http://localhost:9644/v1/migrations 
+```
+--
+endif::[]
+
+ifdef::env-cloud[]
+Cloud API::
++
+--
+Issue a GET request to the `/cloud-storage/mount-tasks` endpoint to view the status of topic mount and unmount operations:
+
+[,bash]
+----
+curl "<dataplane-api-url>/v1alpha2/cloud-storage/mount-tasks" \
+ -H "Authorization: Bearer <token>" \
+ -H "accept: application/json"
+----
+
+--
+endif::[]
+======
+
+You can also retrieve the status of a specific operation by running the command:
+
+
+[tabs]
+======
+rpk::
++
+--
+```
+rpk cluster storage status-mount <migration-id>
+```
+--
+ifndef::env-cloud[]
+Admin API::
++
+--
+```
+curl http://localhost:9644/v1/migrations/<migration-id> 
+```
+--
+endif::[]
+
+ifdef::env-cloud[]
+Cloud API::
++
+--
+[,bash]
+----
+curl "<dataplane-api-url>/v1alpha2/cloud-storage/mount-tasks/<migration-id>" \
+ -H "Authorization: Bearer <token>"
+----
+
+--
+endif::[]
+======
+
+`<migration-id>` is the unique identifier of the operation. Redpanda returns this ID when you start a mount or unmount. You can also retrieve the ID by listing <<monitor-progress,existing operations>>.
+
+The response returns the IDs and state of existing mount and unmount operations ("migrations"):
+
+|===
+| State | Unmount operation (outbound) | Mount operation (inbound)
+
+| `planned`
+2+| Redpanda validates the mount or unmount operation definition.
+
+| `preparing`
+| Redpanda flushes topic data, including topic manifests, to the destination bucket or container in object storage.
+| Redpanda recreates the topics in a disabled state in the target cluster. The cluster allocates partitions but does not add log segments yet. Topic metadata is populated from the topic manifests found in object storage.
+
+| `prepared` 
+| The operation is ready to execute. In this state, the cluster still accepts client reads and writes for the topics.
+| Topics exist in the cluster but clients do not yet have access to consume or produce.
+
+| `executing` 
+| The cluster rejects client reads and writes for the topics. Redpanda uploads any remaining topic data that has not yet been copied to object storage. Uncommitted transactions involving the topic are aborted.
+| The target cluster checks that the topic to be mounted has not already been mounted in any cluster.
+
+| `executed` 
+| All unmounted topic data from the cluster is available in object storage.
+| The target cluster has verified that the topic has not already been mounted.
+
+| `cut_over`
+| Redpanda deletes topic metadata from the cluster, and marks the data in object storage as available for mount operations.
+| The topic data in object storage is no longer available to mount to any clusters.
+
+| `finished`
+| The operation is complete. 
+| The operation is complete. The target cluster starts to handle produce and consume requests.
+
+| `canceling`
+2+| Redpanda is in the process of canceling the mount or unmount operation.
+
+| `cancelled`
+2+| The mount or unmount operation is cancelled.
+
+|===
+
+== Cancel a mount or unmount operation
+
+You can cancel a topic mount or unmount by running the command:
+
+[tabs]
+======
+rpk::
++
+--
+```
+rpk cluster storage cancel-mount <migration-id>
+```
+--
+
+ifndef::env-cloud[]
+Admin API::
++
+--
+```
+curl -X POST http://localhost:9644/v1/<migration-id>/?action=cancel
+```
+--
+endif::[]
+ifdef::env-cloud[]
+Cloud API::
++
+--
+[,bash]
+----
+curl -X POST "<dataplane-api-url>/v1alpha2/cloud-storage/mount-tasks/<id>" \
+ -H "Authorization: Bearer <token>" \
+ -H "accept: application/json" \
+ -H "content-type: application/json" \
+ -d '{"action":"ACTION_CANCEL"}'
+----
+
+--
+endif::[]
+======
+
+You cannot cancel mount and unmount operations in the following <<monitor-progress,states>>:
+
+ifndef::env-cloud[]
+- `planned` (but you may still xref:api:ROOT:admin-api.adoc#delete-/v1/migrations/-id-[delete] a planned mount or unmount)
+endif::[]
+ifdef::env-cloud[]
+- `planned` (but you may still delete a planned mount or unmount)
+endif::[]
+- `cut_over`
+- `finished`
+- `canceling`
+- `cancelled`
+
+== Additional considerations
+
+Redpanda prevents you from mounting the same topic to multiple clusters at once. This ensures that multiple clusters don't write to the same location in object storage and corrupt the topic.
+
+If you attempt to mount a topic where the name matches a topic already in the target cluster, Redpanda fails the operation and emits a warning message in the logs.

@@ -1,0 +1,212 @@
+= Query Iceberg Topics using Databricks and Unity Catalog
+:description: Add Redpanda topics as Iceberg tables that you can query in Databricks managed by Unity Catalog.
+:page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
+
+// tag::single-source[]
+
+ifndef::env-cloud[]
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+endif::[]
+
+This guide walks you through querying Redpanda topics as managed Iceberg tables in Databricks, with AWS S3 as object storage and a catalog integration using https://docs.databricks.com/aws/en/data-governance/unity-catalog[Unity Catalog^]. For general information about Iceberg catalog integrations in Redpanda, see xref:manage:iceberg/use-iceberg-catalogs.adoc[].
+
+== Prerequisites
+
+ifndef::env-cloud[]
+* xref:manage:tiered-storage.adoc#configure-object-storage[Object storage configured] for your cluster and xref:manage:tiered-storage.adoc#enable-tiered-storage[Tiered Storage enabled] for the topics for which you want to generate Iceberg tables.
++
+You need the AWS S3 bucket URI, so you can configure it as an external location in Unity Catalog.
+endif::[]
+* A Databricks workspace in the same region as your S3 bucket. See the https://docs.databricks.com/aws/en/resources/supported-regions#supported-regions-list[list of supported AWS regions^].
+* Unity Catalog enabled in your Databricks workspace. See the https://docs.databricks.com/aws/en/data-governance/unity-catalog/get-started[Databricks documentation^] to set up Unity Catalog for your workspace.
+* https://docs.databricks.com/aws/en/optimizations/predictive-optimization#enable-predictive-optimization[Predictive optimization^] enabled for Unity Catalog.
+* https://docs.databricks.com/aws/en/external-access/admin[External data access^] enabled in your metastore.
+* Workspace admin privileges to complete the steps to create a Unity Catalog storage credential and external location that connects your cluster's Tiered Storage bucket to Databricks.
+
+== Limitations
+ 
+The following data types are not currently supported for managed Iceberg tables:
+
+|===
+| Iceberg type | Equivalent Avro type
+
+| uuid | uuid
+| fixed(L) | fixed
+| time | time-millis, time-micros
+
+|===
+
+There are no limitations for Protobuf types.
+
+== Create a Unity Catalog storage credential
+
+A storage credential is a Databricks object that controls access to external object storage, in this case S3. You associate a storage credential with an AWS IAM role that defines what actions Unity Catalog can perform in the S3 bucket.
+
+Follow the steps in the https://docs.databricks.com/aws/en/connect/unity-catalog/cloud-storage/storage-credentials[Databricks documentation^] to create an AWS IAM role that has the required permissions for the bucket. When you have completed these steps, you should have the following configured in AWS and Databricks:
+
+* A self-assuming IAM role, meaning you've defined the role trust policy so the role trusts itself.
+* Two IAM policies attached to the IAM role. The first policy grants Unity Catalog read and write access to the bucket. The second policy allows Unity Catalog to configure file events.
+* A storage credential in Databricks associated with the IAM role, using the role's ARN. You also use the storage credential's external ID in the role's trust relationship policy to make the role self-assuming.
+
+== Create a Unity Catalog external location
+
+The external location stores the Unity Catalog-managed Iceberg metadata, and the Iceberg data written by Redpanda. You must use the same bucket configured for glossterm:Tiered Storage[] for your Redpanda cluster.
+
+ifdef::env-cloud[]
+For BYOC clusters, the bucket name is `redpanda-cloud-storage-<cluster-id>`, where `<cluster-id>` is the ID of your Redpanda cluster.
+endif::[]
+
+Follow the steps in the https://docs.databricks.com/aws/en/connect/unity-catalog/cloud-storage/external-locations[Databricks documentation] to *manually* create an external location. You can create the external location in the Catalog Explorer or with SQL. You must create the external location manually because the location needs to be associated with the existing Tiered Storage bucket URL, `s3://<bucket-name>`.
+
+== Create a new catalog
+
+Follow the steps in the Databricks documentation to https://docs.databricks.com/aws/en/catalogs/create-catalog[create a standard catalog^]. When you create the catalog, specify the external location you created in the previous step as the storage location.
+
+You use the catalog name when you set the Iceberg cluster configuration properties in Redpanda in a later step.
+
+== Authorize access to Unity Catalog
+
+Redpanda recommends using OAuth for service principals to grant Redpanda access to Unity Catalog. 
+
+. Follow the steps in the https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m[Databricks documentation] to create a service principal, and then generate an OAuth secret. You use the client ID and secret to set Iceberg cluster configuration properties in Redpanda in the next step.
+. Open your catalog in the Catalog Explorer, then click *Permissions*.
+. Click *Grant* to grant the service principal the following permissions on the catalog:
++
+* `ALL PRIVILEGES`
+* `EXTERNAL USE SCHEMA`
+
+The Iceberg integration for Redpanda also supports using bearer tokens.
+
+== Update cluster configuration
+
+To configure your Redpanda cluster to enable Iceberg on a topic and integrate with Unity Catalog:
+
+. Edit your cluster configuration to set the `iceberg_enabled` property to `true`, and set the catalog integration properties listed in the example below.
+ifndef::env-cloud[]
++
+Run `rpk cluster config edit` to update these properties:
++
+[,bash]
+----
+iceberg_enabled: true 
+iceberg_catalog_type: rest
+iceberg_rest_catalog_endpoint: https://<workspace-instance>/api/2.1/unity-catalog/iceberg-rest
+iceberg_rest_catalog_authentication_mode: oauth2
+iceberg_rest_catalog_oauth2_server_uri: https://<workspace-instance>/oidc/v1/token
+iceberg_rest_catalog_oauth2_scope: all-apis
+iceberg_rest_catalog_client_id: <service-principal-client-id>
+iceberg_rest_catalog_client_secret: <service-principal-client-secret>
+iceberg_rest_catalog_warehouse: <unity-catalog-name>
+iceberg_disable_snapshot_tagging: true
+----
+endif::[]
+ifdef::env-cloud[]
+Use `rpk` like in the following example, or use the Cloud API to xref:manage:cluster-maintenance/config-cluster.adoc#set-cluster-configuration-properties[update these cluster properties]. The update might take several minutes to complete.
++
+To reference a secret in a cluster property, you must first xref:manage:iceberg/use-iceberg-catalogs.adoc#store-a-secret-for-rest-catalog-authentication[store the secret value]. 
++
+[,bash]
+----
+rpk cloud login
+
+rpk profile create --from-cloud <cluster-id>
+
+rpk cluster config set \
+  iceberg_enabled=true \
+  iceberg_catalog_type=rest \
+  iceberg_rest_catalog_endpoint=https://<workspace-instance>/api/2.1/unity-catalog/iceberg-rest \
+  iceberg_rest_catalog_authentication_mode=oauth2 \
+  iceberg_rest_catalog_oauth2_server_uri=https://<workspace-instance>/oidc/v1/token \
+  iceberg_rest_catalog_oauth2_scope=all-apis \
+  iceberg_rest_catalog_client_id=<service-principal-client-id> \
+  iceberg_rest_catalog_client_secret=${secrets.<service-principal-client-secret-name>} \
+  iceberg_rest_catalog_warehouse=<unity-catalog-name> \
+  iceberg_disable_snapshot_tagging=true
+----
+endif::[]
++
+Use your own values for the following placeholders:
++
+--
+- `<workspace-instance>`: The URL of your https://docs.databricks.com/aws/en/workspace/workspace-details#workspace-instance-names-urls-and-ids[Databricks workspace instance^]; for example, `cust-success.cloud.databricks.com`.
+- `<service-principal-client-id>`: The client ID of the service principal you created in an earlier step.
+ifndef::env-cloud[]
+- `<service-principal-client-secret>`: The client secret of the service principal you created in an earlier step.
+endif::[]
+ifdef::env-cloud[]
+- `<service-principal-client-secret-name>`: The name of the client secret of the service principal you created in an earlier step.
+endif::[]
+- `<unity-catalog-name>`: The name of your catalog in Unity Catalog.
+--
++
+[,bash,role=no-copy]
+----
+Successfully updated configuration. New configuration version is 2.
+----
+
+ifndef::env-cloud[]
+. You must restart your cluster if you change the configuration for a running cluster. 
+endif::[]
+
+. Enable the integration for a topic by configuring the topic property `redpanda.iceberg.mode`. The following examples show how to use xref:get-started:rpk-install.adoc[`rpk`] to either create a new topic or alter the configuration for an existing topic and set the Iceberg mode to `key_value`. The `key_value` mode creates an Iceberg table for the topic consisting of two columns, one for the record metadata including the key, and another binary column for the record's value. See xref:manage:iceberg/choose-iceberg-mode.adoc[] for more details on Iceberg modes.  
++
+.Create a new topic and set `redpanda.iceberg.mode`:
+[,bash]
+----
+rpk topic create <topic-name> --topic-config=redpanda.iceberg.mode=key_value
+----
++
+.Set `redpanda.iceberg.mode` for an existing topic:
+[,bash]
+----
+rpk topic alter-config <topic-name> --set redpanda.iceberg.mode=key_value
+---- 
+
+. Produce to the topic. For example, 
++
+[,bash]
+----
+echo "hello world\nfoo bar\nbaz qux" | rpk topic produce <topic-name> --format='%k %v\n'
+----
+
+You should see the topic as a table with data in Unity Catalog. The data may take some time to become visible, depending on your config_ref:iceberg_target_lag_ms,true,properties/cluster-properties[`iceberg_target_lag_ms`] setting.
+
+. In Catalog Explorer, open your catalog. You should see a `redpanda` schema, in addition to `default` and `information_schema`.
+. The `redpanda` schema and the table residing within this schema are automatically added for you. The table name is the same as the topic name. 
+
+== Query Iceberg table using Databricks SQL
+
+You can query the Iceberg table using different engines, such as Databricks SQL, PyIceberg, or Apache Spark. To query the table or view the table data in Catalog Explorer, ensure that your account has the necessary permissions to read the table. Review the Databricks documentation on https://docs.databricks.com/aws/en/data-governance/unity-catalog/manage-privileges/?language=SQL#grant-permissions-on-objects-in-a-unity-catalog-metastore[granting permissions to objects^] and https://docs.databricks.com/aws/en/data-governance/unity-catalog/manage-privileges/privileges[Unity Catalog privileges^] for details.
+
+The following example shows how to query the Iceberg table using SQL in Databricks SQL.
+
+. In the Databricks console, open *SQL Editor*.
+. In the query editor, run:
++
+[,sql]
+----
+-- Ensure that the catalog and table name are correctly parsed in case they contain special characters
+SELECT * FROM `<catalog-name>`.redpanda.`<table-name>`;
+----
++
+Your query results should look like the following:
++
+[,sql,role="no-copy no-wrap"]
+----
+-- Example for redpanda.iceberg.mode=key_value with 1 record produced to topic
++----------------------------------------------------------------------+------------+
+| redpanda                                                             | value      |
++----------------------------------------------------------------------+------------+
+| {"partition":0,"offset":"0","timestamp":"2025-04-02T18:57:11.127Z",  | 776f726c64 |
+| "headers":null,"key":"68656c6c6f"}                                   |            |
++----------------------------------------------------------------------+------------+
+----
+
+== See also
+
+- xref:manage:iceberg/query-iceberg-topics.adoc[]
+
+// end::single-source[]

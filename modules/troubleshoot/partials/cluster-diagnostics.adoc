@@ -1,0 +1,366 @@
+ifdef::env-kubernetes[]
+:link-errors: troubleshoot:errors-solutions/k-resolve-errors.adoc
+:link-bundle: troubleshoot:debug-bundle/k-generate-debug-bundle.adoc
+endif::[]
+ifndef::env-kubernetes[]
+:link-errors: troubleshoot:errors-solutions/resolve-errors.adoc
+:link-bundle: troubleshoot:debug-bundle/generate-debug-bundle.adoc
+endif::[]
+
+ifdef::env-kubernetes[]
+== Prerequisites
+
+Before troubleshooting Redpanda, ensure that Kubernetes isn't the cause of the issue. For information about debugging applications in a Kubernetes cluster, see the https://kubernetes.io/docs/tasks/debug/[Kubernetes documentation^].
+endif::[]
+
+== Collect all debugging data
+
+For a comprehensive diagnostic snapshot, generate a debug bundle that collects detailed data for cluster, broker, or node analysis.
+
+See xref:{link-bundle}[] for details on generating a debug bundle.
+
+ifdef::env-kubernetes[]
+== View Helm chart configuration
+
+To check the overrides that were applied to your deployment:
+
+[,bash]
+----
+helm get values <chart-name> --namespace <namespace>
+----
+
+If you're using the Redpanda Operator, the chart name matches the name of your Redpanda resource.
+
+To check all the values that were set in the Redpanda Helm chart, including any overrides:
+
+[,bash]
+----
+helm get values <chart-name> --namespace <namespace> --all
+----
+
+== View recent events
+
+To understand the latest events that occurred in your Redpanda cluster's namespace, you can sort events by their creation timestamp:
+
+[,bash]
+----
+kubectl get events --namespace <namespace> --sort-by='.metadata.creationTimestamp'
+----
+
+== View Redpanda logs
+
+Logs are crucial for monitoring and troubleshooting your Redpanda clusters. Redpanda brokers output logs to STDOUT, making them accessible via `kubectl`.
+
+To access logs for a specific Pod:
+
+. List all Pods to find the names of those that are running Redpanda brokers:
++
+[source,bash]
+----
+kubectl get pods --namespace <namespace>
+----
+
+. View logs for a particular Pod by replacing `<pod-name>` with the name of your Pod:
++
+[source,bash]
+----
+kubectl logs <pod-name> --namespace <namespace>
+----
++
+[TIP]
+====
+For a comprehensive overview, you can view aggregated logs from all Pods in the StatefulSet:
+
+[,bash]
+----
+kubectl logs --namespace <namespace> -l app.kubernetes.io/component=redpanda-statefulset
+----
+====
+
+=== Change the default log level
+
+To change the default log level for all Redpanda subsystems, use the `logging.logLevel` configuration. Valid values are `trace`, `debug`, `info`, `warn`, `error`.
+
+Changing the default log level to `debug` can provide more detailed logs for diagnostics. This logging level increases the volume of generated logs.
+
+NOTE: To set different log levels for individual subsystems, see <<Override the default log level for Redpanda subsystems>>.
+
+[tabs]
+======
+Operator::
++
+--
+Apply the new log level:
+
+.`redpanda-cluster.yaml`
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    logging:
+      logLevel: debug
+----
+
+Then, apply this configuration:
+
+[source,bash]
+----
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+----
+--
+
+Helm::
++
+--
+Choose between using a custom values file or setting values directly:
+[tabs]
+====
+--values::
++
+Specify logging settings in `logging.yaml`, then upgrade:
++
+.`logging.yaml`
+[source,yaml]
+----
+logging:
+  logLevel: debug
+----
++
+[source,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values logging.yaml --reuse-values
+----
+--set::
++
+Directly set the log level during upgrade:
++
+[source,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set logging.logLevel=debug
+----
+====
+--
+======
+
+After applying these changes, verify the log level by <<view-redpanda-logs, checking the initial output of the logs>> for the Redpanda Pods.
+
+=== Override the default log level for Redpanda subsystems
+
+You can override the log levels for individual subsystems, such as `rpc` and `kafka`, for more detailed logging control. Overrides exist for the entire length of the running Redpanda process.
+
+TIP: To temporarily override the log level for individual subsystems, you can use the xref:reference:rpk/rpk-redpanda/rpk-redpanda-admin-config-log-level-set.adoc[`rpk redpanda admin config log-level set`] command.
+
+. List all available subsystem loggers:
++
+[source,bash]
+----
+kubectl exec -it --namespace <namespace> <pod-name> -c redpanda -- rpk redpanda start --help-loggers
+----
+
+. Set the log level for one or more subsystems. In this example, the `rpc` and `kafka` subsystem loggers are set to `debug`.
++
+[tabs]
+======
+Operator::
++
+--
+Apply the new log level:
+
+.`redpanda-cluster.yaml`
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    statefulset:
+      additionalRedpandaCmdFlags:
+        - '--logger-log-level=rpc=debug:kafka=debug'
+----
+
+Then, apply this configuration:
+
+[source,bash]
+----
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+----
+--
+
+Helm::
++
+--
+Choose between using a custom values file or setting values directly:
+[tabs]
+====
+--values::
++
+Specify logging settings in `logging.yaml`, then upgrade:
++
+.`logging.yaml`
+[source,yaml]
+----
+statefulset:
+  additionalRedpandaCmdFlags:
+    - '--logger-log-level=rpc=debug:kafka=debug'
+----
++
+[source,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values logging.yaml --reuse-values
+----
+--set::
++
+Directly set the log level during upgrade:
++
+[source,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set statefulset.additionalRedpandaCmdFlags="{--logger-log-level=rpc=debug:kafka=debug}"
+----
+====
+--
+======
+
+Overriding the log levels for specific subsystems provides enhanced visibility into Redpanda's internal operations, facilitating better debugging and monitoring.
+
+== View Redpanda Operator logs
+
+To learn what's happening with the Redpanda Operator and the associated Redpanda resources, you can inspect a combination of Kubernetes events and the resource manifests. By monitoring these events and resources, you can troubleshoot any issues that arise during the lifecycle of a Redpanda deployment.
+
+[,bash]
+----
+kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
+----
+
+== Inspect the Redpanda resource
+
+In the Redpanda resource, the conditions section reveals the ongoing status of reconciliation. These conditions provide information on the success, failure, or pending status of various operations.
+
+To check the Redpanda resource:
+
+[,bash]
+----
+kubectl get redpandas.cluster.redpanda.com -o yaml --namespace <namespace>
+----
+
+endif::[]
+
+[[self-test]]
+== Self-test benchmarks
+
+When anomalous behavior arises in a cluster, you can determine if it's caused by issues with hardware, such as disk drives or network interfaces (NICs) by running xref:reference:rpk/rpk-cluster/rpk-cluster-self-test.adoc[`rpk cluster self-test`] to assess their performance and compare it to vendor specifications.
+
+The `rpk cluster self-test` command runs a set of benchmarks to gauge the maximum performance of a machine's disks and network connections:
+
+* **Disk tests**: Measures throughput and latency by performing concurrent sequential operations.
+* **Network tests**: Selects unique pairs of Redpanda brokers as client/server pairs and runs throughput tests between them.
+
+Each benchmark runs for a configurable duration and returns IOPS, throughput, and latency metrics. This helps you determine if hardware performance aligns with expected vendor specifications.
+
+=== Cloud storage tests
+
+You can also use the self-test command to confirm your cloud storage is configured correctly for xref:manage:tiered-storage.adoc[Tiered Storage].
+
+Self-test performs the following checks to validate cloud storage configuration:
+
+include::reference:partial$rpk-self-test-cloud-tests.adoc[]
+
+For more information on cloud storage test details, see the xref:reference:rpk/rpk-cluster/rpk-cluster-self-test-start.adoc[`rpk cluster self-test start`] reference.
+
+=== Start self-test
+
+To start using self-test, run the `self-test start` command. Only initiate `self-test start` when system resources are available, as this operation can be resource-intensive.
+
+[,bash]
+----
+rpk cluster self-test start
+----
+
+For command help, run `rpk cluster self-test start -h`. For additional command flags, see the xref:reference:rpk/rpk-cluster/rpk-cluster-self-test-start.adoc[rpk cluster self-test start] reference.
+
+Before `self-test start` begins, it requests your confirmation to run its potentially large workload.
+
+Example start output:
+
+[.no-copy]
+----
+? Redpanda self-test will run benchmarks of disk and network hardware that will consume significant system resources. Do not start self-test if large workloads are already running on the system. (Y/n)
+Redpanda self-test has started, test identifier: "031be460-246b-46af-98f2-5fc16f03aed3", To check the status run:
+rpk cluster self-test status
+----
+
+The `self-test start` command returns immediately, and self-test runs its benchmarks asynchronously.
+
+=== Check self-test status
+
+To check the status of self-test, run the `self-test status` command.
+
+[,bash]
+----
+rpk cluster self-test status
+----
+
+For command help, run `rpk cluster self-test status -h`. For additional command flags, see the xref:reference:rpk/rpk-cluster/rpk-cluster-self-test-status.adoc[rpk cluster self-test status] reference.
+
+If benchmarks are currently running, `self-test status` returns a test-in-progress message.
+
+Example status output:
+
+[.no-copy]
+----
+$ rpk cluster self-test status
+Nodes [0 1 2] are still running jobs
+----
+
+[TIP]
+====
+The `status` command can output results in JSON format for automated checks or script integration. Use the `--format=json` option:
+
+[,bash]
+----
+rpk cluster self-test status --format=json
+----
+====
+
+If benchmarks have completed, `self-test status` returns their results.
+
+include::reference:partial$rpk-self-test-descriptions.adoc[]
+
+.Example status output: test results
+include::reference:partial$rpk-self-test-status-output.adoc[]
+
+=== Stop self-test
+
+To stop a running self-test, run the `self-test stop` command.
+
+[,bash]
+----
+rpk cluster self-test stop
+----
+
+Example stop output:
+
+[.no-copy]
+----
+$ rpk cluster self-test stop
+All self-test jobs have been stopped
+----
+
+For command help, run `rpk cluster self-test stop -h`. For additional command flags, see the xref:reference:rpk/rpk-cluster/rpk-cluster-self-test-stop.adoc[rpk cluster self-test stop] reference.
+
+For more details about self-test, including command flags, see xref:reference:rpk/rpk-cluster/rpk-cluster-self-test.adoc[rpk cluster self-test].
+
+== Next steps
+
+Learn how to xref:{link-errors}[resolve common errors].

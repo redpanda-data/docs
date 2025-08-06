@@ -9,6 +9,8 @@ endif::[]
 
 - Minimum version required of Ubuntu: {supported-ubuntu-required}. *Recommended*: {supported-ubuntu-recommended}
 
+NOTE: Enabling SELinux (Security-Enhanced Linux) can result in latency issues. If you wish to avoid such latency issues, do not use this mechanism.
+
 *Recommendation*: Linux kernel 4.19 or later for better performance.
 
 ifdef::env-kubernetes[]
@@ -29,17 +31,17 @@ https://helm.sh/docs/intro/install/[Install Helm^].
 endif::[]
 
 [[number-of-workers]]
-== Number of {node}s
+== Number of nodes
 
 Provision one physical node or virtual machine (VM) for each Redpanda broker that you plan to deploy in your Redpanda cluster.
-Each Redpanda broker requires its own dedicated {node} for the following reasons:
+Each Redpanda broker requires its own dedicated node for the following reasons:
 
-- *Resource isolation*: Redpanda brokers are designed to make full use of available system resources, including CPU and memory. By dedicating a {node} to each broker, you ensure that these resources aren't shared with other applications or processes, avoiding potential performance bottlenecks or contention.
-- *External networking*: External clients should connect directly to the broker that owns the partition they're interested in. This means that each broker must be individually addressable. As clients must connect to the specific broker that is the leader of the partition, they need a mechanism to directly address each broker in the cluster. Assigning each broker to its own dedicated {node} makes this direct addressing feasible, since each {node} will have a unique address. See <<External networking>>.
+- *Resource isolation*: Redpanda brokers are designed to make full use of available system resources, including CPU and memory. By dedicating a node to each broker, you ensure that these resources aren't shared with other applications or processes, avoiding potential performance bottlenecks or contention.
+- *External networking*: External clients should connect directly to the broker that owns the partition they're interested in. This means that each broker must be individually addressable. As clients must connect to the specific broker that is the leader of the partition, they need a mechanism to directly address each broker in the cluster. Assigning each broker to its own dedicated node makes this direct addressing feasible, since each node will have a unique address. See <<External networking>>.
 - *Fault tolerance*: Ensuring each broker operates on a separate node enhances fault tolerance. If one node experiences issues, it won't directly impact the other brokers.
 
 ifdef::env-kubernetes[]
-NOTE: The Redpanda Helm chart configures xref:reference:k-redpanda-helm-spec.adoc#statefulset-podantiaffinity[`podAntiAffinity` rules] to make sure that each Redpanda broker runs on its own {node}.
+NOTE: The Redpanda Helm chart configures xref:reference:k-redpanda-helm-spec.adoc#statefulset-podantiaffinity[`podAntiAffinity` rules] to make sure that each Redpanda broker runs on its own node.
 
 
 *Recommendations*: xref:./kubernetes-deploy.adoc#pod-replicas[Deploy at least three Pod replicas].
@@ -49,24 +51,71 @@ ifndef::env-kubernetes[]
 *Recommendations*: Deploy at least three Redpanda brokers.
 endif::[]
 
+[[node-updates]]
+== Prevent automatic node upgrades
+
+Ensure that node and operating system (OS) upgrades are manually managed when running Redpanda in production. Manual control avoids unplanned reboots or replacements that disrupt Redpanda brokers, causing service downtime, data loss, or quorum instability.
+
+Common issues with automatic node upgrades include:
+
+- Hard timeouts for graceful shutdowns that do not allow Redpanda brokers enough time to complete decommissioning or leadership transitions.
+- Replacements or reboots without ensuring data has been safely migrated or replicated, risking data loss.
+- Parallel upgrades across multiple nodes, which can disrupt quorum or reduce cluster availability.
+
+*Requirements*:
+
+- Disable automatic node maintenance or upgrades.
+ifdef::env-kubernetes[]
+To prevent managed Kubernetes services from automatically rebooting or upgrading nodes:
+** **Azure AKS**: https://learn.microsoft.com/en-us/azure/aks/auto-upgrade-node-os-image[Set the OS upgrade channel to `None`^].
+** **Google GKE**: https://cloud.google.com/kubernetes-engine/docs/how-to/node-auto-upgrades[Disable GKE auto-upgrades for node pools^].
+** **Amazon EKS**: https://docs.aws.amazon.com/eks/latest/userguide/automode.html[Disable EKS node auto-upgrades^].
+
+See also: xref:upgrade:k-upgrade-kubernetes.adoc[How to manually manage node upgrades].
+endif::[]
+
 == CPU and memory
 
 *Requirements*:
 
-- Two physical, not virtual, cores for each {node}.
+- Each node must have at least two physical CPU cores.
+- x86_64 (Westmere or newer) and AWS Graviton processors are supported.
+ifdef::env-kubernetes[]
+- Each Redpanda Pod requires at least 2 GiB of memory per core.
++
+** Request a minimum of 2.22 GiB per core to meet Redpanda's memory allocation strategy.
++
+See xref:manage:kubernetes/k-manage-resources.adoc[] for detailed guidance and examples.
+endif::[]
 
-- x86_64 (Westmere or newer) and AWS Graviton family processors are supported.
+- Each Redpanda broker must have at least 2 GB of memory per core.
 
-- 2 GB or more of memory per core.
-
-- 4 MB of memory for each topic partition replica. You can enforce this requirement in the tunable xref:reference:tunable-properties.adoc#topic_memory_per_partition[`topic_memory_per_partition`] property.
+- Each Redpanda broker must have at least 2 MB of memory for each topic partition replica.
++
+The total memory available for partition replicas is determined as a percentage of the cluster's total memory, which is controlled by the xref:reference:tunable-properties.adoc#topic_partitions_memory_allocation_percent[`topic_partitions_memory_allocation_percent`] setting. Each partition replica consumes xref:reference:tunable-properties.adoc#topic_memory_per_partition[`topic_memory_per_partition`] bytes from this pool. If insufficient memory is available, topic operations will fail. You can adjust the allocation ratio using `topic_partitions_memory_allocation_percent`, but doing so is not recommended, as lowering it may lead to instability or degraded performance.
 
 *Recommendations*:
 
-- Four physical cores for each {node} are strongly recommended.
+- Four physical cores for each node are strongly recommended.
 
 ifdef::env-kubernetes[]
-- xref:./kubernetes-deploy.adoc#resources[Set resource requests and limits for memory and CPU].
+== Pod resource configuration
+
+To ensure stable performance and predictable scheduling in Kubernetes, configure Redpanda Pods with appropriate CPU and memory requests and limits:
+
+* Set `resources.requests.memory` and `resources.limits.memory` to the same value.
+** Request at least 2.22 GiB of memory per core to meet Redpanda's heap and overhead requirements.
+* Set `resources.cpu.cores` to an even integer (for example, `4`, `6`, or `8`) to align with the Kubernetes static CPU manager policy.
+* Match CPU and memory resource settings for all containers in the Pod, including init containers and sidecars, to receive the `Guaranteed` QoS class.
+* Enable memory locking with the `--lock-memory` flag to prevent paging and improve performance.
+
+This configuration:
+
+* Grants Redpanda exclusive access to CPU cores and memory
+* Reduces the risk of throttling, eviction, and OOM kills
+* Provides predictable and isolated runtime performance
+
+See xref:manage:kubernetes/k-manage-resources.adoc[Manage Pod Resources in Kubernetes] for configuration examples using both Helm and the Redpanda Operator.
 endif::[]
 
 == Storage
@@ -81,7 +130,7 @@ ifdef::env-kubernetes[]
 For information about supported volume types for different data in Redpanda, see xref:manage:kubernetes/storage/k-volume-types.adoc[].
 endif::[]
 +
-CAUTION: Avoid using NFS (Network File System) for the Redpanda data directory or the Tiered Storage cache.
+CAUTION: The Network File System (NFS) is unsupported for use as the storage mechanism for the Redpanda data directory or for the Tiered Storage cache.
 
 ifdef::env-kubernetes[- A default StorageClass that can provision PersistentVolumes with at least 20Gi of storage.]
 
@@ -104,7 +153,7 @@ endif::[]
 
 == External networking
 
-- For external access, each {node} in your cluster must have a static, externally accessible IP address.
+- For external access, each node in your cluster must have a static, externally accessible IP address.
 
 - Minimum 10 GigE (10 Gigabit Ethernet) connection to ensure:
 
@@ -118,7 +167,7 @@ endif::[]
 
 == Tuning
 
-Before deploying Redpanda to production, each {node} that runs Redpanda must be tuned to optimize the Linux kernel for Redpanda processes.
+Before deploying Redpanda to production, each node that runs Redpanda must be tuned to optimize the Linux kernel for Redpanda processes.
 
 ifdef::env-kubernetes[]
 See xref:deploy:deployment-option/self-hosted/kubernetes/k-tune-workers.adoc[].
@@ -171,6 +220,8 @@ ifdef::env-kubernetes[EKS defaults to the ext4 file system. Use XFS instead wher
 
 - Storage optimized: Storage-optimized instances are designed for workloads that require high, sequential read and write access to very large data sets on local storage. They are optimized to deliver tens of thousands of low-latency, random IOPS to applications.
 
+** https://aws.amazon.com/ec2/instance-types/i4g/[I4g, Is4gen, Im4gn^]
+** https://aws.amazon.com/ec2/instance-types/i4i/[I4i^]
 ** https://aws.amazon.com/ec2/instance-types/i3/[I3^]
 ** https://aws.amazon.com/ec2/instance-types/i3en/[I3en^]
 
@@ -183,16 +234,11 @@ ifdef::env-kubernetes[EKS defaults to the ext4 file system. Use XFS instead wher
 
 ifdef::env-kubernetes[AKS often defaults to the ext4 file system. Use XFS instead where possible.]
 
-- Memory optimized: Memory-optimized VM sizes offer a high memory-to-CPU ratio.
+- General purpose: General purpose VM sizes provide balanced CPU-to-memory ratio. Ideal for testing and development, small to medium databases, and low to medium traffic web servers.	
 
-** https://learn.microsoft.com/en-us/azure/virtual-machines/ebdsv5-ebsv5-series[Ebsv5 series (NVMe)^]
-** https://learn.microsoft.com/en-us/azure/virtual-machines/ebdsv5-ebsv5-series[Ebdsv5 series (NVMe)^]
-
-- Storage optimized: Storage-optimized virtual machine (VM) sizes offer high disk throughput and IO.
-
-** https://learn.microsoft.com/en-us/azure/virtual-machines/lsv2-series[Lsv2 series^]
-** https://learn.microsoft.com/en-us/azure/virtual-machines/lsv3-series[Lsv3 series^]
-** https://learn.microsoft.com/en-us/azure/virtual-machines/lasv3-series[Lasv3 series^]
+** https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/ddv5-series?tabs=sizebasic[Standard_D2d_v5^]
+** https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/ddv5-series?tabs=sizebasic[Standard_D4d_v5^]	
+** https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/ddv5-series?tabs=sizebasic[Standard_D32d_v5^]	
 
 === Google
 

@@ -1,8 +1,19 @@
 == Monitor for performance and health
+// tag::single-source[]
 
 This section provides guidelines and example queries using Redpanda's public metrics to optimize your system's performance and monitor its health.
 
-TIP: To help detect and mitigate anomalous system behaviors, capture baseline metrics of your healthy system at different stages (at start-up, under high load, in steady state) so you can set thresholds and alerts according to those baselines.
+To help detect and mitigate anomalous system behaviors, capture baseline metrics of your healthy system at different stages (at start-up, under high load, in steady state) so you can set thresholds and alerts according to those baselines.
+
+[TIP]
+====
+For counter type metrics, a broker restart causes the count to reset to zero in tools like Prometheus and Grafana. Redpanda recommends wrapping counter metrics in a rate query to account for broker restarts, for example:
+
+[,promql]
+----
+rate(redpanda_kafka_records_produced_total[5m])
+----
+====
 
 === Redpanda architecture
 
@@ -26,7 +37,7 @@ rate(redpanda_uptime_seconds_total[5m])
 
 For the total CPU busy (non-idle) time, monitor xref:reference:public-metrics-reference.adoc#redpanda_cpu_busy_seconds_total[`redpanda_cpu_busy_seconds_total`].
 
-To detect unexpected idling, you can query the rate of change as a percentage of the shard that is in use at a given point in time.
+To detect unexpected idling, you can query the rate of change as a fraction of the shard that is in use at a given point in time.
 
 [,promql]
 ----
@@ -42,18 +53,34 @@ This high host-level CPU utilization happens because Redpanda uses Seastar, whic
 Use xref:reference:public-metrics-reference.adoc#redpanda_cpu_busy_seconds_total[`redpanda_cpu_busy_seconds_total`] to monitor the actual Redpanda CPU utilization. When it indicates close to 100% utilization over a given period of time, make sure to also monitor produce and consume <<latency,latency>> as they may then start to increase as a result of resources becoming overburdened.
 ====
 
-==== Memory allocated
+==== Memory availability and pressure
 
-To monitor the percentage of memory allocated, use a formula with xref:reference:public-metrics-reference.adoc#redpanda_memory_allocated_memory[`redpanda_memory_allocated_memory`] and xref:reference:public-metrics-reference.adoc#redpanda_memory_free_memory[`redpanda_memory_free_memory`]:
+To monitor memory, use xref:reference:public-metrics-reference.adoc#redpanda_memory_available_memory[`redpanda_memory_available_memory`], which includes both free memory and reclaimable memory from the batch cache. This provides a more accurate picture than using allocated memory alone, since allocated does not include reclaimable cache memory.
+
+To monitor the fraction of memory available:
 
 [,promql]
 ----
-sum(redpanda_memory_allocated_memory) / (sum(redpanda_memory_free_memory) + sum(redpanda_memory_allocated_memory))
+min(redpanda_memory_available_memory / (redpanda_memory_free_memory + redpanda_memory_allocated_memory))
+----
+
+To monitor memory pressure (fraction of memory being used), which may be more intuitive for alerting:
+
+[,promql]
+----
+min(redpanda_memory_available_memory / redpanda_memory_allocated_memory)
+----
+
+You can also monitor the lowest available memory available since the process started to understand historical memory pressure:
+
+[,promql]
+----
+min(redpanda_memory_available_memory_low_water_mark / (redpanda_memory_free_memory + redpanda_memory_allocated_memory))
 ----
 
 ==== Disk used
 
-To monitor the percentage of disk consumed, use a formula with xref:reference:public-metrics-reference.adoc#redpanda_storage_disk_free_bytes[`redpanda_storage_disk_free_bytes`] and xref:reference:public-metrics-reference.adoc#redpanda_storage_disk_total_bytes[`redpanda_storage_disk_total_bytes`]:
+To monitor the fraction of disk consumed, use a formula with xref:reference:public-metrics-reference.adoc#redpanda_storage_disk_free_bytes[`redpanda_storage_disk_free_bytes`] and xref:reference:public-metrics-reference.adoc#redpanda_storage_disk_total_bytes[`redpanda_storage_disk_total_bytes`]:
 
 [,promql]
 ----
@@ -137,11 +164,12 @@ rate(redpanda_kafka_request_latency_seconds_count{redpanda_request="produce"}[5m
 
 ==== Internal RPC latency
 
-To monitor Redpanda internal RPC latency, use the xref:reference:public-metrics-reference.adoc#redpanda_rpc_request_latency_seconds[`redpanda_rpc_request_latency_seconds`] histogram. For example, create a query for the 99th percentile latency:
+To monitor Redpanda internal RPC latency, use the  xref:reference:public-metrics-reference.adoc#redpanda_rpc_request_latency_seconds[`redpanda_rpc_request_latency_seconds`] histogram with 
+the `redpanda_server="internal"` label. For example, create a query for the 99th percentile latency:
 
 [,promql]
 ----
-histogram_quantile(0.99, (sum(rate(redpanda_rpc_request_latency_seconds_bucket[5m])) by (le, provider, region, instance, namespace, pod, redpanda_server)))
+histogram_quantile(0.99, (sum(rate(redpanda_rpc_request_latency_seconds_bucket{redpanda_server="internal"}[5m])) by (le, provider, region, instance, namespace, pod)))
 ----
 
 You can monitor the rate of internal RPC requests with xref:reference:public-metrics-reference.adoc#redpanda_rpc_request_latency_seconds[`redpanda_rpc_request_latency_seconds`] histogram's count:
@@ -198,13 +226,135 @@ Leaderless partitions can be caused by unresponsive brokers. When an alert on `r
 
 Redpanda's Raft implementation exchanges periodic status RPCs between a broker and its peers. The xref:reference:public-metrics-reference.adoc#redpanda_node_status_rpcs_timed_out[`redpanda_node_status_rpcs_timed_out`] gauge increases when a status RPC times out for a peer, which indicates that a peer may be unresponsive and may lead to problems with partition replication that Raft manages. Monitor for non-zero values of this gauge, and correlate it with any logged errors or changes in partition replication.
 
-=== Consumers
+[[consumers]]
+=== Consumer group lag
 
-==== Consumer group lag
+Consumer group lag is an important performance indicator that measures the difference between the broker's latest (max) offset and the consumer group's last committed offset. The lag indicates how current the consumed data is relative to real-time production. A high or increasing lag means that consumers are processing messages slower than producers are generating them. A decreasing or stable lag implies that consumers are keeping pace with producers, ensuring real-time or near-real-time data consumption.
 
-When working with Kafka consumer groups, the consumer group lag&mdash;the difference between the broker's latest (max) offset and the group's last committed offset&mdash;is a performance indicator of how fresh the data being consumed is. While higher lag for archival consumers is expected, high lag for real-time consumers could indicate that the consumers are overloaded and thus may need their topics to be partitioned more, or to spread the load to more consumers.
+By monitoring consumer lag, you can identify performance bottlenecks and make informed decisions about scaling consumers, tuning configurations, and improving processing efficiency.
 
-To monitor consumer group lag, create a query with the xref:reference:public-metrics-reference.adoc#redpanda_kafka_max_offset[`redpanda_kafka_max_offset`] and xref:reference:public-metrics-reference.adoc#redpanda_kafka_consumer_group_committed_offset[`redpanda_kafka_consumer_group_committed_offset`] gauges:
+A high maximum lag may indicate that a consumer is experiencing connectivity problems or cannot keep up with the incoming workload.
+
+A high or increasing total lag (lag sum) suggests that the consumer group lacks sufficient resources to process messages at the rate they are produced. In such cases, scaling the number of consumers within the group can help, but only up to the number of partitions available in the topic. If lag persists despite increasing consumers, repartitioning the topic may be necessary to distribute the workload more effectively and improve processing efficiency.
+
+Redpanda provides the following methods for monitoring consumer group lag:
+
+- <<dedicated-gauges, Dedicated gauges>>: Redpanda brokers can internally calculate consumer group lag and expose two dedicated gauges. This method is recommended for environments where your observability platform does not support complex queries required to calculate the lag from offset metrics.
++
+Enabling these gauges may add a small amount of additional processing overhead to the brokers.
+- <<offset-based-calculation, Offset-based calculation>>: You can use your observability platform to calculate consumer group lag from offset metrics. Use this method if your observability platform supports functions, such as `max()`, and you prefer to avoid additional processing overhead on the broker.
+
+==== Dedicated gauges
+
+Redpanda can internally calculate consumer group lag and expose it as two dedicated gauges.
+
+- xref:reference:public-metrics-reference.adoc#redpanda_kafka_consumer_group_lag_max[`redpanda_kafka_consumer_group_lag_max`]:
+Reports the maximum lag observed among all partitions for a consumer group. This metric helps pinpoint the partition with the greatest delay, indicating potential performance or configuration issues.
+
+- xref:reference:public-metrics-reference.adoc#redpanda_kafka_consumer_group_lag_sum[`redpanda_kafka_consumer_group_lag_sum`]:
+Aggregates the lag across all partitions, providing an overall view of data consumption delay for the consumer group.
+
+To enable these dedicated gauges, you must enable consumer group metrics in your cluster properties. Add the following to your Redpanda configuration:
+
+- xref:reference:properties/cluster-properties.adoc#enable_consumer_group_metrics[`enable_consumer_group_metrics`]: A list of properties to enable for consumer group metrics. You must add the `consumer_lag` property to enable consumer group lag metrics.
+ifndef::env-cloud[]
+[,bash]
+- xref:reference:properties/cluster-properties.adoc#consumer_group_lag_collection_interval_sec[`consumer_group_lag_collection_interval_sec`] (optional): The interval in seconds for collecting consumer group lag metrics. The default is 60 seconds.
+endif::[]
++
+Set this value equal to the scrape interval of your metrics collection system. Aligning these intervals ensures synchronized data collection, reducing the likelihood of missing or misaligned lag measurements.
+
+For example:
+
+ifndef::env-kubernetes[]
+[,bash]
+----
+rpk cluster config set enable_consumer_group_metrics '["group", "partition", "consumer_lag"]'
+----
+endif::[]
+
+ifdef::env-kubernetes[]
+[tabs]
+======
+Helm + Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    config:
+      cluster:
+        enable_consumer_group_metrics:
+          - group
+          - partition
+          - consumer_lag
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`enable-consumer-metrics.yaml`
+[,yaml]
+----
+config:
+  cluster:
+    enable_consumer_group_metrics:
+      - group
+      - partition
+      - consumer_lag
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+--values enable-consumer-metrics.yaml --reuse-values
+```
+
+--set::
++
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda \
+  --namespace <namespace> \
+  --create-namespace \
+  --set config.cluster.enable_consumer_group_metrics[0]=group \
+  --set config.cluster.enable_consumer_group_metrics[1]=partition \
+  --set config.cluster.enable_consumer_group_metrics[2]=consumer_lag
+----
+
+====
+--
+======
+endif::[]
+
+
+When these properties are enabled, Redpanda computes and exposes the `redpanda_kafka_consumer_group_lag_max` and `redpanda_kafka_consumer_group_lag_sum` gauges to the `/public_metrics` endpoint.
+
+==== Offset-based calculation
+
+If your environment is sensitive to the performance overhead of the <<dedicated-gauges, dedicated gauges>>, use the offset-based calculation method to calculate consumer group lag. This method requires your observability platform to support functions like `max()`.
+
+Redpanda provides two metrics to calculate consumer group lag:
+
+- xref:reference:public-metrics-reference.adoc#redpanda_kafka_max_offset[`redpanda_kafka_max_offset`]: The broker's latest offset for a partition.
+- xref:reference:public-metrics-reference.adoc#redpanda_kafka_consumer_group_committed_offset[`redpanda_kafka_consumer_group_committed_offset`]: The last committed offset for a consumer group on that partition.
+
+For example, here's a typical query to compute consumer lag:
 
 [,promql]
 ----
@@ -264,3 +414,6 @@ rate(redpanda_rest_proxy_request_errors_total[5m])
 === Data transforms
 
 See xref:develop:data-transforms/monitor.adoc[].
+
+// end::single-source[]
+

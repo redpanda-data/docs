@@ -1,37 +1,100 @@
 = Uninstall Redpanda
 
-When you've finished testing Redpanda, you can uninstall it from your cluster and delete any Kubernetes resources that the Helm chart created.
+When you finish testing Redpanda, you can uninstall it from your Kubernetes cluster. The steps depend on how you installed Redpanda: using the Redpanda Operator or the Redpanda Helm chart.
 
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
+//tag::operator[]
+Follow the steps in **exact order** to avoid race conditions between
+the Redpanda Operator's reconciliation loop and Kubernetes garbage collection.
+
+. Delete all Redpanda-related custom resources:
++
+[,bash,role="no-wrap"]
+----
+kubectl delete users      --namespace <namespace> --all
+kubectl delete topics     --namespace <namespace> --all
+kubectl delete schemas    --namespace <namespace> --all
+kubectl delete redpanda   --namespace <namespace> --all
+----
+
+. Make sure requests for those resources return no results. For example, if you had a Redpanda cluster named `redpanda` in the namespace `<namespace>`, run:
++
 [,bash]
 ----
-kubectl delete -f redpanda-cluster.yaml --namespace <namespace>
-helm uninstall redpanda-controller --namespace <namespace>
-kubectl delete pod --all --namespace <namespace>
-kubectl delete pvc --all --namespace <namespace>
-kubectl delete secret --all --namespace <namespace>
+kubectl get redpanda --namespace <namespace>
 ----
+
+. Uninstall the Redpanda Operator Helm release:
++
+[,bash]
+----
+helm uninstall redpanda-controller --namespace <namespace>
+----
++
+Helm does not uninstall CRDs by default when using `helm uninstall` to avoid accidentally deleting existing custom resources.
+
+. Remove the CRDs.
+.. List all Redpanda CRDs installed by the operator:
++
+[,bash]
+----
+kubectl api-resources --api-group='cluster.redpanda.com'
+----
++
+This command displays all CRDs defined by the Redpanda Operator. For example:
++
+[,bash,role="no-wrap"]
+----
+NAME        SHORTNAMES   APIVERSION                      NAMESPACED   KIND
+redpandas   rp           cluster.redpanda.com/v1alpha2   true         Redpanda
+schemas     sc           cluster.redpanda.com/v1alpha2   true         Schema
+topics                   cluster.redpanda.com/v1alpha2   true         Topic
+users       rpu          cluster.redpanda.com/v1alpha2   true         User
+----
+
+.. Delete the CRDs:
++
+[,bash]
+----
+kubectl get crds -o name | grep cluster.redpanda.com | xargs kubectl delete
+----
++
+This command lists all CRDs with the `cluster.redpanda.com` domain suffix and deletes them, ensuring only Redpanda CRDs are removed. Helm does not delete CRDs automatically to prevent data loss, so you must run this step manually.
+
+. (Optional) Delete any leftover PVCs or Secrets in the namespace:
++
+CAUTION: The following command deletes all PVCs and Secrets in the namespace, which may remove unrelated resources if the namespace is shared with other applications.
++
+[,bash]
+----
+kubectl delete pvc,secret --all --namespace <namespace>
+----
+//end::operator[]
 --
 
 Helm::
 +
 --
+If you deployed Redpanda with the Redpanda Helm chart, follow these steps to uninstall it:
+
+. Uninstall the Helm release:
++
 [,bash]
 ----
 helm uninstall redpanda --namespace <namespace>
-kubectl delete pod --all --namespace <namespace>
-kubectl delete pvc --all --namespace <namespace>
-kubectl delete secret --all --namespace <namespace>
+----
+
+. (Optional) Delete any leftover PVCs or Secrets in the namespace:
++
+CAUTION: The following command deletes all PVCs and Secrets in the namespace, which may remove unrelated resources if the namespace is shared with other applications.
++
+[,bash]
+----
+kubectl delete pvc,secret --all --namespace <namespace>
 ----
 --
 ======
-
-To remove the `internal-rpk` alias:
-
-```bash
-unalias internal-rpk
-```

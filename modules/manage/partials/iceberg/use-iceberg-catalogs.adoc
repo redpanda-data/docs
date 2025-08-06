@@ -1,0 +1,309 @@
+ifdef::env-cloud[:about-iceberg-doc: manage:iceberg/about-iceberg-topics.adoc]
+ifndef::env-cloud[:about-iceberg-doc: manage:iceberg/topic-iceberg-integration.adoc]
+
+To read from the Redpanda-generated xref:{about-iceberg-doc}[Iceberg table], your Iceberg-compatible client or tool needs access to the catalog to retrieve the table metadata and know the current state of the table. The catalog provides the current table metadata, which includes locations for all the table's data files. You can configure Redpanda to either connect to a REST-based catalog, or use a filesystem-based catalog. 
+
+For production deployments, Redpanda recommends <<rest,using an external REST catalog>> to manage Iceberg metadata. This enables built-in table maintenance, safely handles multiple engines and tools accessing tables at the same time, facilitates data governance, and maximizes data discovery. However, if it is not possible to use a REST catalog, you can <<object-storage,use the filesystem-based catalog>> (`object_storage` catalog type), which does not require you to maintain a separate service to access the Iceberg data. 
+
+In either case, you use the catalog to load, query, or refresh the Iceberg table as you produce to the Redpanda topic. See the documentation for your query engine or Iceberg-compatible tool for specific guidance on adding the Iceberg tables to your data warehouse or lakehouse using the catalog. 
+
+After you have selected a catalog type at the cluster level and xref:{about-iceberg-doc}#enable-iceberg-integration[enabled the Iceberg integration] for a topic, you cannot switch to another catalog type.
+
+[[rest]]
+== Connect to a REST catalog
+
+Connect to an Iceberg REST catalog using the standard https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml[REST API^] supported by many catalog providers. Use this catalog integration type with REST-enabled Iceberg catalog services, such as https://docs.databricks.com/en/data-governance/unity-catalog/index.html[Databricks Unity^] and https://other-docs.snowflake.com/en/opencatalog/overview[Snowflake Open Catalog^].
+
+[TIP]
+====
+This section provides general guidance on using REST catalogs with Redpanda. For instructions on integrating with specific REST catalog services, see the following:
+
+* xref:manage:iceberg/iceberg-topics-aws-glue.adoc[AWS Glue Data Catalog]
+* xref:manage:iceberg/iceberg-topics-databricks-unity.adoc[Databricks Unity Catalog]
+* xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[Snowflake with Open Catalog]
+====
+
+ifdef::env-cloud[]
+=== Prerequisites
+
+For BYOVPC clusters, you must:
+
+. Enable secrets management, which allows you to store and use secrets in your cluster's Iceberg catalog authentication properties. 
++
+Secrets management is enabled by default for AWS if you follow the guide to xref:get-started:cluster-types/byoc/aws/vpc-byo-aws.adoc[creating a new BYOVPC cluster]. For GCP, follow the guides to enable secrets management for a xref:get-started:cluster-types/byoc/gcp/vpc-byo-gcp.adoc[new BYOVPC cluster] or an xref:get-started:cluster-types/byoc/gcp/enable-secrets-byovpc-gcp.adoc[existing BYOVPC cluster].
+. Ensure that your network security settings allow egress traffic from the Redpanda network to the catalog service endpoints.
+
+=== Limitations
+
+The Iceberg integration for Redpanda Cloud supports multiple Iceberg catalogs across different cloud platforms, with progressive levels of release maturity. Each combination of cloud provider and catalog integration is tested and released independently.
+
+The following matrix shows the current status of Iceberg integrations across different cloud providers and catalogs. Check this matrix regularly as Redpanda Cloud continues to expand GA coverage for Iceberg topics.
+
+|===
+| | Databricks Unity Catalog | Snowflake Open Catalog | AWS Glue Data Catalog | Google BigQuery
+
+|AWS   |Supported |Beta |Beta |N/A
+|GCP   |Supported |Beta |N/A  |Beta
+|Azure |Beta      |Beta |N/A  |N/A
+|===
+endif::[]
+
+ifndef::env-cloud[]
+=== Limitations
+
+The Iceberg integration for Redpanda Self-Managed supports multiple Iceberg catalogs, with progressive levels of release maturity. Each catalog integration is tested and released independently.
+
+The following shows the current status of Iceberg catalog integrations. Check this list regularly as Redpanda continues to expand GA coverage for Iceberg topics.
+
+|===
+|Catalog service | Status
+
+|Databricks Unity Catalog |Supported
+|Snowflake Open Catalog |Supported
+|AWS Glue Data Catalog | Beta
+|Google BigQuery |Beta
+
+|===
+endif::[]
+
+Other REST catalogs such as Dremio Nessie, Apache Polaris, and the Apache reference implementation have been tested but are not regularly verified. For more information, contact https://support.redpanda.com/hc/en-us/requests/new[Redpanda Support^].
+
+=== Set cluster properties
+
+To connect to a REST catalog, set the following cluster configuration properties:
+
+* config_ref:iceberg_catalog_type,true,properties/cluster-properties[`iceberg_catalog_type`]: `rest`
+* config_ref:iceberg_rest_catalog_endpoint,true,properties/cluster-properties[`iceberg_rest_catalog_endpoint`]: The endpoint URL for your Iceberg catalog. You either manage this directly, or you have this managed by an external catalog service.
+
+NOTE: You must set `iceberg_rest_catalog_endpoint` at the same time that you set `iceberg_catalog_type` to `rest`.
+
+==== Configure authentication
+
+To authenticate with the REST catalog, set the following cluster properties:
+
+* config_ref:iceberg_rest_catalog_authentication_mode,true,properties/cluster-properties[`iceberg_rest_catalog_authentication_mode`]: The authentication mode to use for the REST catalog. Choose from `oauth2`, `aws_sigv4`, `bearer`, or `none` (default). You must use `aws_sigv4` for xref:manage:iceberg/iceberg-topics-aws-glue.adoc[AWS Glue Data Catalog].
+ifdef::env-cloud[]
++
+Redpanda generally recommends using `oauth2` for REST catalogs.
+
+endif::[]
+** For `oauth2`, also configure the following properties:
++
+--
+* config_ref:iceberg_rest_catalog_oauth2_server_uri,true,properties/cluster-properties[`iceberg_rest_catalog_oauth2_server_uri`]: The OAuth endpoint URI used to retrieve tokens for REST catalog authentication. If left unset, the deprecated catalog endpoint `/v1/oauth/tokens` is used as the token endpoint instead. 
+* config_ref:iceberg_rest_catalog_client_id,true,properties/cluster-properties[`iceberg_rest_catalog_client_id`]: The ID used to query the OAuth token endpoint for REST catalog authentication.
+* config_ref:iceberg_rest_catalog_client_secret,true,properties/cluster-properties[`iceberg_rest_catalog_client_secret`]:  The secret used with the client ID to query the OAuth token endpoint for REST catalog authentication.
+--
+** For `bearer`, configure the config_ref:iceberg_rest_catalog_token,true,properties/cluster-properties[`iceberg_rest_catalog_token`] property with your bearer token.
++
+Redpanda uses the bearer token unconditionally and does not attempt to refresh the token. Only use the bearer authentication mode for ad hoc or testing purposes.
+
+For REST catalogs that use self-signed certificates, also configure these properties:
+
+* config_ref:iceberg_rest_catalog_trust,true,properties/cluster-properties[`iceberg_rest_catalog_trust`]: The contents of a certificate chain to trust for the REST catalog. 
+ifndef::env-cloud[]
+** Or, use config_ref:iceberg_rest_catalog_trust_file,true,properties/cluster-properties[`iceberg_rest_catalog_trust_file`] to specify the path to the certificate chain file.
+endif::[]
+* config_ref:iceberg_rest_catalog_crl,true,properties/cluster-properties[`iceberg_rest_catalog_crl`]: The contents of a certificate revocation list for `iceberg_rest_catalog_trust`.
+ifndef::env-cloud[]
+** Or, use config_ref:iceberg_rest_catalog_crl_file,true,properties/cluster-properties[`iceberg_rest_catalog_crl_file`] to specify the path to the certificate revocation list file.
+endif::[]
+
+See xref:reference:properties/cluster-properties.adoc[Cluster Configuration Properties] for the full list of cluster properties to configure for a catalog integration.
+
+ifdef::env-cloud[]
+=== Store a secret for REST catalog authentication
+
+To store a secret that you can reference in your catalog authentication cluster properties, you must create the secret using `rpk` or the Data Plane API. Secrets are stored in the secret management solution of your cloud provider. Redpanda retrieves the secrets at runtime. 
+
+For more information, see xref:manage:rpk/intro-to-rpk.adoc[] and xref:manage:api/cloud-api-overview.adoc[].
+
+If you need to configure any of the following properties, you must set their values using secrets:
+
+* `iceberg_rest_catalog_client_secret`
+* `iceberg_rest_catalog_crl`
+* `iceberg_rest_catalog_token`
+* `iceberg_rest_catalog_trust`
+
+To create a new secret:
+
+[tabs]
+=====
+rpk::
++
+--
+Run the following `rpk` command:
+
+[,bash]
+----
+rpk security secret create --name <secret-name> --value <secret-value> --scopes redpanda_cluster
+----
+
+Replace the placeholders with your own values:
+
+- `<secret-name>`: The name of the secret you want to add. The secret name is also its ID. Use only the following characters: `^[A-Z][A-Z0-9_]*$`.
+- `<secret-value>`: The value of the secret.
+--
+
+Cloud API::
++
+--
+. Authenticate and make a `GET /v1/clusters/\{id}` request to xref:manage:api/cloud-dataplane-api.adoc#get-data-plane-api-url[retrieve the Data Plane API URL] for your cluster.
+. Make a request to xref:api:ROOT:cloud-dataplane-api.adoc#post-/v1/secrets[`POST /v1/secrets`]. You must use a Base64-encoded secret.
++
+[,bash]
+----
+curl -X POST "https://<dataplane-api-url>/v1/secrets" \
+ -H 'accept: application/json'\
+ -H 'authorization: Bearer <token>'\
+ -H 'content-type: application/json' \
+ -d '{"id":"<secret-name>","scopes":["SCOPE_REDPANDA_CLUSTER"],"secret_data":"<secret-value>"}' 
+----
++
+You must include the following values:
+
+- `<dataplane-api-url>`: The base URL for the Data Plane API.
+- `<token>`: The API key you generated during authentication.
+- `<secret-name>`: The name of the secret you want to add. The secret name is also its ID. Use only the following characters: `^[A-Z][A-Z0-9_]*$`.
+- `<secret-value>`: The Base64-encoded secret.
+- This scope: `"SCOPE_REDPANDA_CLUSTER"`.
+
++
+The response returns the name and scope of the secret.
+
+You can now <<use-a-secret-in-cluster-configuration,reference the secret in your cluster configuration>>.
+
+--
+=====
+
+=== Use a secret in cluster configuration
+
+To set the cluster property to use the value of the secret, use `rpk` or the Control Plane API.
+
+For example, to use a secret for the `iceberg_rest_catalog_client_secret` property, run:
+
+[tabs]
+=====
+rpk::
++
+--
+[,bash]
+----
+rpk cluster config set iceberg_rest_catalog_client_secret ${secrets.<secret-name>}
+----
+--
+
+Cloud API::
++
+--
+Make a request to the xref:api:ROOT:cloud-controlplane-api.adoc#patch-/v1/clusters/-cluster.id-[`PATCH /v1/clusters/<cluster-id>`] endpoint of the Control Plane API.
+
+[,bash]
+----
+curl -H "Authorization: Bearer <token>" -X PATCH \
+"https://api.cloud.redpanda.com/v1/clusters/<cluster-id>" \
+-H 'accept: application/json'\
+-H 'content-type: application/json' \
+-d '{"cluster_configuration": {
+        "custom_properties": {
+            "iceberg_rest_catalog_client_secret": "${secrets.<secret-name>}"
+            }
+        }
+    }'
+----
+
+You must include the following values:
+
+- `<cluster-id>`: The ID of the Redpanda cluster.
+- `<token>`: The API key you generated during authentication.
+- `<secret-name>`: The name of the secret you created earlier.
+--
+=====
+endif::[]
+
+=== Example REST catalog configuration
+
+Suppose you configure the following Redpanda cluster properties for connecting to a REST catalog:
+
+[,yaml]
+----
+iceberg_catalog_type: rest 
+iceberg_rest_catalog_endpoint: http://catalog-service:8181
+iceberg_rest_catalog_authentication_mode: oauth2
+iceberg_rest_catalog_client_id: <rest-connection-id>
+iceberg_rest_catalog_client_secret: <rest-connection-secret>
+----
+
+If you use Apache Spark as a processing engine, your Spark configuration might look like the following. This example uses a catalog named `streaming`:
+
+[,spark]
+----
+spark.sql.catalog.streaming = org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.streaming.type = rest
+spark.sql.catalog.streaming.uri = http://catalog-service:8181
+# You may need to configure additional properties based on your object storage provider.
+# See https://iceberg.apache.org/docs/latest/spark-configuration/#catalog-configuration and https://spark.apache.org/docs/latest/configuration.html
+# For example, for AWS S3:
+# spark.sql.catalog.streaming.io-impl = org.apache.iceberg.aws.s3.S3FileIO
+# spark.sql.catalog.streaming.warehouse = s3://<bucket-name>/
+# spark.sql.catalog.streaming.s3.endpoint = http://<s3-uri>
+----
+
+NOTE: Redpanda recommends setting credentials in environment variables so Spark can securely access your Iceberg data in object storage. For example, for AWS, use `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+
+The Spark engine can use the REST catalog to automatically discover the topic's Iceberg table. Using Spark SQL, you can query the Iceberg table directly by specifying the catalog name, the namespace, and the table name:
+
+[,sql]
+----
+SELECT * FROM streaming.redpanda.<table-name>;
+----
+
+The Iceberg table name is the name of your Redpanda topic. Redpanda puts the Iceberg table into a namespace called `redpanda`, creating the namespace if necessary. 
+
+// Hide section in Cloud until Snowflake doc is single sourced
+ifndef::env-cloud[]
+TIP: You may need to explicitly create a table for the Iceberg data in your query engine. For an example, see xref:manage:iceberg/redpanda-topics-iceberg-snowflake-catalog.adoc[].
+endif::[]
+
+[[object-storage]]
+== Integrate filesystem-based catalog (`object_storage`)
+
+By default, Iceberg topics use the filesystem-based catalog (config_ref:iceberg_catalog_type,true,properties/cluster-properties[`iceberg_catalog_type`] cluster property set to `object_storage`). Redpanda stores the table metadata in https://iceberg.apache.org/docs/latest/java-api-quickstart/#using-a-hadoop-catalog[HadoopCatalog^] format in the same object storage bucket or container as the data files.
+
+If using the `object_storage` catalog type, you provide the object storage URI of the table's `metadata.json` file to an Iceberg client so it can access the catalog and data files for your Redpanda Iceberg tables.
+
+NOTE: The `metadata.json` file points to a specific Iceberg table snapshot. In your query engine, you must update your tables whenever a new snapshot is created so that they point to the latest snapshot. See the https://iceberg.apache.org/docs/latest/maintenance/[official Iceberg documentation] for more information, and refer to the documentation for your query engine or Iceberg-compatible tool for specific guidance on Iceberg table update or refresh.
+
+=== Example filesystem-based catalog configuration
+
+To configure Apache Spark to use a filesystem-based catalog, specify at least the following properties:
+
+[,spark]
+----
+spark.sql.catalog.streaming = org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.streaming.type = hadoop
+# URI for table metadata: AWS S3 example
+spark.sql.catalog.streaming.warehouse = s3a://<bucket-name>/redpanda-iceberg-catalog
+# You may need to configure additional properties based on your object storage provider.
+# See https://iceberg.apache.org/docs/latest/spark-configuration/#spark-configuration and https://spark.apache.org/docs/latest/configuration.html
+# For example, for AWS S3:
+# spark.hadoop.fs.s3.impl = org.apache.hadoop.fs.s3a.S3AFileSystem
+# spark.hadoop.fs.s3a.endpoint = http://<s3-uri>
+# spark.sql.catalog.streaming.s3.endpoint = http://<s3-uri>
+----
+
+NOTE: Redpanda recommends setting credentials in environment variables so Spark can securely access your Iceberg data in object storage. For example, for AWS, use `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+
+Depending on your processing engine, you may need to also create a new table to point the data lakehouse to the table location.
+
+=== Specify metadata location
+
+ifndef::env-cloud[]
+The config_ref:iceberg_catalog_base_location,true,properties/cluster-properties[`iceberg_catalog_base_location`] property stores the base path for the filesystem-based catalog if using the `object_storage` catalog type. The default value is `redpanda-iceberg-catalog`. 
+
+CAUTION: Do not change the `iceberg_catalog_base_location` value after you have enabled Iceberg integration for a topic.
+endif::[]
+
+ifdef::env-cloud[]
+The base path for the filesystem-based catalog if using the `object_storage` catalog type is `redpanda-iceberg-catalog`. 
+endif::[]

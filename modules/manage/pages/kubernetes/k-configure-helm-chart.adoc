@@ -30,7 +30,7 @@ This command displays all the values, descriptions, and defaults, which are also
 
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 
@@ -153,7 +153,7 @@ When you specify CLI flags, those values take precedence over the values defined
 
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`
@@ -210,6 +210,147 @@ helm upgrade --install redpanda redpanda/redpanda \
 --
 ======
 
+[[extra-cluster-config]]
+== Set Redpanda cluster properties from Kubernetes Secrets or ConfigMaps
+
+Starting in v25.1.1 of the Redpanda Operator and Redpanda Helm chart, you can set **any Redpanda cluster configuration property** by referencing Kubernetes Secrets or ConfigMaps using the `config.extraClusterConfiguration` field.
+
+This feature provides a more secure, maintainable, and declarative way to manage sensitive or shared configuration values across your Redpanda deployment.
+
+Use this method to:
+
+- Securely inject sensitive values, such as credentials for Iceberg, TLS, or object storage.
+- Reuse the same value across multiple features, such as Tiered Storage, Iceberg, and disaster recovery, without duplication.
+- Centralize config management in Kubernetes-native resources to support GitOps and reduce drift.
+
+For example, to set `iceberg_rest_catalog_client_secret` using a Secret called `iceberg-config`:
+
+[tabs]
+======
+Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    config:
+      extraClusterConfiguration:
+        iceberg_rest_catalog_client_secret:
+          secretKeyRef:
+            name: iceberg-config
+            key: iceberg_rest_catalog_client_secret
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`redpanda-config.yaml`
+[,yaml]
+----
+  config:
+    extraClusterConfiguration:
+      iceberg_rest_catalog_client_secret:
+        secretKeyRef:
+          name: iceberg-config
+          key: iceberg_rest_catalog_client_secret
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda \
+    --namespace <namespace> --create-namespace \
+    --values redpanda-config.yaml --reuse-values
+```
+
+--set::
++
+[,bash,role="no-wrap"]
+----
+helm upgrade --install redpanda redpanda/redpanda \
+  --namespace <namespace> \
+  --create-namespace \
+  --set config.extraClusterConfiguration.iceberg_rest_catalog_client_secret.secretKeyRef.name=iceberg-config \
+  --set config.extraClusterConfiguration.iceberg_rest_catalog_client_secret.secretKeyRef.key=iceberg_rest_catalog_client_secret
+----
+
+====
+--
+======
+
+This method supports both `secretKeyRef` and `configMapKeyRef`:
+
+- Use `secretKeyRef` for sensitive data like access keys or credentials.
+
+- Use `configMapKeyRef` for shared, non-sensitive values such as URIs or feature flags.
+
+You can apply this approach to any Redpanda configuration key, making your deployments more secure, modular, and easier to manage at scale.
+
+For full configuration options, see xref:reference:properties/index.adoc[].
+
+[[reset-config]]
+== Reset configuration values
+
+You may want to reset a configuration value back to its default. The method to do this depends on how you're managing your Redpanda deployment.
+
+[tabs]
+======
+Operator::
++
+--
+
+If you're using the Redpanda Operator and want to reset a configuration property back to its default:
+
+. Add the following annotation to your Redpanda custom resource to enable declarative configuration sync:
++
+[source,yaml]
+----
+metadata:
+  annotations:
+    operator.redpanda.com/config-sync-mode: Declarative
+----
+
+. Remove the configuration key you want to reset from `spec.clusterSpec.config`.
+
+With this annotation, the Redpanda Operator ensures that removed keys are also removed from the Redpanda cluster configuration.
+
+
+If this annotation is not set, the Redpanda Operator retains previously applied values even if you remove them from the custom resource.
+
+--
+CLI::
++
+--
+
+To reset a configuration property using the Redpanda CLI:
+
+- Run the xref:reference:rpk/rpk-cluster/rpk-cluster-config-set.adoc[`rpk cluster config set`] command with an empty string:
+
+[source,bash]
+----
+rpk cluster config set <property> ""
+----
+
+- Or, use the xref:reference:rpk/rpk-cluster/rpk-cluster-config-edit.adoc[`rpk cluster config edit`] command and delete the line for the property.
+
+If you're using a file, such as a `values.yaml` or a Redpanda resource, to manage your configuration, make sure to also remove the property from that file. Otherwise, it may be reapplied the next time you run `helm upgrade` or the Pods restart.
+
+--
+======
+
 == Configure Redpanda Console
 
 Redpanda Console is included as a subchart of the Redpanda Helm chart.
@@ -220,7 +361,7 @@ For example, to enable the admin API for Redpanda Console:
 
 [tabs]
 ======
-Helm + Operator::
+Operator::
 +
 --
 .`redpanda-cluster.yaml`

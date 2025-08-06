@@ -6,31 +6,161 @@ Configure compaction for your cluster to optimize storage utilization.
 
 == Redpanda compaction overview
 
-Compaction is an optional mechanism intended to reduce the storage needs of Redpanda topics. You can enable compaction through configuration of a cluster or topic's cleanup policy. When compaction is enabled as part of the cleanup policy, a background process executes on a pre-set interval to perform compaction operations. When triggered for a partition, the process purges older versions of messages for a given key and only retains the most recent message in that partition. This is done by analyzing closed segments in the partition, copying the most recent messages for each key into a new segment, then deleting the source segments.
+Compaction is an optional mechanism intended to reduce the storage needs of Redpanda topics. You can enable compaction through configuration of a cluster or topic's cleanup policy. When compaction is enabled as part of the cleanup policy, a background process executes on a pre-set interval to perform compaction operations. When triggered for a partition, the process purges older versions of records for a given key and only retains the most recent record in that partition. This is done by analyzing closed segments in the partition, copying the most recent records for each key into a new segment, then deleting the source segments.
 
 image::shared:compaction-example.png[Example of topic compaction]
 
-This diagram provides an illustration of a compacted topic. Imagine a remote sensor network that uses image recognition to track appearances of red pandas in a geographic area. The sensor network employs special devices that send messages to a topic when they detect one. You might enable compaction to reduce topic storage while still maintaining a record in the topic of the last time each device saw a red panda, perhaps to see if they stop frequenting a given area. The left side of the diagram shows all messages sent across the topic. The right side illustrates the results of compaction; older messages for certain keys are deleted from the message log.
+This diagram illustrates a compacted topic. Imagine a remote sensor network that uses image recognition to track appearances of red pandas in a geographic area. The sensor network employs special devices that send records to a topic when they detect one. You might enable compaction to reduce topic storage while still maintaining a record in the topic of the last time each device saw a red panda, perhaps to see if they stop frequenting a given area. The left side of the diagram shows all records sent across the topic. The right side illustrates the results of compaction; older records for certain keys are deleted from the log.
 
-NOTE: If your application requires consuming every message for a given key, consider using the `delete` xref:develop:config-topics#change-the-cleanup-policy.adoc[cleanup policy] instead.
+NOTE: If your application requires consuming every record for a given key, consider using the `delete` xref:develop:config-topics#change-the-cleanup-policy.adoc[cleanup policy] instead.
 
-IMPORTANT:  When using Tiered Storage, compaction functions at the local storage level. As long as a segment remains in local storage, its messages are eligible for compaction. Once a segment is uploaded to tiered storage and removed from local storage it is not retrieved for further compaction operations. A key may therefore appear in multiple segments between Tiered Storage and local storage.
+IMPORTANT:  When using xref:manage:tiered-storage.adoc[Tiered Storage], compaction functions at the local storage level. As long as a segment remains in local storage, its records are eligible for compaction. Once a segment is uploaded to object storage and removed from local storage it is not retrieved for further compaction operations. A key may therefore appear in multiple segments between Tiered Storage and local storage.
 
 While compaction reduces storage needs, Redpanda's compaction (just like Kafka's) does not guarantee perfect de-duplication of a topic. It represents a best effort mechanism to reduce storage needs but duplicates of a key may still exist within a topic. Compaction is not a complete topic operation, either, since it operates on subsets of each partition within the topic.
 
-== Configure cleanup policy
+== Configure a cleanup policy
 
-Compaction policy may be applied to a cluster or to an individual topic. If both are set, the topic-level policy overrides the cluster-level policy. The cluster-level xref:reference:cluster-properties.adoc#log_cleanup_policy[`log_cleanup_policy`] and the topic-level xref:reference:topic-properties.adoc#cleanuppolicy[`cleanup.policy`] support the following three options:
+A compaction policy may be applied to a cluster or to an individual topic. If both are set, the topic-level policy overrides the cluster-level policy. The cluster-level xref:reference:cluster-properties.adoc#log_cleanup_policy[`log_cleanup_policy`] and the topic-level xref:reference:topic-properties.adoc#cleanuppolicy[`cleanup.policy`] support the following three options:
 
-* `delete`: Messages are deleted from the topic once the specified retention period (time and/or size allocations) is exceeded. This is the default mechanism and is analogous to disabling compaction.
-* `compact`: This triggers only cleanup of messages with multiple versions. A message that represents the only version for a given key is not deleted.
-* `compact,delete`: This combines both policies, deleting messages exceeding the retention period while compacting multiple versions of messages.
+* `delete`: Records are deleted from the topic once the specified retention period (time and/or size allocations) is exceeded. This is the default mechanism and is analogous to disabling compaction.
+* `compact`: This triggers only cleanup of records with multiple versions. A record that represents the only version for a given key is not deleted.
+* `compact,delete`: This combines both policies, deleting records exceeding the retention period while compacting multiple versions of records.
+
+include::develop:partial$topic-properties-warning.adoc[]
+
+== Tune log compaction with a dirty ratio threshold
+
+Use the dirty ratio to control when log compaction runs in compacted topics. The dirty ratio is the size of dirty segments divided by the total size of closed segments. Dirty segments are closed but un-compacted, meaning they may still contain duplicate keys that exist earlier in the log.
+
+[source]
+----
+dirty_ratio = dirty_segment_bytes / total_closed_segment_bytes
+----
+
+Where:
+
+- *Dirty segments* are closed segments that may contain duplicate keys that haven't yet been compacted.
+- *Closed segments* are all finalized segments in the log.
+
+=== Configuration options
+
+[cols="1a,1a,3a"]
+|===
+| Property
+| Scope
+| Description
+
+| xref:reference:cluster-properties.adoc#min_cleanable_dirty_ratio[`min_cleanable_dirty_ratio`]
+| Cluster
+| The minimum ratio between the number of bytes in dirty segments and the total number of bytes in closed segments that must be reached before a partition's log is eligible for compaction in a compact topic.
+
+| xref:reference:properties/topic-properties.adoc#mincleanabledirtyratio[`min.cleanable.dirty.ratio`]
+| Topic
+| Topic-level override of the cluster-wide dirty ratio threshold.
+
+| xref:reference:cluster-properties.adoc#log_compaction_interval_ms[`log_compaction_interval_ms`]
+| Cluster
+| Compaction frequency in milliseconds.
+
+| xref:reference:cluster-properties.adoc#max_compaction_lag_ms[`max_compaction_lag_ms`]
+| Cluster
+| The maximum amount of time in milliseconds that a message remains ineligible for compaction. Use to guarantee the maximum delay between the time a message is written and the time the message becomes eligible for compaction. This setting is useful for ensuring that messages are compacted within a predictable timeframe.
+
+| xref:reference:cluster-properties.adoc#min_compaction_lag_ms[`min_compaction_lag_ms`]
+| Cluster
+| The minimum time in milliseconds that a message remains uncompacted in the log. Use to guarantee the minimum length of time that must pass after a message is written before it could be compacted. For example, to provide a lower bound on how long each message will remain in the (uncompacted) head.
+
+| xref:reference:properties/topic-properties.adoc#maxcompactionlagms[`max.compaction.lag.ms`]
+| Topic
+| The maximum amount of time in milliseconds that a message remains ineligible for compaction. Use to guarantee the maximum delay between the time a message is written and the time the message becomes eligible for compaction.
+
+| xref:reference:properties/topic-properties.adoc#mincompactionlagms[`min.compaction.lag.ms`]
+| Topic
+| The minimum time in milliseconds that a message remains uncompacted in the log. Use to guarantee the minimum length of time that must pass after a message is written before it could be compacted. For example, to provide a lower bound on how long each message will remain in the (uncompacted) head.
+|===
+
+Redpanda runs a scan every `log_compaction_interval_ms`. During each scan:
+
+- Logs are evaluated for compaction eligibility using their dirty ratio.
+- Only logs with a dirty ratio greater than the configured threshold are compacted.
+- Logs are compacted in descending order of dirty ratio to maximize efficiency.
+
+=== Use cases for dirty ratio-based compaction
+
+[cols="2a,3a"]
+|===
+| Use Case
+| Recommended Setting
+
+| High-throughput topics with frequent key overwrites
+| Lower `min_cleanable_dirty_ratio` to enable more aggressive compaction.
+
+| Topics with large segment sizes or expensive I/O
+| Raise `min_cleanable_dirty_ratio` to defer compaction until it is more efficient.
+
+| Topics requiring custom tuning
+| Use `min.cleanable.dirty.ratio` to override the cluster setting on specific topics.
+|===
+
+== Tombstone record removal
+
+Compaction also enables deletion of existing records through tombstones. For example, as data is deleted from a source system, clients produce a tombstone record to the log. A tombstone contains a key and the value `null`. Tombstones signal to brokers and consumers that records with the same key prior to it in the log should be deleted. 
+
+You can specify how long Redpanda keeps these tombstones for compacted topics using both a cluster configuration property config_ref:tombstone_retention_ms,true,properties/cluster-properties[] and a topic configuration property xref:reference:properties/topic-properties.adoc#deleteretentionms[`delete.retention.ms`]. If both are set, the topic-level tombstone retention policy overrides the cluster-level policy.
+
+[NOTE]
+====
+Redpanda does not currently remove tombstone records for compacted topics with Tiered Storage enabled. 
+
+You cannot enable `tombstone_retention_ms` if you have enabled any of the Tiered Storage cluster properties `cloud_storage_enabled`, `cloud_storage_enable_remote_read`, and `cloud_storage_enable_remote_write`.
+
+On the topic level, you cannot enable `delete.retention.ms` at the same time as the Tiered Storage topic configuration properties `redpanda.remote.read` and `redpanda.remote.write`.
+====
+
+To set the cluster-level tombstone retention policy, run the command:
+
+[,bash]
+----
+rpk cluster config set tombstone_retention_ms=100
+----
+
+You can unset the tombstone retention policy for a topic so it inherits the cluster-wide default policy:
+
+[,bash]
+----
+rpk topic alter-config <topic-name> --delete delete.retention.ms
+----
+
+To override the cluster-wide default for a specific topic:
+
+[,bash]
+----
+rpk topic alter-config <topic-name> --set delete.retention.ms=5
+----
+
+To disable tombstone removal for a specific topic:
+
+[,bash]
+----
+rpk topic alter-config <topic-name> --set delete.retention.ms=-1
+----
+
+Redpanda removes tombstones as follows:
+
+* For topics with a `compact` only cleanup policy: Tombstones are removed when the topic exceeds the tombstone retention limit. The `delete.retention.ms` or `tombstone_retention_ms` values therefore also set the time bound that a consumer has in order to see a complete view of the log with tombstones present before they are removed.
+* For topics with a `compact,delete` cleanup policy: Both the tombstone retention policy and standard garbage collection can remove tombstone records.
+
+If obtaining a complete snapshot of the log, including tombstone records, is important to your consumers, set the tombstone retention value such that consumers have enough time for their reads to complete before tombstones are removed. Consumers may not see tombstones if their reads take longer than `delete.retention.ms` and `tombstone_retention_ms`. The trade-offs to ensuring tombstone visibility to consumers are increased disk usage and potentially slower compaction. 
+
+On the other hand, if more frequent cleanup of tombstones is important for optimizing workloads and space management, consider setting a shorter tombstone retention, for example the typical default of 24 hours (86400000 ms).
 
 == Compaction policy settings
 
 The various cleanup policy settings rely on proper tuning of a cluster's compaction and retention policy options. The applicable settings are:
 
 * xref:reference:cluster-properties.adoc#log_compaction_interval_ms[`log_compaction_interval`]: Defines the compaction frequency in milliseconds. (default: 10,000ms)
+
+* xref:reference:cluster-properties.adoc#min_cleanable_dirty_ratio[`min_cleanable_dirty_ratio`]: Minimum dirty ratio a log must exceed to be eligible for compaction.
 
 * xref:reference:tunable-properties.adoc#compaction_ctrl_backlog_size[`compaction_ctrl_backlog_size`]: Defines the size for the compaction backlog of the backlog controller. (default: 10% of disk capacity)
 
@@ -45,6 +175,5 @@ The various cleanup policy settings rely on proper tuning of a cluster's compact
 * xref:reference:tunable-properties.adoc#compacted_log_segment_size[`compacted_log_segment_size`]: Defines the base size for a compacted log segment in bytes. (default: 268435456 [256 MiB])
 
 * xref:reference:tunable-properties.adoc#max_compacted_log_segment_size[`max_compacted_log_segment_size`]: Defines the maximum size after consolidation for a compacted log segment in bytes. (default: 5368709120 [5 GiB])
-
 
 NOTE: Additional xref:reference:tunable-properties.adoc[tunable properties] are available but should only be used with direction from Redpanda support. These properties include xref:reference:tunable-properties.adoc#compaction_ctrl_p_coeff[`compaction_ctrl_p_coeff`], xref:reference:tunable-properties.adoc#compaction_ctrl_i_coeff[`compaction_ctrl_i_coeff`], xref:reference:tunable-properties.adoc#compaction_ctrl_d_coeff[`compaction_ctrl_d_coeff`], and xref:reference:tunable-properties.adoc#compaction_ctrl_update_interval_ms[`compaction_ctrl_update_interval_ms`].

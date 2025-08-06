@@ -2,7 +2,7 @@
 :description: Learn how to install the beta version.
 :publish-only-during-beta: true
 
-Redpanda beta versions provide users the opportunity to test and share feedback on new features before they're finalized in general availability. Beta versions, like `v{redpanda-beta-version}`, are published to `redpanda-unstable` as release candidate (RC) builds. RC builds are not recommended for production use.
+Redpanda beta versions provide users the opportunity to test and share feedback on new features before they're finalized in general availability. Beta versions, like `{redpanda-beta-tag}`, are published to `redpanda-unstable` as release candidate (RC) builds. RC builds are not recommended for production use.
 
 To install the beta version, select your environment.
 
@@ -12,11 +12,11 @@ Docker::
 +
 --
 
-. Pull the latest RC build from https://hub.docker.com/r/redpandadata/redpanda-unstable/tags[dockerhub^]:
+. Pull the latest RC build from https://hub.docker.com/r/redpandadata/redpanda-unstable/tags[Docker Hub^]:
 +
 [source,bash,subs="attributes+"]
 ----
-docker pull docker.redpanda.com/redpandadata/redpanda-unstable:v{redpanda-beta-version}
+docker pull docker.redpanda.com/redpandadata/redpanda-unstable:{redpanda-beta-tag}
 ----
 
 . Create a Docker Compose file with the beta version:
@@ -59,7 +59,7 @@ services:
       - --mode dev-container
       # enable logs for debugging.
       - --default-log-level=debug
-    image: docker.redpanda.com/redpandadata/redpanda-unstable:v{redpanda-beta-version}
+    image: docker.redpanda.com/redpandadata/redpanda-unstable:{redpanda-beta-tag}
     container_name: redpanda-0
     volumes:
       - redpanda-0:/var/lib/redpanda/data
@@ -72,7 +72,7 @@ services:
       - 19644:9644
   console:
     container_name: redpanda-console
-    image: docker.redpanda.com/redpandadata/console:v{latest-console-version}
+    image: docker.redpanda.com/redpandadata/console:{latest-console-tag}
     networks:
       - redpanda_network
     entrypoint: /bin/sh
@@ -151,15 +151,62 @@ Kubernetes::
 +
 --
 
-Install Redpanda with Helm from the RC build in https://hub.docker.com/r/redpandadata/redpanda-unstable/tags[dockerhub^]:
-
+. Install Redpanda with Helm from the RC build in https://hub.docker.com/r/redpandadata/redpanda-unstable/tags[Docker Hub^]:
++
 [source,bash,subs="attributes+"]
 ----
 helm repo add redpanda https://charts.redpanda.com
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm install cert-manager jetstack/cert-manager --set crds.enabled=true --namespace cert-manager --create-namespace
 helm install redpanda redpanda/redpanda \
   --namespace <namespace> \
-  --create-namespace --set image.repository=docker.redpanda.com/redpandadata/redpanda-unstable --set image.tag=v{redpanda-beta-version}
+  --create-namespace --set image.repository=docker.redpanda.com/redpandadata/redpanda-unstable --set image.tag={redpanda-beta-tag} --set console.enabled=false
 ----
+
+. Generate and deploy the manifest for Redpanda Console v3 beta:
++
+[source,bash,role="no-wrap",subs="attributes+"]
+----
+helm template consolev3 oci://registry-1.docker.io/redpandadata/console-unstable \
+  --namespace <namespace> \
+  --create-namespace \
+  --version v0.0-k8s0-968fcab9-helm-chart \
+  --set "image.tag={console-beta-tag}" \
+  --set "secretMounts[0].name=redpanda-default-cert" \
+  --set "secretMounts[0].secretName=redpanda-default-cert" \
+  --set "secretMounts[0].defaultMode=272" \
+  --set "secretMounts[0].path=/etc/tls/certs/default" \
+  --set "config.kafka.brokers[0]=redpanda-0.redpanda.redpanda.svc.cluster.local.:9093" \
+  --set "config.kafka.brokers[1]=redpanda-1.redpanda.redpanda.svc.cluster.local.:9093" \
+  --set "config.kafka.brokers[0]=redpanda-2.redpanda.redpanda.svc.cluster.local.:9093" \
+  --set "config.kafka.sasl.enabled=false" \
+  --set "config.kafka.tls.caFilepath=/etc/tls/certs/default/ca.crt" \
+  --set "config.kafka.tls.enabled=true" \
+  --set "config.kafka.tls.insecureSkipTlsVerify=false" \
+  --set "config.schemaRegistry.enabled=true" \
+  --set "config.schemaRegistry.tls.caFilepath=/etc/tls/certs/default/ca.crt" \
+  --set "config.schemaRegistry.tls.enabled=true" \
+  --set "config.schemaRegistry.tls.insecureSkipTlsVerify=false" \
+  --set "config.schemaRegistry.urls[0]=https://redpanda-0.redpanda.redpanda.svc.cluster.local.:8081" \
+  --set "config.schemaRegistry.urls[1]=https://redpanda-1.redpanda.redpanda.svc.cluster.local.:8081" \
+  --set "config.schemaRegistry.urls[2]=https://redpanda-2.redpanda.redpanda.svc.cluster.local.:8081" \
+  --set "config.redpanda.adminApi.enabled=true" \
+  --set "config.redpanda.adminApi.tls.caFilepath=/etc/tls/certs/default/ca.crt" \
+  --set "config.redpanda.adminApi.tls.enabled=true" \
+  --set "config.redpanda.adminApi.tls.insecureSkipTlsVerify=false" \
+  --set "config.redpanda.adminApi.urls[0]=https://redpanda.redpanda.svc.cluster.local.:9644" > console-deployment-v3.yaml
+
+kubectl apply -f console-deployment-v3.yaml
+----
+
+. Forward the ports to access Redpanda Console locally:
++
+```bash
+kubectl --namespace <namespace> port-forward svc/consolev3-console-unstable 8080:8080
+```
+
+. Navigate to http://localhost:8080.
 
 --
 =====

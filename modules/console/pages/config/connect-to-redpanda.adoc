@@ -1,90 +1,223 @@
-= Configure a Connection to a Redpanda Cluster
+= Configure Redpanda Console to Connect to a Redpanda Cluster
 :description: This topic provides instructions on configuring Redpanda Console to connect to a Redpanda cluster. The configuration ensures that Redpanda Console can communicate with your Redpanda brokers.
+:page-context-switcher: [{"name": "Redpanda Console v2.x", "to": "24.3@ROOT:console:config/connect-to-redpanda.adoc" },{"name": "Redpanda Console v3.x", "to": "current" } ]
 
-{description}
+include::console:partial$operator-console-version-note.adoc[]
+
+Redpanda Console connects to your Redpanda cluster using dedicated configuration blocks for the Kafka API, Schema Registry API, and Admin API. Each connection serves a different purpose:
+
+* **Kafka API:** Enables core messaging operations and authenticates requests to your Kafka cluster.
+* **Schema Registry API:** Allows Redpanda Console to manage and display schema information.
+* **Admin API:** Unlocks management features such as viewing cluster details, managing users, and generating debug bundles.
+
+To ensure secure and reliable communication, each connection must be configured with the appropriate authentication, TLS, and startup settings. The authentication mechanism you configure in Redpanda Console must match the one set up in your Redpanda cluster, ensuring that the user's credentials are properly verified.
+
+This guide provides detailed instructions and examples for configuring each of these connections.
 
 == Prerequisites
 
 Ensure that you have:
 
 - Access to your Redpanda cluster's broker URLs.
-- The necessary authentication credentials if your cluster requires SASL, TLS, or other security measures.
+- The necessary configuration details if your cluster requires authentication, TLS, or other security measures.
 
-== Configure a connection to Redpanda
+== Configure a connection to the Kafka API
 
-You must set up a connection to the Kafka API on your Redpanda brokers. This includes specifying the brokers' URLs, client identifiers, and any security protocols such as SASL or TLS.
+Redpanda Console must be configured to communicate with the Kafka API on your Redpanda brokers. This configuration involves specifying the broker endpoints and, if needed, configuring client identification, SASL, and TLS settings.
 
-[,yaml]
+Here is an example configuration for the Kafka API using OAuth for SASL authentication:
+
+[source,yaml]
 ----
 kafka:
   brokers:
-    - <hostname>:<port>
-
-  # Optional settings:
-  # clientId: console  # The client ID you can use to identify Redpanda Console to the Redpanda cluster.
-
-  # Specify a rack in multi-zone Redpanda clusters to reduce costs by consuming messages from local replicas:
+    - "http://broker1.example.com:9092"
+    - "http://broker2.example.com:9092"
+  # Optional client identification:
+  # clientId: "console"
   # rackId: "zone-a"
 
-  # SASL configuration (optional) if your Redpanda cluster uses SASL for authentication:
-  # sasl:
-    # enabled: false
-    # username: my-username
-    # password: my-password
-    # mechanism: PLAIN  # Options include PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, GSSAPI, OAUTHBEARER, AWS_MSK_IAM
+  sasl:
+    enabled: true
+    mechanism: OAUTHBEARER
+    impersonateUser: false
+    oauth:
+      # token: "example-oauth-token" (for static token)
+      clientId: "example-client-id"
+      clientSecret: "example-client-secret"
+      tokenEndpoint: "https://accounts.google.com/token"
+      scope: "openid"
 
-  # TLS configuration (optional) if your Redpanda cluster uses TLS for secure connections:
+  startup:
+    establishConnectionEagerly: true   # Test the connection at startup.
+    maxRetries: 5                      # Maximum number of retry attempts.
+    retryInterval: 1s                  # Initial wait time between retries.
+    maxRetryInterval: 60s              # Maximum wait time between retries.
+    backoffMultiplier: 2               # Multiplier for increasing retry intervals.
+
+  # TLS configuration (only needed if self-signed certificates or mTLS are used):
   # tls:
-    # enabled: false
+    # enabled: true
     # caFilepath: "/path/to/ca-cert.pem"
     # certFilepath: "/path/to/client-cert.pem"
     # keyFilepath: "/path/to/client-key.pem"
-    # insecureSkipTlsVerify: false  # Set to true if you want to skip server certificate validation
+    # insecureSkipTlsVerify: false
 ----
 
-If your Redpanda cluster uses advanced security features such as Kerberos (GSSAPI), OAuth, or AWS MSK IAM, you need to configure these settings in the `sasl` block.
+For clusters using Kerberos, the configuration may resemble the following:
 
-For example, to configure Kerberos:
-
-[,yaml]
+[source,yaml]
 ----
 kafka:
+  brokers:
+    - "http://broker1.example.com:9092"
   sasl:
     enabled: true
     mechanism: GSSAPI
+    impersonateUser: false  # Must be false when using Kerberos with Redpanda Console
     gssapi:
       authType: KEYTAB_AUTH
       keyTabPath: "/path/to/keytab"
       kerberosConfigPath: "/path/to/krb5.conf"
       serviceName: "kafka"
-      username: "my-username"
-      password: "my-password"
-      realm: "MY.REALM"
+      username: "example-user"
+      password: "example-password"
+      realm: "EXAMPLE.REALM"
       enableFast: true
 ----
 
+NOTE: Because Redpanda Console supports only OIDC and basic authentication for its own login authentication, Kerberos (GSSAPI) configurations cannot be used with user impersonation enabled. Ensure `impersonateUser` is set to `false` when using Kerberos.
+
+[cols="1a,4a"]
+|===
+| Kafka API Configuration Option | Description
+
+| `brokers`
+| A list of Kafka broker endpoints including the URL scheme (`http://` or `https://`), hostname, and port. Include all brokers in your cluster for high availability.
+
+| `clientId` (optional)
+| An identifier used by Redpanda Console to identify itself to the cluster.
+
+| `rackId` (optional)
+| Specifies the rack for multi-zone clusters to optimize local message consumption.
+
+| `sasl` (optional)
+| Contains settings for SASL-based authentication. Configure this block if your cluster requires authentication through one of the following mechanisms:
+
+- **Basic authentication:** Provide `username` and `password`.
+- **OAuth 2.0:** Provide `token` to use a static token or provide `clientId`, `clientSecret`, `tokenEndpoint`, and `scope` to acquire new tokens at runtime.
+- **Kerberos (GSSAPI):** Provide parameters such as `authType`, `keyTabPath`, `kerberosConfigPath`, `serviceName`, `username`, `password`, `realm`, and `enableFast`.
+
+Supported mechanisms:
+
+- PLAIN
+- SCRAM-SHA-256 or SCRAM-SHA-512
+- GSSAPI
+- OAUTHBEARER
+
+NOTE: Because Redpanda Console supports only OIDC and basic authentication for its own login authentication, Kerberos (GSSAPI) configurations must be used with `impersonateUser` set to `false`.
+
+For more detailed instructions on configuring authentication, see xref:console:config/security/authentication.adoc[].
+
+| `startup` (optional)
+| Controls connection behavior at startup:
+
+- `establishConnectionEagerly`: Tests the connection immediately.
+- `maxRetries`, `retryInterval`, `maxRetryInterval`, `backoffMultiplier`: Define the retry logic for establishing a connection.
+
+| `tls` (optional)
+| Contains settings to secure the connection using TLS. Specify paths for the CA certificate, client certificate, and client key. Optionally configure `insecureSkipTlsVerify` for testing purposes.
+|===
+
+== Configure access to the Schema Registry
+
+To enable schema management features, you must configure Redpanda Console to connect to the Schema Registry API. This includes specifying the service endpoints and, if needed, setting up authentication.
+
+Example Schema Registry configuration:
+
+[source,yaml]
+----
+schemaRegistry:
+  enabled: true
+  urls:
+    - "http://broker1.example.com:8081"
+    - "http://broker2.example.com:8081"
+
+  # Optional authentication settings
+  authentication:
+    impersonateUser: true
+    #basic:
+      #username: "example-user"
+      #password: "example-password"
+    #bearerToken: "example-bearer-token"
+----
+
+[cols="1a,4a"]
+|===
+| Schema Registry Configuration Option | Description
+
+| `urls`
+| A list of Schema Registry endpoints including the URL scheme (`http://` or `https://`), hostname, and port. Include all endpoints for redundancy.
+
+| `authentication` (optional)
+| Configure authentication for the Schema Registry. Options include basic authentication or bearer tokens. For more detailed instructions on configuring authentication, see xref:console:config/security/authentication.adoc[].
+|===
+
+[[admin]]
 == Configure access to the Redpanda Admin API
 
-Configuring a connection to the Redpanda Admin API enables additional Redpanda-specific features in Redpanda Console, such as viewing the Redpanda version, managing data transforms, and SASL-SCRAM users.
+Configuring a connection to the Redpanda Admin API unlocks additional features in Redpanda Console, including viewing the current Redpanda version, managing data transforms, administering SASL-SCRAM users, and generating debug bundles. This section details the configuration options and how they interact.
 
-[,yaml]
+Example configuration template:
+
+[source,yaml]
 ----
 redpanda:
   adminApi:
-    enabled: true
-    urls: ["<hostname>:<port>"]
-    # Optional settings for authentication and TLS:
-    # username: admin
-    # password: my-password
-    # tls:
-      # enabled: true
-      # caFilepath: "/path/to/ca-cert.pem"
-      # certFilepath: "/path/to/client-cert.pem"
-      # keyFilepath: "/path/to/client-key.pem"
-      # insecureSkipTlsVerify: false
+    enabled: true # Enable connection to the Admin API.
+    urls:
+      - "http://broker1.example.com:9644" # Provide all endpoints (host:port) for high availability.
+      - "http://broker2.example.com:9644"
+    # Optional authentication settings
+    authentication:
+      impersonateUser: true # Use the logged-in user's credentials for authentication.
+      # For basic authentication.
+      #basic:
+        #username: "example-user"
+        #password: "example-password"
+      # For OIDC, use the `bearerToken` field instead of `basic`.
+      #bearerToken: "example-bearer-token"
+    startup:
+      establishConnectionEagerly: true   # Test the connection at startup.
+      maxRetries: 5                      # Maximum number of retry attempts.
+      retryInterval: 1s                  # Initial wait time between retries.
+      maxRetryInterval: 60s              # Maximum wait time between retries.
+      backoffMultiplier: 2               # Multiplier for increasing retry intervals.
 ----
+
+NOTE: Include the URLs of _all_ endpoints in the `redpanda.adminApi.urls` array. For some requests such as collecting debug bundles, Redpanda Console must be able to communicate with all brokers individually.
+
+[cols="1a,4a"]
+|===
+| Redpanda Admin API Configuration Option | Description
+
+| `enabled`
+| Activates the connection to the Admin API. Set to `true` to enable the integration.
+
+| `urls`
+| A list of Admin API endpoints including the URL scheme (`http://` or `https://`), hostname, and port. Providing all URLs enhances reliability.
+
+| `authentication` (optional)
+| Provides credentials using basic authentication or bearer tokens when impersonation is disabled. For more detailed instructions on configuring authentication, see xref:console:config/security/authentication.adoc[].
+
+| `startup` (optional)
+| Controls connection behavior at startup:
+
+- `establishConnectionEagerly`: Tests the connection immediately.
+- `maxRetries`, `retryInterval`, `maxRetryInterval`, `backoffMultiplier`: Define the retry logic for establishing a connection.
+|===
 
 == Suggested reading
 
-- xref:console:config/deserialization.adoc[]
 - xref:console:config/security/index.adoc[]
+- xref:console:config/deserialization.adoc[]

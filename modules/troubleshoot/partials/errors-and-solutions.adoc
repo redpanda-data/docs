@@ -1,0 +1,576 @@
+ifdef::env-kubernetes+include-categories[]
+== Kubernetes-related issues
+
+This section addresses common issues that may occur when deploying Redpanda in a Kubernetes environment.
+endif::[]
+
+//tag::deployment[]
+
+ifdef::env-kubernetes[]
+//tag::deployment-pod-pending[]
+=== StatefulSet never rolls out
+
+If the StatefulSet Pods remain in a pending state, they are waiting for resources to become available.
+
+To identify the Pods that are pending, use the following command:
+
+[,bash]
+----
+kubectl get pod --namespace <namespace>
+----
+
+The response includes a list of Pods in the StatefulSet and their status.
+
+To view logs for a specific Pod, use the following command.
+
+[,bash]
+----
+kubectl logs -f <pod-name> --namespace <namespace>
+----
+
+You can use the output to debug your deployment.
+//end::deployment-pod-pending[]
+
+//tag::deployment-failed-scheduling[]
+=== Didn't match pod anti-affinity rules
+
+If you see this error, your cluster does not have enough nodes to satisfy the anti-affinity rules:
+
+[.no-copy]
+----
+Warning  FailedScheduling  18m  default-scheduler  0/1 nodes are available: 1 node(s) didn't match pod anti-affinity rules. preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod.
+----
+
+The Helm chart configures default `podAntiAffinity` rules to make sure that only one Pod running a Redpanda broker is scheduled on each worker node. To learn why, see xref:deploy:deployment-option/self-hosted/kubernetes/k-requirements.adoc#number-of-workers[Number of workers].
+
+To resolve this issue, do one of the following:
+
+- Create additional worker nodes.
+
+- Modify the anti-affinity rules (for development purposes only).
++
+If adding nodes is not an option, you can modify the `podAntiAffinity` rules in your StatefulSet to be less strict.
++
+[tabs]
+======
+Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    statefulset:
+      podAntiAffinity:
+        type: soft
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+--
+
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`docker-repo.yaml`
+[,yaml]
+----
+statefulset:
+  podAntiAffinity:
+    type: soft
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values docker-repo.yaml
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set statefulset.podAntiAffinity.type=soft
+```
+====
+--
+======
+//end::deployment-failed-scheduling[]
+
+//tag::deployment-unable-to-mount-volume[]
+=== Unable to mount volume
+
+If you see volume mounting errors in the Pod events or in the Redpanda logs, ensure that each of your Pods has a volume available in which to store data.
+
+* If you're using StorageClasses with dynamic provisioners (default), ensure they exist:
++
+[,bash]
+----
+kubectl get storageclass
+----
+
+* If you're using PersistentVolumes, ensure that you have one PersistentVolume available for each Redpanda broker, and that each one has the storage capacity that's set in `storage.persistentVolume.size`:
++
+[,bash]
+----
+kubectl get persistentvolume --namespace <namespace>
+----
+
+To learn how to configure different storage volumes, see xref:manage:kubernetes/storage/k-configure-storage.adoc[Configure Storage].
+
+//end::deployment-unable-to-mount-volume[]
+
+//tag::deployment-failed-to-pull-image[]
+=== Failed to pull image
+
+When deploying the Redpanda Helm chart, you may encounter Docker rate limit issues because the default registry URL is not recognized as a Docker Hub URL. The domain `docker.redpanda.com` is used for statistical purposes, such as tracking the number of downloads. It mirrors Docker Hub's content while providing specific analytics for Redpanda.
+
+[.no-copy]
+----
+Failed to pull image "docker.redpanda.com/redpandadata/redpanda:v<version>": rpc error: code = Unknown desc = failed to pull and unpack image "docker.redpanda.com/redpandadata/redpanda:v<version>": failed to copy: httpReadSeeker: failed open: unexpected status code 429 Too Many Requests - Server message: toomanyrequests: You have reached your pull rate limit. You may increase the limit by authenticating and upgrading: https://www.docker.com/increase-rate-limit
+----
+
+To fix this error, do one of the following:
+
+- Replace the `image.repository` value in the Helm chart with `docker.io/redpandadata/redpanda`. Switching to Docker Hub avoids the rate limit issues associated with `docker.redpanda.com`.
++
+[tabs]
+======
+Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    image:
+      repository: docker.io/redpandadata/redpanda
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+--
+
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`docker-repo.yaml`
+[,yaml]
+----
+image:
+  repository: docker.io/redpandadata/redpanda
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values docker-repo.yaml
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set image.repository=docker.io/redpandadata/redpanda
+```
+====
+--
+======
+
+- Authenticate to Docker Hub by logging in with your Docker Hub credentials. The `docker.redpanda.com` site acts as a reflector for Docker Hub. As a result, when you log in with your Docker Hub credentials, you will bypass the rate limit issues.
+
+//end::deployment-failed-to-pull-image[]
+//tag::deployment-dig-not-defined[]
+=== Dig not defined
+
+This error means that you are using an unsupported version of https://helm.sh/docs/intro/install/[Helm^]:
+
+[.no-copy]
+----
+Error: parse error at (redpanda/templates/statefulset.yaml:203): function "dig" not defined
+----
+
+To fix this error, ensure that you are using the minimum required version: {supported-helm-version}.
+
+[,bash]
+----
+helm version
+----
+
+//end::deployment-dig-not-defined[]
+//tag::deployment-name-exists[]
+=== Repository name already exists
+
+If you see this error, remove the `redpanda` chart repository, then try installing it again.
+
+[,bash]
+----
+helm repo remove redpanda
+helm repo add redpanda https://charts.redpanda.com
+helm repo update
+----
+
+//end::deployment-name-exists[]
+
+//tag::deployment-forbidden-debug-bundle[]
+=== redpanda-rpk-debug-bundle is forbidden
+
+If you see this error, your Redpanda Operator's RBAC settings are out of sync with the Pod-level RBAC in the Redpanda resource:
+
+[.no-copy]
+----
+… forbidden: user "…-operator" … attempting to grant RBAC permissions not currently held …
+----
+
+To fix this error, make sure you haven't disabled xref:reference:k-operator-helm-spec.adoc#rbac-createrpkbundlecrs[`rbac.createRPKBundleCRs`] in the Redpanda Operator chart while still leaving xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-rbac[`spec.clusterSpec.rbac.rpkDebugBundle`] enabled in your Redpanda resource. Either enable both or disable both.
+//end::deployment-forbidden-debug-bundle[]
+
+//tag::deployment-data-dir-not-writable[]
+=== Fatal error during checker "Data directory is writable" execution
+
+This error appears when Redpanda does not have write access to your configured storage volume under `storage` in the Helm chart.
+
+[.no-copy]
+----
+Error: fatal error during checker "Data directory is writable" execution: open /var/lib/redpanda/data/test_file: permission denied
+----
+
+To fix this error, set `statefulset.initContainers.setDataDirOwnership.enabled` to `true` so that the initContainer can set the correct permissions on the data directories.
+//end::deployment-data-dir-not-writable[]
+
+//tag::deployment-cannot-patch[]
+=== Cannot patch "redpanda" with kind StatefulSet
+
+This error appears when you run `helm upgrade` with the `--values` flag but do not include all your previous overrides.
+
+[.no-copy]
+----
+Error: UPGRADE FAILED: cannot patch "redpanda" with kind StatefulSet: StatefulSet.apps "redpanda" is invalid: spec: Forbidden: updates to statefulset spec for fields other than 'replicas', 'template', 'updateStrategy', 'persistentVolumeClaimRetentionPolicy' and 'minReadySeconds' are forbidden
+----
+
+To fix this error, include all the value overrides from the previous installation using either the `--set` or the `--values` flags.
++
+WARNING: Do not use the `--reuse-values` flag to upgrade from one version of the Helm chart to another. This flag stops Helm from using any new values in the upgraded chart.
+
+=== Cannot patch "redpanda-console" with kind Deployment
+
+This error appears if you try to upgrade your deployment and you already have `console.enabled` set to `true`.
+
+[.no-copy]
+----
+Error: UPGRADE FAILED: cannot patch "redpanda-console" with kind Deployment: Deployment.apps "redpanda-console" is invalid: spec.selector: Invalid value: v1.LabelSelector{MatchLabels:map[string]string{"app.kubernetes.io/instance":"redpanda", "app.kubernetes.io/name":"console"}, MatchExpressions:[]v1.LabelSelectorRequirement(nil)}: field is immutable
+----
+
+To fix this error, set `console.enabled` to `false` so that Helm doesn't try to deploy Redpanda Console again.
+//end::deployment-cannot-patch[]
+
+//tag::pending-rollback[]
+=== Helm is in a pending-rollback state
+
+An interrupted Helm upgrade process can leave your Helm release in a `pending-rollback` state. This state prevents further actions like upgrades, rollbacks, or deletions through standard Helm commands. To fix this:
+
+. Identify the Helm release that's in a `pending-rollback` state:
++
+[source,bash]
+----
+helm list --namespace <namespace> --all
+----
++
+Look for releases with a status of `pending-rollback`. These are the ones that need intervention.
+
+. Verify the Secret's status to avoid affecting the wrong resource:
++
+[source,bash]
+----
+kubectl --namespace <namespace> get secret --show-labels
+----
++
+Identify the Secret associated with your Helm release by its `pending-rollback` status in the labels.
++
+WARNING: Ensure you have correctly identified the Secret to avoid unintended consequences. Deleting the wrong Secret could impact other deployments or services.
+
+. Delete the Secret to clear the `pending-rollback` state:
++
+[source,bash]
+----
+kubectl --namespace <namespace> delete secret -l status=pending-rollback
+----
+
+After clearing the `pending-rollback` state:
+
+* *Retry the upgrade*: Restart the upgrade process. You should investigate the initial failure to avoid getting into the `pending-rollback` state again.
+* *Perform a rollback*: If you need to roll back to a previous release, use `helm rollback <release-name> <revision>` to revert to a specific, stable release version.
+//end::pending-rollback[]
+
+endif::[]
+
+ifdef::include-categories[]
+== Deployment issues
+
+This section addresses common deployment issues encountered during Redpanda setup or upgrades.
+endif::[]
+
+//tag::crashloopbackoff[]
+ifdef::env-kubernetes[]
+=== Crash loop backoffs
+
+If a broker crashes after startup, or gets stuck in a crash loop, it can accumulate an increasing amount of stored state. This accumulated state not only consumes additional disk space but also prolongs the time required for each subsequent restart to process it.
+
+To prevent infinite crash loops, the Redpanda Helm chart sets the xref:reference:properties/broker-properties.adoc#crash_loop_limit[`crash_loop_limit`] broker configuration property to `5`. The crash loop limit is the number of consecutive crashes that can happen within one hour of each other. By default, the broker terminates immediately after hitting the `crash_loop_limit`. The Pod running Redpanda remains in a `CrashLoopBackoff` state until its internal consecutive crash counter is reset to zero.
+
+To facilitate debugging in environments where a broker is stuck in a crash loop, you can also set the xref:reference:properties/broker-properties.adoc#crash_loop_sleep_sec[`crash_loop_sleep_sec`] broker configuration property. This setting determines how long the broker sleeps before terminating the process after reaching the crash loop limit. By providing a window during which the Pod remains available, you can SSH into it and troubleshoot the issue.
+
+Example configuration:
+
+```yaml
+config:
+  node:
+    crash_loop_limit: 5
+    crash_loop_sleep_sec: 60
+```
+
+In this example, when the broker hits the `crash_loop_limit` of 5, it will sleep for 60 seconds before terminating the process. This delay allows administrators to access the Pod and troubleshoot.
+
+To troubleshoot a crash loop backoff:
+
+. Check the Redpanda logs from the most recent crashes:
++
+[,bash]
+----
+kubectl logs <pod-name> --namespace <namespace>
+----
++
+NOTE: Kubernetes retains logs only for the current and the previous instance of a container. This limitation makes it difficult to access logs from earlier crashes, which may contain vital clues about the root cause of the issue. Given these log retention limitations, setting up a centralized logging system is crucial. Systems such as https://grafana.com/docs/loki/latest/[Loki] or https://www.datadoghq.com/product/log-management/[Datadog] can capture and store logs from all containers, ensuring you have access to historical data.
+
+. Resolve the issue that led to the crash loop backoff.
+
+. Reset the crash counter to zero to allow Redpanda to restart. You can do any of the following to reset the counter:
++
+- Make changes to any of the following sections in the Redpanda Helm chart to trigger an update:
++
+--
+* `config.node`
+* `config.tunable`
+--
++
+For example:
++
+```yaml
+config:
+  node:
+    crash_loop_limit: <new-integer>
+```
+
+- Delete the `startup_log` file in the broker's data directory.
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -- rm /var/lib/redpanda/data/startup_log
+----
++
+NOTE: It might be challenging to execute this command within a Pod that is in a `CrashLoopBackoff` state due to the limited time during which the Pod is available before it restarts. Wrapping the command in a loop might work.
+
+- Wait one hour since the last crash. The crash counter resets after one hour.
+
+To avoid future crash loop backoffs and manage the accumulation of small segments effectively:
+
+* xref:manage:kubernetes/monitoring/k-monitor-redpanda.adoc[Monitor] the size and number of segments regularly.
+* Optimize your Redpanda configuration for segment management.
+* Consider implementing xref:manage:kubernetes/storage/tiered-storage/k-tiered-storage.adoc[Tiered Storage] to manage data more efficiently.
+
+endif::[]
+//end::crashloopbackoff[]
+
+=== A Redpanda Enterprise Edition license is required
+
+During a Redpanda upgrade, if enterprise features are enabled and a valid Enterprise Edition license is missing, Redpanda logs a warning and aborts the upgrade process on the first broker. This issue prevents a successful upgrade.
+
+[.no-copy]
+----
+A Redpanda Enterprise Edition license is required to use the currently enabled features. To apply your license, downgrade this broker to the pre-upgrade version and provide a valid license key via rpk using 'rpk cluster license set <key>', or via Redpanda Console. To request an enterprise license, please visit <redpanda.com/upgrade>. To try Redpanda Enterprise for 30 days, visit <redpanda.com/try-enterprise>. For more information, see <https://docs.redpanda.com/current/get-started/licenses>.
+----
+
+If you encounter this message, follow these steps to recover:
+
+ifdef::env-kubernetes[]
+. xref:upgrade:k-rolling-upgrade.adoc#roll-back[Roll back the affected broker to the original version].
+endif::[]
+ifndef::env-kubernetes[]
+. Roll back the affected broker to the original version.
+endif::[]
+. Do one of the following:
+- xref:get-started:licensing/add-license-redpanda/index.adoc[Apply a valid Redpanda Enterprise Edition license] to the cluster.
+- Disable enterprise features.
++
+If you do not have a valid license and want to proceed without using enterprise features, you can disable the enterprise features in your Redpanda configuration.
+
+. Retry the upgrade.
+
+//end::deployment[]
+
+ifdef::include-categories[]
+ifdef::env-kubernetes[]
+== Networking issues
+
+This section provides insights into diagnosing network-related errors, such as connection timeouts, DNS misconfigurations, and network stability.
+endif::[]
+endif::[]
+
+// tag::networking[]
+ifdef::env-kubernetes[]
+=== I/O timeout
+
+This error appears when your worker nodes are unreachable through the given address.
+
+Check the following:
+
+* The address and port are correct.
+* Your DNS records point to addresses that resolve to your worker nodes.
+
+endif::[]
+//end::networking[]
+
+ifdef::include-categories[]
+== TLS issues
+
+This section covers common TLS errors, their causes, and solutions, including certificate issues and correct client configuration.
+
+endif::[]
+
+//tag::tls[]
+ifdef::env-kubernetes[]
+=== Redpanda not applying TLS changes
+
+include::manage:partial$kubernetes/tls-update-note.adoc[]
+
+endif::[]
+
+=== Invalid large response size
+
+This error appears when your cluster is configured to use TLS, but you don't specify that you are connecting over TLS.
+
+[.no-copy]
+----
+unable to request metadata: invalid large response size 352518912 > limit 104857600; the first three bytes received appear to be a tls alert record for TLS v1.2; is this a plaintext connection speaking to a tls endpoint?
+----
+
+If you're using `rpk`, ensure to add the `-X tls.enabled` flag, and any other necessary TLS flags such as the TLS certificate:
+
+[,bash]
+----
+ifdef::env-kubernetes[kubectl exec <pod-name> -c redpanda --namespace <namespace> -- \]
+rpk cluster info -X tls.enabled=true
+----
+
+For all available flags, see the xref:reference:rpk/rpk-x-options.adoc[`rpk` options reference].
+
+=== Malformed HTTP response
+
+This error appears when a cluster has TLS enabled, and you try to access the admin API without passing the required TLS parameters.
+
+[.no-copy]
+----
+Retrying POST for error: Post "http://127.0.0.1:9644/v1/security/users": net/http: HTTP/1.x transport connection broken: malformed HTTP response "\x15\x03\x03\x00\x02\x02"
+----
+
+If you're using `rpk`, ensure to include the TLS flags.
+
+For all available flags, see the xref:reference:rpk/rpk-x-options.adoc[`rpk` options reference].
+
+=== x509: certificate signed by unknown authority
+
+This error appears when the Certificate Authority (CA) that signed your certificates is not trusted by your system.
+
+Check the following:
+
+- Ensure you have installed the root CA certificate correctly on your local system.
+- If using a self-signed certificate, ensure it is properly configured and included in your system's trust store.
+- If you are using a certificate issued by a CA, ensure the issuing CA is included in your system's trust store.
+ifdef::env-kubernetes[]
+- If you are using cert-manager, ensure it is correctly configured and running properly.
+endif::[]
+- Check the validity of your certificates. They might have expired.
+
+=== x509: certificate is not valid for any names
+
+This error indicates that the certificate you are using is not valid for the specific domain or IP address you are trying to use it with. This error typically occurs when there is a mismatch between the certificate's Subject Alternative Name (SAN) or Common Name (CN) field and the name being used to access the broker.
+
+To fix this error, you may need to obtain a new certificate that is valid for the specific domain or IP address you are using. Ensure that the certificate's SAN or CN entry matches the name being used, and that the certificate is not expired or revoked.
+
+=== cannot validate certificate for 127.0.0.1
+
+This error appears if you are using a CA certificate when you try to establish an internal connection using localhost. For example:
+
+```
+unable to request metadata: unable to dial: x509: cannot validate certificate for 127.0.0.1 because it doesn't contain any IP SANs
+```
+
+To fix this error, you must either specify the URL with a public domain or use self-signed certificates:
+
+[,bash]
+----
+ifdef::env-kubernetes[kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- \]
+rpk cluster info \
+-X brokers=<redpanda-url>:<port> \
+-X tls.enabled=true
+----
+
+//end::tls[]
+
+ifdef::include-categories[]
+== SASL issues
+
+This section addresses errors related to SASL (Simple Authentication and Security Layer), focusing on connection and authentication problems.
+
+endif::[]
+
+//tag::sasl[]
+ifdef::env-kubernetes[]
+=== Unable to continue with update: Secret
+
+When you use a YAML list to specify superusers, the Helm chart creates a Secret using the value of `auth.sasl.secretRef` as the Secret's name, and stores those superusers in the Secret. If the Secret already exists in the namespace when you deploy Redpanda, the following error is displayed:
+
+[.no-copy]
+----
+Error: UPGRADE FAILED: rendered manifests contain a resource that already exists. Unable to continue with update: Secret
+----
+
+To fix this error, ensure that you use only one of the following methods to create superusers:
+
+- `auth.sasl.secretRef`
+- `auth.sasl.users`
+
+endif::[]
+=== Is SASL missing?
+
+This error appears when you try to interact with a cluster that has SASL enabled without passing a user's credentials.
+
+[.no-copy]
+----
+unable to request metadata: broker closed the connection immediately after a request was issued, which happens when SASL is required but not provided: is SASL missing?
+----
+
+If you're using `rpk`, ensure to specify the `-X user`, `-X pass`, and `-X sasl.mechanism` flags.
+
+For all available flags, see the xref:reference:rpk/rpk-x-options.adoc[`rpk` options reference].
+//end::sasl[]

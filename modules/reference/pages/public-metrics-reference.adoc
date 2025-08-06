@@ -1,31 +1,42 @@
 = Public Metrics
-// tag::single-source[]
 :description: Public metrics to create your system dashboard.
+// tag::single-source[]
 
-This section provides reference descriptions about the public metrics exported from Redpanda's `/public_metrics` endpoint.
-
-include::reference:partial$public_metrics_tip.adoc[]
+This section provides reference descriptions for the public metrics exported from Redpanda's `/public_metrics` endpoint.
 
 // Cloud does not expose the internal metrics.
 ifndef::env-cloud[]
 include::shared:partial$metrics-usage-tip.adoc[]
 endif::[]
 
+[IMPORTANT]
+====
+In a live system, Redpanda metrics are exported only for features that are in use. For example, Redpanda does not export metrics for consumer groups if no groups are registered.
+
+To see the available public metrics in your system, query the `/public_metrics` endpoint:
+
+[,bash]
+----
+curl http://<node-addr>:9644/public_metrics | grep "[HELP|TYPE]"
+----
+
+====
+
 == Cluster metrics
 
 === redpanda_cluster_brokers
 
-Number of configured, fully commissioned brokers in a cluster.
+Total number of fully commissioned brokers configured in the cluster.
 
 *Type*: gauge
 
-*How to monitor*: Create an alert for when this gauge dips below a steady-state threshold, as a node(s) has become unresponsive.
+*Usage*: Create an alert if this gauge falls below a steady-state threshold, which may indicate that a broker has become unresponsive.
 
 ---
 
 === redpanda_cluster_controller_log_limit_requests_available_rps
 
-Limit on the available requests per second (RPS) for a cluster controller log.
+The upper limit on the requests per second (RPS) that the cluster controller log is allowed to process, segmented by command group.
 
 *Type*: gauge
 
@@ -37,7 +48,7 @@ Limit on the available requests per second (RPS) for a cluster controller log.
 
 === redpanda_cluster_controller_log_limit_requests_dropped
 
-Number of requests dropped by a cluster controller log due to exceeding <<redpanda_cluster_controller_log_limit_requests_available_rps,redpanda_cluster_controller_log_limit_requests_available_rps>>.
+The cumulative number of requests dropped by the controller log because the incoming rate exceeded the available RPS limit.
 
 *Type*: counter
 
@@ -45,80 +56,31 @@ Number of requests dropped by a cluster controller log due to exceeding <<redpan
 
 * `redpanda_cmd_group=("move_operations" | "topic_operations" | "configuration_operations" | "node_management_operations" | "acls_and_users_operations")`
 
-*Usage*: When this counter increases, it indicates that the controller is dropping requests.
+*Usage*: A rising counter indicates that requests are being dropped, which could signal overload or misconfiguration.
 
 ---
 
-=== redpanda_cluster_non_homogenous_fips_mode 
+=== redpanda_cluster_features_enterprise_license_expiry_sec
 
-Number of brokers that have a non-homogenous FIPS mode value.
+Number of seconds remaining until the Enterprise Edition license expires.
 
 *Type*: gauge
 
----
+*Usage*:
 
-=== redpanda_cluster_partition_moving_from_node
+- A value of `-1` indicates that no license is present.
 
-Number of partition replicas in the cluster that are currently being removed from a node.
+- A value of `0` signifies an expired license.
 
-*Type*: gauge
-
-*Usage*: When this gauge is non-zero, determine whether there is an expected or unexpected reassignment of partitions that is causing movement of partition replicas.
+Use this metric to proactively monitor license status and trigger alerts for timely renewal.
 
 ---
 
-=== redpanda_cluster_partition_moving_to_node
-
-Number of partition replicas in the cluster that are currently being added or moved to a node.
-
-*Type*: gauge
-
-*Usage*: When this gauge is non-zero, determine whether there is an expected or unexpected reassignment of partitions that is causing movement of partition replicas.
-
----
-
-=== redpanda_cluster_partition_node_cancelling_movements
-
-During a partition movement cancellation operation, the number of partition replicas that were being moved that now need to be cancelled.
-
-*Type*: gauge
-
-*How to monitor*: When this gauge is non-zero, determine whether there is an expected or unexpected reassignment of partitions that is causing movement of partition replicas.
-
----
-
-=== redpanda_cluster_partitions
-
-Number of partitions managed by a cluster. Includes partitions of the controller topic, but not replicas.
-
-*Type*: gauge
-
----
-
-=== redpanda_cluster_topics
-
-Number of topics in a cluster.
-
-*Type*: gauge
-
----
-
-=== redpanda_cluster_unavailable_partitions
-
-Number of unavailable partitions (the partitions that lack quorum among their replica group) in the cluster.
-
-*Type*: gauge
-
-*Usage*: When this gauge is non-zero, it indicates that a partition(s) doesn't have quorum and thus doesn't have an active leader. To mitigate, consider increasing the number of brokers and the partition replication factor.
-
----
-
-[[redpanda_cluster_latest_cluster_metadata_manifest_age]]
 === redpanda_cluster_latest_cluster_metadata_manifest_age
 
 The amount of time in seconds since the last time Redpanda uploaded metadata files to Tiered Storage for your cluster. A value of `0` indicates metadata has not yet been uploaded.
 
-When performing a whole cluster restore operation, the metadata for the new cluster will not have any changes made to a source cluster that is newer than this age.
+When performing a whole cluster restore operation, metadata for new clusters will not include any changes made to a source cluster that is newer than this age.
 
 *Type*: gauge
 
@@ -130,73 +92,620 @@ ifndef::env-cloud[]
 - xref:manage:whole-cluster-restore.adoc[]
 endif::[]
 
+---
+
+=== redpanda_cluster_members_backend_queued_node_operations
+
+The number of node operations queued per shard that are awaiting processing by the backend.
+
+*Type*: gauge
+
+*Labels*:
+
+- `shard`
+
+---
+
+=== redpanda_cluster_non_homogenous_fips_mode
+
+Count of brokers whose FIPS mode configuration differs from the rest of the cluster.
+
+*Type*: gauge
+
+*Usage*: Indicates inconsistencies in security configurations that might affect compliance or interoperability.
+
+---
+
+=== redpanda_cluster_partition_moving_from_node
+
+Number of partition replicas that are in the process of being removed from a broker.
+
+*Type*: gauge
+
+*Usage*: A non-zero value can indicate ongoing or unexpected partition reassignments. Investigate if this metric remains elevated.
+
+---
+
+=== redpanda_cluster_partition_moving_to_node
+
+Number of partition replicas in the cluster currently being added or moved to a broker.
+
+*Type*: gauge
+
+*Usage*: When this gauge is non-zero, determine whether there is an expected or unexpected reassignment of partitions causing partition replicas movement.
+
+---
+
+=== redpanda_cluster_partition_node_cancelling_movements
+
+During a partition movement cancellation operation, the number of partition replicas that were being moved that now need to be canceled.
+
+*Type*: gauge
+
+*Usage*: Track this metric to verify that partition reassignments are proceeding as expected; persistent non-zero values may warrant further investigation.
+
+---
+
+=== redpanda_cluster_partition_num_with_broken_rack_constraint
+
+During a partition movement cancellation operation, the number of partition replicas that were scheduled for movement but now require cancellation.
+
+*Type*: gauge
+
+*Usage*: A non-zero value may indicate issues in the partition reassignment process that need attention.
+
+---
+
+=== redpanda_cluster_partitions
+
+Total number of logical partitions managed by the cluster. This includes partitions for the controller topic but excludes replicas.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cluster_topics
+
+The total number of topics configured within the cluster.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cluster_unavailable_partitions
+
+Number of partitions that are unavailable due to a lack of quorum among their replica set.
+
+*Type*: gauge
+
+*Usage*: A non-zero value indicates that some partitions do not have an active leader. Consider increasing the number of brokers or the replication factor if this persists.
+
+== Debug bundle metrics
+
+=== redpanda_debug_bundle_failed_generation_count
+
+Running count of debug bundle generation failures, reported per shard.
+
+*Type*: counter
+
+*Labels*:
+
+- `shard`
+
+---
+
+=== redpanda_debug_bundle_last_failed_bundle_timestamp_seconds
+
+Unix epoch timestamp of the last failed debug bundle generation, per shard.
+
+*Type*: gauge
+
+*Labels*:
+
+- `shard`
+
+---
+
+=== redpanda_debug_bundle_last_successful_bundle_timestamp_seconds
+
+Unix epoch timestamp of the last successfully generated debug bundle, per shard.
+
+*Type*: gauge
+
+*Labels*:
+
+- `shard`
+
+---
+
+=== redpanda_debug_bundle_successful_generation_count
+
+Running count of successfully generated debug bundles, reported per shard.
+
+*Type*: counter
+
+*Labels*:
+
+- `shard`
+
+== Iceberg metrics
+
+=== redpanda_iceberg_rest_client_active_gets
+
+Number of active GET requests.
+
+*Type*: gauge
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_active_puts
+
+Number of active PUT requests.
+
+*Type*: gauge
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_active_requests
+
+Number of active HTTP requests (includes PUT and GET).
+
+*Type*: gauge
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_commit_table_update_requests
+
+Total number of requests sent to the `commit_table_update` endpoint.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_commit_table_update_requests_failed
+
+Number of requests sent to the `commit_table_update` endpoint that failed.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_create_namespace_requests
+
+Total number of requests sent to the `create_namespace` endpoint.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_create_namespace_requests_failed
+
+Number of requests sent to the `create_namespace` endpoint that failed.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_create_table_requests
+
+Total number of requests sent to the `create_table` endpoint.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_create_table_requests_failed
+
+Number of requests sent to the `create_table` endpoint that failed.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_drop_table_requests
+
+Total number of requests sent to the `drop_table` endpoint.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_drop_table_requests_failed
+
+Number of requests sent to the `drop_table` endpoint that failed.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_get_config_requests
+
+Total number of requests sent to the `config` endpoint.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_get_config_requests_failed
+
+Number of requests sent to the `config` endpoint that failed.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_load_table_requests
+
+Total number of requests sent to the `load_table` endpoint.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_load_table_requests_failed
+
+Number of requests sent to the `load_table` endpoint that failed.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_oauth_token_requests
+
+Total number of requests sent to the `oauth_token` endpoint.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_oauth_token_requests_failed
+
+Number of requests sent to the `oauth_token` endpoint that failed.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_request_timeouts
+
+Total number of catalog requests that could no longer be retried because they timed out. This may occur if the catalog is not responding.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_num_transport_errors
+
+Total number of transport errors (TCP and TLS).
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_total_gets
+
+Number of completed GET requests.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_total_inbound_bytes
+
+Total number of bytes received from the Iceberg REST catalog.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_total_outbound_bytes
+
+Total number of bytes sent to the Iceberg REST catalog.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_total_puts
+
+Number of completed PUT requests.
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_rest_client_total_requests
+
+Number of completed HTTP requests (includes PUT and GET).
+
+*Type*: counter
+
+*Labels*:
+
+- `role`
+
+---
+
+=== redpanda_iceberg_translation_decompressed_bytes_processed
+
+Number of bytes consumed post-decompression for processing that may or may not succeed in being processed. For example, if Redpanda fails to communicate with the coordinator preventing processing of a batch, this metric still increases.
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_namespace`
+- `redpanda_topic`
+
+---
+
+=== redpanda_iceberg_translation_dlq_files_created
+
+Number of created Parquet files for the dead letter queue (DLQ) table.
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_namespace`
+- `redpanda_topic`
+
+---
+
+=== redpanda_iceberg_translation_files_created
+
+Number of created Parquet files (not counting the DLQ table).
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_namespace`
+- `redpanda_topic`
+
+---
+
+=== redpanda_iceberg_translation_invalid_records
+
+Number of invalid records handled by translation.
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_cause`
+- `redpanda_namespace`
+- `redpanda_topic`
+
+---
+
+=== redpanda_iceberg_translation_parquet_bytes_added
+
+Number of bytes in created Parquet files (not counting the DLQ table).
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_namespace`
+- `redpanda_topic`
+
+---
+
+=== redpanda_iceberg_translation_parquet_rows_added
+
+Number of rows in created Parquet files (not counting the DLQ table).
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_namespace`
+- `redpanda_topic`
+
+---
+
+=== redpanda_iceberg_translation_raw_bytes_processed
+
+Number of raw, potentially compressed bytes, consumed for processing that may or may not succeed in being processed. For example, if Redpanda fails to communicate with the coordinator preventing processing of a batch, this metric still increases.
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_namespace`
+- `redpanda_topic`
+
+---
+
+=== redpanda_iceberg_translation_translations_finished
+
+Number of finished translator executions.
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_namespace`
+- `redpanda_topic`
+
+---
+
 == Infrastructure metrics
 
 === redpanda_cpu_busy_seconds_total
 
-Total CPU busy time in seconds.
+Total time (in seconds) the CPU has been actively processing tasks.
 
 *Type*: counter
+
+*Usage*: Useful for tracking overall CPU utilization.
+
+*Labels*:
+
+* `shard`
 
 ---
 
 === redpanda_io_queue_total_read_ops
 
-Total read operations passed in the I/O queue.
+Cumulative count of read operations processed by the I/O queue.
 
 *Type*: counter
 
 *Labels*:
 
 * `class=("default" | "compaction" | "raft")`
-* `ioshard`
+
+* `iogroup`
+
 * `mountpoint`
+
 * `shard`
 
 ---
 
 === redpanda_io_queue_total_write_ops
 
-Total write operations passed in the I/O queue.
+Cumulative count of write operations processed by the I/O queue.
 
 *Type*: counter
 
 *Labels*:
 
 * `class=("default" | "compaction" | "raft")`
-* `ioshard`
+
+* `iogroup`
+
 * `mountpoint`
+
 * `shard`
 
 ---
 
 === redpanda_memory_allocated_memory
 
-Total allocated memory in bytes.
+Total memory allocated (in bytes) per CPU shard.
 
 *Type*: gauge
 
 *Labels*:
 
 * `shard`
+
+*Usage*: This metric includes reclaimable memory from the batch cache. For monitoring memory pressure, consider using `redpanda_memory_available_memory` instead, which provides a more accurate picture of memory that can be immediately reallocated.
 
 ---
 
 === redpanda_memory_available_memory
 
-Total memory potentially available (free plus reclaimable memory) to a CPU shard (core), in bytes.
+Total memory (in bytes) available to a CPU shard—including both free and reclaimable memory.
 
 *Type*: gauge
 
 *Labels*:
 
 * `shard`
+
+*Usage*: This metric is more useful than `redpanda_memory_allocated_memory` for monitoring memory pressure, as it accounts for reclaimable memory in the batch cache. A low value indicates the system is approaching memory exhaustion.
 
 ---
 
 === redpanda_memory_available_memory_low_water_mark
 
-The low watermark for available memory at process start.
+The lowest recorded available memory (in bytes) per CPU shard since the process started.
 
 *Type*: gauge
 
@@ -204,11 +713,13 @@ The low watermark for available memory at process start.
 
 * `shard`
 
+*Usage*: This metric helps identify the closest the system has come to memory exhaustion. Useful for capacity planning and understanding historical memory pressure patterns.
+
 ---
 
 === redpanda_memory_free_memory
 
-Available memory in bytes.
+Total unallocated (free) memory in bytes available for each CPU shard.
 
 *Type*: gauge
 
@@ -220,7 +731,7 @@ Available memory in bytes.
 
 === redpanda_rpc_active_connections
 
-The total number of currently-active clients the RPC server on a given shard has connections to.
+Current number of active RPC client connections on a shard.
 
 *Type*: gauge
 
@@ -230,9 +741,27 @@ The total number of currently-active clients the RPC server on a given shard has
 
 ---
 
+=== redpanda_rpc_received_bytes
+
+Number of bytes received from the clients in valid requests.
+
+The `redpanda_server` label supports the following options for this metric:
+
+- `kafka`: Data sent over the Kafka API
+
+- `internal`: Inter-broker traffic
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_server`
+
+---
+
 === redpanda_rpc_request_errors_total
 
-Number of RPC errors.
+Cumulative count of RPC errors encountered, segmented by server type.
 
 *Type*: counter
 
@@ -240,13 +769,13 @@ Number of RPC errors.
 
 * `redpanda_server=("kafka" | "internal")`
 
-*Usage*: When this counter increases, analyze the logged errors.
+*Usage*: Use this metric to diagnose potential issues in RPC communication.
 
 ---
 
 === redpanda_rpc_request_latency_seconds
 
-RPC latency in seconds.
+Histogram capturing the latency (in seconds) for RPC requests.
 
 *Type*: histogram
 
@@ -256,31 +785,86 @@ RPC latency in seconds.
 
 ---
 
+=== redpanda_rpc_sent_bytes
+
+Number of bytes sent to clients.
+
+The `redpanda_server` label supports the following options for this metric:
+
+- `kafka`: Data sent over the Kafka API
+
+- `internal`: Inter-broker traffic
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_server`
+
+---
+
 === redpanda_scheduler_runtime_seconds_total
 
-Accumulated runtime of the task queue associated with a scheduling group.
+Total accumulated runtime (in seconds) for the task queue associated with each scheduling group per shard.
 
 *Type*: counter
 
 *Labels*:
 
 * `redpanda_scheduling_group=("admin" | "archival_upload" | "cache_background_reclaim" | "cluster" | "coproc" | "kafka" | "log_compaction" | "main" | "node_status" | "raft" | "raft_learner_recovery")`
+
 * `shard`
 
 ---
 
-=== redpanda_storage_disk_free_bytes
+=== redpanda_storage_cache_disk_free_bytes
 
-Available disk storage in bytes.
+Amount of free disk space (in bytes) available on the cache storage.
+
+*Type*: gauge
+
+*Usage*: Monitor this to ensure sufficient cache storage capacity.
+
+---
+
+=== redpanda_storage_cache_disk_free_space_alert
+
+Alert indicator for cache storage free space, where:
+
+- `0` = OK
+
+- `1` = Low space
+
+- `2` = Degraded
 
 *Type*: gauge
 
 ---
 
+=== redpanda_storage_cache_disk_total_bytes
+
+Total size of attached storage, in bytes.
+
+*Type*: gauge
+
+---
+
+=== redpanda_storage_disk_free_bytes
+
+Amount of free disk space (in bytes) available on attached storage.
+
+*Type*: gauge
+
 [[redpanda_storage_disk_free_space_alert]]
 === redpanda_storage_disk_free_space_alert
 
-Alert for low disk storage: `0-OK`, `1-low space`, `2-degraded`.
+Alert indicator for overall disk storage free space, where:
+
+- `0` = OK
+
+- `1` = Low space
+
+- `2` = Degraded
 
 *Type*: gauge
 
@@ -288,7 +872,7 @@ Alert for low disk storage: `0-OK`, `1-low space`, `2-degraded`.
 
 === redpanda_storage_disk_total_bytes
 
-Total size in bytes of attached storage.
+Total capacity (in bytes) of the attached storage.
 
 *Type*: gauge
 
@@ -296,17 +880,15 @@ Total size in bytes of attached storage.
 
 === redpanda_uptime_seconds_total
 
-Total CPU runtime (uptime) in seconds.
+Total system uptime (in seconds) representing the overall CPU runtime.
 
 *Type*: gauge
-
----
 
 == Raft metrics
 
 === redpanda_node_status_rpcs_received
 
-Number of node status RPCs received by a node.
+Total count of node status RPCs received by a broker.
 
 *Type*: gauge
 
@@ -314,7 +896,7 @@ Number of node status RPCs received by a node.
 
 === redpanda_node_status_rpcs_sent
 
-Number of node status RPCs sent by a node.
+Total count of node status RPCs sent by a broker.
 
 *Type*: gauge
 
@@ -322,25 +904,136 @@ Number of node status RPCs sent by a node.
 
 === redpanda_node_status_rpcs_timed_out
 
-Number of timed out node status RPCs from a node.
+Total count of node status RPCs that timed out on a broker.
 
 *Type*: gauge
 
----
-
 == Service metrics
 
-=== redpanda_pandaproxy_request_latency_seconds
+=== redpanda_authorization_result
 
-Latency in seconds of the request indicated by the label in HTTP Proxy. The measurement includes the time spent waiting for resources to become available, processing the request, and dispatching the response.
+Cumulative count of authorization results, categorized by result type.
+
+*Type*: counter
+
+*Labels*:
+
+- `type`
+
+---
+
+=== redpanda_kafka_rpc_sasl_session_expiration_total
+
+Total number of SASL session expirations observed.
+
+*Type*: counter
+
+---
+
+=== redpanda_kafka_rpc_sasl_session_reauth_attempts_total
+
+Total number of SASL reauthentication attempts made by clients.
+
+*Type*: counter
+
+---
+
+=== redpanda_kafka_rpc_sasl_session_revoked_total
+
+Total number of SASL sessions that have been revoked.
+
+*Type*: counter
+
+---
+
+=== redpanda_rest_proxy_request_latency_seconds
+
+Histogram capturing the latency (in seconds) for REST proxy requests. The measurement includes waiting for resource availability, processing, and response dispatch.
 
 *Type*: histogram
 
 ---
 
+=== redpanda_schema_registry_cache_schema_count
+
+Total number of schemas currently stored in the Schema Registry cache.
+
+*Type*: gauge
+
+---
+
+=== redpanda_schema_registry_cache_schema_memory_bytes
+
+Memory usage (in bytes) by schemas stored in the Schema Registry cache.
+
+*Type*: gauge
+
+---
+
+=== redpanda_schema_registry_cache_subject_count
+
+Count of subjects stored in the Schema Registry cache.
+
+*Type*: gauge
+
+*Labels*:
+
+- `deleted`
+
+---
+
+=== redpanda_schema_registry_cache_subject_version_count
+
+Count of versions available for each subject in the Schema Registry cache.
+
+*Type*: gauge
+
+*Labels*:
+
+- `deleted`
+- `subject`
+
+---
+
+=== redpanda_schema_registry_inflight_requests_memory_usage_ratio
+
+Ratio of memory used by in-flight requests in the Schema Registry, reported per shard.
+
+*Type*: gauge
+
+*Labels*:
+
+- `shard`
+
+---
+
+=== redpanda_schema_registry_inflight_requests_usage_ratio
+
+Usage ratio for in-flight Schema Registry requests, reported per shard.
+
+*Type*: gauge
+
+*Labels*:
+
+- `shard`
+
+---
+
+=== redpanda_schema_registry_queued_requests_memory_blocked
+
+Count of Schema Registry requests queued due to memory constraints, reported per shard.
+
+*Type*: gauge
+
+*Labels*:
+
+- `shard`
+
+---
+
 === redpanda_schema_registry_request_errors_total
 
-Total number of Schema Registry errors.
+Total number of errors encountered by the Schema Registry, categorized by status code.
 
 *Type*: counter
 
@@ -352,69 +1045,144 @@ Total number of Schema Registry errors.
 
 === redpanda_schema_registry_request_latency_seconds
 
-Latency of the request indicated by the label in the Schema Registry. The measurement includes the time spent waiting for resources to become available, processing the request, and dispatching the response.
+Histogram capturing the latency (in seconds) for Schema Registry requests.
 
 *Type*: histogram
-
----
 
 == Partition metrics
 
 === redpanda_kafka_max_offset
 
-The high watermark offset of a partition. Suitable for calculating consumer group lag.
+High watermark offset for a partition, used to calculate consumer group lag.
 
 *Type*: gauge
 
 *Labels*:
 
 * `redpanda_namespace`
+
 * `redpanda_partition`
+
 * `redpanda_topic`
 
-// The cloud docs do not currently include the guidance on monitoring specific metrics. Do we want to single-source those into here? If we include the metrics reference, this seems like something cloud users may want.
-// https://github.com/redpanda-data/cloud-docs/blob/main/modules/manage/pages/monitor-cloud.adoc
 *Related topics*:
 
 - xref:manage:monitoring.adoc#consumer-group-lag[Consumer group lag]
 
 ---
 
+=== redpanda_kafka_request_bytes_total
+
+Total number of bytes read from or written to the partitions of a topic.
+The total may include fetched bytes that are not returned to the client.
+
+*Type*: counter
+
+*Labels*:
+
+* `redpanda_namespace`
+
+* `redpanda_topic`
+
+* `redpanda_request=("produce" | "consume")`
+
+---
+
 === redpanda_kafka_under_replicated_replicas
 
-Number of replicas in the partition that are live but not at the latest offset, <<redpanda_kafka_max_offset,redpanda_kafka_max_offset>>.
+Number of partition replicas that are live yet lag behind the latest offset, <<redpanda_kafka_max_offset,redpanda_kafka_max_offset>>.
 
 *Type*: gauge
 
 *Labels*:
 
 * `redpanda_namespace`
+
 * `redpanda_partition`
+
 * `redpanda_topic`
 
 ---
 
-=== redpanda_raft_recovery_partition_movement_available_bandwidth
+=== redpanda_raft_leadership_changes
 
-Bandwidth available for partition movement, in bytes per sec.
+Total count of leadership changes (such as successful leader elections) across all partitions for a given topic.
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_namespace`
+
+- `redpanda_topic`
+
+---
+
+=== redpanda_raft_learners_gap_bytes
+
+Total number of bytes that must be delivered to learner replicas to bring them up to date.
 
 *Type*: gauge
 
 *Labels*:
 
-* `shard`
+- `shard`
 
 ---
+
+=== redpanda_raft_recovery_offsets_pending
+
+Sum of offsets across partitions on a broker that still need to be recovered.
+
+*Type*: gauge
+
+---
+
+=== redpanda_raft_recovery_partition_movement_available_bandwidth
+
+Available network bandwidth (in bytes per second) for partition movement operations.
+
+*Type*: gauge
+
+*Labels*:
+
+- `shard`
+
+---
+
+=== redpanda_raft_recovery_partition_movement_consumed_bandwidth
+
+Network bandwidth (in bytes per second) currently being consumed for partition movement.
+
+*Type*: gauge
+
+*Labels*:
+
+- `shard`
+
+---
+
+=== redpanda_raft_recovery_partitions_active
+
+Number of partition replicas currently undergoing recovery on a broker.
+
+*Type*: gauge
+
+---
+
+=== redpanda_raft_recovery_partitions_to_recover
+
+Total count of partition replicas that are pending recovery on a broker.
+
+*Type*: gauge
 
 == Topic metrics
 
----
-
 === redpanda_cluster_partition_schema_id_validation_records_failed
 
-Number of records that failed schema ID validation.
+Count of records that failed schema ID validation during ingestion.
 
-*Type*:  counter
+*Type*: counter
 
 ---
 
@@ -425,72 +1193,80 @@ Configured number of partitions for a topic.
 *Type*: gauge
 
 *Labels*:
--`redpanda_namespace`
--`redpanda_topic`
+
+- `redpanda_namespace`
+
+- `redpanda_topic`
 
 ---
 
 === redpanda_kafka_records_fetched_total
 
-Total number of records fetched.
+Total number of records fetched from a topic.
 
 *Type*: counter
+
+*Labels*:
+
+* `redpanda_namespace`
+* `redpanda_topic`
 
 ---
 
 === redpanda_kafka_records_produced_total
 
-Total number of records produced.
+Total number of records produced to a topic.
 
 *Type*: counter
+
+*Labels*:
+
+* `redpanda_namespace`
+* `redpanda_topic`
 
 ---
 
 === redpanda_kafka_replicas
 
-The number of configured replicas per topic.
+Configured number of replicas for a topic.
 
 *Type*: gauge
 
 *Labels*:
 
 * `redpanda_namespace`
+
 * `redpanda_topic`
 
 ---
 
-=== redpanda_kafka_request_bytes_total
+=== redpanda_security_audit_errors_total
 
-Total number of bytes produced or consumed per topic.
+Cumulative count of errors encountered when creating or publishing audit event log entries.
 
 *Type*: counter
 
-*Labels*:
-
-* `redpanda_namespace`
-* `redpanda_topic`
-* `redpanda_request=("produce" | "consume")`
-
 ---
 
-=== redpanda_raft_leadership_changes
+=== redpanda_security_audit_last_event_timestamp_seconds
 
-Number of leadership changes across all partitions of a given topic.
+Unix epoch timestamp of the last successful audit log event publication.
 
 *Type*: counter
-
-*Labels*:
-
-* `redpanda_namespace`
-* `redpanda_topic`
-
----
 
 == Broker metrics
 
+=== redpanda_kafka_handler_latency_seconds
+
+Histogram capturing the latency for processing Kafka requests at the broker level.
+
+*Type*: histogram
+
+---
+
 === redpanda_kafka_request_latency_seconds
 
-Latency of produce/consume requests per broker. This duration measures from when a request is initiated on the partition to when the response is fulfilled.
+Histogram capturing the latency (in seconds) for produce/consume requests at the broker. This duration spans from request initiation to response fulfillment.
 
 *Type*: histogram
 
@@ -502,75 +1278,154 @@ Latency of produce/consume requests per broker. This duration measures from when
 
 === redpanda_kafka_quotas_client_quota_throttle_time
 
-Client quota throttling delay, in seconds, per rule and quota type.
-
-*Type*: histogram
-
-*Labels*:
-
-* `quota_rule=("not_applicable" | "kafka_client_default" | "cluster_client_default" | "kafka_client_prefix" | "cluster_client_prefix" | "kafka_client_id")``
-* `quota_type=("produce_quota" | "fetch_quota" | "partition_mutation_quota")`
-
----
-
-=== redpanda_kafka_quotas_client_quota_throughput
-
-Client quota throughput per rule and quota type.
+Histogram of client quota throttling delays (in seconds) per quota rule and type.
 
 *Type*: histogram
 
 *Labels*:
 
 * `quota_rule=("not_applicable" | "kafka_client_default" | "cluster_client_default" | "kafka_client_prefix" | "cluster_client_prefix" | "kafka_client_id")`
+
 * `quota_type=("produce_quota" | "fetch_quota" | "partition_mutation_quota")`
 
 ---
+
+=== redpanda_kafka_quotas_client_quota_throughput
+
+Histogram of client quota throughput per quota rule and type.
+
+*Type*: histogram
+
+*Labels*:
+
+* `quota_rule=("not_applicable" | "kafka_client_default" | "cluster_client_default" | "kafka_client_prefix" | "cluster_client_prefix" | "kafka_client_id")`
+
+* `quota_type=("produce_quota" | "fetch_quota" | "partition_mutation_quota")`
 
 == Consumer group metrics
 
 === redpanda_kafka_consumer_group_committed_offset
 
-Committed offset of a consumer group.
+Committed offset for a consumer group, segmented by topic and partition.
+
+To enable this metric, you must include the `partition` option in the xref:reference:properties/cluster-properties.adoc#enable_consumer_group_metrics[`enable_consumer_group_metrics`] cluster property.
 
 *Type*: gauge
 
 *Labels*:
 
-* `group`
-* `topic`
-* `partition`
+- `redpanda_group`
+- `redpanda_partition`
+- `redpanda_topic`
+- `shard`
 
 ---
 
 === redpanda_kafka_consumer_group_consumers
 
-Number of consumers in a consumer group.
+Number of active consumers within a consumer group.
+
+To enable this metric, you must include the `group` option in the xref:reference:properties/cluster-properties.adoc#enable_consumer_group_metrics[`enable_consumer_group_metrics`] cluster property.
 
 *Type*: gauge
 
 *Labels*:
 
-* `group`
+- `redpanda_group`
+- `shard`
+
+---
+
+=== redpanda_kafka_consumer_group_lag_max
+
+Maximum consumer group lag across topic partitions. This metric is useful for identifying the most delayed partition in the consumer group.
+
+To enable this metric, you must include the `consumer_lag` option in the xref:reference:properties/cluster-properties.adoc#enable_consumer_group_metrics[`enable_consumer_group_metrics`] cluster property.
+
+*Type*: gauge
+
+*Labels*:
+
+- `redpanda_group`
+
+*Related topics*:
+
+- xref:manage:monitoring.adoc#consumer-group-lag[Consumer group lag]
+
+---
+
+=== redpanda_kafka_consumer_group_lag_sum
+
+Sum of consumer group lag for all topic partitions. This metric is useful for tracking the total lag across all partitions.
+
+To enable this metric, you must include the `consumer_lag` option in the xref:reference:properties/cluster-properties.adoc#enable_consumer_group_metrics[`enable_consumer_group_metrics`] cluster property.
+
+*Type*: gauge
+
+*Labels*:
+
+- `redpanda_group`
+
+*Related topics*:
+
+- xref:manage:monitoring.adoc#consumer-group-lag[Consumer group lag]
 
 ---
 
 === redpanda_kafka_consumer_group_topics
 
-Number of topics in a consumer group.
+Number of topics being consumed by a consumer group.
+
+To enable this metric, you must include the `group` option in the xref:reference:properties/cluster-properties.adoc#enable_consumer_group_metrics[`enable_consumer_group_metrics`] cluster property.
 
 *Type*: gauge
 
 *Labels*:
 
-* `group`
-
----
+- `redpanda_group`
+- `shard`
 
 == REST proxy metrics
 
+=== redpanda_rest_proxy_inflight_requests_memory_usage_ratio
+
+Ratio of memory used by in-flight REST proxy requests, measured per shard.
+
+*Type*: gauge
+
+*Labels*:
+
+- `shard`
+
+---
+
+=== redpanda_rest_proxy_inflight_requests_usage_ratio
+
+Usage ratio for in-flight REST proxy requests, measured per shard.
+
+*Type*: gauge
+
+*Labels*:
+
+- `shard`
+
+---
+
+=== redpanda_rest_proxy_queued_requests_memory_blocked
+
+Count of REST proxy requests queued due to memory limitations, measured per shard.
+
+*Type*: gauge
+
+*Labels*:
+
+- `shard`
+
+---
+
 === redpanda_rest_proxy_request_errors_total
 
-Total number of REST proxy server errors.
+Cumulative count of REST proxy errors, categorized by HTTP status code.
 
 *Type*: counter
 
@@ -582,34 +1437,34 @@ Total number of REST proxy server errors.
 
 === redpanda_rest_proxy_request_latency_seconds_bucket
 
-Internal latency of REST proxy requests.
+Histogram representing the internal latency buckets for REST proxy requests.
 
 *Type*: histogram
-
----
 
 == Application metrics
 
 === redpanda_application_build
 
-Redpanda build information.
+Build information for Redpanda, including the revision and version details.
 
 *Type*: gauge
 
 *Labels*:
 
-* `redpanda_revision=<redpanda-revision-ID>`
-* `redpanda_version=<redpanda-version-number>`
+* `redpanda_revision`
+* `redpanda_version`
 
 ---
 
-=== redpanda_application_fips_mode 
+=== redpanda_application_fips_mode
 
-Identifies whether or not Redpanda is running in FIPS mode. Possible values: 
+Indicates whether Redpanda is running in FIPS mode. Possible values:
 
-* 0 = disabled
-* 1 = permissive
-* 2 = enabled
+- `0` = disabled
+
+- `1` = permissive
+
+- `2` = enabled
 
 *Type*: gauge
 
@@ -617,220 +1472,335 @@ Identifies whether or not Redpanda is running in FIPS mode. Possible values:
 
 === redpanda_application_uptime_seconds_total
 
-Redpanda application uptime in seconds.
+Total runtime (in seconds) of the Redpanda application.
 
-*Type* gauge
-
----
+*Type*: gauge
 
 == Cloud metrics
 
 === redpanda_cloud_client_backoff
 
-Total number of requests that backed off.
+Total number of object storage requests that experienced backoff delays.
 
 *Type*: counter
 
 *Labels*:
 
-* S3
-** `redpanda_endpoint`
-** `redpanda_region`
-* Azure Blob Storage (ABS)
-** `redpanda_endpoint`
-** `redpanda_storage_account`
+* For S3 and GCP:
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_region`
+
+* For Azure Blob Storage (ABS):
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_storage_account`
+
+---
+
+=== redpanda_cloud_client_client_pool_utilization
+
+Utilization of the object storage pool(0 - unused, 100 - fully utilized).
+
+*Type*: gauge
+
+*Labels*:
+
+- `redpanda_endpoint`
+- `redpanda_region`
+- `shard`
 
 ---
 
 === redpanda_cloud_client_download_backoff
 
-Total number of download requests that backed off.
+Total number of object storage download requests that experienced backoff delays.
 
 *Type*: counter
 
 *Labels*:
 
-* S3
-** `redpanda_endpoint`
-** `redpanda_region`
-* Azure Blob Storage (ABS)
-** `redpanda_endpoint`
-** `redpanda_storage_account`
+* For S3 and GCP:
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_region`
+
+* For Azure Blob Storage (ABS):
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_storage_account`
 
 ---
 
 === redpanda_cloud_client_downloads
 
-Total number of requests that downloaded an object from cloud storage.
+Total number of successful download requests from object storage.
 
 *Type*: counter
 
 *Labels*:
 
-* S3
-** `redpanda_endpoint`
-** `redpanda_region`
-* Azure Blob Storage (ABS)
-** `redpanda_endpoint`
-** `redpanda_storage_account`
+* For S3 and GCP:
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_region`
+
+* For Azure Blob Storage (ABS):
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_storage_account`
+
+---
+
+=== redpanda_cloud_client_lease_duration
+
+Histogram representing the lease duration for object storage clients.
+
+*Type*: histogram
 
 ---
 
 === redpanda_cloud_client_not_found
 
-Total number of requests for which the object was not found.
+Total number of object storage requests that resulted in a “not found” error.
 
 *Type*: counter
 
 *Labels*:
 
-* S3
-** `redpanda_endpoint`
-** `redpanda_region`
-* Azure Blob Storage (ABS)
-** `redpanda_endpoint`
-** `redpanda_storage_account`
+* For S3 and GCP:
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_region`
+
+* For Azure Blob Storage (ABS):
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_storage_account`
+
+---
+
+=== redpanda_cloud_client_num_borrows
+
+Count of instances where a shard borrowed a object storage client from another shard.
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_endpoint`
+
+- `redpanda_region`
+
+- `shard`
 
 ---
 
 === redpanda_cloud_client_upload_backoff
 
-Total number of upload requests that backed off.
+Total number of object storage upload requests that experienced backoff delays.
 
 *Type*: counter
 
 *Labels*:
 
-* S3
-** `redpanda_endpoint`
-** `redpanda_region`
-* Azure Blob Storage (ABS)
-** `redpanda_endpoint`
-** `redpanda_storage_account`
+* For S3 and GCP:
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_region`
+
+* For Azure Blob Storage (ABS):
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_storage_account`
 
 ---
 
 === redpanda_cloud_client_uploads
 
-Total number of requests that uploaded an object to cloud storage.
+Total number of successful upload requests to object storage.
 
 *Type*: counter
 
 *Labels*:
 
-* S3
-** `redpanda_endpoint`
-** `redpanda_region`
-* Azure Blob Storage (ABS)
-** `redpanda_endpoint`
-** `redpanda_storage_account`
+* For S3 and GCP:
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_region`
+
+* For Azure Blob Storage (ABS):
+
+
+- `redpanda_endpoint`
+
+
+- `redpanda_storage_account`
 
 ---
-
-=== repdanda_cloud_storage_cloud_log_size
-
-The amount of data, in bytes, that exists in Tiered Storage and is accessible by Kafka. Increases every time Redpanda offloads a segment to Tiered Storage, and decreases every time compaction or retention deletes data.
-
-The `redpanda_namespace` label supports the following options for this metric:
-
-* `kafka` - User topics
-* `kafka_internal` - Internal Kafka topic, such as consumer groups
-* `redpanda` - Redpanda-only internal data
-
-*Type*: gauge
-
-*Usage*: This metric reports the log size for each topic and partition in your cluster
-
-*Labels*:
-
-* `redpanda_namespace=("kafka" | "kafka_internal" | "redpanda")`
-* `redpanda_topic`
-* `redpanda_partition`
 
 [[tls_metrics]]
 == TLS metrics
 
-=== redpanda_tls_truststore_expires_at_timestamp_seconds
-
-The expiration time, represented as a Unix-style timestamp, of the shortest-lived certificate authority (CA) in the installed CA chain. This lists all resources that have at least one CA configured.
-
-*Type*: gauge
-
-*Labels*:
-
-* `area`
-* `detail`
-
-*Usage*: This metric is recorded for all resources that may have a TLS certificate installed. The `area` and `detail` labels provide a hierarchical way of identifying a single resource you need information on.
-
----
-
 === redpanda_tls_certificate_expires_at_timestamp_seconds
 
-The expiration time, represented as a Unix-style timestamp, for the shortest-lived installed certificate. While more than one certificate may be installed for a resource, this provides only the timestamp of the next certificate to expire. This lists all resources that have at least one certificate installed.
+Unix epoch timestamp for the expiration of the shortest-lived installed TLS certificate.
 
 *Type*: gauge
 
 *Labels*:
 
 * `area`
+
 * `detail`
 
-*Usage*: This metric is recorded for all resources that may have a TLS certificate installed. The `area` and `detail` labels provide a hierarchical way of identifying a single resource you need information on.
+*Usage*: Useful for proactive certificate renewal by indicating the next certificate set to expire.
 
 ---
 
 === redpanda_tls_certificate_serial
 
-The serial number of the shortest-lived installed certificate. These serial numbers are technically unbounded. As such, this will return the least significant 4B digits of the integer representation certificate's serial number. While more than one certificate may be installed for a resource, this provides only the serial number of the next certificate to expire. This lists all resources that have at least one certificate installed.
+The least significant 4 bytes of the serial number for the certificate that will expire next.
 
 *Type*: gauge
 
 *Labels*:
 
 * `area`
+
 * `detail`
 
-*Usage*: This metric is recorded for all resources that may have a TLS certificate installed. The `area` and `detail` labels provide a hierarchical way of identifying a single resource you need information on.
-
----
-
-=== redpanda_tls_loaded_at_timestamp_seconds
-
-The last time, represented as a Unix-style timestamp, that at least one TLS certificate was loaded for a resource. This lists all resources that have at least one certificate installed.
-
-*Type*: gauge
-
-*Labels*:
-
-* `area`
-* `detail`
-
-*Usage*: This metric is recorded for all resources that may have a TLS certificate installed. The `area` and `detail` labels provide a hierarchical way of identifying a single resource you need information on.
+*Usage*: Provides a quick reference to identify the certificate in question.
 
 ---
 
 === redpanda_tls_certificate_valid
 
-Indicates whether a given resource has at least one valid installed TLS certificate. Querying this will provide a check on all resources with at least one certificate installed. The value of this gauge is either `1` to indicate presence of a valid certificate or `0` to indicate the absence of a valid certificate.
+Indicator of whether a resource has at least one valid TLS certificate installed. Returns `1` if a valid certificate is present and `0` if not.
 
 *Type*: gauge
 
 *Labels*:
 
 * `area`
+
 * `detail`
 
-*Usage*: This metric is recorded for all resources that may have a TLS certificate installed. The `area` and `detail` labels provide a hierarchical way of identifying a single resource you need information on.
+*Usage*: Aids in continuous monitoring of certificate validity across resources.
+
+---
+
+=== redpanda_tls_loaded_at_timestamp_seconds
+
+Unix epoch timestamp marking the last time a TLS certificate was loaded for a resource.
+
+*Type*: gauge
+
+*Labels*:
+
+* `area`
+
+* `detail`
+
+*Usage*: Indicates recent certificate updates across resources.
+
+---
+
+=== redpanda_tls_truststore_expires_at_timestamp_seconds
+
+Unix epoch timestamp representing the expiration time of the shortest-lived certificate authority (CA) in the installed truststore.
+
+*Type*: gauge
+
+*Labels*:
+
+* `area`
+
+* `detail`
+
+*Usage*: Helps identify when any CA in the chain is nearing expiration.
+
+---
+
+=== redpanda_trust_file_crc32c
+
+CRC32C checksum calculated from the contents of the trust file. This value is calculated when a valid certificate is loaded and a trust store is present. Otherwise, the value is zero.
+
+*Type*: gauge
+
+*Labels*:
+
+- `area`
+- `detail`
+- `shard`
+
+---
+
+=== redpanda_truststore_expires_at_timestamp_seconds
+
+Expiry time of the shortest-lived CA in the truststore, measured in seconds since epoch.
+
+*Type*: gauge
+
+*Labels*:
+
+- `area`
+- `detail`
+- `shard`
 
 ---
 
 [[data_transform_metrics]]
 == Data transforms metrics
 
+=== redpanda_transform_execution_errors
+
+Counter for the number of errors encountered during the invocation of data transforms.
+
+*Type*: counter
+
+*Labels*:
+
+* `function_name`
+
+---
+
 === redpanda_transform_execution_latency_sec
 
-A histogram of the latency of transforming a single record, in seconds.
+Histogram tracking the execution latency (in seconds) for processing a single record using data transforms.
 
 *Type*: histogram
 
@@ -840,77 +1810,9 @@ A histogram of the latency of transforming a single record, in seconds.
 
 ---
 
-=== redpanda_transform_execution_errors
+=== redpanda_transform_failures
 
-Data transform invocation errors.
-
-*Type*: counter
-
-*Labels*:
-
-* `function_name`
-
----
-
-=== redpanda_wasm_engine_cpu_seconds_total
-
-Total CPU time spent inside a WebAssembly function, in seconds.
-
-*Type*: counter
-
-*Labels*:
-
-* `function_name`
-
----
-
-=== redpanda_wasm_engine_memory_usage
-
-Amount of memory usage for a WebAssembly function.
-
-*Type*: gauge
-
-*Labels*:
-
-* `function_name`
-
----
-
-=== redpanda_wasm_engine_max_memory
-
-Maximum amount of memory for a WebAssembly function.
-
-*Type*: gauge
-
-*Labels*:
-
-* `function_name`
-
----
-
-=== redpanda_wasm_binary_executable_memory_usage
-
-The amount of executable memory usage for WebAssembly binaries.
-
-*Type*: gauge
-
----
-
-=== redpanda_transform_read_bytes
-
-A counter for all the bytes that has been input to a transform.
-
-*Type*: counter
-
-*Labels*:
-
-* `function_name`
-
----
-
-=== redpanda_transform_write_bytes
-
-A counter for all the bytes that has been output from a transform.
+Counter for each failure encountered by a data transform processor.
 
 *Type*: counter
 
@@ -922,7 +1824,7 @@ A counter for all the bytes that has been output from a transform.
 
 === redpanda_transform_processor_lag
 
-The amount of pending records on the input topic that have yet to be processed by the transform.
+Number of records pending processing in the input topic for a data transform.
 
 *Type*: gauge
 
@@ -932,9 +1834,9 @@ The amount of pending records on the input topic that have yet to be processed b
 
 ---
 
-=== redpanda_transform_failures
+=== redpanda_transform_read_bytes
 
-A counter for each time that a processor encounters a failure.
+Cumulative count of bytes read as input to data transforms.
 
 *Type*: counter
 
@@ -946,199 +1848,505 @@ A counter for each time that a processor encounters a failure.
 
 === redpanda_transform_state
 
-The number of transform processors in a specific state (running, inactive, errored).
+Current count of transform processors in a specific state (running, inactive, or errored).
 
 *Type*: gauge
 
 *Labels*:
 
 * `function_name`
+
 * `state=("running" | "inactive" | "errored")`
 
 ---
 
-== Cloud storage metrics
+=== redpanda_transform_write_bytes
 
-include::reference:partial$public_metrics_tip.adoc[]
+Cumulative count of bytes output from data transforms.
+
+*Type*: counter
+
+*Labels*:
+
+* `function_name`
+
+---
+
+=== redpanda_wasm_binary_executable_memory_usage
+
+Number of bytes (memory) used by executable WebAssembly binaries.
+
+*Type*: gauge
+
+---
+
+=== redpanda_wasm_engine_cpu_seconds_total
+
+Total CPU time (in seconds) consumed by WebAssembly functions.
+
+*Type*: counter
+
+*Labels*:
+
+* `function_name`
+
+---
+
+=== redpanda_wasm_engine_max_memory
+
+Maximum allowed memory (in bytes) allocated for a WebAssembly function.
+
+*Type*: gauge
+
+*Labels*:
+
+* `function_name`
+
+---
+
+=== redpanda_wasm_engine_memory_usage
+
+Current memory usage (in bytes) by a WebAssembly function.
+
+*Type*: gauge
+
+*Labels*:
+
+* `function_name`
+
+== Object storage metrics
 
 ifndef::env-cloud[]
-NOTE: Cloud storage metrics are only available if you have:
 
-- xref:manage:tiered-storage.adoc[] enabled
-- The cluster property xref:reference:properties/object-storage-properties.adoc#cloud_storage_enabled[cloud_storage_enabled] set to `true`
+[NOTE]
+====
+Object storage metrics are available only if you have:
+
+* xref:manage:tiered-storage.adoc[Tiered Storage] enabled
+* The cluster property xref:reference:properties/object-storage-properties.adoc#cloud_storage_enabled[cloud_storage_enabled] set to `true`
+====
 endif::[]
-
-=== redpanda_cloud_storage_cache_space_size_bytes
-
-Sum of size of cached objects.
-
-=== redpanda_cloud_storage_housekeeping_drains
-
-Number of times upload housekeeping queue was drained.
-
-=== redpanda_cloud_storage_spillover_manifests_materialized_bytes
-
-Bytes of memory used for spilled manifests currently cached in memory.
-
-=== redpanda_cloud_storage_cache_op_put
-
-Number of objects written into cache.
-
-=== redpanda_cloud_storage_segments
-
-Total number of accounted topic segments in the cloud.
-
-=== redpanda_cloud_storage_jobs_local_segment_reuploads
-
-Number of segment reuploads from local data directory.
-
-=== redpanda_cloud_storage_cache_trim_failed_trims
-
-Number of times Redpanda could not free the expected amount of space, indicating possible bug or configuration issue.
-
-=== redpanda_cloud_storage_cache_trim_exhaustive_trims
-
-Number of times a fast trim could not free enough space and had to fall back to a slower exhaustive trim.
-
-=== redpanda_cloud_storage_deleted_segments
-
-Count of deleted remote segments.
-
-=== redpanda_cloud_storage_segment_uploads_total
-
-Successful data segment uploads.
 
 === redpanda_cloud_storage_active_segments
 
-Number of remote log segments currently hydrated for read.
+Number of remote log segments that are currently hydrated and available for read operations.
 
-=== redpanda_cloud_storage_cache_trim_fast_trims
+*Type*: gauge
 
-Number of times Redpanda trimmed the cache using the normal (fast) mode.
+---
 
-=== redpanda_cloud_storage_housekeeping_jobs_failed
+=== redpanda_cloud_storage_anomalies
 
-Number of failed housekeeping jobs.
+Count of missing partition manifest anomalies detected for the topic.
 
-=== redpanda_cloud_storage_partition_readers_delayed
+*Type*: gauge
 
-How many partition readers were delayed due to hitting reader limit. This indicates cluster is saturated with Tiered Storage reads.
-
-=== redpanda_cloud_storage_segments_pending_deletion
-
-Total number of topic segments pending deletion from the cloud.
-
-=== redpanda_cloud_storage_housekeeping_rounds
-
-Number of upload housekeeping rounds.
-
-=== redpanda_cloud_storage_segment_readers_delayed
-
-Number of segment readers delayed due to hitting reader limit. This indicates cluster is saturated with Tiered Storage reads.
-
-=== redpanda_cloud_storage_cache_space_hwm_size_bytes
-
-High watermark of sum of size of cached objects.
-
-=== redpanda_cloud_storage_cache_space_hwm_files
-
-High watermark of number of objects in cache.
-
-=== redpanda_cloud_storage_cache_op_in_progress_files
-
-Number of files that are being added to cache.
-
-=== redpanda_cloud_storage_jobs_cloud_segment_reuploads
-
-Number of segment reuploads from cloud storage sources (cloud storage cache or direct download from cloud storage).
-
-=== redpanda_cloud_storage_jobs_manifest_reuploads
-
-Number of manifest reuploads performed by all housekeeping jobs.
-
-=== redpanda_cloud_storage_housekeeping_pauses
-
-Number of times upload housekeeping was paused.
-
-=== redpanda_cloud_storage_segment_index_uploads_total
-
-Successful segment index uploads.
-
-=== redpanda_cloud_storage_cache_op_miss
-
-Number of failed get requests because of missing object in the cache.
-
-=== redpanda_cloud_storage_errors_total
-
-Number of transmit errors.
-
-=== redpanda_cloud_storage_spillover_manifest_uploads_total
-
-Successful spillover manifest uploads.
-
-=== redpanda_cloud_storage_housekeeping_requests_throttled_average_rate
-
-Average rate per shard of requests from the read and write path that were throttled by Tiered Storage.
-
-=== redpanda_cloud_storage_jobs_segment_deletions
-
-Number of segments deleted by all housekeeping jobs.
-
-=== redpanda_cloud_storage_segment_materializations_delayed
-
-Number of segment materializations delayed due to hitting reader limit. This indicates cluster is saturated with Tiered Storage reads.
-
-=== redpanda_cloud_storage_jobs_metadata_syncs
-
-Number of archival configuration updates performed by all housekeeping jobs.
-
-=== redpanda_cloud_storage_housekeeping_jobs_completed
-
-Number of successful housekeeping jobs.
-
-=== redpanda_cloud_storage_readers
-
-Number of segment read cursors for hydrated remote log segments.
-
-=== redpanda_cloud_storage_partition_manifest_uploads_total
-
-Successful partition manifest uploads.
-
-=== redpanda_cloud_storage_limits_downloads_throttled_sum
-
-Total amount of throttling applied to cloud storage downloads.
-
-=== redpanda_cloud_storage_housekeeping_resumes
-
-Number of times upload housekeeping was resumed.
+---
 
 === redpanda_cloud_storage_cache_op_hit
 
-Number of get requests for objects that are already in cache.
+Total number of successful get requests that found the requested object in the cache.
 
-=== redpanda_cloud_storage_spillover_manifests_materialized_count
+*Type*: counter
 
-Number of spilled manifests currently cached in memory.
+---
 
-=== redpanda_cloud_storage_uploaded_bytes
+=== redpanda_cloud_storage_cache_op_in_progress_files
 
-Total number of uploaded bytes for the topic.
+Number of files currently being written to the cache.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_cache_op_miss
+
+Total count of get requests that did not find the requested object in the cache.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_cache_op_put
+
+Total number of objects successfully written into the cache.
+
+*Type*: counter
+
+---
 
 === redpanda_cloud_storage_cache_space_files
 
-Number of objects in cache.
+Current number of objects stored in the cache.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_cache_space_hwm_files
+
+High watermark for the number of objects stored in the cache.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_cache_space_hwm_size_bytes
+
+High watermark for the total size (in bytes) of cached objects.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_cache_space_size_bytes
+
+Total size (in bytes) of objects currently stored in the cache.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_cache_space_tracker_size
+
+Current count of entries in the cache access tracker.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_cache_space_tracker_syncs
+
+Total number of times the cache access tracker was synchronized with disk data.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_cache_trim_carryover_trims
+
+Count of times the cache trim operation was invoked using a carryover strategy.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_cache_trim_exhaustive_trims
+
+Count of instances where a fast cache trim was insufficient and an exhaustive trim was required.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_cache_trim_failed_trims
+
+Count of cache trim operations that failed to free the expected amount of space, possibly indicating a bug or misconfiguration.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_cache_trim_fast_trims
+
+Count of successful fast cache trim operations.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_cache_trim_in_mem_trims
+
+Count of cache trim operations performed using the in-memory access tracker.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_cloud_log_size
+
+Total size (in bytes) of user-visible log data stored in Tiered Storage. This value increases with every segment offload and decreases when segments are deleted due to retention or compaction.
+
+*Type*: gauge
+
+*Usage*: Segmented by `redpanda_namespace` (e.g., `kafka`, `kafka_internal`, or `redpanda`), `redpanda_topic`, and `redpanda_partition`.
+
+---
+
+=== redpanda_cloud_storage_deleted_segments
+
+Count of log segments that have been deleted from object storage due to retention policies or compaction processes.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_errors_total
+
+Cumulative count of errors encountered during object storage operations, segmented by direction.
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_direction`
+
+---
+
+=== redpanda_cloud_storage_housekeeping_drains
+
+Count of times the object storage upload housekeeping queue was fully drained.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_housekeeping_jobs_completed
+
+Total number of successfully executed object storage housekeeping jobs.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_housekeeping_jobs_failed
+
+Total number of object storage housekeeping jobs that failed.
+
+*Type*: counter
+
+---
 
 === redpanda_cloud_storage_housekeeping_jobs_skipped
 
-Number of skipped housekeeping jobs.
+Count of object storage housekeeping jobs that were skipped during execution.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_housekeeping_pauses
+
+Count of times object storage upload housekeeping was paused.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_housekeeping_requests_throttled_average_rate
+
+Average rate (per shard) of requests that were throttled during object storage operations.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_housekeeping_resumes
+
+Count of instances when object storage upload housekeeping resumed after a pause.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_housekeeping_rounds
+
+Total number of rounds executed by the object storage upload housekeeping process.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_jobs_cloud_segment_reuploads
+
+Count of log segments reuploaded from object storage sources (either from the cache or via direct download).
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_jobs_local_segment_reuploads
+
+Count of log segments reuploaded from the local data directory.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_jobs_manifest_reuploads
+
+Total number of partition manifest reuploads performed by housekeeping jobs.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_jobs_metadata_syncs
+
+Total number of archival configuration updates (metadata synchronizations) executed by housekeeping jobs.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_jobs_segment_deletions
+
+Total count of log segments deleted by housekeeping jobs.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_limits_downloads_throttled_sum
+
+Total cumulative time (in milliseconds) during which downloads were throttled.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_partition_manifest_uploads_total
+
+Total number of successful partition manifest uploads to object storage.
+
+*Type*: counter
+
+---
 
 === redpanda_cloud_storage_partition_readers
 
-Number of partition reader instances, based on the number of current fetch/timequery requests reading from Tiered Storage.
+Number of active partition reader instances (fetch/timequery operations) reading from Tiered Storage.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_partition_readers_delayed
+
+Count of partition read operations delayed due to reaching the reader limit, suggesting potential saturation of Tiered Storage reads.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_paused_archivers
+
+Number of paused archivers.
+
+*Type*: gauge
+
+*Labels*:
+
+- `redpanda_namespace`
+- `redpanda_topic`
+
+---
+
+=== redpanda_cloud_storage_readers
+
+Total number of segment read cursors for hydrated remote log segments.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_segment_index_uploads_total
+
+Total number of successful segment index uploads to object storage.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_segment_materializations_delayed
+
+Count of segment materialization operations that were delayed because of reader limit constraints.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_segment_readers_delayed
+
+Count of segment reader operations delayed due to reaching the reader limit. This indicates a cluster is saturated with Tiered Storage reads.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_segment_uploads_total
+
+Total number of successful data segment uploads to object storage.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_segments
+
+Total number of log segments accounted for in object storage for the topic.
+
+*Type*: gauge
+
+*Labels*:
+
+- `redpanda_namespace`
+- `redpanda_topic`
+
+---
+
+=== redpanda_cloud_storage_segments_pending_deletion
+
+Total number of log segments pending deletion from object storage for the topic.
+
+*Type*: gauge
+
+*Labels*:
+
+- `redpanda_namespace`
+- `redpanda_topic`
+
+---
+
+=== redpanda_cloud_storage_spillover_manifest_uploads_total
+
+Total number of successful spillover manifest uploads to object storage.
+
+*Type*: counter
+
+---
+
+=== redpanda_cloud_storage_spillover_manifests_materialized_bytes
+
+Total bytes of memory used by spilled manifests that are currently cached in memory.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_spillover_manifests_materialized_count
+
+Count of spilled manifests currently held in memory cache.
+
+*Type*: gauge
+
+---
+
+=== redpanda_cloud_storage_uploaded_bytes
+
+Total number of bytes uploaded for the topic to object storage.
+
+*Type*: counter
+
+*Labels*:
+
+- `redpanda_namespace`
+- `redpanda_topic`
 
 == Related topics
 
 * xref:manage:monitoring.adoc[Learn how to monitor Redpanda]
+
 ifndef::env-cloud[]
 * xref:./internal-metrics-reference.adoc[Internal metrics reference]
 endif::[]

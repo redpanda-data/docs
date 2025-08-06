@@ -6,6 +6,7 @@ A topic-level property sets a Redpanda or Kafka configuration for a particular t
 
 Many topic-level properties have corresponding xref:manage:cluster-maintenance/cluster-property-configuration.adoc[cluster properties] that set a default value for all topics of a cluster. To customize the value for a topic, you can set a topic-level property that overrides the value of the corresponding cluster property.
 
+
 NOTE: All topic properties take effect immediately after being set. 
 
 |===
@@ -23,6 +24,9 @@ NOTE: All topic properties take effect immediately after being set.
 | <<initialretentionlocaltargetms,`initial.retention.local.target.ms`>>
 | xref:./cluster-properties.adoc#initial_retention_local_target_ms_default[`initial_retention_local_target_ms_default`]
 
+| <<mincleanabledirtyratio,`min.cleanable.dirty.ratio`>>
+| xref:reference:cluster-properties.adoc#min_cleanable_dirty_ratio[`min_cleanable_dirty_ratio`]
+
 | <<retentionbytes,`retention.bytes`>>
 | xref:./cluster-properties.adoc#retention_bytes[`retention_bytes`]
 
@@ -37,6 +41,12 @@ NOTE: All topic properties take effect immediately after being set.
 
 | <<compressiontype,`compression.type`>>
 | xref:./cluster-properties.adoc#log_compression_type[`log_compression_type`]
+
+| <<maxcompactionlagms,`max.compaction.lag.ms`>>
+| xref:./cluster-properties.adoc#max_compaction_lag_ms[`max_compaction_lag_ms`]
+
+| <<mincompactionlagms,`min.compaction.lag.ms`>>
+| xref:./cluster-properties.adoc#min_compaction_lag_ms[`min_compaction_lag_ms`]
 
 | <<messagetimestamptype,`message.timestamp.type`>>
 | xref:./cluster-properties.adoc#log_message_timestamp_type[`log_message_timestamp_type`]
@@ -147,15 +157,12 @@ kubectl exec <pod-name> -- rpk topic alter-config <topic-name> --set retention.m
 --
 ====
 
-== Properties
-
-This section describes all supported topic-level properties.
-
-=== Disk space properties
+== Disk space properties
 
 Configure properties to manage the disk space used by a topic:
 
 - Clean up log segments by deletion and/or compaction (<<cleanuppolicy, `cleanup.policy`>>).
+- Control compaction timing with maximum and minimum lag settings (<<maxcompactionlagms, `max.compaction.lag.ms`>> and <<mincompactionlagms, `min.compaction.lag.ms`>>).
 - Retain logs up to a maximum size per partition before cleanup (<<retentionbytes, `retention.bytes`>>).
 - Retain logs for a maximum duration before cleanup (<<retentionms, `retention.ms`>>).
 - Periodically close an active log segment (<<segmentms, `segment.ms`>>).
@@ -165,11 +172,13 @@ Configure properties to manage the disk space used by a topic:
 ---
 
 [[cleanuppolicy]]
-==== cleanup.policy
+=== cleanup.policy
 
 The cleanup policy to apply for log segments of a topic.
 
 When `cleanup.policy` is set, it overrides the cluster property xref:cluster-properties.adoc#log_cleanup_policy[`log_cleanup_policy`] for the topic.
+
+include::develop:partial$topic-properties-warning.adoc[]
 
 **Default**: `[delete]`
 
@@ -179,6 +188,8 @@ When `cleanup.policy` is set, it overrides the cluster property xref:cluster-pro
 - `[compact]` - Deletes data according to a key-based retention policy, discarding all but the latest value for each key.
 - `[compact,delete]` - The latest values are kept for each key, while the remaining data is deleted according to retention limits.
 
+
+
 **Related topics**:
 
 - xref:manage:cluster-maintenance/disk-utilization.adoc#configure-segment-size[Configure segment size]
@@ -187,7 +198,7 @@ When `cleanup.policy` is set, it overrides the cluster property xref:cluster-pro
 ---
 
 [[flushms]]
-==== flush.ms
+=== flush.ms
 
 The maximum delay (in ms) between two subsequent fsyncs. After this delay, the log is automatically fsynced.
 
@@ -200,7 +211,7 @@ The maximum delay (in ms) between two subsequent fsyncs. After this delay, the l
 ---
 
 [[flushbytes]]
-==== flush.bytes
+=== flush.bytes
 
 The maximum bytes not fsynced per partition. If this configured threshold is reached, the log is automatically fsynced, even though it wasn't explicitly requested.
 
@@ -212,8 +223,55 @@ The maximum bytes not fsynced per partition. If this configured threshold is rea
 
 ---
 
+[[mincleanabledirtyratio]]
+=== min.cleanable.dirty.ratio
+
+The minimum ratio between the number of bytes in dirty segments and the total number of bytes in closed segments that must be reached before a partition's log is eligible for compaction in a compact topic.
+
+**Default**: null
+
+**Related topics**:
+
+- xref:manage:cluster-maintenance/compaction-settings.adoc[]
+
+---
+
+[[maxcompactionlagms]]
+=== max.compaction.lag.ms
+
+The maximum amount of time (in ms) that a log segment can remain unaltered before it is eligible for compaction in a compact topic. Overrides the cluster property xref:cluster-properties.adoc#max_compaction_lag_ms[`max_compaction_lag_ms`] for the topic.
+
+*Type:* integer
+
+*Accepted values:* [`1`, `9223372036854`]
+
+*Default:* `9223372036854`
+
+**Related topics**:
+
+- xref:manage:cluster-maintenance/compaction-settings.adoc#configuration-options[Configure maximum compaction lag]
+
+---
+
+[[mincompactionlagms]]
+=== min.compaction.lag.ms
+
+The minimum amount of time (in ms) that a log segment must remain unaltered before it can be compacted in a compact topic. Overrides the cluster property xref:cluster-properties.adoc#min_compaction_lag_ms[`min_compaction_lag_ms`] for the topic.
+
+*Type:* integer
+
+*Accepted values:* [`0`, `9223372036854`]
+
+*Default:* `0`
+
+**Related topics**:
+
+- xref:manage:cluster-maintenance/compaction-settings.adoc#configure-min-compaction-lag[Configure minimum compaction lag]
+
+---
+
 [[retentionbytes]]
-==== retention.bytes
+=== retention.bytes
 
 A size-based retention limit that configures the maximum size that a topic partition can grow before becoming eligible for cleanup.
 
@@ -230,7 +288,7 @@ When both size-based (`retention.bytes`) and time-based (`retention.ms`) retenti
 ---
 
 [[retentionms]]
-==== retention.ms
+=== retention.ms
 
 A time-based retention limit that configures the maximum duration that a log's segment file for a topic is retained before it becomes eligible to be cleaned up. To consume all data, a consumer of the topic must read from a segment before its `retention.ms` elapses, otherwise the segment may be compacted and/or deleted. If a non-positive value, no per-topic limit is applied.
 
@@ -247,7 +305,7 @@ When both size-based (`retention.bytes`) and time-based (`retention.ms`) retenti
 ---
 
 [[segmentms]]
-==== segment.ms
+=== segment.ms
 
 The maximum duration that a log segment of a topic is active (open for writes and not deletable). A periodic event, with `segment.ms` as its period, forcibly closes the active segment and transitions, or rolls, to a new active segment. The closed (inactive) segment is then eligible to be cleaned up according to cleanup and retention properties.
 
@@ -262,7 +320,7 @@ If set to a positive duration, `segment.ms` overrides the cluster property xref:
 ---
 
 [[segmentbytes]]
-==== segment.bytes
+=== segment.bytes
 
 The maximum size of an active log segment for a topic. When the size of an active segment exceeds `segment.bytes`, the segment is closed and a new active segment is created. The closed, inactive segment is then eligible to be cleaned up according to retention properties.
 
@@ -279,7 +337,7 @@ When `segment.bytes` is set to a positive value, it overrides the cluster proper
 ---
 
 [[writecaching]]
-==== write.caching
+=== write.caching
 
 The write caching mode to apply to a topic. 
 
@@ -298,7 +356,7 @@ When `write.caching` is set, it overrides the cluster property xref:cluster-prop
 
 ---
 
-=== Message properties
+== Message properties
 
 Configure properties for the messages of a topic:
 
@@ -307,7 +365,7 @@ Configure properties for the messages of a topic:
 - Set the maximum size of a message (<<maxmessagebytes, `max.message.bytes`>>).
 
 [[compressiontype]]
-==== compression.type
+=== compression.type
 
 The type of compression algorithm to apply for all messages of a topic. When a compression type is set for a topic, producers compress and send messages, nodes (brokers) store and send compressed messages, and consumers receive and uncompress messages.
 
@@ -336,7 +394,7 @@ NOTE: The valid values of `compression.type` are taken from `log_compression_typ
 ---
 
 [[messagetimestamptype]]
-==== message.timestamp.type
+=== message.timestamp.type
 
 The source of a message's timestamp: either the message's creation time or its log append time.
 
@@ -352,7 +410,7 @@ When `message.timestamp.type` is set, it overrides the cluster property xref:./c
 ---
 
 [[maxmessagebytes]]
-==== max.message.bytes
+=== max.message.bytes
 
 The maximum size of a message or batch of a topic. If a compression type is enabled, `max.message.bytes` sets the maximum size of the compressed message or batch.
 
@@ -366,7 +424,7 @@ If `max.message.bytes` is set to a positive value, it overrides the cluster prop
 
 ---
 
-=== Tiered Storage properties
+== Tiered Storage properties
 
 Configure properties to manage topics for xref:manage:tiered-storage.adoc[Tiered Storage]:
 
@@ -376,7 +434,7 @@ Configure properties to manage topics for xref:manage:tiered-storage.adoc[Tiered
 - Delete data from object storage for a topic when it's deleted from local storage (<<redpandaremotedelete, `redpanda.remote.delete`>>).
 
 [[redpandaremotewrite]]
-==== redpanda.remote.write
+=== redpanda.remote.write
 
 A flag for enabling Redpanda to upload data for a topic from local storage to object storage. When set to `true` together with <<redpandaremoteread, `redpanda.remote.read`>>, it enables the xref:manage:tiered-storage.adoc[Tiered Storage] feature.
 
@@ -389,7 +447,7 @@ A flag for enabling Redpanda to upload data for a topic from local storage to ob
 ---
 
 [[redpandaremoteread]]
-==== redpanda.remote.read
+=== redpanda.remote.read
 
 A flag for enabling Redpanda to fetch data for a topic from object storage to local storage. When set to `true` together with <<redpandaremotewrite, `redpanda.remote.write`>>, it enables the xref:manage:tiered-storage.adoc[Tiered Storage] feature.
 
@@ -402,7 +460,7 @@ A flag for enabling Redpanda to fetch data for a topic from object storage to lo
 ---
 
 [[initialretentionlocaltargetbytes]]
-==== initial.retention.local.target.bytes
+=== initial.retention.local.target.bytes
 
 A size-based initial retention limit for Tiered Storage that determines how much data in local storage is transferred to a partition replica when a cluster is resized. If `null` (default), all locally retained data is transferred.
 
@@ -415,7 +473,7 @@ A size-based initial retention limit for Tiered Storage that determines how much
 ---
 
 [[initialretentionlocaltargetms]]
-==== initial.retention.local.target.ms
+=== initial.retention.local.target.ms
 
 A time-based initial retention limit for Tiered Storage that determines how much data in local storage is transferred to a partition replica when a cluster is resized. If `null` (default), all locally retained data is transferred.
 
@@ -428,7 +486,7 @@ A time-based initial retention limit for Tiered Storage that determines how much
 ---
 
 [[retentionlocaltargetbytes]]
-==== retention.local.target.bytes
+=== retention.local.target.bytes
 
 A size-based retention limit for Tiered Storage that configures the maximum size that a topic partition in local storage can grow before becoming eligible for cleanup. It applies per partition and is equivalent to <<retentionbytes, `retention.bytes`>> without Tiered Storage.
 
@@ -441,7 +499,7 @@ A size-based retention limit for Tiered Storage that configures the maximum size
 ---
 
 [[retentionlocaltargetms]]
-==== retention.local.target.ms
+=== retention.local.target.ms
 
 A time-based retention limit for Tiered Storage that sets the maximum duration that a log's segment file for a topic is retained in local storage before it's eligible for cleanup. This property is equivalent to <<retentionms, `retention.ms`>> without Tiered Storage.
 
@@ -454,7 +512,7 @@ A time-based retention limit for Tiered Storage that sets the maximum duration t
 ---
 
 [[redpandaremoterecovery]]
-==== redpanda.remote.recovery
+=== redpanda.remote.recovery
 
 A flag that enables the recovery or reproduction of a topic from object storage for Tiered Storage. The recovered data is saved in local storage, and the maximum amount of recovered data is determined by the local storage retention limits of the topic.
 
@@ -469,7 +527,7 @@ TIP: You can only configure `redpanda.remote.recovery` when you create a topic. 
 ---
 
 [[redpandaremotedelete]]
-==== redpanda.remote.delete
+=== redpanda.remote.delete
 
 A flag that enables deletion of data from object storage for Tiered Storage when it's deleted from local storage for a topic.
 
@@ -486,11 +544,11 @@ NOTE: `redpanda.remote.delete` doesn't apply to Remote Read Replica topics: a Re
 
 ---
 
-=== Remote Read Replica properties
+== Remote Read Replica properties
 
 Configure properties to manage topics for xref:manage:remote-read-replicas.adoc[Remote Read Replicas].
 
-==== redpanda.remote.readreplica
+=== redpanda.remote.readreplica
 
 The name of the object storage bucket for a Remote Read Replica topic.
 
@@ -504,11 +562,131 @@ CAUTION: Setting `redpanda.remote.readreplica` together with either `redpanda.re
 
 ---
 
-=== Redpanda topic properties
+== Apache Iceberg integration properties
+
+Integrate Redpanda topics as Iceberg tables.
+
+=== redpanda.iceberg.mode
+
+Enable the Iceberg integration for the topic. You can choose one of four modes.
+
+**Default**: `disabled`
+
+**Values**:
+
+- `key_value`: Creates an Iceberg table with a `Key` column and a `Value` column. Redpanda stores the raw topic content in the `Value` column.
+- `value_schema_id_prefix`: Creates an Iceberg table whose structure matches the Redpanda schema for the topic, with columns corresponding to each field. Redpanda uses the Schema Registry wire format, consisting of the "magic byte" and schema ID encoded in the payload header, to parse the topic values per field and store them in the corresponding table columns.
+- `value_schema_latest`: Creates an Iceberg table whose structure matches the latest schema version in Schema Registry that matches the subject name. This mode is compatible with Avro and Protobuf schemas and is used when you don't produce to the topic using the wire format. See xref:manage:iceberg/choose-iceberg-mode.adoc#override-value-schema-latest-default[Choose an Iceberg Mode] for details on using this mode.
+- `disabled`: Disables writing to an Iceberg table for the topic.
+
+**Related topics**:
+
+- xref:manage:iceberg/choose-iceberg-mode.adoc[]
+- xref:manage:iceberg/about-iceberg-topics.adoc[]
+
+---
+
+=== redpanda.iceberg.delete
+
+Whether the corresponding Iceberg table is deleted upon deleting the topic.
+
+**Default**: `true`
+
+**Related topics**:
+
+- xref:manage:iceberg/about-iceberg-topics.adoc[]
+
+---
+
+=== redpanda.iceberg.invalid.record.action
+
+Whether to write invalid records to a dead-letter queue (DLQ).
+
+**Default**: `dlq_table`
+
+**Values**:
+
+- `drop`: Disable the DLQ and drop invalid records.
+- `dlq_table`: Write invalid records to a separate DLQ Iceberg table.
+
+**Related topics**:
+
+- xref:manage:iceberg/about-iceberg-topics.adoc#troubleshoot-errors[Troubleshoot errors]
+
+---
+
+=== redpanda.iceberg.partition.spec
+
+The https://iceberg.apache.org/docs/nightly/partitioning/[partitioning^] specification for the Iceberg table.
+
+**Default**: `(hour(redpanda.timestamp))`
+
+**Related topics**:
+
+- xref:manage:iceberg/about-iceberg-topics.adoc#use-custom-partitioning[Use custom partitioning]
+
+---
+
+=== redpanda.iceberg.target.lag.ms
+
+Controls how often the data in the Iceberg table is refreshed with new data from the topic. Redpanda attempts to commit all data produced to the topic within the lag target, subject to resource availability.
+
+**Default**: `60000`
+
+**Related topics**:
+
+- xref:manage:iceberg/about-iceberg-topics.adoc[]
+
+---
+
+== Redpanda topic properties
 
 Configure Redpanda-specific topic properties.
 
-==== replication.factor
+---
+
+[[deleteretentionms]]
+=== delete.retention.ms
+
+The retention time for tombstone records in a compacted topic. Redpanda removes tombstone records after the retention limit is exceeded.
+
+If you have enabled Tiered Storage and set <<redpandaremoteread,`redpanda.remote.read`>> or <<redpandaremotewrite,`redpanda.remote.write`>> for the topic, you cannot enable tombstone removal. 
+
+If both `delete.retention.ms` and the cluster property config_ref:tombstone_retention_ms,true,properties/cluster-properties[] are set, `delete.retention.ms` overrides the cluster level tombstone retention for an individual topic.
+
+*Unit:* milliseconds
+
+**Default**: null
+
+**Related topics**:
+
+- xref:manage:cluster-maintenance/compaction-settings.adoc#tombstone-record-removal[Tombstone record removal]
+
+---
+
+[[redpandaleaderspreference]]
+=== redpanda.leaders.preference
+
+The preferred location (rack) for partition leaders of a topic.
+
+This property inherits the value from the config_ref:default_leaders_preference,true,properties/cluster-properties[] cluster configuration property. You may override the cluster-wide setting by specifying the value for individual topics.
+
+If the cluster configuration property config_ref:enable_rack_awareness,true,properties/cluster-properties[] is set to `false`, Leader Pinning is disabled across the cluster.
+
+**Default**: `none`
+
+**Values**:
+
+- `none`: Opt out the topic from Leader Pinning.
+- `racks:<rack1>[,<rack2>,...]`: Specify the preferred location (rack) of all topic partition leaders. The list can contain one or more rack IDs. If you specify multiple IDs, Redpanda tries to distribute the partition leader locations equally across brokers in these racks.
+
+**Related topics**:
+
+- xref:develop:produce-data/leader-pinning.adoc[Leader pinning]
+
+---
+
+=== replication.factor
 
 The number of replicas of a topic to save in different nodes (brokers) of a cluster.
 
@@ -525,7 +703,10 @@ NOTE: Although `replication.factor` isn't returned or displayed by xref:referenc
 
 ---
 
+
+
 == Related topics
 
 - xref:develop:produce-data/configure-producers.adoc[Configure Producers]
 - xref:develop:config-topics.adoc[Manage Topics]
+
