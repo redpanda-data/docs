@@ -270,7 +270,7 @@ config:
 Apply with:
 
 ```bash
-helm upgrade --install redpanda-console redpanda/console -f values.yaml
+helm upgrade --install redpanda-console redpanda/console -f console-values.yaml
 ```
 --
 ======
@@ -405,7 +405,7 @@ config:
 Apply with:
 
 ```bash
-helm upgrade --install redpanda-console redpanda/console -f values.yaml
+helm upgrade --install redpanda-console redpanda/console -f console-values.yaml
 ```
 --
 ======
@@ -414,6 +414,417 @@ helm upgrade --install redpanda-console redpanda/console -f values.yaml
 * `serde.protobuf.git.repository.url`: The URL of the GitHub repository containing your Protobuf files.
 * `serde.protobuf.git.basicAuth`: Basic authentication credentials, often an API token for private repositories.
 * `serde.protobuf.git.refreshInterval`: Frequency at which the repository is polled for updates.
+
+==== Private git repositories
+
+If Protobuf files are stored in a private GitHub repository, Redpanda Console must authenticate using one of the following methods:
+
+- A link:https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token[GitHub Personal Access Token^] (PAT) over HTTPS (basic auth)
+- An link:https://docs.github.com/en/authentication/connecting-to-github-with-ssh[SSH private key^]
+
+===== Authenticate using a GitHub Personal Access Token (PAT)
+
+Use this method to authenticate to GitHub over HTTPS using a personal access token.
+
+[tabs]
+======
+Standalone::
++
+--
+
+. Set environment variables:
++
+[,bash]
+----
+SERDE_PROTOBUF_GIT_BASICAUTH_USERNAME=token
+SERDE_PROTOBUF_GIT_BASICAUTH_PASSWORD=<github-pat>
+----
+
+. Configure Console:
++
+[,yaml]
+----
+serde:
+  protobuf:
+    enabled: true
+    mappings:
+      - topicName: <kafka-topic-name>
+        valueProtoType: <protobuf-message-type>
+    git:
+      enabled: true
+      repository:
+        url: https://github.com/<github-organization>/<repository-name>.git
+        branch: <branch-name>
+      refreshInterval: 10m
+      paths:
+        - ./
+      basicAuth:
+        enabled: true
+----
+
+--
+
+Kubernetes embedded::
++
+--
+
+. Create a secret:
++
+[,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: protobuf-git-auth
+  namespace: redpanda
+type: Opaque
+stringData:
+  SERDE_PROTOBUF_GIT_BASICAUTH_PASSWORD: <github-pat>
+----
+
+. Reference the secret and set the username:
++
+[tabs]
+====
+Operator::
++
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    console:
+      enabled: true
+      extraEnv:
+        - name: SERDE_PROTOBUF_GIT_BASICAUTH_USERNAME
+          value: token
+      extraEnvFrom:
+        - secretRef:
+            name: protobuf-git-auth
+      console:
+        config:
+          serde:
+            protobuf:
+              enabled: true
+              mappings:
+                - topicName: <kafka-topic-name>
+                  valueProtoType: <protobuf-message-type>
+              git:
+                enabled: true
+                repository:
+                  url: https://github.com/<github-organization>/<repository-name>.git
+                  branch: <branch-name>
+                refreshInterval: 10m
+                paths:
+                  - ./
+                basicAuth:
+                  enabled: true
+----
+
+Helm::
++
+[,yaml]
+----
+console:
+  enabled: true
+  extraEnv:
+    - name: SERDE_PROTOBUF_GIT_BASICAUTH_USERNAME
+      value: token
+  extraEnvFrom:
+    - secretRef:
+        name: protobuf-git-auth
+  console:
+    config:
+      serde:
+        protobuf:
+          enabled: true
+          mappings:
+            - topicName: <kafka-topic-name>
+              valueProtoType: <protobuf-message-type>
+          git:
+            enabled: true
+            repository:
+              url: https://github.com/<github-organization>/<repository-name>.git
+              branch: <branch-name>
+            refreshInterval: 10m
+            paths:
+              - ./
+            basicAuth:
+              enabled: true
+----
+====
+
+--
+
+Kubernetes standalone::
++
+--
+
+. Create a secret:
++
+[,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: protobuf-git-auth
+  namespace: redpanda
+type: Opaque
+stringData:
+  SERDE_PROTOBUF_GIT_BASICAUTH_PASSWORD: <github-pat>
+----
+
+. Update Helm values:
++
+[,yaml]
+----
+config:
+  serde:
+    protobuf:
+      enabled: true
+      mappings:
+        - topicName: <kafka-topic-name>
+          valueProtoType: <protobuf-message-type>
+      git:
+        enabled: true
+        repository:
+          url: https://github.com/<github-organization>/<repository-name>.git
+          branch: <branch-name>
+        refreshInterval: 10m
+        paths:
+          - ./
+        basicAuth:
+          enabled: true
+
+extraEnv:
+  - name: SERDE_PROTOBUF_GIT_BASICAUTH_USERNAME
+    value: token
+
+extraEnvFrom:
+  - secretRef:
+      name: protobuf-git-auth
+----
+--
+======
+
+Replace the following values:
+
+- `<github-pat>`: A GitHub personal access token that has `repo` scope.
+- `<kafka-topic-name>`: Kafka topic to be deserialized
+- `<protobuf-message-type>`: Fully qualified Protobuf message type (for example, `com.example.Order`)
+- `<github-organization>`: GitHub organization or user that owns the repository
+- `<repository-name>`: Name of the repository containing `.proto` files
+- `<branch-name>`: Git branch to clone (for example, `main`)
+
+==== Authenticate using SSH
+
+Use this method to authenticate with GitHub over SSH using a private key.
+
+[tabs]
+======
+Standalone::
++
+--
+
+. Save the SSH private key on the local filesystem (for example, `/etc/redpanda/ssh/id_rsa`).
+
+. Set environment variables:
++
+[,bash]
+----
+SERDE_PROTOBUF_GIT_SSH_ENABLED=true
+SERDE_PROTOBUF_GIT_SSH_USERNAME=git
+SERDE_PROTOBUF_GIT_SSH_PRIVATEKEYFILEPATH=/etc/redpanda/ssh/id_rsa
+SERDE_PROTOBUF_GIT_SSH_PASSPHRASE=<private-key-passphrase>
+----
+
+. Configure Console:
++
+[,yaml]
+----
+serde:
+  protobuf:
+    enabled: true
+    mappings:
+      - topicName: <kafka-topic-name>
+        valueProtoType: <protobuf-message-type>
+    git:
+      enabled: true
+      repository:
+        url: git@github.com:<github-organization>/<repository-name>.git
+        branch: <branch-name>
+      refreshInterval: 10m
+      paths:
+        - ./
+      ssh:
+        enabled: true
+----
+
+--
+
+Kubernetes embedded::
++
+--
+. Create a secret with the SSH key:
++
+[,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: protobuf-git-ssh
+  namespace: redpanda
+type: Opaque
+stringData:
+  privateKey: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    <ssh-private-key>
+    -----END OPENSSH PRIVATE KEY-----
+  passphrase: <private-key-passphrase>
+----
+
+. Mount the secret and configure environment variables:
++
+[tabs]
+====
+Operator::
++
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    console:
+      enabled: true
+      extraVolumeMounts:
+        - name: git-ssh
+          mountPath: /etc/git-ssh
+          readOnly: true
+      extraVolumes:
+        - name: git-ssh
+          secret:
+            secretName: protobuf-git-ssh
+      extraEnv:
+        - name: SERDE_PROTOBUF_GIT_SSH_ENABLED
+          value: "true"
+        - name: SERDE_PROTOBUF_GIT_SSH_USERNAME
+          value: git
+        - name: SERDE_PROTOBUF_GIT_SSH_PRIVATEKEYFILEPATH
+          value: /etc/git-ssh/privateKey
+        - name: SERDE_PROTOBUF_GIT_SSH_PASSPHRASE
+          value: <private-key-passphrase>
+----
+
+Helm::
++
+[,yaml]
+----
+console:
+  enabled: true
+  extraVolumeMounts:
+    - name: git-ssh
+      mountPath: /etc/git-ssh
+      readOnly: true
+  extraVolumes:
+    - name: git-ssh
+      secret:
+        secretName: protobuf-git-ssh
+  extraEnv:
+    - name: SERDE_PROTOBUF_GIT_SSH_ENABLED
+      value: "true"
+    - name: SERDE_PROTOBUF_GIT_SSH_USERNAME
+      value: git
+    - name: SERDE_PROTOBUF_GIT_SSH_PRIVATEKEYFILEPATH
+      value: /etc/git-ssh/privateKey
+    - name: SERDE_PROTOBUF_GIT_SSH_PASSPHRASE
+      value: <private-key-passphrase>
+----
+====
+
+--
+
+Kubernetes standalone::
++
+--
+
+. Create a secret:
++
+[,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: protobuf-git-ssh
+  namespace: redpanda
+type: Opaque
+stringData:
+  privateKey: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    <ssh-private-key>
+    -----END OPENSSH PRIVATE KEY-----
+  passphrase: <private-key-passphrase>
+----
+
+. Update Helm values:
++
+[,yaml]
+----
+config:
+  serde:
+    protobuf:
+      enabled: true
+      mappings:
+        - topicName: <kafka-topic-name>
+          valueProtoType: <protobuf-message-type>
+      git:
+        enabled: true
+        repository:
+          url: git@github.com:<github-organization>/<repository-name>.git
+          branch: <branch-name>
+        refreshInterval: 10m
+        paths:
+          - ./
+        ssh:
+          enabled: true
+
+extraVolumeMounts:
+  - name: git-ssh
+    mountPath: /etc/git-ssh
+    readOnly: true
+
+extraVolumes:
+  - name: git-ssh
+    secret:
+      secretName: protobuf-git-ssh
+
+extraEnv:
+  - name: SERDE_PROTOBUF_GIT_SSH_ENABLED
+    value: "true"
+  - name: SERDE_PROTOBUF_GIT_SSH_USERNAME
+    value: git
+  - name: SERDE_PROTOBUF_GIT_SSH_PRIVATEKEYFILEPATH
+    value: /etc/git-ssh/privateKey
+  - name: SERDE_PROTOBUF_GIT_SSH_PASSPHRASE
+    value: <private-key-passphrase>
+----
+--
+======
+
+Replace the following values:
+
+- `<kafka-topic-name>`: Kafka topic to be deserialized
+- `<protobuf-message-type>`: Fully qualified Protobuf message type (for example, `com.example.Order`)
+- `<github-organization>`: GitHub organization or user that owns the repository
+- `<repository-name>`: Name of the repository containing `.proto` files
+- `<branch-name>`: Git branch to clone (for example, `main`)
+- `<ssh-private-key>`: SSH private key content used to authenticate to GitHub (must be base64-safe if stored in secrets)
+- `<private-key-passphrase>`: Passphrase used to decrypt the SSH private key, if applicable
 
 == MessagePack deserialization
 
@@ -495,7 +906,7 @@ config:
 Apply with:
 
 ```bash
-helm upgrade --install redpanda-console redpanda/console -f values.yaml
+helm upgrade --install redpanda-console redpanda/console -f console-values.yaml
 ```
 --
 ======

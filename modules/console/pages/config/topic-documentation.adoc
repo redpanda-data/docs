@@ -5,7 +5,7 @@
 
 include::console:partial$operator-console-version-note.adoc[]
 
-You can embed your topic's documentation into the Redpanda Console user interface by providing access to a public or private Git repository that hosts your documentation files in Markdown format.
+You can embed topic documentation into the Redpanda Console user interface by providing access to a public or private Git repository that hosts the documentation files in Markdown format.
 
 image::topic-documentation.png[]
 
@@ -32,12 +32,9 @@ The *Documentation* tab in the frontend displays the content of the Markdown fil
 | &#10003;
 |===
 
-In addition to the repository URL and branch, you can configure authentication credentials for private repositories.
-Redpanda Console supports SSH as well as basic auth. If neither is specified you could still pull publicly accessible repositories.
-
 == Repository information
 
-Start by specifying the Git repository that contains your Markdown documentation. You must provide the repository's URL, the branch you want to use, and the base directory where your documentation is located.
+Start by specifying the Git repository that contains the Markdown documentation files. Provide the repository URL, the branch, and the base directory that contains the documentation.
 
 [tabs]
 ======
@@ -52,9 +49,9 @@ console:
     git:
       enabled: true
       repository:
-        url: https://github.com/<organization>/<repository>
-        branch: main
-        baseDirectory: <path-to-documentation-files>
+        url: https://github.com/<github-organization>/<repository-name>.git
+        branch: <branch-name>
+        baseDirectory: <base-directory-path>
 ----
 
 --
@@ -68,8 +65,7 @@ When Redpanda Console is part of the Redpanda Helm chart or Operator:
 ====
 Operator::
 +
-[,yaml]
-.`redpanda-cluster`.yaml
+[source,yaml]
 ----
 apiVersion: cluster.redpanda.com/v1alpha2
 kind: Redpanda
@@ -86,15 +82,14 @@ spec:
               git:
                 enabled: true
                 repository:
-                  url: https://github.com/<organization>/<repository>
-                  branch: main
-                  baseDirectory: <path-to-documentation-files>
+                  url: https://github.com/<github-organization>/<repository-name>.git
+                  branch: <branch-name>
+                  baseDirectory: <base-directory-path>
 ----
 
 Helm::
 +
-[,yaml]
-.`redpanda-values.yaml`
+[source,yaml]
 ----
 console:
   enabled: true
@@ -105,9 +100,9 @@ console:
           git:
             enabled: true
             repository:
-              url: https://github.com/<organization>/<repository>
-              branch: main
-              baseDirectory: <path-to-documentation-files>
+              url: https://github.com/<github-organization>/<repository-name>.git
+              branch: <branch-name>
+              baseDirectory: <base-directory-path>
 ----
 ====
 --
@@ -117,8 +112,7 @@ Kubernetes standalone::
 
 When using the standalone Console Helm chart:
 
-[,yaml]
-.`console-values.yaml`
+[source,yaml]
 ----
 config:
   console:
@@ -126,21 +120,17 @@ config:
       git:
         enabled: true
         repository:
-          url: https://github.com/<organization>/<repository>
-          branch: main
-          baseDirectory: <path-to-documentation-files>
+          url: https://github.com/<github-organization>/<repository-name>.git
+          branch: <branch-name>
+          baseDirectory: <base-directory-path>
 ----
 
 --
 ======
 
-* `url`: The complete URL of your Git repository.
-* `branch`: The branch of the repository that has the documentation files.
-* `baseDirectory`: The path within your repository from where the documentation search should begin. Redpanda Console recursively iterates through five levels of directories.
-
 == Refresh interval
 
-Define how often Redpanda Console should refresh the documentation from the repository. This ensures your documentation is always up to date.
+Define how often Redpanda Console should refresh the documentation from the repository.
 
 [source,yaml]
 ----
@@ -151,50 +141,373 @@ console:
       refreshInterval: 10m
 ----
 
-* `refreshInterval`: A value such as `10m` means the documentation will be refreshed every 10 minutes. Adjust this based on how frequently your documentation is updated, or set to `0` to disable automatic refresh.
+* `refreshInterval`: Set a duration like `10m` to refresh documentation every 10 minutes. Use `0` to disable automatic refresh.
 
-== Authentication configuration
+== Authenticate with private git repositories
 
-To use private repositories, you must configure authentication. Redpanda Console supports both SSH and basic authentication.
+If the Git repository is private, Redpanda Console must authenticate using either:
 
-=== Basic authentication
+- A link:https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token[GitHub Personal Access Token^] (PAT) over HTTPS (basic auth)
+- An link:https://docs.github.com/en/authentication/connecting-to-github-with-ssh[SSH private key^]
 
-To use a personal access token:
+=== Authenticate using a GitHub Personal Access Token (PAT)
 
+[tabs]
+======
+Standalone::
++
+--
+
+. Set the environment variables:
++
+[,bash]
+----
+TOPICDOCUMENTATION_GIT_BASICAUTH_USERNAME=token
+TOPICDOCUMENTATION_GIT_BASICAUTH_PASSWORD=<github_pat>
+----
++
+Replace `<github_pat>` with a GitHub personal access token that has `repo` scope.
+
+
+. Configure Console:
++
 [source,yaml]
 ----
 console:
   topicDocumentation:
     git:
       enabled: true
+      repository:
+        url: https://github.com/<github-organization>/<repository-name>.git
+        branch: <branch-name>
+        baseDirectory: <base-directory-path>
+      refreshInterval: 10m
       basicAuth:
         enabled: true
-        username: token # Use "token" for GitHub personal access tokens
-        password: "your_github_token"
 ----
 
-* Enable `basicAuth` and input your GitHub personal access token as the `password`. If using a personal access token, the `username` should be `token`.
+--
+Kubernetes embedded::
++
+--
 
-=== SSH authentication
+. Create the Secret:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: topic-doc-git-auth
+  namespace: redpanda
+type: Opaque
+stringData:
+  TOPICDOCUMENTATION_GIT_BASICAUTH_PASSWORD: <github_pat>
+----
 
-To use SSH-based access:
+. Configure the deployment:
++
+[tabs]
+====
+Operator::
++
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    console:
+      enabled: true
+      extraEnv:
+        - name: TOPICDOCUMENTATION_GIT_BASICAUTH_USERNAME
+          value: token
+      extraEnvFrom:
+        - secretRef:
+            name: topic-doc-git-auth
+      console:
+        config:
+          console:
+            topicDocumentation:
+              git:
+                enabled: true
+                repository:
+                  url: https://github.com/<github-organization>/<repository-name>.git
+                  branch: <branch-name>
+                  baseDirectory: <base-directory-path>
+                refreshInterval: 10m
+                basicAuth:
+                  enabled: true
+----
 
+Helm::
++
+[source,yaml]
+----
+console:
+  enabled: true
+  extraEnv:
+    - name: TOPICDOCUMENTATION_GIT_BASICAUTH_USERNAME
+      value: token
+  extraEnvFrom:
+    - secretRef:
+        name: topic-doc-git-auth
+  console:
+    config:
+      console:
+        topicDocumentation:
+          git:
+            enabled: true
+            repository:
+              url: https://github.com/<github-organization>/<repository-name>.git
+              branch: <branch-name>
+              baseDirectory: <base-directory-path>
+            refreshInterval: 10m
+            basicAuth:
+              enabled: true
+----
+====
+--
+Kubernetes standalone::
++
+--
+
+. Create the Secret:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: topic-doc-git-auth
+  namespace: redpanda
+type: Opaque
+stringData:
+  TOPICDOCUMENTATION_GIT_BASICAUTH_PASSWORD: <github_pat>
+----
+
+. Reference it in Helm values:
++
+[source,yaml]
+----
+config:
+  console:
+    topicDocumentation:
+      git:
+        enabled: true
+        repository:
+          url: https://github.com/<github-organization>/<repository-name>.git
+          branch: <branch-name>
+          baseDirectory: <base-directory-path>
+        refreshInterval: 10m
+        basicAuth:
+          enabled: true
+
+extraEnv:
+  - name: TOPICDOCUMENTATION_GIT_BASICAUTH_USERNAME
+    value: token
+
+extraEnvFrom:
+  - secretRef:
+      name: topic-doc-git-auth
+----
+--
+======
+
+=== Authenticate using SSH
+
+[tabs]
+======
+Standalone::
++
+--
+
+. Save the SSH key to a secure path (for example, `/etc/redpanda/ssh/id_rsa`).
+
+. Set the environment variables:
++
+[,bash]
+----
+TOPICDOCUMENTATION_GIT_SSH_ENABLED=true
+TOPICDOCUMENTATION_GIT_SSH_USERNAME=git
+TOPICDOCUMENTATION_GIT_SSH_PRIVATEKEYFILEPATH=/etc/redpanda/ssh/id_rsa
+TOPICDOCUMENTATION_GIT_SSH_PASSPHRASE=<private-key-passphrase>
+----
+
+. Configure Console:
++
 [source,yaml]
 ----
 console:
   topicDocumentation:
     git:
       enabled: true
+      repository:
+        url: git@github.com:<github-organization>/<repository-name>.git
+        branch: <branch-name>
+        baseDirectory: <base-directory-path>
+      refreshInterval: 10m
       ssh:
         enabled: true
-        username: git
-        privateKey: "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
-        # OR specify a file path
-        privateKeyFilepath: "/path/to/private/key"
-        passphrase: "optional_passphrase"
 ----
 
-* Enable SSH and provide your private key either directly in the configuration or in the `privateKeyFilepath` field. Include the passphrase if your key has one.
+--
+Kubernetes embedded::
++
+--
+
+. Create the Secret:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: topic-doc-git-ssh
+  namespace: redpanda
+type: Opaque
+stringData:
+  privateKey: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    <ssh-private-key>
+    -----END OPENSSH PRIVATE KEY-----
+  passphrase: <private-key-passphrase>
+----
+
+. Mount the secret and set environment variables:
++
+[tabs]
+====
+Operator::
++
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    console:
+      enabled: true
+      extraVolumeMounts:
+        - name: git-ssh
+          mountPath: /etc/git-ssh
+          readOnly: true
+      extraVolumes:
+        - name: git-ssh
+          secret:
+            secretName: topic-doc-git-ssh
+      extraEnv:
+        - name: TOPICDOCUMENTATION_GIT_SSH_ENABLED
+          value: "true"
+        - name: TOPICDOCUMENTATION_GIT_SSH_USERNAME
+          value: git
+        - name: TOPICDOCUMENTATION_GIT_SSH_PRIVATEKEYFILEPATH
+          value: /etc/git-ssh/privateKey
+        - name: TOPICDOCUMENTATION_GIT_SSH_PASSPHRASE
+          value: <private-key-passphrase>
+----
+
+Helm::
++
+[source,yaml]
+----
+console:
+  enabled: true
+  extraVolumeMounts:
+    - name: git-ssh
+      mountPath: /etc/git-ssh
+      readOnly: true
+  extraVolumes:
+    - name: git-ssh
+      secret:
+        secretName: topic-doc-git-ssh
+  extraEnv:
+    - name: TOPICDOCUMENTATION_GIT_SSH_ENABLED
+      value: "true"
+    - name: TOPICDOCUMENTATION_GIT_SSH_USERNAME
+      value: git
+    - name: TOPICDOCUMENTATION_GIT_SSH_PRIVATEKEYFILEPATH
+      value: /etc/git-ssh/privateKey
+    - name: TOPICDOCUMENTATION_GIT_SSH_PASSPHRASE
+      value: <private-key-passphrase>
+----
+====
+--
+Kubernetes standalone::
++
+--
+
+. Create the Secret:
++
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: topic-doc-git-ssh
+  namespace: redpanda
+type: Opaque
+stringData:
+  privateKey: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    <ssh-private-key>
+    -----END OPENSSH PRIVATE KEY-----
+  passphrase: <private-key-passphrase>
+----
+
+. Configure Helm values:
++
+[source,yaml]
+----
+config:
+  console:
+    topicDocumentation:
+      git:
+        enabled: true
+        repository:
+          url: git@github.com:<github-organization>/<repository-name>.git
+          branch: <branch-name>
+          baseDirectory: <base-directory-path>
+        refreshInterval: 10m
+        ssh:
+          enabled: true
+
+extraVolumeMounts:
+  - name: git-ssh
+    mountPath: /etc/git-ssh
+    readOnly: true
+
+extraVolumes:
+  - name: git-ssh
+    secret:
+      secretName: topic-doc-git-ssh
+
+extraEnv:
+  - name: TOPICDOCUMENTATION_GIT_SSH_ENABLED
+    value: "true"
+  - name: TOPICDOCUMENTATION_GIT_SSH_USERNAME
+    value: git
+  - name: TOPICDOCUMENTATION_GIT_SSH_PRIVATEKEYFILEPATH
+    value: /etc/git-ssh/privateKey
+  - name: TOPICDOCUMENTATION_GIT_SSH_PASSPHRASE
+    value: <private-key-passphrase>
+----
+--
+======
+
+Replace the following values throughout the examples:
+
+- `<github-organization>`: GitHub organization or user that owns the repository
+- `<repository-name>`: Name of the GitHub repository containing the topic documentation files
+- `<branch-name>`: Name of the Git branch to use (for example, `main` or `docs`)
+- `<base-directory-path>`: Relative path inside the repository where Markdown documentation files are stored
+- `<github_pat>`: GitHub personal access token with `repo` scope (used for basic authentication)
+- `<ssh-private-key>`: SSH private key content used to authenticate to GitHub (must be base64-safe if stored in secrets)
+- `<private-key-passphrase>`: Passphrase used to decrypt the SSH private key, if applicable
 
 == Example configuration
 
@@ -216,7 +529,7 @@ console:
         enabled: true
         username: git
         privateKeyFilepath: "/home/user/.ssh/redpanda_docs_key"
-        passphrase: "your_passphrase"
+        passphrase: "passphrase"
 ----
 
 This configuration is designed for a secure and automated integration of topic documentation into the Redpanda Console, using SSH for secure repository access and a refresh interval that keeps the documentation consistently updated without manual intervention.
