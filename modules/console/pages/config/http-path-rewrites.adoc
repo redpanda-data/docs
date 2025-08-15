@@ -1,5 +1,5 @@
 = HTTP Path Rewrites in Redpanda Console
-:description: Learn how to configure Redpanda Console to work seamlessly with your URL path rewrites, particularly when hosted under a subpath.
+:description: Learn how to configure Redpanda Console to work with your URL path rewrites, particularly when hosted under a subpath.
 :page-aliases: console:features/http-path-rewrites.adoc, manage:console/http-path-rewrites.adoc
 :page-context-switcher: [{"name": "Redpanda Console v2.x", "to": "24.3@ROOT:console:config/http-path-rewrites.adoc" },{"name": "Redpanda Console v3.x", "to": "current" } ]
 
@@ -53,13 +53,11 @@ Consider the following setup where you want to host Redpanda Console at `+https:
 
 . Nginx is configured to route requests from `/redpanda/console` to Redpanda Console, running on `+http://localhost:8080+`.
 +
-.Redpanda Console configuration
-```yaml
-server:
-  setBasePathFromXForwardedPrefix: true
-  stripPrefix: true
-```
+[tabs]
+======
+Standalone::
 +
+--
 .Nginx configuration
 ```nginx
 location /redpanda/console/ {
@@ -67,6 +65,109 @@ location /redpanda/console/ {
     proxy_set_header X-Forwarded-Prefix /redpanda/console;
 }
 ```
+--
+Kubernetes::
++
+--
+[,yaml]
+----
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: redpanda-console
+  annotations:
+    # Pass the base-path header through to Redpanda Console
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header X-Forwarded-Prefix /redpanda/console;
+spec:
+  ingressClassName: nginx # or your ingress class name
+  tls:
+    - hosts:
+        - my-company.com
+      secretName: my-company-tls # optional
+  rules:
+    - host: my-company.com
+      http:
+        paths:
+          - path: /redpanda/console
+            pathType: Prefix
+            backend:
+              service:
+                name: redpanda-console        # your Service name
+                port:
+                  number: 8080                 # your Service port
+----
+--
+======
+
+. Redpanda Console is configured to use the `X-Forwarded-Prefix` header for determining the base path.
++
+[tabs]
+======
+Standalone::
++
+--
+
+```yaml
+server:
+  setBasePathFromXForwardedPrefix: true
+  stripPrefix: true
+```
+
+--
+
+Kubernetes embedded::
++
+--
+
+When Redpanda Console is part of the Redpanda Helm chart or Operator:
+
+[tabs]
+====
+Operator::
++
+```yaml
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    console:
+      enabled: true
+      console:
+        config:
+          server:
+            setBasePathFromXForwardedPrefix: true
+            stripPrefix: true
+```
+
+Helm::
++
+```yaml
+console:
+  enabled: true
+  console:
+    config:
+      server:
+        setBasePathFromXForwardedPrefix: true
+        stripPrefix: true
+```
+====
+--
+Kubernetes standalone::
++
+--
+When using the standalone Redpanda Console Helm chart:
+
+```yaml
+config:
+  server:
+    setBasePathFromXForwardedPrefix: true
+    stripPrefix: true
+```
+--
+======
 
 . A user navigates to `+https://my-company.com/redpanda/console/topics+` in their browser.
 
@@ -90,7 +191,7 @@ To better understand this problem, consider the following scenario:
 . Redpanda Console sees the `X-Forwarded-Prefix` and attempts to remove what it thinks is the prefix. The path becomes `/example-topic`.
 . Redpanda Console then tries to find a handler for `/example-topic`, but no such route exists, leading to a failure.
 
-To avoid this issue, either disable `stripPrefix` in Console or ensure that the proxy does not modify the request path in a conflicting manner.
+To avoid this issue, either disable `stripPrefix` in Redpanda Console or ensure that the proxy does not modify the request path in a conflicting manner.
 
 == Proxy rewrites
 
