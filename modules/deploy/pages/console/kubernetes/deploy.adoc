@@ -1,0 +1,423 @@
+= Deploy Redpanda Console on Kubernetes
+:description: Deploy Redpanda Console on Kubernetes using Helm charts or YAML manifests.
+:env-kubernetes: true
+
+This page shows you how to deploy Redpanda Console as a standalone service on Kubernetes using Helm charts or YAML manifests.
+
+[NOTE]
+====
+When you deploy a Redpanda cluster using the xref:deploy:redpanda/kubernetes/k-production-deployment.adoc[Redpanda Operator or Redpanda Helm chart], Redpanda Console is automatically deployed alongside your cluster.
+
+Use this standalone deployment guide only when you need to:
+
+* Connect to a Redpanda cluster running outside Kubernetes.
+* Deploy Redpanda Console independently from your Redpanda cluster.
+* Deploy multiple Redpanda Console instances for different environments.
+====
+
+
+== Prerequisites
+
+* You must have a running Redpanda or Kafka cluster available to connect to. Redpanda Console requires a cluster to function. For instructions on deploying a Redpanda cluster, see xref:deploy:redpanda/kubernetes/index.adoc[].
+* Review the xref:deploy:console/kubernetes/k-requirements.adoc[system requirements for Redpanda Console on Kubernetes].
+
+== Install Redpanda Console
+
+. Create a values file:
++
+The values file is where you configure how Redpanda Console connects to your Redpanda or Kafka cluster. You must specify the broker addresses in the `config.kafka.brokers` section.
++
+[,yaml]
+.`console-values.yaml`
+----
+config:
+  kafka:
+    brokers:
+      - redpanda-0.redpanda.redpanda.svc.cluster.local:9092 <1>
+      - redpanda-1.redpanda.redpanda.svc.cluster.local:9092
+      - redpanda-2.redpanda.redpanda.svc.cluster.local:9092
+
+# Resource configuration
+resources: <2>
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 4000m
+    memory: 2Gi
+
+# High availability configuration
+replicaCount: 2 <3>
+
+# Pod anti-affinity for node separation
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: console
+        topologyKey: kubernetes.io/hostname
+
+# Service configuration
+service: <4>
+  type: LoadBalancer
+  port: 8080
+
+# Ingress configuration (optional)
+ingress: <5>
+  enabled: true
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  ingressClassName: nginx
+  hosts:
+    - host: console.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: console-tls
+      hosts:
+        - console.example.com
+----
++
+<1> Replace these addresses with the internal DNS names or external addresses of your Redpanda brokers. If you deployed Redpanda using the Redpanda Helm chart or Redpanda Operator, you can find the broker service names by running:
++
+[,bash]
+----
+kubectl get svc -n <redpanda-namespace>
+----
++
+Look for services named like `redpanda-0`, `redpanda-1`, etc. The port is typically `9092` for Kafka traffic. If your brokers are outside the cluster, use their reachable addresses instead.
+<2> Adjust resource requests and limits based on your expected workload and available node resources.
+<3> For production, run at least two replicas for high availability and rolling upgrades.
+<4> Use `LoadBalancer` for cloud environments or when you want Redpanda Console to be accessible from outside the cluster. Use `ClusterIP` for internal-only access.
+<5> Enable and configure Ingress if you want to expose Redpanda Console using a domain name and use TLS/HTTPS. Make sure your cluster has an Ingress controller installed.
+
+. Install the chart:
++
+[,bash]
+----
+helm install redpanda-console redpanda/console \
+  --namespace redpanda \
+  --create-namespace \
+  --values console-values.yaml
+----
+
+=== Connect to Redpanda clusters with TLS
+
+If your Redpanda cluster uses TLS encryption (the default for Helm deployments), you must configure Redpanda Console to connect securely:
+
+. Run the following command to extract the CA certificate from the Redpanda Helm deployment:
++
+[,bash]
+----
+kubectl get secret redpanda-default-root-certificate -n redpanda -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
+----
+
+. Create a secret named `redpanda-console` in the `redpanda` namespace with the CA certificate:
++
+[,bash]
+----
+kubectl create secret generic redpanda-console --from-file=ca.crt=ca.crt -n redpanda
+----
+
+. In your `console-values.yaml`:
++
+[,yaml]
+----
+config:
+  kafka:
+    brokers:
+      - redpanda-0.redpanda.redpanda.svc.cluster.local:9093
+    tls:
+      enabled: true
+      caFilepath: /etc/console/secrets/ca.crt
+      insecureSkipTlsVerify: true # For local/testing only
+secretMounts:
+  - name: redpanda-console
+    secretName: redpanda-console
+    path: /etc/console/secrets
+----
+
+. Upgrade or install Redpanda Console:
++
+[,bash]
+----
+helm upgrade --install redpanda-console redpanda/console \
+  --namespace redpanda \
+  --values console-values.yaml
+----
+
+Redpanda Console will now connect securely to your Redpanda cluster using TLS. For production, set `insecureSkipTlsVerify: false` and use a trusted CA.
+
+
+== Deploy Redpanda Console as standalone service with YAML manifests
+
+If you prefer to deploy using YAML manifests, you can create the following resources:
+
+[,yaml, subs="attributes+"]
+.console-deployment.yaml
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redpanda-console
+  namespace: redpanda
+  labels:
+    app.kubernetes.io/name: console
+    app.kubernetes.io/component: console
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: console
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: console
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: console
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: console
+        image: docker.redpanda.com/redpandadata/console:{latest-console-tag}
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        env:
+        - name: KAFKA_BROKERS
+          value: "redpanda-0.redpanda.redpanda.svc.cluster.local:9092,redpanda-1.redpanda.redpanda.svc.cluster.local:9092,redpanda-2.redpanda.redpanda.svc.cluster.local:9092"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+----
+
+[,yaml]
+.console-service.yaml
+----
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda-console
+  namespace: redpanda
+  labels:
+    app.kubernetes.io/name: console
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8080
+    targetPort: http
+    protocol: TCP
+    name: http
+  selector:
+    app.kubernetes.io/name: console
+----
+
+For more complex configurations, create a ConfigMap:
+
+[,yaml]
+.console-config.yaml
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redpanda-console-config
+  namespace: redpanda
+data:
+  config.yaml: |
+    kafka:
+      brokers:
+        - redpanda-0.redpanda.redpanda.svc.cluster.local:9092
+        - redpanda-1.redpanda.redpanda.svc.cluster.local:9092
+        - redpanda-2.redpanda.redpanda.svc.cluster.local:9092
+
+    server:
+      listenPort: 8080
+
+    console:
+      enabled: true
+----
+
+Apply the manifests:
+
+[,bash]
+----
+kubectl apply -f console-config.yaml
+kubectl apply -f console-deployment.yaml
+kubectl apply -f console-service.yaml
+----
+
+== Configuration
+
+Make sure to configure the following settings in your values file or ConfigMap:
+
+=== Connect to Redpanda
+
+Configure the connection to your Redpanda cluster by setting the broker addresses in your values file or ConfigMap.
+
+See xref:console:config/connect-to-redpanda.adoc[].
+
+=== Authentication and security
+
+For production deployments, configure:
+
+* **TLS encryption**: Enable TLS for secure communication
+* **SASL authentication**: Configure SASL if Redpanda uses authentication
+* **RBAC**: Set up role-based access control
+
+Example with SASL authentication:
+
+[,yaml]
+----
+config:
+  kafka:
+    brokers:
+      - redpanda-0.redpanda.redpanda.svc.cluster.local:9092
+    sasl:
+      enabled: true
+      mechanism: SCRAM-SHA-256
+      username: console-user
+      password: console-password
+----
+
+See xref:console:config/security/index.adoc[].
+
+== Verify deployment
+
+. Check pod status:
++
+[,bash]
+----
+kubectl get pods -n redpanda -l app.kubernetes.io/name=console
+----
+
+. Check service status:
++
+[,bash]
+----
+kubectl get svc -n redpanda redpanda-console
+----
+
+. Access the Redpanda Console:
++
+.. If using LoadBalancer:
++
+[,bash]
+----
+kubectl get svc -n redpanda redpanda-console -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+----
+
+.. If using port-forward for testing:
++
+[,bash]
+----
+kubectl port-forward -n redpanda svc/redpanda-console 8080:8080
+----
+
+Then open http://localhost:8080 in your browser.
+
+== Scaling
+
+For production deployments, consider the following scaling strategies:
+
+=== Horizontal scaling
+
+Scale the deployment:
+
+[,bash]
+----
+kubectl scale deployment redpanda-console -n redpanda --replicas=3
+----
+
+=== Auto-scaling
+
+Create an HPA for automatic scaling:
+
+[,yaml]
+.console-hpa.yaml
+----
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: redpanda-console-hpa
+  namespace: redpanda
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: redpanda-console
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+----
+
+== Monitoring
+
+Enable monitoring for Redpanda Console:
+
+[,yaml]
+----
+config:
+  server:
+    metrics:
+      enabled: true
+      port: 9090
+----
+
+== Troubleshooting
+
+* **Connection refused**: Verify Redpanda broker addresses and network policies
+* **Authentication failed**: Check SASL credentials and configuration
+* **Resource limits**: Monitor CPU and memory usage, adjust limits as needed
+
+=== Logs
+
+Check Redpanda Console logs:
+
+[,bash]
+----
+kubectl logs -n redpanda -l app.kubernetes.io/name=console -f
+----
+
+== Next steps
+
+* xref:console:config/configure-console.adoc[]
+* xref:console:config/security/authentication.adoc[]
+* xref:console:config/security/authorization.adoc[]
