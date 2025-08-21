@@ -1,0 +1,332 @@
+= Try the 25.2 Beta of the Redpanda Operator
+:page-beta: true
+:description: Deploy the 25.2 beta release of the Redpanda Operator. This version of the Redpanda Operator is cluster scope so a single instance of the Operator can manage multiple Redpanda resources in different namespaces.
+
+{description}
+
+This beta version is available for testing and feedback. It is not supported by Redpanda and should not be used in production environments. To give feedback on beta releases, reach out to the Redpanda team in https://redpanda.com/slack[Redpanda Community Slack^].
+
+== Prerequisites
+
+Make sure that your Kubernetes cluster meets the xref:./k-requirements.adoc[requirements].
+
+== Deploy Redpanda Operator v25.2.1-beta1 in cluster scope
+
+To deploy the Redpanda Operator in cluster scope (managing Redpanda resources across all namespaces), do the following:
+
+. Make sure that you have permission to install custom resource definitions (CRDs):
++
+```bash
+kubectl auth can-i create CustomResourceDefinition --all-namespaces
+```
++
+You should see `yes` in the output.
++
+You need these cluster-level permissions to install glossterm:cert-manager[^] and Redpanda Operator CRDs in the next steps.
+
+. Install cert-manager:
++
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm install cert-manager jetstack/cert-manager \
+  --set crds.enabled=true \
+  --namespace cert-manager \
+  --create-namespace
+```
++
+TLS is enabled by default and cert-manager is used to manage TLS certificates.
+
+. Deploy the Redpanda Operator:
++
+[,bash,subs="attributes+"]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <operator-namespace> \
+  --create-namespace \
+  --version {operator-beta-tag} \
+  --set crds.enabled=true
+----
+
+. Ensure that the Deployment is successfully rolled out:
++
+```bash
+kubectl --namespace <operator-namespace> rollout status --watch deployment/redpanda-controller-operator
+```
++
+[.no-copy]
+----
+deployment "redpanda-controller-operator" successfully rolled out
+----
+
+. Define a xref:reference:k-crd.adoc[Redpanda custom resource] to deploy a Redpanda cluster.
++
+.`redpanda-cluster.yaml`
+[,yaml,subs="attributes+"]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+  namespace: <cluster-namespace> <1>
+----
++
+<1> Add your namespace.
+
+. If you want to use enterprise features in Redpanda, add the details of a Secret that stores your Enterprise Edition license key.
++
+.`redpanda-cluster.yaml`
+[,yaml,subs="attributes+"]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+  namespace: <cluster-namespace>
+spec:
+  clusterSpec:
+    enterprise:
+      licenseSecretRef:
+        name: <secret-name>
+        key: <secret-key>
+----
++
+For details, see xref:get-started:licensing/add-license-redpanda/kubernetes.adoc[].
+
+. Apply the Redpanda resource:
++
+```bash
+kubectl apply -f redpanda-cluster.yaml
+```
+
+. Wait for the Redpanda Operator to deploy the cluster:
++
+```bash
+kubectl get redpanda --namespace <cluster-namespace> --watch
+```
++
+[.no-copy]
+----
+NAME       READY   STATUS
+redpanda   True    Redpanda reconciliation succeeded
+----
++
+This step may take a few minutes. You can watch for new Pods to make sure that the deployment is progressing:
++
+```bash
+kubectl get pod --namespace <cluster-namespace>
+```
++
+If it's taking too long, see xref:manage:kubernetes/troubleshooting/k-troubleshoot.adoc[Troubleshooting].
+
+=== Deploy multiple Redpanda clusters
+
+You can deploy more than one Redpanda cluster in the same Kubernetes cluster by using a different namespace and unique node ports.
+
+. Define a new Redpanda resource in a unique namespace.
++
+NOTE: Make sure to also use unique node ports for the listeners in your Redpanda resource so that they don't conflict with any existing node ports in your other Redpanda clusters.
++
+.`redpanda-cluster-two.yaml`
+[source,yaml,subs="attributes+"]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda-two
+  namespace: <cluster-two-namespace>
+spec:
+  clusterSpec:
+    listeners:
+      kafka:
+        external:
+          default:
+            advertisedPorts: [31093]
+      admin:
+        external:
+          default:
+            advertisedPorts: [31645]
+      http:
+        external:
+          default:
+            advertisedPorts: [30083]
+      rpc:
+        port: 33146
+      schemaRegistry:
+        external:
+          default:
+            advertisedPorts: [30084]
+----
+
+. Apply the Redpanda resource:
++
+```bash
+kubectl apply -f redpanda-cluster-two.yaml
+```
+
+== Deploy Redpanda Operator v25.2.1-beta1 in namespace scope
+
+To deploy the Redpanda Operator in namespace scope (managing only resources within its deployment namespace), do the following:
+
+. Make sure that you have permission to install custom resource definitions (CRDs):
++
+```bash
+kubectl auth can-i create CustomResourceDefinition --all-namespaces
+```
++
+You should see `yes` in the output.
++
+You need these cluster-level permissions to install glossterm:cert-manager[^] and Redpanda Operator CRDs in the next steps.
+
+. Install cert-manager:
++
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm install cert-manager jetstack/cert-manager \
+  --set crds.enabled=true \
+  --namespace cert-manager \
+  --create-namespace
+```
++
+TLS is enabled by default and cert-manager is used to manage TLS certificates.
+
+. Deploy the Redpanda Operator:
++
+[,bash,subs="attributes+"]
+----
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <namespace> \
+  --create-namespace \
+  --version {latest-operator-version} \
+  --set crds.enabled=true \
+  --set 'additionalCmdFlags=["--namespace=<namespace>"]' <1>
+----
++
+<1> This flag restricts the Redpanda Operator to manage resources only within the specified namespace.
++
+WARNING: Do not run multiple Redpanda Operators in different scopes (cluster and namespace scope) in the same cluster as this can cause resource conflicts.
+
+. Ensure that the Deployment is successfully rolled out:
++
+```bash
+kubectl --namespace <namespace> rollout status --watch deployment/redpanda-controller-operator
+```
++
+[.no-copy]
+----
+deployment "redpanda-controller-operator" successfully rolled out
+----
+
+. Define a xref:reference:k-crd.adoc[Redpanda custom resource] to deploy a Redpanda cluster in the same namespace as the namespace-scoped Redpanda Operator.
++
+.`redpanda-cluster.yaml`
+[,yaml,subs="attributes+"]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+  namespace: <namespace>
+----
+
+. Apply the Redpanda resource:
++
+```bash
+kubectl apply -f redpanda-cluster.yaml
+```
+
+. Wait for the Redpanda Operator to deploy the cluster:
++
+```bash
+kubectl get redpanda --namespace <namespace> --watch
+```
++
+[.no-copy]
+----
+NAME       READY   STATUS
+redpanda   True    Redpanda reconciliation succeeded
+----
++
+This step may take a few minutes. You can watch for new Pods to make sure that the deployment is progressing:
++
+```bash
+kubectl get pod --namespace <namespace>
+```
++
+If it's taking too long, see xref:manage:kubernetes/troubleshooting/k-troubleshoot.adoc[Troubleshooting].
+
+== Uninstall Redpanda
+
+When you finish testing Redpanda, you can uninstall it from your Kubernetes cluster.
+
+Follow the steps in **exact order** to avoid race conditions between
+the Redpanda Operator's reconciliation loop and Kubernetes garbage collection.
+
+. Delete all Redpanda-related custom resources:
++
+[,bash,role="no-wrap"]
+----
+kubectl delete users      --namespace <operator-namespace> --all
+kubectl delete topics     --namespace <operator-namespace> --all
+kubectl delete schemas    --namespace <operator-namespace> --all
+kubectl delete redpanda   --namespace <operator-namespace> --all
+----
+
+. Make sure requests for those resources return no results. For example, if you had a Redpanda cluster named `redpanda` in the namespace `<namespace>`, run:
++
+[,bash]
+----
+kubectl get redpanda --namespace <cluster-namespace>
+----
+
+. Uninstall the Redpanda Operator Helm release:
++
+[,bash]
+----
+helm uninstall redpanda-controller --namespace <operator-namespace>
+----
++
+Helm does not uninstall CRDs by default when using `helm uninstall` to avoid accidentally deleting existing custom resources.
+
+. Remove the CRDs.
+.. List all Redpanda CRDs installed by the operator:
++
+[,bash]
+----
+kubectl api-resources --api-group='cluster.redpanda.com'
+----
++
+This command displays all CRDs defined by the Redpanda Operator. For example:
++
+[,bash,role="no-wrap"]
+----
+NAME        SHORTNAMES   APIVERSION                      NAMESPACED   KIND
+redpandas   rp           cluster.redpanda.com/v1alpha2   true         Redpanda
+schemas     sc           cluster.redpanda.com/v1alpha2   true         Schema
+topics                   cluster.redpanda.com/v1alpha2   true         Topic
+users       rpu          cluster.redpanda.com/v1alpha2   true         User
+----
+
+.. Delete the CRDs:
++
+[,bash]
+----
+kubectl get crds -o name | grep cluster.redpanda.com | xargs kubectl delete
+----
++
+This command lists all CRDs with the `cluster.redpanda.com` domain suffix and deletes them, ensuring only Redpanda CRDs are removed. Helm does not delete CRDs automatically to prevent data loss, so you must run this step manually.
+
+. (Optional) Delete any leftover PVCs or Secrets in the namespace:
++
+CAUTION: The following command deletes all PVCs and Secrets in the namespace, which may remove unrelated resources if the namespace is shared with other applications.
++
+[,bash]
+----
+kubectl delete pvc,secret --all --namespace <cluster-namespace>
+----
+
+== Next steps
+
+To give feedback about this beta version, reach out to the Redpanda team in https://redpanda.com/slack[Redpanda Community Slack^].
