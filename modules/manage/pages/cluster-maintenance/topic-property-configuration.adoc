@@ -1,0 +1,202 @@
+= Configure Topic Properties
+:description: Learn how to configure topic properties to control Redpanda's behavior for individual topics, including retention, cleanup policies, and Tiered Storage settings.
+:page-categories: Management
+
+Topic properties control Redpanda's behavior for individual topics, including data retention, cleanup policies, compression settings, and Tiered Storage configurations. These properties let you customize how Redpanda stores, processes, and manages data for each topic, overriding cluster-wide defaults when needed.
+
+Redpanda stores topic properties as metadata associated with each topic and replicates them across the cluster to ensure consistency. Many topic properties correspond to xref:manage:cluster-maintenance/cluster-property-configuration.adoc[cluster properties] that establish default values for all topics. When you set a topic property, it overrides the corresponding cluster default for that specific topic.
+
+NOTE: All topic properties take effect immediately after being set.
+
+For a complete reference of available topic properties and their corresponding cluster properties, see xref:reference:properties/topic-properties.adoc[Topic Configuration Properties].
+
+== Configuration methods
+
+You can configure topic properties through multiple interfaces:
+
+* **rpk commands** - Use xref:reference:rpk/rpk-topic/rpk-topic-create.adoc[`rpk topic create`] with the `-c` flag to set properties during topic creation, or xref:reference:rpk/rpk-topic/rpk-topic-alter-config.adoc[`rpk topic alter-config`] to modify existing topics.
+* **Kafka Admin API** - Any Kafka-compatible client can use the standard Admin API to configure topic properties.
+* **Kubernetes Topic resources** - In Kubernetes deployments, configure topic properties using the `additionalConfig` field in Topic resources. See xref:manage:kubernetes/k-manage-topics.adoc[Manage Topics in Kubernetes].
+* **Redpanda Console** - Use the web interface to xref:console:ui/edit-topic-configuration.adoc[edit topic configuration] through a graphical interface.
+
+== Verify topic property configuration
+
+The `SOURCE` output of the xref:reference:rpk/rpk-topic/rpk-topic-describe.adoc[`rpk topic describe <topic>`] command shows how properties are configured for the topic:
+
+* `DEFAULT_CONFIG` is set by a Redpanda default.
+* `DYNAMIC_TOPIC_CONFIG` is set by the user specifically for the topic and overrides inherited default configurations, such as a default or a cluster-level property.
+
+Although xref:reference:rpk/rpk-topic/rpk-topic-describe.adoc[`rpk topic describe`] doesn't report `replication.factor` as a configuration, `replication.factor` can indeed be set by using the xref:reference:rpk/rpk-topic/rpk-topic-alter-config.adoc[`rpk topic alter-config`] command.
+
+== Examples
+
+The following examples show how to configure topic-level properties. Set a topic-level property for a topic to override the value of corresponding cluster property.
+
+=== Create topic with topic properties
+
+To set topic properties when creating a topic, use the xref:reference:rpk/rpk-topic/rpk-topic-create.adoc[rpk topic create] command with the `-c` option.
+
+For example, to create a topic with the `cleanup.policy` property set to `compact`:
+
+[tabs]
+====
+Local::
++
+--
+
+```bash
+rpk topic create -c cleanup.policy=compact <topic-name>
+```
+
+--
+Kubernetes::
++
+--
+
+```bash
+kubectl exec <pod-name> -- rpk topic create -c cleanup.policy=compact<topic-name>
+```
+
+--
+====
+
+To configure multiple properties for a topic, use the `-c` option for each property.
+
+For example, to create a topic with all necessary properties for Tiered Storage:
+
+[tabs]
+====
+Local::
++
+--
+
+```bash
+rpk topic create -c redpanda.remote.recovery=true -c redpanda.remote.write=true -c redpanda.remote.read=true <topic-name>
+```
+
+--
+Kubernetes::
++
+--
+
+```bash
+kubectl exec <pod-name> -- rpk topic create -c redpanda.remote.recovery=true -c redpanda.remote.write=true -c redpanda.remote.read=true <topic-name>
+```
+
+--
+====
+
+=== Modify topic properties
+
+To modify topic properties of an existing topic, use the xref:reference:rpk/rpk-topic/rpk-topic-alter-config.adoc[rpk topic alter-config] command.
+
+For example, to modify a topic's `retention.ms` property:
+
+[tabs]
+====
+Local::
++
+--
+
+```bash
+rpk topic alter-config <topic-name> --set retention.ms=<retention-time>
+```
+
+--
+Kubernetes::
++
+--
+
+```bash
+kubectl exec <pod-name> -- rpk topic alter-config <topic-name> --set retention.ms=<retention-time>
+```
+
+--
+====
+
+=== Configure topic properties with Kubernetes
+
+In Kubernetes deployments, configure topic properties using the `additionalConfig` field in Topic resources:
+
+```yaml
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Topic
+metadata:
+  name: example-topic
+spec:
+  partitions: 3
+  replicationFactor: 3
+  additionalConfig:
+    cleanup.policy: "compact"
+    retention.ms: "604800000"
+    segment.ms: "86400000"
+```
+
+Apply the configuration:
+
+```bash
+kubectl apply -f topic-config.yaml
+```
+
+== Common topic property categories
+
+Topic properties are organized into several categories based on their functionality:
+
+=== Disk space management
+
+Configure properties to manage disk space usage for a topic:
+
+- Clean up log segments by deletion and/or compaction (xref:reference:properties/topic-properties.adoc#cleanuppolicy[`cleanup.policy`]).
+- Control compaction timing with maximum and minimum lag settings (xref:reference:properties/topic-properties.adoc#maxcompactionlagms[`max.compaction.lag.ms`] and xref:reference:properties/topic-properties.adoc#mincompactionlagms[`min.compaction.lag.ms`]).
+- Retain logs up to a maximum size per partition before cleanup (xref:reference:properties/topic-properties.adoc#retentionbytes[`retention.bytes`]).
+- Retain logs for a maximum duration before cleanup (xref:reference:properties/topic-properties.adoc#retentionms[`retention.ms`]).
+- Periodically close an active log segment (xref:reference:properties/topic-properties.adoc#segmentms[`segment.ms`]).
+- Limit the maximum size of an active log segment (xref:reference:properties/topic-properties.adoc#segmentbytes[`segment.bytes`]).
+
+=== Write performance and caching
+
+Control how Redpanda writes and syncs data to disk:
+
+- Cache batches until the segment appender chunk is full, instead of fsyncing for every `acks=all` write (xref:reference:properties/topic-properties.adoc#writecaching[`write.caching`]).
+- Configure the maximum delay between two subsequent fsyncs (xref:reference:properties/topic-properties.adoc#flushms[`flush.ms`]).
+- Set the maximum bytes not fsynced per partition (xref:reference:properties/topic-properties.adoc#flushbytes[`flush.bytes`]).
+
+=== Message properties
+
+Configure message-specific settings:
+
+- Set the source of a message's timestamp (xref:reference:properties/topic-properties.adoc#messagetimestamptype[`message.timestamp.type`]).
+- Set the maximum size of a message (xref:reference:properties/topic-properties.adoc#maxmessagebytes[`max.message.bytes`]).
+- Configure compression for stored data (xref:reference:properties/topic-properties.adoc#compressiontype[`compression.type`]).
+
+=== Tiered Storage
+
+For topics using Tiered Storage, configure:
+
+- Upload and fetch data to and from object storage (xref:reference:properties/topic-properties.adoc#redpandaremotewrite[`redpanda.remote.write`] and xref:reference:properties/topic-properties.adoc#redpandaremoteread[`redpanda.remote.read`]).
+- Recover data from object storage (xref:reference:properties/topic-properties.adoc#redpandaremoterecovery[`redpanda.remote.recovery`]).
+- Configure local storage retention limits (xref:reference:properties/topic-properties.adoc#retentionlocaltargetbytes[`retention.local.target.bytes`] and xref:reference:properties/topic-properties.adoc#retentionlocaltargetms[`retention.local.target.ms`]).
+
+=== Compaction settings
+
+For topics with compacted cleanup policies, configure:
+
+- Minimum ratio of dirty segments required before compaction (xref:reference:properties/topic-properties.adoc#mincleanabledirtyratio[`min.cleanable.dirty.ratio`]).
+- Retention time for tombstone records (xref:reference:properties/topic-properties.adoc#deleteretentionms[`delete.retention.ms`]).
+
+=== Replication and leadership
+
+Configure replication and leadership settings:
+
+- Number of replicas for the topic (xref:reference:properties/topic-properties.adoc#replicationfactor[`replication.factor`]).
+- Preferred location for partition leaders (xref:reference:properties/topic-properties.adoc#redpandaleaderspreference[`redpanda.leaders.preference`]).
+
+For complete details about all available topic properties, see xref:reference:properties/topic-properties.adoc[Topic Configuration Properties].
+
+== Related topics
+
+* xref:reference:properties/topic-properties.adoc[Topic Configuration Properties] - Complete reference of all available topic properties
+* xref:manage:cluster-maintenance/cluster-property-configuration.adoc[Configure Cluster Properties] - Configure cluster-wide defaults
+* xref:develop:config-topics.adoc[Manage Topics] - Create and manage topics
+* xref:manage:kubernetes/k-manage-topics.adoc[Manage Topics in Kubernetes] - Topic management in Kubernetes deployments
+* xref:console:ui/edit-topic-configuration.adoc[Edit Topic Configuration in Redpanda Console] - Graphical topic configuration
