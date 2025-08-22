@@ -2,17 +2,10 @@
 :page-categories: Management, Security
 :page-aliases: features:acls.adoc, security:acls.adoc
 // tag::single-source[]
-:description: Learn how to use ACLs to configure fine-grained access to provisioned users.
+:description: Learn how to use ACLs to configure fine-grained access to Redpanda resources.
 
-Access control lists (ACLs) provide a way to configure fine-grained access to Redpanda resources. ACLs are assigned principals, either user or role. 
+Access control lists (ACLs) provide a way to configure fine-grained access to Redpanda resources. ACLs are permission rules that determine what actions users or roles can perform on specific resources such as clusters, topics, consumer groups, transactional IDs, and Schema Registry subjects and operations.
 
-In {ui}, you create ACLs from the Security tab on either the ACLs page or the Roles page. The ACLs page defaults to the `user` principal. The Roles page defaults to the `Redpanda role` principal. But you can edit to specify different principals as needed. You then select the host, either all hosts or specific IP addresses, and then you select which Redpanda resources that ACL can access: clusters, topics, consumer groups, transactional IDs, subjects and Schema Registry.
-
-ACLs work with SASL/SCRAM and with mTLS with principal mapping for authentication.
-
-== ACLs
-
-Use access control lists (ACLs) to manage user and role permissions. ACLs are assigned principals (user or role), which then access resources within Redpanda. 
 Redpanda stores ACLs internally, replicated with glossterm:Raft[] to provide the same consensus guarantees as your data. 
 
 ifndef::env-cloud[]
@@ -27,19 +20,100 @@ For complex organizational hierarchies or large numbers of users, consider using
 
 endif::[]
 
+== How ACLs Work
+
+ACLs control access by defining:
+
+* *Who* can access resources (principals - users or roles)
+* *What* they can access (resources like clusters, topics, and consumer groups)
+* *How* they can interact with those resources (operations like read, write, describe)
+* *Where* they can connect from (host restrictions)
+
+ACLs work with SASL/SCRAM and mTLS authentication methods to provide comprehensive security.
+
+== Create ACLs
+
+You can create and manage ACLs in two ways:
+
+* *{ui}*: Use the Security tab on either the *ACLs* page (for user principals) or the *Roles* page (for role principals)
+* *Command Line*: Use the `rpk` command-line tool for programmatic management
+
+For example, suppose you want to create a user named `analytics-user` who can read from topics starting with "logs-" and write to a topic called "processed-data":
+
+[,bash]
+----
+# 1. Create the user
+rpk security user create analytics-user --password 'secure-password'
+
+# 2. Grant read access to topics with "logs-" prefix
+rpk security acl create --allow-principal analytics-user \
+  --operation read,describe --topic 'logs-' \
+  --resource-pattern-type prefixed
+
+# 3. Grant write access to the processed-data topic
+rpk security acl create --allow-principal analytics-user \
+  --operation write,describe --topic processed-data
+----
+
 === ACL terminology
 
-Entities accessing the *resources* are called *principals*. A User:foo is the principal for user "foo". You can decide whether to allow or deny *permissions* to access to the resources.
+Understanding ACL terminology is crucial for effective access control:
 
-You can also specify the *hosts* for which they have access.
+[cols="1,2,2"]
+|===
+| Term | Definition | Example
 
-This access is represented as *operations*, such as `read`, `write`, or `describe`, and the operations can be performed on *resources*, such as a topic. You can filter the resources by name.
+| *Principal*
+| The entity (user or role) requesting access
+| `User:analytics-user`, `Role:data-engineers`
 
-ACL commands work on a multiplicative basis. If you set up two principals and two permissions, the result is four ACLs: both permissions for the first principal, as well as both permissions for the second principal. Adding two resources further doubles the ACLs created.
+| *Resource*
+| The Redpanda component being accessed (cluster, topic, consumer group, transactional ID, Schema Registry subjects and operations)
+| Topic: `sensor-data`, Group: `analytics-group`, Cluster: `kafka-cluster`
 
-TIP: Be as specific as possible when granting ACLs.
+| *Operation*
+| The action being performed on the resource
+| `READ`, `WRITE`, `CREATE`, `DELETE`, `DESCRIBE`
 
-Granting more ACLs than necessary per principal may inadvertently allow clients to do things they should not, such as deleting topics or joining the wrong consumer group.
+| *Host*
+| The IP address or hostname from which access is allowed/denied
+| `192.168.1.100`, `*` (any host)
+
+| *Permission*
+| Whether access is allowed or denied
+| `ALLOW`, `DENY`
+|===
+
+*How they work together*: An ACL rule combines these elements to create a permission statement:
+
+`ALLOW User:analytics-user to READ topic:sensor-data from host:192.168.1.100`
+
+ACL commands work on a multiplicative basis. If you specify two principals and two permissions, you create four ACLs: both permissions for each principal.
+
+== Best practices
+
+Follow these recommendations for secure and manageable ACL configurations:
+
+=== Security best practices
+
+* *Principle of least privilege*: Grant only the minimum permissions required for each user or role
+* *Avoid wildcards*: Use specific resource names instead of `*` whenever possible
+* *Separate environments*: Use different principals for development, staging, and production
+* *Regular audits*: Periodically review and clean up unused ACLs
+
+=== Management best practices
+
+* *Use descriptive names*: Choose clear user and topic names that indicate their purpose
+* *Group related permissions*: Create roles for users with similar access patterns
+* *Document ACL decisions*: Keep records of why specific permissions were granted
+* *Test ACLs*: Verify permissions work as expected before deploying to production
+
+=== Common pitfalls to avoid
+
+* *Over-privileging*: Granting `ALL` operations when specific ones would suffice
+* *Forgetting consumer groups*: Not granting necessary group permissions for consumers
+* *Host restrictions*: Accidentally blocking legitimate client connections with overly restrictive host rules
+* *Pattern confusion*: Mixing up literal vs. prefixed resource pattern types
 
 [[principals]]
 === Principals
@@ -80,41 +154,96 @@ Use the `--resource-pattern-type` flag to specify that a resource name is "prefi
 
 === Operations
 
-Paired with resources, operations are the actions that are allowed or denied.
-Redpanda supports the following operations:
+Operations define what actions are allowed or denied on resources. Here are the available operations with common use cases:
 
 |===
-| Operation | Description
-
-| ALL
-| Allows all operations below.
+| Operation | Description | Common use case
 
 | READ
-| Allows reading a given resource.
+| Allows reading data from a resource
+| Consumers reading from topics, fetching consumer group offsets
 
 | WRITE
-| Allows writing to a given resource.
+| Allows writing data to a resource
+| Producers publishing messages to topics
 
 | CREATE
-| Allows creating a given resource.
+| Allows creating new resources
+| Auto-creating topics, creating new consumer groups
 
 | DELETE
-| Allows deleting a given resource.
-
-| ALTER
-| Allows altering non-configurations.
+| Allows deleting resources
+| Removing topics, deleting consumer groups
 
 | DESCRIBE
-| Allows querying non-configurations.
+| Allows querying resource metadata
+| Listing topics, getting topic configurations
+
+| ALTER
+| Allows modifying resource properties
+| Changing topic partition counts, updating consumer group settings
 
 | DESCRIBE_CONFIGS
-| Allows describing configurations.
+| Allows viewing resource configurations
+| Reading topic settings, broker configurations
 
 | ALTER_CONFIGS
-| Allows altering configurations.
+| Allows modifying resource configurations
+| Changing topic retention policies, updating broker settings
+
+| ALL
+| Grants all operations above
+| Administrative access to resources
 |===
+*Common combinations:
+
+* *Producer*: `WRITE` + `DESCRIBE` on topics
+* *Consumer*: `READ` + `DESCRIBE` on topics, `READ` on consumer groups  
+* *Admin*: `ALL` on cluster and specific resources
 
 === Producing/Consuming
+
+For quick reference, here are the ACL requirements for common client scenarios:
+
+[cols="1,3"]
+|===
+| Client type | Required ACLs
+
+| Simple producer
+| • `WRITE` + `DESCRIBE` on target topics
+
+| Simple consumer
+| • `READ` + `DESCRIBE` on target topics +
+• `READ` on consumer group
+
+| Producer with auto-create topics
+| • `WRITE` + `DESCRIBE` on target topics +
+| • `CREATE` on cluster (for auto-creating topics)
+
+| Transactional producer
+| • `WRITE` + `DESCRIBE` on target topics +
+• `WRITE` on transactional ID
+
+| Consumer group admin
+| • `READ` + `DESCRIBE` on target topics +
+• `READ` + `DESCRIBE` + `DELETE` on consumer groups
+|===
+*Command examples:
+
+[,bash]
+----
+# Basic producer access
+rpk security acl create --allow-principal producer-user \
+  --operation write,describe --topic my-topic
+
+# Basic consumer access  
+rpk security acl create --allow-principal consumer-user \
+  --operation read,describe --topic my-topic
+rpk security acl create --allow-principal consumer-user \
+  --operation read --group my-consumer-group
+----
+
+Detailed operation requirements:
 
 The following operations are necessary for each individual client request, where *resource* corresponds to the resource flag, and "for xyz" corresponds to the resource names in the request:
 
@@ -259,7 +388,7 @@ ADMIN
     GetSchemaById           READ on SUBJECT for subject
 ----
 
-To get this information at the CLI, run:
+To get this information with `rpk`, run:
 
 [,bash]
 ----
@@ -283,54 +412,76 @@ A client can be allowed access or denied access. By default, all permissions are
 
 Commands for managing users and ACLs work on a specific ACL basis, but listing and deleting ACLs works on filters. Filters allow matching many ACLs to be printed, listed, and deleted at the same time. Because this can be risky for deleting, the delete command prompts for confirmation by default.
 
-== rpk for managing users and ACLs
+== Manage ACLs with rpk
 
-The `rpk security acl` command manages your ACLs as well as your SASL/SCRAM users. 
+The `rpk security acl` command is the primary tool for managing ACLs and SASL/SCRAM users from the command line.
 
 ifndef::env-cloud[]
-If you're on Kubernetes, you can use `kubectl exec` to run `rpk` commands.
+On Kubernetes, you can use `kubectl exec` to run `rpk` commands.
 
 endif::[]
 
+=== Basic Workflow
+
+Follow this typical workflow when setting up ACLs:
+
+1. *Create a user*: `rpk security user create <username> --password '<password>'`
+2. *Create ACLs*: `rpk security acl create --allow-principal <username> --operation <ops> --topic <topic>`
+3. *Verify access*: `rpk security acl list --allow-principal <username>`
+
+*Example complete setup*:
+
 [,bash]
 ----
-rpk security acl [command] [flags]
+# 1. Create user
+rpk security user create data-processor \
+  --password 'secure-password' \
+ifndef::env-cloud[]
+  -X admin.hosts=localhost:9644
+endif::[]
+
+# 2. Grant topic access
+rpk security acl create --allow-principal data-processor \
+  --operation read,write,describe --topic 'data-*' \
+  --resource-pattern-type prefixed
+
+# 3. Grant consumer group access
+rpk security acl create --allow-principal data-processor \
+  --operation read,describe --group data-processing-group
+
+# 4. Verify the setup
+rpk security acl list --allow-principal data-processor
 ----
 
-For example, to create a user:
+=== Command overview
 
-[,bash]
-----
-rpk security user create Jack \
---password '<password>' \
--X admin.hosts=localhost:9644
-----
-
-`Created user 'Jack'`
-
-Here are all the available commands and how they interact with Redpanda:
+Here's how `rpk` commands interact with Redpanda:
 
 |===
-| Command | Protocol | Default Port
+| Command | Protocol | Default port | Purpose
 ifndef::env-cloud[]
 | user
 | Admin API
 | 9644
+| Manage SASL/SCRAM users
 endif::[]
 | list
 | Kafka API
 | 9092
+| View existing ACLs
 
 | create
 | Kafka API
 | 9092
+| Create new ACLs
 
 | delete
 | Kafka API
 | 9092
+| Remove ACLs
 |===
 
-For more information, see xref:reference:rpk/rpk-acl.adoc[`rpk security acl`].
+For detailed command reference, see xref:reference:rpk/rpk-acl.adoc[`rpk security acl`].
 
 === Global flags
 
