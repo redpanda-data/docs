@@ -1,7 +1,7 @@
 = Configure Redpanda in Kubernetes
-:description: Customize the values of the Redpanda Helm chart to configure the cluster and the Kubernetes components that the chart deploys.
+:description: Customize the values of the Redpanda Helm chart or Redpanda resource to configure both the Redpanda cluster and the Kubernetes components.
 :tags: ["Kubernetes"]
-:page-aliases: manage:kubernetes/helm-configuration.adoc, manage:helm-configuration.adoc, deploy-self-hosted:arbitrary-configuration.adoc, features:kubernetes-additional-config.adoc, deployment:arbitrary-configuration.adoc, deployment:kubernetes-additional-config.adoc, manage:kubernetes/configure-helm-chart.adoc
+:page-aliases: manage:kubernetes/helm-configuration.adoc, manage:helm-configuration.adoc, deploy-self-hosted:arbitrary-configuration.adoc, features:kubernetes-additional-config.adoc, deployment:arbitrary-configuration.adoc, deployment:kubernetes-additional-config.adoc, manage:kubernetes/configure-helm-chart.adoc, manage:kubernetes/k-cluster-property-configuration.adoc
 :page-categories: Management
 :env-kubernetes: true
 
@@ -145,11 +145,11 @@ The values in the `--set` options override their counterparts in the Helm chart'
 
 NOTE: If you're upgrading and you already have Redpanda Console installed, set `console.enabled` to `false` to stop Helm from trying to deploy it again.
 
-== Specify Redpanda CLI flags in the Helm Chart
+=== Set Redpanda CLI flags
 
-The Redpanda Helm chart allows you to specify Redpanda CLI flags, such as `--smp`, `--memory`, or `--reserve-memory`, directly rather than having to find the appropriate configuration in the chart's values.
+You can specify Redpanda CLI flags, such as `--smp`, `--memory`, or `--reserve-memory`, directly rather than having to find the appropriate stanza in the YAML values.
 
-When you specify CLI flags, those values take precedence over the values defined in the chart's values.
+When you specify CLI flags, those values take precedence over the values defined in the YAML values.
 
 [tabs]
 ======
@@ -210,8 +210,26 @@ helm upgrade --install redpanda redpanda/redpanda \
 --
 ======
 
+=== Set Redpanda cluster properties
+
+Cluster properties control the core behavior of your Redpanda cluster, such as topic auto-creation, log retention, and feature flags. You can set any cluster property using the `config.cluster` field in your Helm values or Redpanda custom resource.
+
+For a full list of available properties and their defaults, see xref:reference:cluster-properties.adoc[cluster configuration properties].
+
+.Example: Enable automatic topic creation
+[,yaml]
+----
+config:
+  cluster:
+    auto_create_topics_enabled: true
+----
+
+You can set multiple properties under `config.cluster` as needed. This method works for all cluster properties, including those for advanced features like Tiered Storage.
+
+To set cluster properties using the Operator or Helm, add the `config.cluster` block to your YAML file or use the `--set` flag. See the examples below for both approaches.
+
 [[extra-cluster-config]]
-== Set Redpanda cluster properties from Kubernetes Secrets or ConfigMaps
+=== Use Kubernetes Secrets or ConfigMaps
 
 Starting in v25.1.1 of the Redpanda Operator and Redpanda Helm chart, you can set **any Redpanda cluster configuration property** by referencing Kubernetes Secrets or ConfigMaps using the `config.extraClusterConfiguration` field.
 
@@ -301,8 +319,55 @@ You can apply this approach to any Redpanda configuration key, making your deplo
 
 For full configuration options, see xref:reference:properties/index.adoc[].
 
+=== Export a Redpanda configuration file
+
+To see all Redpanda configurations for a broker, you can use the `rpk cluster config export` command to save the current Redpanda configuration to a file. For example, you may want to use the configuration file during debugging.
+
+TIP: To get more detailed information about your Redpanda deployment, generate a xref:manage:kubernetes/troubleshooting/k-diagnostics-bundle.adoc[diagnostics bundle], which includes the Redpanda configuration files for all brokers in the cluster.
+
+. Execute the `rpk cluster config export` command inside a Pod container that's running a Redpanda broker.
++
+```bash
+kubectl exec redpanda-0 --namespace <namespace> -c redpanda -- \
+rpk cluster config export --filename <filename>.yaml
+```
++
+To save the configuration file outside of your current working directory, provide an absolute path to the `--filename` flag. Otherwise, the file is saved in your current working directory.
++
+Example output
++
+```
+Wrote configuration to file "/tmp/config_625125906.yaml".
+```
+
+. On your host machine, make a directory in which to save the configuration file:
++
+```bash
+mkdir configs
+```
+
+. Copy the configuration file from the Pod to your host machine:
++
+Replace `<path-to-file>` with the path to your exported file.
++
+```bash
+kubectl cp redpanda/redpanda-0:<path-to-file> configs/redpanda-0-configuration-file.yaml
+```
+
+. Remove the exported file from the Redpanda container:
++
+```bash
+kubectl exec redpanda-0 -c redpanda --namespace <namespace> -- rm <path-to-file>
+```
+
+When you've finished with the file, remove it from your host machine:
+
+```bash
+rm -r configs
+```
+
 [[reset-config]]
-== Reset configuration values
+=== Reset configuration values
 
 You may want to reset a configuration value back to its default. The method to do this depends on how you're managing your Redpanda deployment.
 
@@ -449,7 +514,7 @@ Use `helm install` to install or reinstall Redpanda. Use `helm upgrade` to recon
 
 === Reinstall Redpanda
 
-When reinstalling Redpanda with `helm install`, cluster configuration overrides specified in the Helm values may not take effect due to PersistentVolumeClaim (PVC) retention. 
+When reinstalling Redpanda with `helm install`, cluster configuration overrides specified in the Helm values may not take effect due to PersistentVolumeClaim (PVC) retention.
 
 By default, most PVCs are retained when a Helm release is uninstalled. As a result, when Redpanda is reinstalled, the previously created PVCs are adopted, restoring the state of the previous cluster. This adoption results in the new `bootstrap.yaml` file being ignored and the `post_upgrade` job not running. The `post_upgrade` job is a component in the Helm chart that applies configuration overrides during an upgrade.
 

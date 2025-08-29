@@ -40,21 +40,34 @@ endif::[]
 === Nested partition spec support
 
 AWS Glue does not support partitioning on nested fields. If Redpanda detects that
-the default partitioning `(hour(redpanda.timestamp))` is in use, it will instead apply an empty partition spec `()`, which means the table will not be partitioned.
+the default partitioning `(hour(redpanda.timestamp))` based on the record metadata is in use, it will instead apply an empty partition spec `()`, which means the table will not be partitioned.
 
-If you want to use partitioning, you must specify a custom partition specification using your own partition columns (columns that are not nested).
+To use partitioning, you must implement custom partitioning using your own partition columns (that is, columns that are not nested).
+
+[NOTE]
+====
+In Redpanda versions 25.2.1 and earlier, an empty partition spec `()` can cause a known issue that prevents certain engines like Amazon Redshift from successfully querying the table. To resolve this issue, specify custom partitioning, or upgrade Redpanda to versions 25.2.2 or later.
+====
+
+=== Manual deletion of Iceberg tables
+
+The AWS Glue catalog integration does not support automatic deletion of Iceberg tables from Redpanda. To manually delete Iceberg tables in AWS Glue, you must either:
+
+* Set the cluster property config_ref:iceberg_delete,true,properties/cluster-properties[`iceberg_delete`] to `false` when you configure the catalog integration.
+ifndef::env-cloud[]
+* Override the cluster property `iceberg_delete` by setting the topic property xref:reference:properties/topic-properties.adoc#redpanda-iceberg-delete[`redpanda.iceberg.delete`] to `false` for the topic you want to delete.
+endif::[]
+ifdef::env-cloud[]
+* Override the cluster property `iceberg_delete` by setting the topic property `redpanda.iceberg.delete` to `false` for the topic you want to delete.
+endif::[]
+
+When `iceberg_delete` or the topic override `redpanda.iceberg.delete` is set to `false`, you can delete the Redpanda topic, and then delete the table in AWS Glue and the Iceberg data and metadata files in the S3 bucket. If you plan to re-create the topic after deleting it, you must delete the table data entirely before re-creating the topic.
 
 == Authorize access to AWS Glue
 
-ifndef::env-cloud[]
 You must allow Redpanda access to AWS Glue services in your AWS account. You can use the same access credentials that you configured for S3 (IAM role, access keys, and KMS key), as long as you have also added read and write access to AWS Glue Data Catalog.
 
-For example, you could create a separate IAM policy that manages access to AWS Glue, and attach it to the IAM role that Redpanda also uses to access S3. It is recommended to add all AWS Glue API actions in the policy (`"glue:*"`) on the following resources:
-endif::[]
-
-ifdef::env-cloud[]
-You must allow Redpanda access to AWS Glue services in your AWS account. It is recommended to create a new IAM policy or role that manages access to AWS Glue, allowing all AWS Glue API actions (`"glue:*"`) on the following resources:
-endif::[]
+For example, you could create a separate IAM policy that manages access to AWS Glue and attach it to the IAM role that Redpanda also uses to access S3. Add all AWS Glue API actions in the policy (`"glue:*"`) on the following resources:
 
 - Root catalog (`catalog`)
 - All databases (`database/*`)
@@ -100,6 +113,7 @@ endif::[]
 ifdef::env-cloud[]
 You must configure credentials for the AWS Glue Data Catalog integration using the following properties:
 
+* config_ref:iceberg_rest_catalog_credentials_source,true,properties/cluster-properties[`iceberg_rest_catalog_credentials_source`] set to `config_file`
 * config_ref:iceberg_rest_catalog_aws_access_key,true,properties/cluster-properties[`iceberg_rest_catalog_aws_access_key`]
 * config_ref:iceberg_rest_catalog_aws_secret_key,true,properties/cluster-properties[`iceberg_rest_catalog_aws_secret_key`], added as a secret value (see the <<update-cluster-configuration,next section>> for details)
 * config_ref:iceberg_rest_catalog_aws_region,true,properties/cluster-properties[`iceberg_rest_catalog_aws_region`]
@@ -116,13 +130,15 @@ Run `rpk cluster config edit` to update these properties:
 +
 [,bash]
 ----
-iceberg_enabled: true 
+iceberg_enabled: true
+# Glue requires Redpanda Iceberg tables to be manually deleted
+iceberg_delete: false
 iceberg_catalog_type: rest
 iceberg_rest_catalog_endpoint: https://glue.<glue-region>.amazonaws.com/iceberg
 iceberg_rest_catalog_authentication_mode: aws_sigv4
 iceberg_rest_catalog_base_location: s3://<bucket-name>/<warehouse-path>
 # Use the iceberg_rest_catalog_aws_* properties if you want to 
-# use separate AWS credentials for the catalog, or delete to reuse S3 
+# use separate AWS credentials for the catalog, or omit these lines to reuse S3 
 # (cloud_storage_*) credentials.
 # For access using access keys only, use iceberg_rest_catalog_aws_access_key
 # and iceberg_rest_catalog_aws_secret_key. For access with an IAM role, use 
@@ -154,10 +170,13 @@ rpk cluster config set \
   iceberg_catalog_type=rest \
   iceberg_rest_catalog_endpoint=https://glue.<glue-region>.amazonaws.com/iceberg \
   iceberg_rest_catalog_authentication_mode=aws_sigv4 \
-  iceberg_rest_catalog_base_location=s3://<bucket-name>/<warehouse-path>
-  iceberg_rest_catalog_aws_region=<glue-region>
-  iceberg_rest_catalog_aws_access_key=<glue-access-key>
-  iceberg_rest_catalog_aws_secret_key=${secrets.<glue-secret-key-name>}
+  iceberg_rest_catalog_base_location=s3://<bucket-name>/<warehouse-path> \
+  # Set credentials source to config_file if using 
+  # iceberg_rest_catalog_aws_access_key and iceberg_rest_catalog_aws_secret_key
+  iceberg_rest_catalog_credentials_source=config_file
+  iceberg_rest_catalog_aws_region=<glue-region> \
+  iceberg_rest_catalog_aws_access_key=<glue-access-key> \
+  iceberg_rest_catalog_aws_secret_key='${secrets.<glue-secret-key-name>}'
 ----
 +
 Use your own values for the following placeholders:
@@ -218,7 +237,7 @@ To query the table in Amazon Athena:
 +
 [,sql]
 ----
-SELECT * FROM "AwsDataCatalog"."redpanda"."<table-name>" limit 1;
+SELECT * FROM "AwsDataCatalog"."redpanda"."<table-name>" limit 10;
 ----
 +
 Your query results should look like the following:
