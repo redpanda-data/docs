@@ -23,10 +23,16 @@ Starting in v25.2, Schema Registry Authorization provides fine-grained access co
 
 === How to manage Schema Registry Authorization
 
-You can manage Schema Registry Authorization in two ways:
+You can manage Schema Registry Authorization in the following ways:
 
-- **Using rpk**: Use the xref:reference:rpk/rpk-security/rpk-security-acl-create.adoc[`rpk security acl create`] command, just like you would for other Kafka ACLs.
-- **Using the API**: Use the link:/api/doc/schema-registry/operation/operation-get_security_acls[Redpanda Schema Registry API] endpoints.
+- **rpk**: Use the xref:reference:rpk/rpk-security/rpk-security-acl-create.adoc[`rpk security acl create`] command, just like you would for other Kafka ACLs.
+- **Schema Registry API**: Use the link:/api/doc/schema-registry/operation/operation-get_security_acls[Redpanda Schema Registry API] endpoints.
+ifndef::env-cloud[]
+- **{ui}**: After enabling Schema Registry Authorization for your cluster, you can use {ui} to manage Schema Registry ACLs. See xref:manage:security/authorization/acl.adoc[]. 
+endif::[]
+ifdef::env-cloud[]
+- **{ui}**: After enabling Schema Registry Authorization for your cluster, you can use {ui} to manage Schema Registry ACLs. See xref:security:/authorization/acl.adoc[]. 
+endif::[]
 
 === Schema Registry ACL resource types
 
@@ -102,20 +108,20 @@ Not all Kafka operations are supported when using Redpanda Schema Registry ACLs.
 | none/open
 | -
 
-| `/schema/ids/\{id}`
+| `/schemas/ids/\{id}`
 | `GET`
 | `read`
 | `subject`
 
-| `/schema/ids/\{versions}`
+| `/schemas/ids/\{versions}`
 | `GET`
 | `describe`
 | `registry`
 
-| `/schema/ids/\{subjects}`
+| `/schemas/ids/\{subjects}`
 | `GET`
 | `describe`
-| `subject`
+| `registry`
 
 | `/subjects`
 | `GET`
@@ -124,7 +130,7 @@ Not all Kafka operations are supported when using Redpanda Schema Registry ACLs.
 
 | `/subjects/\{subject}`
 | `POST`
-| `read`
+| `write`
 | `subject`
 
 | `/subjects/\{subject}`
@@ -162,7 +168,7 @@ Not all Kafka operations are supported when using Redpanda Schema Registry ACLs.
 | `describe`
 | `registry`
 
-| `compatibility/subjects/\{subject}/versions/\{version}`
+| `/compatibility/subjects/\{subject}/versions/\{version}`
 | `POST`
 | `read`
 | `subject`
@@ -197,11 +203,32 @@ For additional guidance on these operations, see the link:/api/doc/schema-regist
 Before you can enable Schema Registry Authorization, you must have:
 
 ifndef::env-cloud[]
-* A valid Redpanda Enterprise license
+* A valid Redpanda Enterprise license.
 endif::[]
 
-* `rpk` v25.2+
-* Cluster administrator permissions to modify cluster configuration
+ifdef::env-cloud[]
+* `rpk` v25.2+ installed. For installation instructions, see xref:manage:rpk/rpk-install.adoc[rpk installation].
+endif::[]
+
+ifndef::env-cloud[]
+* `rpk` v25.2+ installed. For installation instructions, see xref:get-started:rpk-install.adoc[rpk installation].
+endif::[]
+
+ifndef::env-cloud[]
+* Authentication enabled using `schema_registry_api.authn_method`, which specifies how clients must authenticate when accessing the Schema Registry API. See xref:reference:properties/broker-properties.adoc#schema-registry[Schema Registry broker properties].
+endif::[]
+
+ifndef::env-cloud[]
+* If you have listeners configured for Schema Registry, ensure you xref:manage:security/authentication.adoc#basic-authentication[configure authentication] for them and that your configuration points to the correct Schema Registry address (correct scheme, host, and port) for the same cluster you are targeting with your Kafka brokers.
+endif::[]
+
+* Cluster administrator permissions to modify cluster configurations.
+  For example, to enable management of Schema Registry ACLs by the principal `schema_registry_admin`, run:
+
+  [,bash]
+  ----
+  rpk security acl create --allow-principal schema_registry_admin --cluster --operation alter
+  ----
 
 === Enable authorization
 
@@ -210,13 +237,6 @@ To enable Schema Registry Authorization for your cluster, run:
 [,bash]
 ----
 rpk cluster config set schema_registry_enable_authorization true
-----
-
-To enable management of Schema Registry ACLs by the principal `schema_registry_admin`, run:
-
-[,bash]
-----
-rpk security acl create --allow-principal schema_registry_admin --cluster --operation alter
 ----
 
 For details, see xref:reference:properties/cluster-properties.adoc#schema_registry_enable_authorization[`schema_registry_enable_authorization`].
@@ -287,7 +307,7 @@ rpk security acl create \
   --allow-role SoftwareEng
 
 # You can add more ACLs to this role later
-rpk security acl create --allow-role "RedpandaRole:SoftwareEng" [additional-acl-flags]
+rpk security acl create --allow-role "SoftwareEng" [additional-acl-flags]
 ----
 
 After creating the role, assign it to users:
@@ -306,7 +326,7 @@ jane  User
 
 When creating ACLs that include Schema Registry subjects, you might encounter errors if the subject doesn't exist or if there are configuration issues.
 
-==== Common error: Subject not found
+==== Subject not found
 
 Sometimes an ACL for a Kafka topic is created successfully, but the Schema Registry subject ACL fails:
 
@@ -349,31 +369,49 @@ User:alice  *     SUBJECT        bar-value      LITERAL                READ     
 User:alice  *     TOPIC          bar            LITERAL                READ       ALLOW
 ----
 
-The `Not found` error occurs in the request: `12:17:33.935 DEBUG sending request {"method": "POST", "URL: "http://127.0.0.1:8081/security/acls", "has_bearer": false, 
-"has_basic_auth": false}`, meaning that the endpoint is not available (because you are using an older Redpanda version). You must upgrade to the current version of Redpanda.
+The `Not found` error occurs in the request: `12:17:33.935 DEBUG sending request {"method": "POST", "URL: "http://127.0.0.1:8081/security/acls", "has_bearer": false,
+"has_basic_auth": false}`. This typically means the endpoint is unavailable. Verify:
+* You're on Redpanda v25.2+.
+* `schema_registry_enable_authorization` is set to `true`.
+* Your rpk Schema Registry URL points to the correct host/scheme/port.
+Upgrade if needed and correct configuration before retrying.
 
-ifndef::env-cloud[]
-This next error occurs when the user tries to create two ACLs, one for a topic and one for a registry-subject:
+==== Inconsistent listener configuration
 
-[bash]
+This error occurs when the user tries to create an ACL for a principal:
+
+[,bash]
 ----
-$ rpk security acl create --topic private --allow-principal mary --operation read --registry-subject private-key -v
-18:27:05.485  DEBUG  opening connection to broker  {"addr": "127.0.0.1:9092", "broker": "seed_0"}
-18:27:05.485  DEBUG  connection opened to broker  {"addr": "127.0.0.1:9092", "broker": "seed_0"}
-18:27:05.485  DEBUG  issuing api versions request  {"broker": "seed_0", "version": 4}
-18:27:05.485  DEBUG  wrote ApiVersions v4  {"broker": "seed_0", "bytes_written": 31, "write_wait": "14.584µs", "time_to_write": "18.25µs", "err": null}
-18:27:05.487  DEBUG  read ApiVersions v4  {"broker": "seed_0", "bytes_read": 331, "read_wait": "23.583µs", "time_to_read": "1.847542ms", "err": null}
-18:27:05.487  DEBUG  connection initialized successfully  {"addr": "127.0.0.1:9092", "broker": "seed_0"}
-18:27:05.487  DEBUG  wrote CreateACLs v2  {"broker": "seed_0", "bytes_written": 45, "write_wait": "2.564792ms", "time_to_write": "8.75µs", "err": null}
-18:27:05.489  DEBUG  read CreateACLs v2  {"broker": "seed_0", "bytes_read": 19, "read_wait": "20.042µs", "time_to_read": "1.465375ms", "err": null}
-18:27:05.489  DEBUG  sending request  {"method": "POST", "URL": "http://127.0.0.1:8081/security/acls", "has_bearer": false, "has_basic_auth": false}
+rpk security acl create --allow-principal "superuser" --operation "all" --registry-global -v
+13:07:02.810  DEBUG  opening connection to broker  {"addr": "seed-036d6a67.d2hiu9c8ljef72usuu20.fmc.prd.cloud.redpanda.com:9092", "broker": "seed_0"}
+...
+13:07:03.304  DEBUG  sending request  {"method": "POST", "URL": "https://127.0.0.1:8080/security/acls", "has_bearer": false, "has_basic_auth": true}
+PRINCIPAL       HOST  RESOURCE-TYPE  RESOURCE-NAME  RESOURCE-PATTERN-TYPE  OPERATION  PERMISSION  ERROR
+User:superuser  *     REGISTRY                      LITERAL                ALL        ALLOW       unable to POST "https://127.0.0.1:8080/security/acls": Post "https://127.0.0.1:8080/security/acls": http: server gave HTTP response to HTTPS client
+----
+
+When using Schema Registry Authorization, ensure that your Kafka brokers and Schema Registry address target the same cluster and that the Schema Registry address uses the correct scheme/host/port. In the example above, `rpk` communicates with a remote broker (`...:9092`) but posts to a local Schema Registry address over HTTPS (`https://127.0.0.1:8080/security/acls`), while the local Schema Registry appears to be HTTP-only. To align them:
+* Set the correct Schema Registry address (host and scheme) for the target cluster.
+* Ensure TLS settings match the Schema Registry endpoint (HTTP vs HTTPS).
+* Avoid mixing remote broker addresses with a local Schema Registry address unless it is intentional and properly configured.
+
+See xref:reference:rpk/rpk-registry/rpk-registry.adoc[rpk registry] for Schema Registry configuration commands.
+
+==== Resource names do not appear
+
+The following output appears to suggest that there are missing resource names for the registry resource types:
+
+[,bash]
+----
+rpk security acl create --allow-principal jane --operation read,write --topic private --registry-global
 PRINCIPAL  HOST  RESOURCE-TYPE  RESOURCE-NAME  RESOURCE-PATTERN-TYPE  OPERATION  PERMISSION  ERROR
-User:mary  *     SUBJECT        private-key    LITERAL                READ       ALLOW       Invalid license: not present
-User:mary  *     TOPIC          private        LITERAL                READ       ALLOW
+User:jane  *     REGISTRY                      LITERAL                READ       ALLOW
+User:jane  *     REGISTRY                      LITERAL                WRITE      ALLOW
+User:jane  *     TOPIC          private        LITERAL                READ       ALLOW
+User:jane  *     TOPIC          private        LITERAL                WRITE      ALLOW
 ----
 
-The `Invalid license: not present` error indicates that the user is trying to create an ACL for a resource that requires a license, but no license is present. See xref:get-started:licensing/overview.adoc[Licensing overview] for details on how to obtain a license.
-endif::[]
+When using the `--registry-global` option, be aware that `REGISTRY` resource types are global and apply to all of Schema Registry. They do not have a resource name because they are not tied to a specific resource. There are no resource names missing here.
 
 == Suggested reading
 
