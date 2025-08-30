@@ -1,0 +1,225 @@
+= Configure Topic Properties
+:description: Learn how to configure topic properties to control Redpanda's behavior for individual topics, including retention, cleanup policies, and Tiered Storage settings.
+:page-categories: Management
+
+Topic properties control Redpanda's behavior for individual topics, including data retention, cleanup policies, compression settings, and Tiered Storage configurations. These properties let you customize how Redpanda stores, processes, and manages data for each topic, overriding cluster-wide defaults when needed.
+
+Redpanda stores topic properties as metadata associated with each topic and replicates them across the cluster to ensure consistency. Many topic properties correspond to xref:manage:cluster-maintenance/cluster-property-configuration.adoc[cluster properties] that establish default values for all topics. When you set a topic property, it overrides the corresponding cluster default for that specific topic.
+
+include::develop:partial$topic-properties-warning.adoc[]
+
+For a complete reference of available topic properties and their corresponding cluster properties, see xref:reference:properties/topic-properties.adoc[Topic Configuration Properties].
+
+== Configuration methods
+
+You can configure topic properties through multiple interfaces:
+
+* **rpk commands** - Use xref:reference:rpk/rpk-topic/rpk-topic-create.adoc[`rpk topic create`] with the `-c` flag to set properties during topic creation, or xref:reference:rpk/rpk-topic/rpk-topic-alter-config.adoc[`rpk topic alter-config`] to modify existing topics.
+* **Kafka Admin API** - Any Kafka-compatible client can use the standard Admin API to configure topic properties.
+* **Kubernetes Topic resources** - In Kubernetes deployments, configure topic properties using the `additionalConfig` field in Topic resources. See xref:manage:kubernetes/k-manage-topics.adoc[Manage Topics in Kubernetes].
+* **Redpanda Console** - Use the web interface to xref:console:ui/edit-topic-configuration.adoc[edit topic configuration] through a graphical interface.
+
+== Verify topic property configuration
+
+Use `rpk topic describe <topic>` to view topic properties and their configuration sources:
+
+```
+rpk topic describe my-topic
+```
+
+The output shows two sections:
+
+```
+SUMMARY
+=======
+NAME        my-topic
+PARTITIONS  3
+REPLICAS    3
+
+CONFIGS
+=======
+KEY                     VALUE          SOURCE
+cleanup.policy          delete         DEFAULT_CONFIG
+compression.type        producer       DEFAULT_CONFIG
+retention.ms            604800000      DEFAULT_CONFIG
+write.caching           true           DYNAMIC_TOPIC_CONFIG
+```
+
+The `SOURCE` column indicates how each property is configured:
+
+* `DEFAULT_CONFIG` - Redpanda's default value
+* `DYNAMIC_TOPIC_CONFIG` - User-configured value
+
+The replication factor appears as REPLICAS in the SUMMARY section, not as replication.factor in the CONFIGS list. However, you need to use the `replication.factor` key when modifying the value with `rpk topic alter-config`.
+
+For partition-level details, add the `-p` flag:
+
+```
+rpk topic describe my-topic -p
+```
+
+This shows a different output focused on partition information:
+
+```
+PARTITION  LEADER  EPOCH  REPLICAS  LOG-START-OFFSET  HIGH-WATERMARK
+0          1       2     [1 2 3]   0                 6
+1          2       4     [1 2 3]   0                 10
+2          3       1     [1 2 3]   0                 8
+```
+
+== Examples
+
+The following examples show how to configure topic-level properties. Set a topic-level property for a topic to override the value of corresponding cluster property.
+
+=== Create topic with topic properties
+
+To set topic properties when creating a topic, use the xref:reference:rpk/rpk-topic/rpk-topic-create.adoc[rpk topic create] command with the `-c` option.
+
+For example, to create a topic with the `cleanup.policy` property set to `compact`:
+
+[tabs]
+====
+Local::
++
+--
+
+```bash
+rpk topic create -c cleanup.policy=compact <topic-name>
+```
+
+--
+Kubernetes::
++
+--
+
+```bash
+kubectl exec <pod-name> -- rpk topic create -c cleanup.policy=compact <topic-name>
+```
+
+--
+====
+
+To configure multiple properties for a topic, use the `-c` option for each property.
+
+For example, to create a topic with all necessary properties for Tiered Storage:
+
+[tabs]
+====
+Local::
++
+--
+
+```bash
+rpk topic create -c redpanda.remote.recovery=true -c redpanda.remote.write=true -c redpanda.remote.read=true <topic-name>
+```
+
+--
+Kubernetes::
++
+--
+
+```bash
+kubectl exec <pod-name> -- rpk topic create -c redpanda.remote.recovery=true -c redpanda.remote.write=true -c redpanda.remote.read=true <topic-name>
+```
+
+--
+====
+
+=== Modify topic properties
+
+To modify topic properties of an existing topic, use the xref:reference:rpk/rpk-topic/rpk-topic-alter-config.adoc[rpk topic alter-config] command.
+
+For example, to modify a topic's `retention.ms` property:
+
+[tabs]
+====
+Local::
++
+--
+
+```bash
+rpk topic alter-config <topic-name> --set retention.ms=<retention-time>
+```
+
+--
+Kubernetes::
++
+--
+
+```bash
+kubectl exec <pod-name> -- rpk topic alter-config <topic-name> --set retention.ms=<retention-time>
+```
+
+--
+====
+
+=== Configure topic properties with Kubernetes
+
+In Kubernetes deployments, configure topic properties using the `additionalConfig` field in Topic resources:
+
+```yaml
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Topic
+metadata:
+  name: example-topic
+spec:
+  partitions: 3
+  replicationFactor: 3
+  additionalConfig:
+    cleanup.policy: "compact"
+    retention.ms: "604800000"
+    segment.ms: "86400000"
+```
+
+Apply the configuration:
+
+```bash
+kubectl apply -f topic-config.yaml
+```
+
+== Common topic property categories
+
+The most commonly configured topic properties fall into these main categories:
+
+=== Disk space management
+
+Redpanda manages disk space through two main mechanisms: **compaction** (removing duplicate keys) and **retention** (removing old data). 
+
+Choose your cleanup strategy with xref:reference:properties/topic-properties.adoc#cleanuppolicy[`cleanup.policy`]:
+- `delete` - Remove old data based on time or size limits
+- `compact` - Keep only the latest value for each key
+- `compact,delete` - Combine both strategies
+
+=== Compaction
+
+When using `cleanup.policy=compact` or `cleanup.policy=compact,delete`, configure:
+
+- xref:reference:properties/topic-properties.adoc#mincleanabledirtyratio[`min.cleanable.dirty.ratio`] - Control when compaction triggers based on dirty data ratio
+- xref:reference:properties/topic-properties.adoc#maxcompactionlagms[`max.compaction.lag.ms`] - Set maximum time before compaction is forced
+- xref:reference:properties/topic-properties.adoc#mincompactionlagms[`min.compaction.lag.ms`] - Set minimum time before compaction can occur
+
+=== Retention
+
+When using `cleanup.policy=delete` or `cleanup.policy=compact,delete`, configure:
+
+- xref:reference:properties/topic-properties.adoc#retentionbytes[`retention.bytes`] - Maximum size before cleanup (size-based retention)
+- xref:reference:properties/topic-properties.adoc#retentionms[`retention.ms`] - Maximum age before cleanup (time-based retention)
+- xref:reference:properties/topic-properties.adoc#segmentbytes[`segment.bytes`] - Control how frequently cleanup can occur by setting segment size
+
+=== Performance
+
+Essential performance tuning properties:
+
+- xref:reference:properties/topic-properties.adoc#writecaching[`write.caching`] - Cache writes for lower latency with `acks=all`
+- xref:reference:properties/topic-properties.adoc#maxmessagebytes[`max.message.bytes`] - Set maximum message size
+- xref:reference:properties/topic-properties.adoc#replicationfactor[`replication.factor`] - Number of replicas for durability vs. performance
+
+For complete details about all available topic properties, see xref:reference:properties/topic-properties.adoc[Topic Configuration Properties].
+
+== Related topics
+
+* xref:reference:properties/topic-properties.adoc[Topic Configuration Properties] - Complete reference of all available topic properties
+* xref:manage:cluster-maintenance/cluster-property-configuration.adoc[Configure Cluster Properties] - Configure cluster-wide defaults
+* xref:develop:config-topics.adoc[Manage Topics] - Create and manage topics
+* xref:manage:kubernetes/k-manage-topics.adoc[Manage Topics in Kubernetes] - Topic management in Kubernetes deployments
+* xref:console:ui/edit-topic-configuration.adoc[Edit Topic Configuration in Redpanda Console] - Graphical topic configuration
