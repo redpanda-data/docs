@@ -2,40 +2,152 @@
 
 == RBAC overview
 
-RBAC is designed to address the critical challenge of access management at scale. It alleviates the process of manually maintaining and verifying a set of raw permissions (access control lists, or ACLs) for a user base that could contain thousands of users. RBAC provides a method to onboard new employees easier, audit accesses faster, and adapt more readily to evolutions of usage and compliance needs.
+RBAC addresses the challenge of access management at scale. Instead of managing individual ACLs for each user, RBAC groups permissions into roles that you can assign to multiple users. Roles can reflect organizational structure or job duties. This approach decouples users and permissions, allowing a one-to-many mapping that reduces the number of custom ACLs needed.
 
-Using RBAC, you can define roles to reflect organizational structure or job duties. This approach decouples users and permissions through the assignment of roles. RBAC allows a one-to-many mapping of a given role to many users, dramatically reducing the number of custom policies needed for a resource from one per user, to one per group of users.
+Benefits of RBAC:
 
-=== RBAC terminology
+* Simplified management: Create roles once, assign to many users
+* Easier onboarding: New employees inherit permissions by role assignment
+* Faster audits: Review permissions by role rather than individual user
+* Better compliance: Roles align with organizational structure and job duties
+* Reduced errors: Fewer individual ACL assignments mean fewer mistakes
 
-Under the RBAC framework, you create *roles*, grant *permissions* to those roles, and assign the roles to *users*. When you change the permissions for a given role, all users with that role automatically gain the modified permissions. You grant or deny permissions for a role by creating an ACL and specifying the RBAC role as either allowed or denied  respectively.
+== Manage roles
+
+ifndef::env-cloud[]
+Administrators can create and manage RBAC configurations with `rpk`, the Redpanda Admin API, or {ui}. 
+
+endif::[]
+
+ifdef::env-cloud[]
+Administrators can manage RBAC configurations with `rpk` or {ui}. 
+
+endif::[]
+
+In {ui}, select *Security* from the left navigation menu, and then select the *Roles* tab. After the role is created, you can add users/principals to it. 
+
+For `rpk`, use xref:reference:rpk/rpk-security/rpk-security.adoc[`rpk security`]. For example, suppose you want to create a `DataAnalysts` role for users who need to read from analytics topics and write to reporting topics:
+
+[,bash]
+----
+# 1. Create the role
+rpk security role create DataAnalysts
+
+# 2. Grant read access to analytics topics
+rpk security acl create --operation read,describe \
+  --topic 'analytics-*' --resource-pattern-type prefixed \
+  --allow-role DataAnalysts
+
+# 3. Grant write access to reporting topics  
+rpk security acl create --operation write,describe \
+  --topic 'reports-*' --resource-pattern-type prefixed \
+  --allow-role DataAnalysts
+
+# 4. Assign users to the role
+rpk security role assign DataAnalysts --principal alice,bob,charlie
+
+# 5. Verify the setup
+rpk security role describe DataAnalysts
+----
+
+All three users (`alice`, `bob`, `charlie`) now have identical permissions without managing individual ACLs for each user.
+
+
+== RBAC terminology
+
+Understanding RBAC terminology is essential for effective role management:
+
+[cols="1,2,2"]
+|===
+| Term | Definition | Example
+
+| Role
+| A named collection of ACLs that can be assigned to users
+| `DataEngineers`, `ApplicationDevelopers`, `ReadOnlyUsers`
+
+| Principal
+| A user account in the system (same as ACL principals)
+| `User:alice`, `User:bob`, `User:analytics-service`
+
+| Permission
+| An ACL rule that allows or denies specific operations
+| `ALLOW READ on topic:sensor-data`, `DENY DELETE on cluster`
+
+| Assignment
+| The association between a user and one or more roles
+| User `alice` has roles `DataEngineers` and `TopicAdmins`
+|===
+
+RBAC workflow:
+
+1. *Create roles*: Define roles that match your organizational needs
+2. *Grant permissions*: Create ACLs specifying the role as allowed/denied
+3. *Assign users*: Associate users with appropriate roles
+4. *Automatic inheritance*: Users gain all permissions from their assigned roles
+
+Under the RBAC framework, you create *roles*, grant *permissions* to those roles, and assign the roles to *users*. When you change the permissions for a given role, all users with that role automatically gain the modified permissions. You grant or deny permissions for a role by creating an ACL and specifying the RBAC role as either allowed or denied respectively.
 
 Redpanda treats all *users* as security principals and defines them with the `Type:Name` syntax (for example, `User:mike`). You can omit the `Type` when defining a principal and Redpanda will assume the `User:` type. All examples here use the full syntax for clarity.
 
 ifndef::env-cloud[]
-See xref:security/authorization/acl.adoc[access control lists] for more information on defining ACLs and working with principals.
+See xref:manage:security/authorization/acl.adoc[access control lists] for more information on defining ACLs and working with principals.
+endif::[]
+
+ifdef::env-cloud[]
+See xref:security:authorization/rbac/acl.adoc[access control lists] for more information on defining ACLs and working with principals.
+endif::[]
+
+=== Roles
+
+You can assign any number of roles to a given user. When installing a new Redpanda cluster, no roles are provisioned by default. 
+
+ifndef::env-cloud[]
+To use RBAC, you must create your first roles using your `superuser` account, which enables you to create additional roles and assign appropriate ACLs as necessary. See xref:security/authentication.adoc#create_superusers[configure authentication] for more information on creating and managing superusers.
 
 endif::[]
 
-==== Roles
+When performing an upgrade from older versions of Redpanda, all existing SASL/SCRAM users are assigned to the placeholder `User` role to help you more readily migrate away from pure ACLs. As a security measure, this default role has no assigned ACLs. 
 
-A role is a named collection of ACLs which may have users (security principals) assigned to it. You can assign any number of roles to a given user. When installing a new Redpanda cluster, no roles are provisioned by default. 
+=== Policy conflicts
+
+You can assign a combination of ACLs and roles to any given principal. ACLs allow permissions, deny permissions, or specify a combination of both. As a result, users may at times have role assignments with conflicting policies. 
+
+Permission resolution rules:
+
+A user is permitted to perform an operation if and only if:
+
+. No `DENY` permission exists matching the operation
+. An `ALLOW` permission exists matching the operation
+
+Examples:
+
+[cols="2,2,1,2"]
+|===
+| User's direct ACLs | Role-based ACLs | Result | Explanation
+
+| `ALLOW READ topic:logs`
+| Role has `DENY READ topic:logs`
+| ❌ denied
+| `DENY` always takes precedence
+
+| `DENY WRITE topic:sensitive`
+| Role has `ALLOW WRITE topic:*`
+| ❌ denied
+| Specific `DENY` blocks wildcard `ALLOW`
+
+| No direct ACLs
+| Role has `ALLOW READ topic:data`
+| ✅ allowed
+| Role permission applies
+
+| `ALLOW READ topic:public`
+| No role ACLs for this topic
+| ✅ allowed
+| Direct permission applies
+|===
 
 ifndef::env-cloud[]
-If you want to use RBAC, you must create your first roles using your `superuser` account, which enables you to create additional roles and assign appropriate ACLs as necessary. See xref:security/authentication.adoc#create_superusers[configure authentication] for more information on creating and managing superusers.
 
-endif::[]
-
-When performing an upgrade from older versions of Redpanda, all existing SASL/SCRAM users are assigned to the placeholder `Users` role to help you more readily migrate away from pure ACLs. As a security measure, this default role has no assigned ACLs. 
-
-==== Policy conflicts
-
-You can assign a combination of ACLs and roles to any given principal. ACLs allow permissions, deny permissions, or specify a combination of both. As a result, users may at times have role assignments with conflicting policies. If this situation arises, the user is permitted to perform an operation if and only if:
-
-* There does not exist a DENY permission matching the operation.
-* There exists an ALLOW permission matching the operation.
-
-ifndef::env-cloud[]
 === RBAC example
 
 Consider a scenario where your software engineers use a set of private topics to publish application update information to users. All your private topics begin with the prefix `private-`. You might create a new `SoftwareEng` role to represent the software engineers with write access to these private topics. You would then assign the `SoftwareEng` role as the allowed role for a new ACL specifying read and write permissions to `private-*`. Using a wildcard includes all existing private topics and any new ones you might create later. You then assign the new role to John and Jane, your two software engineers who will write messages to this topic. The `rpk` commands to accomplish this are:
@@ -60,6 +172,31 @@ rpk security acl create --operation write --topic private-software-versions --al
 
 endif::[]
 
+== RBAC best practices
+
+Follow these recommendations for effective role-based access control:
+
+Role design
+
+* Use descriptive names: Choose role names that clearly indicate their purpose (`DataEngineers`, `ReadOnlyAnalysts`)
+* Follow job functions: Align roles with actual job responsibilities and organizational structure
+* Keep roles focused: Create specific roles rather than overly broad ones (`TopicReaders` vs `SuperUsers`)
+* Plan for growth: Design roles that can accommodate new team members and evolving needs
+
+Permission management
+
+* Start with minimal permissions: Grant only the access required for the role's function
+* Use wildcards carefully: Prefixed patterns like `analytics-*` are useful but review regularly
+* Avoid `DENY` rules: Prefer specific `ALLOW` rules over complex `DENY`/`ALLOW` combinations
+* Document role purpose: Maintain clear documentation about what each role is intended for
+
+Operational guidelines
+
+* Regular reviews: Audit roles and assignments quarterly to ensure they remain appropriate
+* Least privilege: Users should have the minimum roles needed for their current responsibilities
+* Temporary access: Create time-limited roles for contractors or temporary project access
+* Monitor usage: Track which roles and permissions are actively used vs. dormant
+
 == Manage users and roles
 
 ifndef::env-cloud[]
@@ -68,15 +205,30 @@ Administrators can manage RBAC configurations with `rpk`, the Redpanda Admin API
 endif::[]
 
 ifdef::env-cloud[]
-Administrators can manage RBAC configurations with {ui}. 
+Administrators can manage RBAC configurations with `rpk` or {ui}. 
 
 endif::[]
+
+Common management tasks:
+
+* Create roles: Define new roles for organizational functions
+* Assign permissions: Add ACLs to roles to define what they can access
+* Assign users: Associate users with appropriate roles
+* Modify roles: Add or remove permissions from existing roles
+* Audit access: Review roles and assignments for compliance
+
+Typical workflow:
+
+. Create role 
+. Add ACL permissions
+. Assign users
+. Test access
+. Monitor and adjust
 
 === Create a role
 
 Creating a new role is a two-step process. First you define the role, giving it a unique and descriptive name. Second, you assign one or more ACLs to allow or deny access for the new role. This defines the permissions that are inherited by all users assigned to the role. It is possible to have an empty role with no ACLs assigned.
 
-ifndef::env-cloud[]
 [tabs]
 =====
 rpk::
@@ -114,13 +266,6 @@ include::manage:partial$rbac-create-role.adoc[]
 --
 =====
 
-endif::[]
-
-ifdef::env-cloud[]
-include::manage:partial$rbac-create-role.adoc[]
-
-endif::[]
-
 === Delete a role
 
 When a role is deleted, Redpanda carries out the following actions automatically:
@@ -130,7 +275,6 @@ When a role is deleted, Redpanda carries out the following actions automatically
 
 Redpanda lists all impacted ACLs and role assignments when running this command. You receive a prompt to confirm the deletion action. The delete operation is irreversible.
 
-ifndef::env-cloud[]
 [tabs]
 ====
 rpk::
@@ -172,18 +316,11 @@ include::manage:partial$rbac-delete-role.adoc[]
 --
 ====
 
-endif::[]
-
-ifdef::env-cloud[]
-include::manage:partial$rbac-delete-role.adoc[]
-
-endif::[]
 
 === Assign a role
 
 You can assign a role to any security principal. Principals are referred to using the format: `Type:Name`. Redpanda currently supports only the `User` type. If you omit the type, Redpanda assumes the `User` type by default. With this command, you can assign the role to multiple principals at the same time by using a comma separator between each principal.
 
-ifndef::env-cloud[]
 [tabs]
 ====
 rpk::
@@ -217,18 +354,10 @@ include::manage:partial$rbac-assign-role.adoc[]
 --
 ====
 
-endif::[]
-
-ifdef::env-cloud[]
-include::manage:partial$rbac-assign-role.adoc[]
-
-endif::[]
-
 === Unassign a role
 
 You can remove a role assignment from a security principal without deleting the role. Principals are referred to using the format: `Type:Name`. Redpanda currently supports only the `User` type. If you omit the type, Redpanda assumes the `User` type by default. With this command, you can remove the role from multiple principals at the same time by using a comma separator between each principal.
 
-ifndef::env-cloud[]
 [tabs]
 ====
 rpk::
@@ -261,18 +390,10 @@ include::manage:partial$rbac-unassign-role.adoc[]
 --
 ====
 
-endif::[]
-
-ifdef::env-cloud[]
-include::manage:partial$rbac-unassign-role.adoc[]
-
-endif::[]
-
 === Edit role permissions
 
 You can add or remove ACLs from any of the roles you have previously created.
 
-ifndef::env-cloud[]
 [tabs]
 ====
 rpk::
@@ -309,7 +430,6 @@ rpk security acl list --allow-role <role_name> --deny-role <role_name>
 
 See also:
 
-* xref:security/authorization/acl.adoc[Access Control Lists] for more information on defining and using ACLs.
 * xref:reference:rpk/rpk-acl/rpk-acl-create.adoc[]
 * xref:reference:rpk/rpk-acl/rpk-acl-delete.adoc[]
 * xref:reference:rpk/rpk-acl/rpk-acl-list.adoc[]
@@ -322,18 +442,10 @@ include::manage:partial$rbac-edit-role.adoc[]
 --
 ====
 
-endif::[]
-
-ifdef::env-cloud[]
-include::manage:partial$rbac-edit-role.adoc[]
-
-endif::[]
-
 === List all roles
 
 Redpanda lets you view a list of all existing roles.
 
-ifndef::env-cloud[]
 [tabs]
 ====
 rpk::
@@ -365,18 +477,10 @@ include::manage:partial$rbac-list-role.adoc[]
 --
 ====
 
-endif::[]
-
-ifdef::env-cloud[]
-include::manage:partial$rbac-list-role.adoc[]
-
-endif::[]
-
 === Describe a role
 
 When managing roles, you may need to review the ACLs the role grants or the list of principals assigned to the role.
 
-ifndef::env-cloud[]
 [tabs]
 ====
 rpk::
@@ -416,11 +520,18 @@ include::manage:partial$rbac-describe-role.adoc[]
 --
 ====
 
+== Suggested reading
+
+* xref:reference:rpk/rpk-security/rpk-security.adoc[`rpk security`] - Complete security command reference
+* xref:reference:rpk/rpk-security/rpk-security-acl.adoc[`rpk security acl`] - ACL management commands
+
+ifndef::env-cloud[]
+* xref:manage:security/authorization/acl.adoc[Access Control Lists] - Understanding the underlying ACL system
+* xref:manage:security/authentication.adoc[Authentication] - Setting up users and authentication methods
 endif::[]
 
 ifdef::env-cloud[]
-include::manage:partial$rbac-describe-role.adoc[]
-
+* xref:security:authorization/rbac/acl.adoc[Access Control Lists] - Understanding the underlying ACL system  
 endif::[]
 
 // end::single-source[]
