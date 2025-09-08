@@ -838,6 +838,8 @@ The amount of memory to reserve per core for data transform (Wasm) virtual machi
 
 *Type:* integer
 
+*Aliases:* `wasm_per_core_memory_reservation`
+
 ifndef::env-cloud[]
 *Default:* `20971520`
 endif::[]
@@ -860,6 +862,8 @@ The amount of memory to give an instance of a data transform (Wasm) virtual mach
 *Visibility:* `user`
 
 *Type:* integer
+
+*Aliases:* `wasm_per_function_memory_limit`
 
 *Default:* `2097152`
 
@@ -2201,7 +2205,7 @@ endif::[]
 
 === iceberg_latest_schema_cache_ttl_ms
 
-The TTL for caching the latest schema during translation when using the `latest_protobuf_value` iceberg mode. This setting controls how long the latest schema remains cached during translation, which affects schema refresh behavior and performance.
+The TTL for caching the latest schema during translation when using the xref:manage:iceberg/specify-iceberg-schema.adoc#value_schema_latest[`value_schema_latest`] iceberg mode. This setting controls how long the latest schema remains cached during translation, which affects schema refresh behavior and performance.
 
 *Unit:* milliseconds
 
@@ -2256,13 +2260,21 @@ AWS access key for Iceberg REST catalog SigV4 authentication. If not set, falls 
 
 === iceberg_rest_catalog_credentials_source
 
+ifndef::env-cloud[]
 Source of AWS credentials for Iceberg REST catalog SigV4 authentication. If not set, falls back to xref:reference:properties/object-storage-properties.adoc#cloud_storage_credentials_source[`cloud_storage_credentials_source`] when using aws_sigv4 authentication mode.
+endif::[]
+
+ifdef::env-cloud[]
+Source of AWS credentials for Iceberg REST catalog SigV4 authentication. If providing explicit credentials using `iceberg_rest_catalog_aws_access_key` and `iceberg_rest_catalog_aws_secret_key` for Glue catalog authentication, you must set this property to `config_file`.
+endif::[]
 
 *Accepted values*: `aws_instance_metadata`, `azure_aks_oidc_federation`, `azure_vm_instance_metadata`, `config_file`, `gcp_instance_metadata`, `sts`.
 
 *Requires restart:* Yes
 
 *Visibility:* `user`
+
+*Aliases:* `iceberg_rest_catalog_aws_credentials_source`
 
 *Default:* `null`
 
@@ -2307,20 +2319,6 @@ AWS service name for SigV4 signing when using aws_sigv4 authentication mode. Def
 *Type:* string
 
 *Default:* `glue`
-
----
-
-=== iceberg_rest_catalog_base_location
-
-Base URI for the Iceberg REST catalog. If unset, the REST catalog server determines the location. Some REST catalogs, like AWS Glue, require the client to set this. After Iceberg is enabled, do not change this value.
-
-*Requires restart:* Yes
-
-*Visibility:* `user`
-
-*Type:* string
-
-*Default:* `null`
 
 ---
 
@@ -2593,18 +2591,18 @@ Path to a file containing a certificate chain to trust for the REST Iceberg cata
 
 ---
 
-// tag::iceberg_rest_catalog_prefix[]
+// tag::iceberg_rest_catalog_warehouse[]
 === iceberg_rest_catalog_warehouse
 
 Warehouse to use for the Iceberg REST catalog. Redpanda queries the catalog to retrieve warehouse-specific configurations and automatically configures settings like the appropriate prefix. The prefix is appended to the catalog path (for example, `/v1/\{prefix}/namespaces`).
-
-*Alias:* `iceberg_rest_catalog_prefix`
 
 *Requires restart:* Yes
 
 *Visibility:* `user`
 
 *Type:* string
+
+*Aliases:* `iceberg_rest_catalog_prefix`
 
 ifndef::env-cloud[]
 *Default:* `null`
@@ -2616,7 +2614,7 @@ endif::[]
 
 ---
 
-// end::iceberg_rest_catalog_prefix[]
+// end::iceberg_rest_catalog_warehouse[]
 
 === iceberg_target_backlog_size
 
@@ -3760,7 +3758,9 @@ Use sliding window compaction.
 
 === log_compression_type
 
-Default topic compression type.
+IMPORTANT: This property is ignored regardless of the value specified. The behavior is always the same as the `producer` value. Redpanda brokers do not compress or recompress data based on this property. If producers send compressed data, Redpanda stores it as-is; if producers send uncompressed data, Redpanda stores it uncompressed. Other listed values are accepted for Apache Kafka compatibility but are ignored by the broker. This property may appear in Admin API and `rpk topic describe` outputs for compatibility.
+
+Default for the Kafka-compatible compression.type property. Redpanda does not recompress data.
 
 The topic property xref:./topic-properties.adoc#compressiontype[`compression.type`] overrides the value of `log_compression_type` at the topic level.
 
@@ -3768,7 +3768,7 @@ The topic property xref:./topic-properties.adoc#compressiontype[`compression.typ
 
 *Visibility:* `user`
 
-*Accepted Values:* `gzip`, `snappy`, `lz4`, `zstd`, `producer`, `none`.
+*Accepted Values:* `producer`. The following values are accepted for Kafka compatibility but ignored by the broker: `gzip`, `snappy`, `lz4`, `zstd`, `none`.
 
 *Default:* `producer`
 
@@ -3849,6 +3849,8 @@ The amount of time to keep a log file before deleting it (in milliseconds). If s
 *Requires restart:* No
 
 *Visibility:* `user`
+
+*Aliases:* `delete_retention_ms`
 
 *Accepted values:* [`-17592186044416`, `17592186044415`]
 
@@ -4588,7 +4590,7 @@ Mode of xref:manage:cluster-maintenance/cluster-balancing.adoc[partition balanci
 
 *Accepted values:* 
 
-* `continuous`: partition balancing happens automatically to maintain optimal performance and availability, based on continuous monitoring for node changes (same as `node_add`) and also high disk usage. This option requires an xref:get-started:licenses.adoc[enterprise license], and it is customized by <<partition_autobalancing_node_availability_timeout_sec,`partition_autobalancing_node_availability_timeout_sec`>> and <<partition_autobalancing_max_disk_usage_percent,`partition_autobalancing_max_disk_usage_percent`>> properties.
+* `continuous`: partition balancing happens automatically to maintain optimal performance and availability, based on continuous monitoring for node changes (same as `node_add`) and also high disk usage. This option requires an xref:get-started:licensing/index.adoc[enterprise license], and it is customized by <<partition_autobalancing_node_availability_timeout_sec,`partition_autobalancing_node_availability_timeout_sec`>> and <<partition_autobalancing_max_disk_usage_percent,`partition_autobalancing_max_disk_usage_percent`>> properties.
 * `node_add`: partition balancing happens when a node is added.
 * `off`: partition balancing is disabled. This option is not recommended for production clusters.
 
@@ -5673,14 +5675,21 @@ Always normalize schemas. If set, this overrides the `normalize` parameter in re
 
 *Type:* boolean
 
+*Aliases:* `schema_registry_normalize_on_startup`
+
 *Default:* `false`
 
 ---
 
+// tag::schema_registry_enable_authorization[]
 === schema_registry_enable_authorization
 
 Enables ACL-based authorization for Schema Registry requests. When `true`, Schema Registry
-uses ACL-based authorization instead of the default `public/user/superuser` authorization model. Requires authentication to be enabled using the `schema_registry_api.authn_method` property.
+uses ACL-based authorization instead of the default `public/user/superuser` authorization model. 
+
+ifdef::env-cloud[]
+Requires authentication to be enabled using the `authentication_method` property in the `schema_registry_api` broker configuration.
+endif::[]
 
 *Requires restart:* No
 
@@ -5688,25 +5697,15 @@ uses ACL-based authorization instead of the default `public/user/superuser` auth
 
 *Type:* boolean
 
+ifndef::env-cloud[]
 *Enterprise license required:* `true`
+endif::[]
 
 *Default:* `false`
 
 ---
 
-=== schema_registry_normalize_on_startup
-
-Normalize schemas as they are read from the topic on startup.
-
-*Requires restart:* Yes
-
-*Visibility:* `user`
-
-*Type:* boolean
-
-*Default:* `false`
-
----
+// end::schema_registry_enable_authorization[]
 
 === segment_appender_flush_timeout_ms
 
@@ -6259,7 +6258,9 @@ Cleanup policy for a transaction coordinator topic.
 
 === transaction_coordinator_delete_retention_ms
 
-Delete segments older than this age. To ensure transaction state is retained as long as the longest-running transaction, make sure this is no less than <<transactional_id_expiration_ms,`transactional_id_expiration_ms`>>.
+Delete segments older than this age. To ensure transaction state is retained for as long as the longest-running transaction, make sure this is greater than or equal to <<transactional_id_expiration_ms,`transactional_id_expiration_ms`>>.
+
+For example, if your typical transactions run for one hour, consider setting both `transaction_coordinator_delete_retention_ms` and `transactional_id_expiration_ms` to at least 3600000 (one hour), or a little over.
 
 *Unit:* milliseconds
 

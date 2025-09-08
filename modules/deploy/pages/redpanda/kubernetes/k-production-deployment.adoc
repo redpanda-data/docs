@@ -1,0 +1,786 @@
+= Deploy Redpanda for Production in Kubernetes
+:description: Deploy a Redpanda cluster in Kubernetes.
+:tags: ["Kubernetes"]
+:page-aliases: deploy:deployment-option/self-hosted/kubernetes/kubernetes-best-practices.adoc, deploy:deployment-option/self-hosted/kubernetes/redpanda-cluster-recommendations.adoc, deploy:deployment-option/self-hosted/kubernetes/kubernetes-deploy.adoc, deploy:deployment-option/self-hosted/kubernetes/k-25.1-beta.adoc, deploy:deployment-option/self-hosted/kubernetes/k-production-deployment.adoc, deploy:redpanda/kubernetes/k-25.2-beta.adoc
+:page-toclevels: 1
+:env-kubernetes: true
+:page-categories: Deployment, GitOps
+
+This topic describes how to configure and deploy one or more Redpanda clusters and Redpanda Console in Kubernetes.
+
+== Prerequisites
+
+Make sure that your Kubernetes cluster meets the xref:deploy:redpanda/kubernetes/k-requirements.adoc[requirements].
+
+You must already have a ConfigMap that stores your `io-config.yaml` file. See xref:deploy:redpanda/kubernetes/k-tune-workers.adoc#io[Generate optimal I/O configuration settings].
+
+== Deploy a Redpanda cluster
+
+To deploy Redpanda and Redpanda Console, you can use the following tools:
+
+- *Redpanda Operator*: The Redpanda Operator extends Kubernetes with custom resource definitions (CRDs), allowing you to define Redpanda clusters as native Kubernetes resources. The resource that the Redpanda Operator uses to represent a Redpanda cluster is the Redpanda resource. The Redpanda Operator can be deployed in either cluster scope (managing resources across all namespaces) or namespace scope (managing resources within a single namespace).
+- *Helm*: https://helm.sh/docs[Helm^] is a package manager for Kubernetes, which simplifies the process of defining, installing, and upgrading Kubernetes applications. Helm uses charts, a collection of files that describe a related set of Kubernetes resources, to deploy applications in a Kubernetes cluster.
+
+TIP: For more details about the differences between these two methods, see xref:deploy:redpanda/kubernetes/k-deployment-overview.adoc[].
+
+[tabs]
+====
+Operator::
++
+--
+
+The Redpanda Operator can be deployed in two different scopes:
+
+- *Cluster scope* (recommended): The Redpanda Operator manages Redpanda resources across all namespaces in your Kubernetes cluster. This provides centralized management and is ideal for production environments.
+- *Namespace scope*: The Redpanda Operator manages Redpanda resources only within a specific namespace. This provides better isolation and is suitable when you need strict namespace boundaries.
+
+WARNING: Do not run multiple Redpanda Operators in different scopes (cluster and namespace scope) in the same cluster as this can cause resource conflicts.
+
+. Make sure that you have permission to install custom resource definitions (CRDs):
++
+```bash
+kubectl auth can-i create CustomResourceDefinition --all-namespaces
+```
++
+You should see `yes` in the output.
++
+You need these cluster-level permissions to install glossterm:cert-manager[^] and Redpanda Operator CRDs in the next steps.
+
+. Install https://cert-manager.io/docs/installation/helm/[cert-manager^]:
++
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm install cert-manager jetstack/cert-manager \
+  --set crds.enabled=true \
+  --namespace cert-manager  \
+  --create-namespace
+```
++
+The Redpanda Helm chart enables TLS by default and uses cert-manager to manage TLS certificates.
+
+. Deploy the Redpanda Operator in your chosen scope:
++
+include::deploy:partial$kubernetes/deploy-operator.adoc[]
+
+. Ensure that the Deployment is successfully rolled out:
++
+```bash
+kubectl --namespace <namespace> rollout status --watch deployment/redpanda-controller-operator
+```
++
+[.no-copy]
+----
+deployment "redpanda-controller-operator" successfully rolled out
+----
+
+. Install a xref:reference:k-crd.adoc[Redpanda custom resource] to deploy a Redpanda cluster and Redpanda Console.
++
+.`redpanda-cluster.yaml`
+[,yaml,subs="attributes+",lines=4+6+7+8]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+  namespace: <cluster-namespace>
+spec:
+  clusterSpec:
+    #enterprise:
+      #licenseSecretRef:
+        #name: <secret-name>
+        #key: <secret-key>
+    image:
+      tag: {latest-redpanda-tag}
+    statefulset:
+      extraVolumes: |-
+        - name: redpanda-io-config
+          configMap:
+            name: redpanda-io-config
+      extraVolumeMounts: |-
+        - name: redpanda-io-config
+          mountPath: /etc/redpanda-io-config
+      additionalRedpandaCmdFlags:
+        - "--io-properties-file=/etc/redpanda-io-config/io-config.yaml"
+----
++
+- `metadata.name`: Name to assign the Redpanda cluster.
+- `metadata.namespace`: For cluster-scoped deployment, specify any namespace. For namespace-scoped deployment, must be the same namespace where the Redpanda Operator is deployed.
+- xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-api-redpanda-v1alpha2-redpandaclusterspec[`spec.clusterSpec`]: This is where you can override default values in the Redpanda Helm chart. Here, you mount the <<prerequisites, I/O configuration file>> to the Pods that run Redpanda. For other configuration details, see <<Production considerations>>.
+- `spec.clusterSpec.enterprise`: If you want to use enterprise features in Redpanda, uncomment this section and add the details of a Secret that stores your Enterprise Edition license key. For details, see xref:get-started:licensing/index.adoc[].
+- `spec.clusterSpec.image.tag`: Deploys the latest version of Redpanda.
+- `spec.clusterSpec.statefulset`: Here, you mount the <<prerequisites, I/O configuration file>> to the Pods that run Redpanda. For other configuration details, see <<Production considerations>>.
+
+. Apply the Redpanda resource:
++
+```bash
+kubectl apply -f redpanda-cluster.yaml
+```
+
+. Wait for the Redpanda Operator to deploy Redpanda using the Helm chart:
++
+```bash
+kubectl get redpanda --namespace <cluster-namespace> --watch
+```
++
+[.no-copy]
+----
+NAME       READY   STATUS
+redpanda   True    Redpanda reconciliation succeeded
+----
++
+This step may take a few minutes. You can watch for new Pods to make sure that the deployment is progressing:
++
+```bash
+kubectl get pod --namespace <cluster-namespace>
+```
++
+If it's taking too long, see xref:manage:kubernetes/troubleshooting/k-troubleshoot.adoc[Troubleshooting].
+
+. Verify that each Redpanda broker is scheduled on only one Kubernetes node:
++
+```bash
+kubectl get pod --namespace <cluster-namespace>  \
+  -o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name -l \
+  app.kubernetes.io/component=redpanda-statefulset
+```
++
+Expected output:
++
+[.no-copy]
+----
+example-worker3   redpanda-0
+example-worker2   redpanda-1
+example-worker    redpanda-2
+----
+
+--
+Helm::
++
+--
+
+. Install cert-manager using Helm:
++
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm install cert-manager jetstack/cert-manager \
+  --set crds.enabled=true \
+  --namespace cert-manager  \
+  --create-namespace
+```
++
+The Redpanda Helm chart enables TLS by default and uses cert-manager to manage TLS certificates.
+
+. Override the default values to mount your <<prerequisites, I/O configuration file>> onto each Pod that runs Redpanda.
++
+.`redpanda-values.yaml`
+[,yaml]
+----
+image:
+  tag: {latest-redpanda-tag}
+statefulset:
+  extraVolumes: |-
+    - name: redpanda-io-config
+      configMap:
+        name: redpanda-io-config
+  extraVolumeMounts: |-
+    - name: redpanda-io-config
+      mountPath: /etc/redpanda-io-config
+  additionalRedpandaCmdFlags:
+    - "--io-properties-file=/etc/redpanda-io-config/io-config.yaml"
+----
++
+Redpanda reads from this file at startup to optimize itself for the given I/O parameters.
++
+If you want to use enterprise features in Redpanda, add the details of a Secret that stores your Enterprise Edition license key.
++
+.`redpanda-values.yaml`
+[,yaml]
+----
+enterprise:
+  licenseSecretRef:
+    name: <secret-name>
+    key: <secret-key>
+----
++
+For details, see xref:get-started:licensing/add-license-redpanda/kubernetes.adoc[].
+
+. Install the Redpanda Helm chart to deploy a Redpanda cluster and Redpanda Console.
++
+[source,bash,subs="attributes+"]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm repo update
+helm install redpanda redpanda/redpanda \
+  --version {latest-redpanda-helm-chart-version} \ <1>
+  --namespace <namespace> \ <2>
+  --create-namespace \
+  --values redpanda-values.yaml
+----
++
+<1> This flag specifies the exact version of the Redpanda Helm chart to use for deployment. By setting this value, you <<version-pinning, pin the chart to a specific version>>, which prevents automatic updates that might introduce breaking changes or new features that have not been tested in your environment.
+<2> Each deployment of the Redpanda Helm chart requires a separate namespace. Ensure you choose a unique namespace for each deployment.
+
+. Wait for the Redpanda cluster to be ready:
++
+```bash
+kubectl --namespace <namespace> rollout status statefulset redpanda --watch
+```
++
+When the Redpanda cluster is ready, the output should look similar to the following:
++
+[.no-copy]
+----
+statefulset rolling update complete 3 pods at revision redpanda-8654f645b4...
+----
+
+. Verify that each Redpanda broker is scheduled on only one Kubernetes node:
++
+```bash
+kubectl get pod --namespace <namespace> \
+-o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name -l \
+app.kubernetes.io/component=redpanda-statefulset
+```
++
+Expected output:
++
+[.no-copy]
+----
+example-worker3   redpanda-0
+example-worker2   redpanda-1
+example-worker    redpanda-2
+----
+
+--
+====
+
+== Deploy multiple Redpanda clusters
+
+You can deploy multiple Redpanda clusters in the same Kubernetes cluster. This is useful for creating separate environments (such as production, staging, and development) or for organizing clusters by application or team.
+
+[tabs]
+====
+Operator::
++
+--
+
+When using the Redpanda Operator, you can deploy multiple Redpanda clusters by creating separate Redpanda custom resources.
+
+*Requirements:*
+
+- Use a cluster-scoped Redpanda Operator deployment (recommended) or separate namespace-scoped operators in different namespaces
+- Each cluster must be deployed in a unique namespace
+- Configure unique external port numbers for each cluster to avoid conflicts
+
+. Create a second Redpanda cluster in a different namespace:
++
+.`redpanda-cluster-two.yaml`
+[,yaml,subs="attributes+"]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda-staging
+  namespace: redpanda-staging
+spec:
+  clusterSpec:
+    image:
+      tag: {latest-redpanda-tag}
+    listeners:
+      kafka:
+        external:
+          default:
+            advertisedPorts: [31093] <1>
+      admin:
+        external:
+          default:
+            advertisedPorts: [31645] <1>
+      http:
+        external:
+          default:
+            advertisedPorts: [30083] <1>
+      rpc:
+        port: 33146 <1>
+      schemaRegistry:
+        external:
+          default:
+            advertisedPorts: [30084] <1>
+    statefulset:
+      extraVolumes: |-
+        - name: redpanda-io-config
+          configMap:
+            name: redpanda-io-config
+      extraVolumeMounts: |-
+        - name: redpanda-io-config
+          mountPath: /etc/redpanda-io-config
+      additionalRedpandaCmdFlags:
+        - "--io-properties-file=/etc/redpanda-io-config/io-config.yaml"
+----
++
+<1> Configure unique port numbers for each cluster to avoid conflicts. Ensure these ports don't conflict with your first cluster's configuration.
+
+. Apply the second Redpanda resource:
++
+```bash
+kubectl apply -f redpanda-cluster-two.yaml
+```
+
+. Wait for the second cluster to be ready:
++
+```bash
+kubectl get redpanda --namespace redpanda-staging --watch
+```
+
+--
+Helm::
++
+--
+
+When using Helm, deploy multiple Redpanda clusters by using separate namespaces and unique release names for each deployment.
+
+*Requirements:*
+
+- Each cluster must be deployed in a unique namespace
+- Use unique Helm release names for each deployment
+- Configure unique external port numbers for each cluster to avoid conflicts
+
+. Create configuration values for your second cluster:
++
+.`redpanda-staging-values.yaml`
+[,yaml,subs="attributes+"]
+----
+image:
+  tag: {latest-redpanda-tag}
+nameOverride: 'redpanda-staging'
+fullnameOverride: 'redpanda-staging'
+listeners:
+  kafka:
+    external:
+      default:
+        advertisedPorts: [31093] <1>
+  admin:
+    external:
+      default:
+        advertisedPorts: [31645] <1>
+  http:
+    external:
+      default:
+        advertisedPorts: [30083] <1>
+  rpc:
+    port: 33146 <1>
+  schemaRegistry:
+    external:
+      default:
+        advertisedPorts: [30084] <1>
+statefulset:
+  extraVolumes: |-
+    - name: redpanda-io-config
+      configMap:
+        name: redpanda-io-config
+  extraVolumeMounts: |-
+    - name: redpanda-io-config
+      mountPath: /etc/redpanda-io-config
+  additionalRedpandaCmdFlags:
+    - "--io-properties-file=/etc/redpanda-io-config/io-config.yaml"
+----
++
+<1> Configure unique port numbers for each cluster to avoid conflicts. Ensure these ports don't conflict with your first cluster's configuration.
+
+. Install the second Redpanda cluster using a unique release name and namespace:
++
+[source,bash,subs="attributes+"]
+----
+helm install redpanda-staging redpanda/redpanda \
+  --version {latest-redpanda-helm-chart-version} \
+  --namespace redpanda-staging \
+  --create-namespace \
+  --values redpanda-staging-values.yaml
+----
+
+. Wait for the second cluster to be ready:
++
+```bash
+kubectl --namespace redpanda-staging rollout status statefulset redpanda-staging --watch
+```
+
+--
+====
+
+IMPORTANT: When deploying multiple clusters, ensure that external listener ports are unique across all clusters to prevent conflicts. Also consider resource allocation and node capacity when planning multiple cluster deployments.
+
+
+[[config]]
+== Production considerations
+
+This section provides advice for configuring the Redpanda in Kubernetes for production.
+
+If you're using the Redpanda Operator, see: xref:reference:k-crd.adoc[] for all available settings.
+
+If you're using the Redpanda Helm chart, see: xref:reference:k-redpanda-helm-spec.adoc[] for all available settings.
+
+[[version-pinning]]
+=== Version pinning (Helm)
+
+If you use the Redpanda Helm chart to deploy Redpanda, it's important to pin the version of the Helm chart to ensure that you have control over the version of Redpanda that you deploy.
+
+The Redpanda Helm chart version is independent of the Redpanda application version. The Redpanda application version can change even in patch releases of the Helm chart. This means that updates to the chart may roll out new versions of Redpanda.
+
+To avoid unexpected changes to your deployments, pin the version of the Helm chart. Pinning refers to the practice of specifying an exact version to use during deployment, rather than using the latest or unspecified version. When you pin the Helm chart version, you maintain consistent, predictable environments, especially in production. Using a specific version helps to:
+
+- *Ensure compatibility*: Guarantee that the deployed application behaves as tested, regardless of new chart versions being released.
+- *Avoid unexpected updates*: Prevent automatic updates that may introduce changes incompatible with the current deployment or operational practices.
+
+[source,bash,subs="attributes+"]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm repo update
+helm install redpanda redpanda/redpanda \
+  --version {latest-redpanda-helm-chart-version} \
+  --namespace <namespace> \
+  --create-namespace
+----
+
+xref:reference:releases/index.adoc[Review the release notes] to understand any significant changes, bug fixes, or potential disruptions that could affect your existing deployment.
+
+=== Name overrides (Helm)
+
+Deploying multiple instances of the same Helm chart in a Kubernetes cluster can lead to naming conflicts. Using `nameOverride` and `fullnameOverride` helps differentiate between them. If you have a production and staging environment for Redpanda, different names help to avoid confusion.
+
+- Use `nameOverride` to customize the labels `app.kubernetes.io/component=<nameOverride>-statefulset` and `app.kubernetes.io/name=<nameOverride>`.
+- Use `fullnameOverride` to customize the name of the StatefulSet and Services.
+
+[source,yaml]
+----
+nameOverride: 'redpanda-production'
+fullnameOverride: 'redpanda-instance-prod'
+----
+
+=== Labels
+
+Kubernetes labels help you to organize, query, and manage your resources. Use labels to categorize Kubernetes resources in different deployments by environment, purpose, or team.
+
+[source,yaml]
+----
+commonLabels:
+  env: 'production'
+----
+
+=== Tolerations
+
+Tolerations and taints allow Pods to be scheduled onto nodes where they otherwise wouldn't. If you have nodes dedicated to Redpanda with a taint `dedicated=redpanda:NoSchedule`, the following toleration allows the Redpanda brokers to be scheduled on them.
+
+[source,yaml]
+----
+tolerations:
+- key: "dedicated"
+  operator: "Equal"
+  value: "redpanda"
+  effect: "NoSchedule"
+----
+
+=== Docker image
+
+You can specify the image tag to deploy a known version of the Redpanda Docker image. By default, the image tag is set in `Chart.appVersion`. Avoid using the `latest` tag, which can lead to unexpected changes.
+
+If you're using a private repository, always ensure your nodes have the necessary credentials to pull the image.
+
+[source,yaml,subs="attributes+"]
+----
+image:
+  repository: docker.redpanda.com/redpandadata/redpanda
+  tag: "{latest-redpanda-tag}"
+imagePullSecrets: []
+----
+
+=== Number of Redpanda brokers
+
+The number of Redpanda brokers you deploy depends on your use case and the level of redundancy you require. For production, deploy at least three Redpanda brokers. Always deploy an odd number of brokers to avoid split-brain scenarios.
+
+[,yaml]
+----
+statefulset:
+  replicas: 3
+----
+
+NOTE: You must provision one dedicated worker node for each Redpanda broker that you plan to deploy in your Redpanda cluster. The default <<affinity-rules, `podAntiAffinity` rules>> make sure that each Redpanda broker runs on its own worker node.
+
+See also:
+
+- xref:deploy:redpanda/kubernetes/k-high-availability.adoc[]
+- xref:deploy:redpanda/kubernetes/k-requirements.adoc#number-of-worker-nodes[Kubernetes Cluster Requirements]
+
+=== TLS
+
+By default, TLS (Transport Layer Security) is enabled for encrypted communication. Internal (`default`) and external (`external`) self-signed certificates are generated using cert-manager. See <<TLS Certificates>>.
+
+[source,yaml]
+----
+tls:
+  enabled: true
+  certs:
+    # This key represents the name of the certificate.
+    default:
+      caEnabled: true
+    # This key represents the name of the certificate.
+    external:
+      caEnabled: true
+----
+
+See also: xref:manage:kubernetes/security/kubernetes-tls.adoc[]
+
+=== Authentication
+
+If you want to authenticate clients connections to the Redpanda cluster, you can enable SASL authentication.
+
+[source,yaml]
+----
+auth:
+  sasl:
+    enabled: true
+    mechanism: "SCRAM-SHA-512"
+    secretRef: "sasl-password-secret"
+    users: []
+----
+
+See also: xref:manage:kubernetes/security/authentication/k-authentication.adoc[]
+
+=== Resources
+
+By default, the resources allocated to Redpanda are for a development environment. In a production cluster, the resources you allocate should be proportionate to your machine type. You should determine and set these values before deploying the cluster.
+
+[source,yaml]
+----
+resources:
+  cpu:
+    cores: 4
+  memory:
+    enable_memory_locking: true
+    container:
+      max: 10Gi
+----
+
+See also:
+
+- xref:manage:kubernetes/k-manage-resources.adoc[]
+- xref:deploy:redpanda/kubernetes/k-requirements.adoc[]
+
+=== Storage
+
+In production, it's best to use local PersistentVolumes (PVs) that are backed by NVMe devices to store the Redpanda data directory. NVMe devices outperform traditional SSDs or HDDs.
+
+Redpanda Data recommends creating StorageClasses that use the https://github.com/metal-stack/csi-driver-lvm[local volume manager (LVM) CSI driver] to automatically provision PVs. The LVM allows you to group physical storage devices into a logical volume group. Allocating logical volumes from a logical volume group provides greater flexibility in terms of storage expansion and management. The LVM supports features such as resizing, snapshots, and striping, which are not available with the other drivers such as the local volume static provisioner.
+
+[,yaml]
+----
+storage:
+  persistentVolume:
+    enabled: true
+    size: 100Gi
+    storageClass: csi-driver-lvm-striped-xfs
+----
+
+For an example of configuring local PersistentVolumes backed by NVMe disks, see one of the following guides:
+
+* xref:deploy:redpanda/kubernetes/aks-guide.adoc#create-sc[Azure Kubernetes Service] (AKS)
+* xref:deploy:redpanda/kubernetes/eks-guide.adoc#create-sc[Elastic Kubernetes Service] (EKS)
+* xref:deploy:redpanda/kubernetes/gke-guide.adoc#create-sc[Google Kubernetes Engine] (GKE)
+
+See also:
+
+- xref:manage:kubernetes/storage/k-volume-types.adoc[]
+- xref:deploy:redpanda/kubernetes/k-requirements.adoc[]
+- xref:manage:kubernetes/storage/k-configure-storage.adoc[]
+
+=== External access
+
+To make the Redpanda cluster accessible from outside the Kubernetes cluster, you can use NodePort or LoadBalancer Services.
+
+The default NodePort Service provides the lowest latency of all the Kubernetes Services because it does not include any unnecessary routing or middleware. Client connections go to the Redpanda brokers in the most direct way possible, through the worker nodes.
+
+By default, the fully qualified domain names (FQDNs) that brokers advertise are their internal addresses within the Kubernetes cluster, which are not reachable from outside the cluster. To make the cluster accessible from outside, each broker must advertise a domain that can be reached from outside the cluster.
+
+[,yaml]
+----
+external:
+  enabled: true
+  type: NodePort
+----
+
+See also:
+
+- xref:manage:kubernetes/networking/k-networking-and-connectivity.adoc[]
+- xref:manage:kubernetes/networking/k-configure-listeners.adoc[]
+
+=== ExternalDNS
+
+You should use ExternalDNS to manage DNS records for your Pods' domains. ExternalDNS synchronizes exposed Kubernetes Services with various DNS providers, rendering Kubernetes resources accessible through DNS servers.
+
+Benefits of ExternalDNS include:
+
+* *Automation*: ExternalDNS automatically configures public DNS records when you create, update, or delete Kubernetes Services or Ingresses. This eliminates the need for manual DNS configuration, which can be error-prone.
+* *Compatibility*: ExternalDNS is compatible with a wide range of DNS providers, including major cloud providers such as AWS, Google Cloud, and Azure, and DNS servers like CoreDNS and PowerDNS.
+* *Integration with other tools*: ExternalDNS can be used with other Kubernetes tools, such as ingress controllers or cert-manager for managing TLS certificates.
+
+[,yaml]
+----
+external:
+  enabled: true
+  type: LoadBalancer
+  externalDns:
+    enabled: true
+----
+
+See also:
+
+- xref:manage:kubernetes/networking/external/k-nodeport.adoc#externaldns[ExternalDNS with a NodePort Service]
+- xref:manage:kubernetes/networking/external/k-loadbalancer.adoc#externaldns[ExternalDNS with LoadBalancer Services]
+
+=== Logging
+
+By default, the log-level is set to `info`. In production, use the `info` logging level to avoid overwhelming the storage. For debugging purposes, temporarily change the logging level to `debug`.
+
+[source,yaml]
+----
+logging:
+  level: "info"
+----
+
+=== Monitoring
+
+By default, monitoring is disabled. If you have the https://prometheus-operator.dev/[Prometheus Operator], enable monitoring to deploy a ServiceMonitor resource for Redpanda. Observability is essential in production environments.
+
+[source,yaml]
+----
+monitoring:
+  enabled: true
+----
+
+See also: xref:manage:kubernetes/monitor.adoc[]
+
+=== StatefulSet update strategy
+
+For smooth and uninterrupted updates, use the default `RollingUpdate` strategy. Additionally, set a PodDisruptionBudget to ensure that at least one Pod is available during updates.
+
+[source,yaml]
+----
+statefulset:
+  updateStrategy:
+    type: "RollingUpdate"
+  budget:
+    maxUnavailable: 1
+----
+
+See also: xref:upgrade:k-rolling-upgrade.adoc[]
+
+=== Affinity rules
+
+By default, `podAntiAffinity` rules stop the Kubernetes scheduler from placing multiple Redpanda brokers on the same node. These rules offer two benefits:
+
+- Minimize the risk of data loss by ensuring that a node's failure results in the loss of only one Redpanda broker.
+- Prevent resource contention between brokers by ensuring they are never co-located on the same node.
+
+Affinities control Pod placement in the cluster based on various conditions. Set these according to your high availability and infrastructure needs. For example, this is a soft rule that tries to ensure the Kubernetes scheduler doesn't place two Pods with the same `app: redpanda` label in the same zone. However, if it's not possible, the scheduler can still place the Pods in the same zone.
+
+[source,yaml,lines=7]
+----
+statefulset:
+  podAntiAffinity:
+    topologyKey: kubernetes.io/hostname
+    type: hard
+    weight: 100
+    custom:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: "app"
+              operator: "In"
+              values:
+              - "redpanda"
+          topologyKey: "kubernetes.io/zone"
+----
+
+To completely disable `podAntiAffinity` rules (for example, in development environments where you want to run multiple brokers on the same node), you can override the default configuration:
+
+[source,yaml]
+----
+statefulset:
+  podTemplate:
+    spec:
+      affinity:
+        podAntiAffinity: null
+----
+
+WARNING: Disabling `podAntiAffinity` rules is not recommended for production environments as it allows multiple brokers to be scheduled on the same node, increasing the risk of data loss if a node fails.
+
+See also: xref:./k-high-availability.adoc[]
+
+=== Graceful shutdown
+
+By default, Pods are given 90 seconds to shut down gracefully. If your brokers require additional time for a graceful shutdown, modify the `terminationGracePeriodSeconds`.
+
+[source,yaml]
+----
+statefulset:
+  terminationGracePeriodSeconds: 100
+----
+
+See also: xref:upgrade:k-rolling-upgrade.adoc[]
+
+=== Service account
+
+Restricting permissions is a best practice. Create a dedicated ServiceAccount for each Pod. To assign roles to this ServiceAccount, see <<RBAC>>.
+
+[source,yaml]
+----
+serviceAccount:
+  create: true
+  name: "redpanda-service-account"
+----
+
+[[RBAC]]
+=== Role-based access control (RBAC)
+
+RBAC is a method for providing permissions to ServiceAccounts based on roles. Some features such as rack awareness require both a ServiceAccount and RBAC to access resources using the Kubernetes API.
+
+[source,yaml]
+----
+rbac:
+  enabled: true
+  annotations: {}
+----
+
+
+See also: xref:manage:kubernetes/k-rack-awareness.adoc[]
+
+include::deploy:partial$self-test.adoc[leveloffset=+1]
+
+== Redpanda Console
+
+Redpanda Console is deployed by default when you deploy a Redpanda cluster using either the Redpanda Operator or the Redpanda Helm chart. This provides a web UI for managing and debugging your Redpanda cluster and applications.
+
+Both the Redpanda Operator and Helm chart automatically deploy Redpanda Console alongside your Redpanda cluster with sensible defaults.
+
+If you need to deploy Redpanda Console separately (for example, to connect to a Redpanda cluster running outside Kubernetes, or to have more granular control over the configuration), see xref:deploy:console/kubernetes/deploy.adoc[Deploy Redpanda Console on Kubernetes].
+
+The standalone deployment option provides the option to connect to Redpanda clusters running outside Kubernetes.
+
+For resource recommendations and scaling guidance for Redpanda Console on Kubernetes, see xref:deploy:console/kubernetes/k-requirements.adoc[].
+
+include::deploy:partial$kubernetes/default-components.adoc[leveloffset=+1]
+
+include::deploy:partial$kubernetes/guides/uninstall.adoc[leveloffset=+1]
+
+include::deploy:partial$kubernetes/guides/troubleshoot.adoc[leveloffset=+1]
+
+== Next steps
+
+See the xref:manage:kubernetes/index.adoc[Manage Kubernetes topics] to learn how to customize your deployment to meet your needs.
+
+include::shared:partial$suggested-reading.adoc[]
+
+- xref:./k-high-availability.adoc[]
+- xref:reference:k-redpanda-helm-spec.adoc[Redpanda Helm Specification]
+- xref:reference:k-crd.adoc[Redpanda CRD Reference]

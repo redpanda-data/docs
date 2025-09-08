@@ -4,11 +4,45 @@
 
 Broker configuration properties are applied individually to each broker in a cluster. You can find and modify these properties in the `redpanda.yaml` configuration file.
 
+Broker properties are organized under different top-level sections in your configuration file:
+
+* `redpanda`
+* `pandaproxy`
+* `pandaproxy_client`
+* `schema_registry`
+* `schema_registry_client`
+* `audit_log_client`
+
+Simple properties use a single key-value pair, while complex properties (such as listeners and TLS configurations) include examples.
+
 For information on how to edit broker properties, see xref:manage:cluster-maintenance/node-property-configuration.adoc[].
 
 NOTE: All broker properties require that you restart Redpanda for any update to take effect.
 
-== Broker configuration
+== Redpanda
+
+Configuration properties for the core Redpanda broker.
+
+.Example
+[,yaml]
+----
+redpanda:
+  data_directory: /var/lib/redpanda/data
+  kafka_api:
+    - address: 0.0.0.0
+      port: 9092
+      authentication_method: sasl
+  admin:
+    - address: 0.0.0.0
+      port: 9644
+  rpc_server:
+    address: 0.0.0.0
+    port: 33145
+  seed_servers:
+    - host:
+        address: redpanda-1
+        port: 33145
+----
 
 === admin
 
@@ -16,7 +50,25 @@ Network address for the glossterm:Admin API[] server.
 
 *Visibility:* `user`
 
-*Default:* `127.0.0.1:9644`
+*Type:* array
+
+*Default:* `[{ address: "127.0.0.1", port: 9644 }]`
+
+.Example
+[,yaml]
+----
+redpanda:
+  admin:
+    - name: <admin-api-name>
+      address: <external-broker-hostname>
+      port: <admin-api-port>
+----
+
+Replace the following placeholders with your values:
+
+* `<admin-api-name>`: Name for the Admin API listener (TLS configuration is handled separately in the <<admin_api_tls, `admin_api_tls`>> broker property)
+* `<external-broker-hostname>`: The externally accessible hostname or IP address that clients use to connect to this broker
+* `<admin-api-port>`: The port number for the Admin API endpoint
 
 ---
 
@@ -38,7 +90,123 @@ Specifies the TLS configuration for the HTTP Admin API.
 
 *Visibility:* `user`
 
-*Default:* `{}`
+*Default:* `[]`
+
+.Example
+[,yaml]
+----
+redpanda:
+  admin_api_tls:
+    - name: <admin-api-tls-name>
+      enabled: true
+      cert_file: <path-to-cert-file>
+      key_file: <path-to-key-file>
+      truststore_file: <path-to-truststore-file>
+      require_client_auth: true
+----
+
+Replace the following placeholders with your values:
+
+* `<admin-api-tls-name>`: Name that matches your Admin API listener (defined in the <<admin, `admin`>> broker property)
+* `<path-to-cert-file>`: Full path to the TLS certificate file
+* `<path-to-key-file>`: Full path to the TLS private key file
+* `<path-to-truststore-file>`: Full path to the Certificate Authority file
+
+---
+
+=== advertised_kafka_api
+
+Address of the Kafka API published to the clients. If not set, the <<kafka_api, `kafka_api`>> broker property is used. When behind a load balancer or in containerized environments, this should be the externally-accessible address that clients use to connect.
+
+*Visibility:* `user`
+
+*Type:* array
+
+*Default:* `[]`
+
+.Example
+[,yaml]
+----
+redpanda:
+  advertised_kafka_api:
+    - name: <kafka-api-name>
+      address: <external-broker-hostname>
+      port: <kafka-port>
+----
+
+Replace the following placeholders with your values:
+
+* `<kafka-api-name>`: Name that matches your Kafka API listener (defined in the <<kafka_api, `kafka_api`>> broker property)
+* `<external-broker-hostname>`: The externally accessible hostname or IP address that clients use to connect to this broker
+* `<kafka-port>`: The port number for the Kafka API endpoint
+
+---
+
+=== advertised_rpc_api
+
+Address of RPC endpoint published to other cluster members. If not set, the <<rpc_server, `rpc_server`>> broker property is used. This should be the address other brokers can use to communicate with this broker.
+
+*Visibility:* `user`
+
+*Type:* string
+
+*Default:* `null`
+
+.Example
+[,yaml]
+----
+redpanda:
+  advertised_rpc_api:
+    address: <external-broker-hostname>
+    port: <rpc-port>
+----
+
+Replace the following placeholders with your values:
+
+* `<external-broker-hostname>`: The externally accessible hostname or IP address that other brokers use to communicate with this broker
+* `<rpc-port>`: The port number for the RPC endpoint (default is 33145)
+
+---
+
+=== cloud_storage_cache_directory
+
+Directory for archival cache. Set when the xref:reference:properties/cluster-properties.adoc#cloud_storage_enabled[`cloud_storage_enabled`] cluster property is enabled. If not specified, Redpanda uses a default path within the data directory.
+
+*Visibility:* `user`
+
+*Type:* string
+
+*Default:* `null`
+
+.Example
+[,yaml]
+----
+redpanda:
+  cloud_storage_cache_directory: <cache-directory-path>
+----
+
+Replace `<cache-directory-path>` with the full path to your desired cache directory.
+
+---
+
+=== cloud_storage_inventory_hash_store
+
+Directory to store inventory report hashes for use by cloud storage scrubber. If not specified, Redpanda uses a default path within the data directory.
+
+*Visibility:* `user`
+
+*Type:* string
+
+*Default:* `null`
+
+.Example
+[,yaml]
+----
+redpanda:
+  cloud_storage_inventory_hash_store: <inventory-hash-directory-path>
+----
+
+Replace `<inventory-hash-directory-path>` with the full path to your desired inventory hash storage directory.
 
 ---
 
@@ -53,7 +221,7 @@ The crash-tracking logic is reset (to zero consecutive crashes) by any of the fo
 * The broker shuts down cleanly.
 * One hour passes since the last crash.
 * The `redpanda.yaml` broker configuration file is updated.
-* The `startup_log` file in the broker's <<data_directory, data_directory>> is manually deleted.
+* The `startup_log` file in the broker's <<data_directory, `data_directory`>> broker property is manually deleted.
 
 *Unit*: number of consecutive crashes of a broker
 
@@ -75,7 +243,7 @@ The amount of time the broker sleeps before terminating when the limit on consec
 
 If `null`, the property is disabled, and the broker terminates immediately after reaching the crash loop limit.
 
-For information about how to reset the crash loop limit, see `crash_loop_limit`.
+For information about how to reset the crash loop limit, see the <<crash_loop_limit, `crash_loop_limit`>> broker property.
 
 *Unit:* seconds
 
@@ -131,7 +299,7 @@ Override the cluster property xref:reference:properties/cluster-properties.adoc#
 
 Controls how a new cluster is formed. All brokers in a cluster must have the same value.
 
-<<seed_servers,See how the `empty_seed_starts_cluster` setting works with the `seed_servers` setting>> to form a cluster.
+<<seed_servers,See how the `empty_seed_starts_cluster` broker property works with the `seed_servers` broker property>> to form a cluster.
 
 TIP: For backward compatibility, `true` is the default. Redpanda recommends using `false` in production environments to prevent accidental cluster formation.
 
@@ -163,11 +331,73 @@ Controls whether Redpanda starts in FIPS mode.  This property allows for three v
 
 === kafka_api
 
-IP address and port of the Kafka API endpoint that handles requests.
+IP address and port of the Kafka API endpoint that handles requests. Supports multiple listeners with different configurations.
 
 *Visibility:* `user`
 
-*Default:* `127.0.0.1:9092`
+*Type:* array
+
+*Default:* `[{ address: "127.0.0.1", port: 9092 }]`
+
+.Basic example
+[,yaml]
+----
+redpanda:
+  kafka_api:
+    - address: <bind-address>
+      port: <kafka-port>
+      authentication_method: sasl
+----
+
+.Multiple listeners example (for different networks or authentication methods)
+[,yaml]
+----
+redpanda:
+  kafka_api:
+    - name: <internal-listener-name>
+      address: <internal-bind-address>
+      port: <internal-kafka-port>
+      authentication_method: none
+    - name: <external-listener-name>
+      address: <external-bind-address>
+      port: <external-kafka-port>
+      authentication_method: sasl
+    - name: <mtls-listener-name>
+      address: <mtls-bind-address>
+      port: <mtls-kafka-port>
+      authentication_method: mtls_identity
+----
+
+Replace the following placeholders with your values:
+
+* `<bind-address>`: The IP address to bind the listener to (typically `0.0.0.0` for all interfaces)
+* `<kafka-port>`: The port number for the Kafka API endpoint
+* `<internal-listener-name>`: Name for internal network connections (for example, `internal`)
+* `<external-listener-name>`: Name for external network connections (for example, `external`)
+* `<mtls-listener-name>`: Name for mTLS connections (for example, `mtls`)
+* `<internal-bind-address>`: The IP address for internal connections
+* `<internal-kafka-port>`: The port number for internal Kafka API connections
+* `<external-bind-address>`: The IP address for external connections  
+* `<external-kafka-port>`: The port number for external Kafka API connections
+* `<mtls-bind-address>`: The IP address for mTLS connections
+* `<mtls-kafka-port>`: The port number for mTLS Kafka API connections
+
+[[kafka_api_auth_method]]
+==== Authentication
+
+The `authentication_method` property configures authentication for Kafka API listeners.
+
+*Accepted values:*
+
+* `none` - No authentication required
+* `sasl` - SASL authentication (specific mechanisms are configured using the xref:reference:properties/cluster-properties.adoc#sasl_mechanisms[`sasl_mechanisms`] cluster property)
+* `mtls_identity` - Mutual TLS authentication using client certificates
+
+*Default:* `none`
+
+When using `authentication_method: sasl`, you must also configure the available SASL mechanisms (such as SCRAM, PLAIN, GSSAPI, or OAUTHBEARER) using the xref:reference:properties/cluster-properties.adoc#sasl_mechanisms[`sasl_mechanisms`] cluster property.
+
+For detailed authentication configuration, see xref:manage:security/authentication.adoc[].
 
 ---
 
@@ -177,7 +407,29 @@ Transport Layer Security (TLS) configuration for the Kafka API endpoint.
 
 *Visibility:* `user`
 
-*Default:* `{}`
+*Default:* `[]`
+
+.Example
+[,yaml]
+----
+redpanda:
+  kafka_api_tls:
+    - name: <kafka-api-listener-name>
+      enabled: true
+      cert_file: <path-to-cert-file>
+      key_file: <path-to-key-file>
+      truststore_file: <path-to-truststore-file>
+      require_client_auth: false
+----
+
+Replace the following placeholders with your values:
+
+* `<kafka-api-listener-name>`: Name that matches your Kafka API listener (defined in the <<kafka_api, `kafka_api`>> broker property)
+* `<path-to-cert-file>`: Full path to the TLS certificate file
+* `<path-to-key-file>`: Full path to the TLS private key file
+* `<path-to-truststore-file>`: Full path to the Certificate Authority file
+
+NOTE: Set `require_client_auth: true` for mutual TLS (mTLS) authentication, or `false` for server-side TLS only.
 
 ---
 
@@ -229,7 +481,33 @@ List of broker IDs and UUID to override at broker startup. Each entry includes t
 
 *Type:* array
 
-*Default:* `{}`
+*Default:* `[]`
+
+.Example
+[,yaml]
+----
+redpanda:
+  node_id_overrides:
+    - current_uuid: "<current-broker-uuid>"
+      new_id: <new-broker-id>
+      new_uuid: "<new-broker-uuid>"
+      ignore_existing_node_id: <ignore-existing-flag>
+    - current_uuid: "<another-current-uuid>"
+      new_id: <another-new-broker-id>
+      new_uuid: "<another-new-uuid>"
+      ignore_existing_node_id: <another-ignore-flag>
+----
+
+Replace the following placeholders with your values:
+
+* `<current-broker-uuid>`: The current UUID of the broker to override
+* `<new-broker-id>`: The new broker ID to assign
+* `<new-broker-uuid>`: The new UUID to assign to the broker
+* `<ignore-existing-flag>`: Set to `true` to force override on brokers that already have a node ID, or `false` to apply override only to brokers without existing node IDs
+* `<another-current-uuid>`: Additional broker UUID for multiple overrides
+* `<another-new-broker-id>`: Additional new broker ID
+* `<another-new-uuid>`: Additional new UUID
+* `<another-ignore-flag>`: Additional ignore existing node ID flag
 
 ---
 
@@ -295,6 +573,26 @@ TLS configuration for the RPC server.
 
 *Visibility:* `user`
 
+*Default:* `{}`
+
+.Example
+[,yaml]
+----
+redpanda:
+  rpc_server_tls:
+    enabled: true
+    cert_file: "<path-to-cert-file>"
+    key_file: "<path-to-key-file>"
+    truststore_file: "<path-to-truststore-file>"
+    require_client_auth: true
+----
+
+Replace the following placeholders with your values:
+
+* `<path-to-cert-file>`: Full path to the RPC TLS certificate file
+* `<path-to-key-file>`: Full path to the RPC TLS private key file  
+* `<path-to-truststore-file>`: Full path to the certificate authority file
+
 ---
 
 === seed_servers
@@ -319,7 +617,51 @@ The `seed_servers` list must be consistent across all seed brokers to prevent cl
 
 *Type:* array
 
-*Default:* `{}`
+*Default:* `[]`
+
+.Example with `empty_seed_starts_cluster: true`
+[,yaml]
+----
+# Cluster root broker (seed starter)
+redpanda:
+  empty_seed_starts_cluster: true
+  seed_servers: []
+----
+
+[,yaml]
+----
+# Additional brokers joining the cluster
+redpanda:
+  empty_seed_starts_cluster: true
+  seed_servers:
+    - host:
+        address: <seed-broker-ip>
+        port: <rpc-port>
+----
+
+.Example with `empty_seed_starts_cluster: false`
+[,yaml]
+----
+# All initial seed brokers use the same configuration
+redpanda:
+  empty_seed_starts_cluster: false
+  seed_servers:
+    - host:
+        address: <seed-broker-1-ip>
+        port: <rpc-port>
+    - host:
+        address: <seed-broker-2-ip>
+        port: <rpc-port>
+    - host:
+        address: <seed-broker-3-ip>
+        port: <rpc-port>
+----
+
+Replace the following placeholders with your values:
+
+* `<seed-broker-ip>`: IP address of the cluster root broker
+* `<seed-broker-x-ip>`: IP addresses of each seed broker in the cluster
+* `<rpc-port>`: RPC port for brokers (default: `33145`)
 
 ---
 
@@ -377,23 +719,51 @@ Maximum duration in seconds for verbose (`TRACE` or `DEBUG`) logging. Values con
 
 
 
+[[http_based_auth_method]]
+== HTTP-Based Authentication
+
+The `authentication_method` property configures authentication for HTTP-based API listeners (Schema Registry and HTTP Proxy).
+
+*Accepted values:*
+- `none` - No authentication required (allows anonymous access).
+- `http_basic` - Authentication required. The specific authentication method (Basic vs OIDC) depends on the xref:reference:properties/cluster-properties.adoc#http_authentication[`http_authentication`] cluster property and the client's Authorization header type.
+
+*Default:* `none`
+
+This property works together with the cluster property xref:reference:properties/cluster-properties.adoc#http_authentication[`http_authentication`]:
+
+* `authentication_method` (broker property): Controls whether a specific listener requires authentication (`http_basic`) or allows anonymous access (`none`)
+* `http_authentication` (cluster property): Controls which authentication methods are available globally (`["BASIC"]`, `["OIDC"]`, or `["BASIC", "OIDC"]`)
+
+When `authentication_method: http_basic` is set on a listener, clients can use any authentication method that is enabled in the `http_authentication` cluster property.
+
+For detailed authentication configuration, see xref:manage:security/authentication.adoc[].
+
 == Schema Registry
 
 The Schema Registry provides configuration properties to help you enable producers and consumers to share  information needed to serialize and deserialize producer and consumer messages.
 
 For information on how to edit broker properties for the Schema Registry, see xref:manage:cluster-maintenance/node-property-configuration.adoc[].
 
-=== api_doc_dir
+Schema Registry shares some configuration property patterns with HTTP Proxy (such as API listeners and authentication methods), but also has additional schema-specific properties like managing schema storage and validation behavior.
 
-Path to the API specifications for the HTTP Proxy API.
+**Shared properties:**
 
-*Requires restart:* Yes
+* <<api_doc_dir, `api_doc_dir`>> - API documentation directory (independent from HTTP Proxy's same-named property)
+* <<schema_registry_api, `schema_registry_api`>> - API listener configuration (similar to HTTP Proxy's <<pandaproxy_api, `pandaproxy_api`>>)
+* <<schema_registry_api_tls, `schema_registry_api_tls`>> - TLS configuration (similar to HTTP Proxy's <<pandaproxy_api_tls, `pandaproxy_api_tls`>>)
 
-*Visibility:* `user`
-
-*Type:* string
-
-*Default:* `/usr/share/redpanda/proxy-api-doc`
+.Example
+[,yaml]
+----
+schema_registry:
+  schema_registry_api:
+    address: 0.0.0.0
+    port: 8081
+    authentication_method: http_basic
+  schema_registry_replication_factor: 3
+  mode_mutability: true
+----
 
 ---
 
@@ -415,7 +785,24 @@ Schema Registry API listener address and port.
 
 *Visibility:* `user`
 
-*Default:* `0.0.0.0:8081`
+*Type:* array
+
+*Default:* `[{ address: "0.0.0.0", port: 8081 }]`
+
+.Example
+[,yaml]
+----
+schema_registry:
+  schema_registry_api:
+    address: 0.0.0.0
+    port: 8081
+    authentication_method: http_basic
+----
+
+[[schema_registry_auth_method]]
+==== Authentication
+
+For authentication configuration options, see <<http_based_auth_method, HTTP-Based Authentication>>.
 
 ---
 
@@ -425,13 +812,13 @@ TLS configuration for Schema Registry API.
 
 *Visibility:* `user`
 
-*Default:* `{}`
+*Default:* `[]`
 
 ---
 
 === schema_registry_replication_factor
 
-Replication factor for internal `_schemas` topic.  If unset, defaults to `default_topic_replication`.
+Replication factor for internal `_schemas` topic. If unset, defaults to the xref:../cluster-properties.adoc#default_topic_replication[`default_topic_replication`] cluster property.
 
 *Visibility:* `user`
 
@@ -448,11 +835,42 @@ Replication factor for internal `_schemas` topic.  If unset, defaults to `defaul
 
 ---
 
-== HTTP Proxy
+== HTTP Proxy (pandaproxy)
 
-Redpanda HTTP Proxy allows access to your data through a REST API. For example, you can list topics or brokers, get events, produce events, subscribe to events from topics using consumer groups, and commit offsets for a consumer.
+Redpanda HTTP Proxy (formerly called Pandaproxy) allows access to your data through a REST API. For example, you can list topics or brokers, get events, produce events, subscribe to events from topics using consumer groups, and commit offsets for a consumer.
+
+These properties configure the HTTP Proxy **server** - the REST API endpoint that external clients connect to. Configure these settings to control how clients authenticate to your HTTP Proxy, which network interfaces it listens on, and how it manages client connections.
 
 See xref:develop:http-proxy.adoc[]
+
+HTTP Proxy shares some configuration property patterns with Schema Registry (such as API listeners and authentication methods), but focuses on client management and proxy functionality.
+
+.Example
+[,yaml]
+----
+pandaproxy:
+  pandaproxy_api:
+    address: 0.0.0.0
+    port: 8082
+    authentication_method: http_basic
+  client_cache_max_size: 10
+  client_keep_alive: 300000
+  consumer_instance_timeout_ms: 300000
+----
+
+=== api_doc_dir
+
+Path to the API specifications directory. This directory contains API documentation for both the HTTP Proxy API and Schema Registry API.
+
+*Requires restart:* Yes
+
+*Visibility:* `user`
+
+*Type:* string
+
+*Default:* `/usr/share/redpanda/proxy-api-doc`
+
+NOTE: Both HTTP Proxy and Schema Registry have independent `api_doc_dir` properties that can be configured separately. However, they both default to the same path (`/usr/share/redpanda/proxy-api-doc`) since they typically use the same API documentation directory.
 
 === advertised_pandaproxy_api
 
@@ -514,23 +932,67 @@ Rest API listener address and port.
 
 *Visibility:* `user`
 
-*Default:* `0.0.0.0:8082`
+*Type:* array
+
+*Default:* `[{ address: "0.0.0.0", port: 8082 }]`
+
+.Example
+[,yaml]
+----
+pandaproxy:
+  pandaproxy_api:
+    address: 0.0.0.0
+    port: 8082
+    authentication_method: http_basic
+----
+
+[[http_proxy_auth_method]]
+==== Authentication
+
+For authentication configuration options, see <<http_based_auth_method, HTTP-Based Authentication>>.
 
 ---
 
 === pandaproxy_api_tls
 
-TLS configuration for Pandaproxy api.
+TLS configuration for Pandaproxy API.
 
 *Visibility:* `user`
 
-*Default:* `{}`
+*Default:* `[]`
 
 ---
 
 == HTTP Proxy Client
 
-Configuration options for HTTP Proxy Client.
+Configuration options for how the HTTP Proxy **connects to Kafka brokers**. 
+
+The HTTP Proxy acts as a bridge: external clients make REST API calls to the HTTP Proxy server (configured in the <<HTTP Proxy (pandaproxy), `pandaproxy`>> section), and the HTTP Proxy uses these client settings to connect to your Kafka cluster.
+
+
+.Example
+[,yaml]
+----
+pandaproxy_client:
+  brokers:
+    - address: <kafka-broker-1>
+      port: <kafka-port>
+    - address: <kafka-broker-2>
+      port: <kafka-port>
+  sasl_mechanism: <scram-mechanism>
+  scram_username: <username>
+  scram_password: <password>
+  produce_ack_level: -1
+  retries: 5
+----
+
+Replace the following placeholders with your values:
+
+* `<kafka-broker-1>`, `<kafka-broker-2>`: IP addresses or hostnames of your Kafka brokers
+* `<kafka-port>`: Port number for the Kafka API (default `9092`)
+* `<scram-mechanism>`: SCRAM authentication mechanism (`SCRAM-SHA-256` or `SCRAM-SHA-512`)
+* `<username>`: SCRAM username for authentication
+* `<password>`: SCRAM password for authentication
 
 === broker_tls
 
@@ -778,7 +1240,9 @@ Delay (in milliseconds) for initial retry backoff.
 
 === sasl_mechanism
 
-The SASL mechanism to use when the HTTP Proxy client connects to the Kafka API. These credentials are used when the HTTP Proxy API listener has `authentication_method: none` but the cluster requires authenticated access to the Kafka API.
+The SASL mechanism to use when the HTTP Proxy client connects to the Kafka API. These credentials are used when the HTTP Proxy API listener has <<http_proxy_auth_method, `authentication_method`>>: `none` but the cluster requires authenticated access to the Kafka API.
+
+This property specifies which individual SASL mechanism the HTTP Proxy client should use, while the cluster-wide available mechanisms are configured using the xref:reference:properties/cluster-properties.adoc#sasl_mechanisms[`sasl_mechanisms`] cluster property.
 
 include::shared:partial$http-proxy-ephemeral-credentials-breaking-change.adoc[]
 
@@ -786,13 +1250,17 @@ include::shared:partial$http-proxy-ephemeral-credentials-breaking-change.adoc[]
 
 *Type:* string
 
+*Accepted values:* `SCRAM-SHA-256`, `SCRAM-SHA-512`
+
+NOTE: While the cluster-wide xref:reference:properties/cluster-properties.adoc#sasl_mechanisms[`sasl_mechanisms`] property may support additional mechanisms (PLAIN, GSSAPI, OAUTHBEARER), HTTP Proxy client connections only support SCRAM mechanisms.
+
 *Default:* `null`
 
 ---
 
 === scram_password
 
-Password to use for SCRAM authentication mechanisms when the HTTP Proxy client connects to the Kafka API. This property is required when the HTTP Proxy API listener has `authentication_method: none` but the cluster requires authenticated access to the Kafka API.
+Password to use for SCRAM authentication mechanisms when the HTTP Proxy client connects to the Kafka API. This property is required when the HTTP Proxy API listener has <<http_proxy_auth_method, `authentication_method`>>: `none` but the cluster requires authenticated access to the Kafka API.
 
 include::shared:partial$http-proxy-ephemeral-credentials-breaking-change.adoc[]
 
@@ -806,7 +1274,7 @@ include::shared:partial$http-proxy-ephemeral-credentials-breaking-change.adoc[]
 
 === scram_username
 
-Username to use for SCRAM authentication mechanisms when the HTTP Proxy client connects to the Kafka API. This property is required when the HTTP Proxy API listener has `authentication_method: none` but the cluster requires authenticated access to the Kafka API.
+Username to use for SCRAM authentication mechanisms when the HTTP Proxy client connects to the Kafka API. This property is required when the HTTP Proxy API listener has <<http_proxy_auth_method, `authentication_method`>>: `none` but the cluster requires authenticated access to the Kafka API.
 
 include::shared:partial$http-proxy-ephemeral-credentials-breaking-change.adoc[]
 
@@ -817,3 +1285,65 @@ include::shared:partial$http-proxy-ephemeral-credentials-breaking-change.adoc[]
 *Default:* `null`
 
 ---
+
+== Schema Registry Client
+
+Configuration options for Schema Registry Client connections to Kafka brokers.
+
+.Example
+[,yaml]
+----
+schema_registry_client:
+  brokers:
+    - address: <kafka-broker-1>
+      port: <kafka-port>
+    - address: <kafka-broker-2>
+      port: <kafka-port>
+  sasl_mechanism: <scram-mechanism>
+  scram_username: <username>
+  scram_password: <password>
+  produce_batch_delay_ms: 0
+  produce_batch_record_count: 0
+  client_identifier: schema_registry_client
+----
+
+Replace the following placeholders with your values:
+
+* `<kafka-broker-1>`, `<kafka-broker-2>`: IP addresses or hostnames of your Kafka brokers
+* `<kafka-port>`: Port number for the Kafka API (typically 9092)
+* `<scram-mechanism>`: SCRAM authentication mechanism (`SCRAM-SHA-256` or `SCRAM-SHA-512`)
+* `<username>`: SCRAM username for authentication
+* `<password>`: SCRAM password for authentication
+
+NOTE: Schema Registry Client uses the same configuration properties as HTTP Proxy Client but with different defaults optimized for Schema Registry operations. The client uses immediate batching (0ms delay, 0 record count) for low-latency schema operations.
+
+---
+
+== Audit Log Client
+
+Configuration options for Audit Log Client connections to Kafka brokers.
+
+.Example
+[,yaml]
+----
+audit_log_client:
+  brokers:
+    - address: <kafka-broker-1>
+      port: <kafka-port>
+    - address: <kafka-broker-2>
+      port: <kafka-port>
+  produce_batch_delay_ms: 0
+  produce_batch_record_count: 0
+  produce_batch_size_bytes: 0
+  produce_compression_type: zstd
+  produce_ack_level: 1
+  produce_shutdown_delay_ms: 3000
+  client_identifier: audit_log_client
+----
+
+Replace the following placeholders with your values:
+
+* `<kafka-broker-1>`, `<kafka-broker-2>`: IP addresses or hostnames of your Kafka brokers
+* `<kafka-port>`: Port number for the Kafka API (typically 9092)
+
+NOTE: Audit Log Client uses the same configuration properties as HTTP Proxy Client but with different defaults optimized for audit logging operations. The client uses immediate batching (0ms delay, 0 record count) with compression enabled (zstd) and acknowledgment level 1 for reliable audit log delivery.

@@ -76,21 +76,27 @@ Use this metric to proactively monitor license status and trigger alerts for tim
 
 ---
 
-=== redpanda_cluster_members_backend_queued_node_operations
+=== redpanda_cluster_latest_cluster_metadata_manifest_age
 
-The number of node operations queued per shard that are awaiting processing by the backend.
+The amount of time in seconds since the last time Redpanda uploaded metadata files to Tiered Storage for your cluster. A value of `0` indicates metadata has not yet been uploaded.
+
+When performing a whole cluster restore operation, metadata for new clusters will not include any changes made to a source cluster that is newer than this age.
 
 *Type*: gauge
 
-*Labels*:
+*Usage*: On a healthy system, this should not exceed the value set for `cloud_storage_cluster_metadata_upload_interval_ms`. You may consider setting an alert if this remains `0` for longer than 1.5 * `cloud_storage_cluster_metadata_upload_interval_ms` as that may indicate a configuration issue.
 
-- `shard`
+ifndef::env-cloud[]
+*Related topics*:
+
+- xref:manage:whole-cluster-restore.adoc[]
+endif::[]
 
 ---
 
 === redpanda_cluster_members_backend_queued_node_operations
 
-Number of queued node operations.
+The number of node operations queued per shard that are awaiting processing by the backend.
 
 *Type*: gauge
 
@@ -173,24 +179,6 @@ Number of partitions that are unavailable due to a lack of quorum among their re
 *Type*: gauge
 
 *Usage*: A non-zero value indicates that some partitions do not have an active leader. Consider increasing the number of brokers or the replication factor if this persists.
-
----
-
-=== redpanda_cluster_latest_cluster_metadata_manifest_age
-
-The amount of time in seconds since the last time Redpanda uploaded metadata files to Tiered Storage for your cluster. A value of `0` indicates metadata has not yet been uploaded.
-
-When performing a whole cluster restore operation, the metadata for the new cluster will not have any changes made to a source cluster that is newer than this age.
-
-*Type*: gauge
-
-*Usage*: On a healthy system, this should not exceed the value set for `cloud_storage_cluster_metadata_upload_interval_ms`. You may consider setting an alert if this remains `0` for longer than 1.5 * `cloud_storage_cluster_metadata_upload_interval_ms` as that may indicate a configuration issue.
-
-ifndef::env-cloud[]
-*Related topics*:
-
-- xref:manage:whole-cluster-restore.adoc[]
-endif::[]
 
 == Debug bundle metrics
 
@@ -697,6 +685,8 @@ Total memory allocated (in bytes) per CPU shard.
 
 * `shard`
 
+*Usage*: This metric includes reclaimable memory from the batch cache. For monitoring memory pressure, consider using `redpanda_memory_available_memory` instead, which provides a more accurate picture of memory that can be immediately reallocated.
+
 ---
 
 === redpanda_memory_available_memory
@@ -709,7 +699,7 @@ Total memory (in bytes) available to a CPU shard—including both free and recla
 
 * `shard`
 
-*Usage*: Indicates memory pressure on each shard.
+*Usage*: This metric is more useful than `redpanda_memory_allocated_memory` for monitoring memory pressure, as it accounts for reclaimable memory in the batch cache. A low value indicates the system is approaching memory exhaustion.
 
 ---
 
@@ -722,6 +712,8 @@ The lowest recorded available memory (in bytes) per CPU shard since the process 
 *Labels*:
 
 * `shard`
+
+*Usage*: This metric helps identify the closest the system has come to memory exhaustion. Useful for capacity planning and understanding historical memory pressure patterns.
 
 ---
 
@@ -1248,20 +1240,6 @@ Configured number of replicas for a topic.
 
 ---
 
-=== redpanda_raft_leadership_changes
-
-Total number of leadership changes across partitions for a given topic.
-
-*Type*: counter
-
-*Labels*:
-
-* `redpanda_namespace`
-
-* `redpanda_topic`
-
----
-
 === redpanda_security_audit_errors_total
 
 Cumulative count of errors encountered when creating or publishing audit event log entries.
@@ -1445,42 +1423,6 @@ Count of REST proxy requests queued due to memory limitations, measured per shar
 
 ---
 
-=== redpanda_rest_proxy_inflight_requests_memory_usage_ratio
-
-Memory usage ratio of in-flight requests in the rest_proxy.
-
-*Type*: gauge
-
-*Labels*:
-
-- `shard`
-
----
-
-=== redpanda_rest_proxy_inflight_requests_usage_ratio
-
-Usage ratio of in-flight requests in the rest_proxy.
-
-*Type*: gauge
-
-*Labels*:
-
-- `shard`
-
----
-
-=== redpanda_rest_proxy_queued_requests_memory_blocked
-
-Number of requests queued in rest_proxy, due to memory limitations.
-
-*Type*: gauge
-
-*Labels*:
-
-- `shard`
-
----
-
 === redpanda_rest_proxy_request_errors_total
 
 Cumulative count of REST proxy errors, categorized by HTTP status code.
@@ -1564,22 +1506,6 @@ Total number of object storage requests that experienced backoff delays.
 
 === redpanda_cloud_client_client_pool_utilization
 
-Current utilization (as a percentage, 0–100) of the object storage client pool.
-
-*Type*: gauge
-
-*Labels*:
-
-- `redpanda_endpoint`
-
-- `redpanda_region`
-
-- `shard`
-
----
-
-=== redpanda_cloud_client_client_pool_utilization
-
 Utilization of the object storage pool(0 - unused, 100 - fully utilized).
 
 *Type*: gauge
@@ -1652,14 +1578,6 @@ Histogram representing the lease duration for object storage clients.
 
 ---
 
-=== redpanda_cloud_client_lease_duration
-
-Lease duration histogram.
-
-*Type*: histogram
-
----
-
 === redpanda_cloud_client_not_found
 
 Total number of object storage requests that resulted in a “not found” error.
@@ -1698,20 +1616,6 @@ Count of instances where a shard borrowed a object storage client from another s
 
 - `redpanda_region`
 
-- `shard`
-
----
-
-=== redpanda_cloud_client_num_borrows
-
-Number of times the current shard had to borrow a object storage client from another shard.
-
-*Type*: counter
-
-*Labels*:
-
-- `redpanda_endpoint`
-- `redpanda_region`
 - `shard`
 
 ---
@@ -1768,32 +1672,8 @@ Total number of successful upload requests to object storage.
 
 ---
 
-=== redpanda_cloud_storage_cloud_log_size
-
-Total size (in bytes) of user-visible log data stored in Tiered Storage. This value increases with every segment offload and decreases when segments are deleted due to retention or compaction.
-
-*Type*: gauge
-
-*Usage*: Segmented by `redpanda_namespace` (e.g., `kafka`, `kafka_internal`, or `redpanda`), `redpanda_topic`, and `redpanda_partition`.
-
 [[tls_metrics]]
 == TLS metrics
-
-=== redpanda_tls_truststore_expires_at_timestamp_seconds
-
-Unix epoch timestamp representing the expiration time of the shortest-lived certificate authority (CA) in the installed truststore.
-
-*Type*: gauge
-
-*Labels*:
-
-* `area`
-
-* `detail`
-
-*Usage*: Helps identify when any CA in the chain is nearing expiration.
-
----
 
 === redpanda_tls_certificate_expires_at_timestamp_seconds
 
@@ -1827,6 +1707,22 @@ The least significant 4 bytes of the serial number for the certificate that will
 
 ---
 
+=== redpanda_tls_certificate_valid
+
+Indicator of whether a resource has at least one valid TLS certificate installed. Returns `1` if a valid certificate is present and `0` if not.
+
+*Type*: gauge
+
+*Labels*:
+
+* `area`
+
+* `detail`
+
+*Usage*: Aids in continuous monitoring of certificate validity across resources.
+
+---
+
 === redpanda_tls_loaded_at_timestamp_seconds
 
 Unix epoch timestamp marking the last time a TLS certificate was loaded for a resource.
@@ -1843,9 +1739,9 @@ Unix epoch timestamp marking the last time a TLS certificate was loaded for a re
 
 ---
 
-=== redpanda_tls_certificate_valid
+=== redpanda_tls_truststore_expires_at_timestamp_seconds
 
-Indicator of whether a resource has at least one valid TLS certificate installed. Returns `1` if a valid certificate is present and `0` if not.
+Unix epoch timestamp representing the expiration time of the shortest-lived certificate authority (CA) in the installed truststore.
 
 *Type*: gauge
 
@@ -1855,7 +1751,7 @@ Indicator of whether a resource has at least one valid TLS certificate installed
 
 * `detail`
 
-*Usage*: Aids in continuous monitoring of certificate validity across resources.
+*Usage*: Helps identify when any CA in the chain is nearing expiration.
 
 ---
 
@@ -1890,18 +1786,6 @@ Expiry time of the shortest-lived CA in the truststore, measured in seconds sinc
 [[data_transform_metrics]]
 == Data transforms metrics
 
-=== redpanda_transform_execution_latency_sec
-
-Histogram tracking the execution latency (in seconds) for processing a single record via data transforms.
-
-*Type*: histogram
-
-*Labels*:
-
-* `function_name`
-
----
-
 === redpanda_transform_execution_errors
 
 Counter for the number of errors encountered during the invocation of data transforms.
@@ -1914,23 +1798,11 @@ Counter for the number of errors encountered during the invocation of data trans
 
 ---
 
-=== redpanda_wasm_engine_cpu_seconds_total
+=== redpanda_transform_execution_latency_sec
 
-Total CPU time (in seconds) consumed by WebAssembly functions.
+Histogram tracking the execution latency (in seconds) for processing a single record using data transforms.
 
-*Type*: counter
-
-*Labels*:
-
-* `function_name`
-
----
-
-=== redpanda_wasm_engine_memory_usage
-
-Current memory usage (in bytes) by a WebAssembly function.
-
-*Type*: gauge
+*Type*: histogram
 
 *Labels*:
 
@@ -1938,41 +1810,9 @@ Current memory usage (in bytes) by a WebAssembly function.
 
 ---
 
-=== redpanda_wasm_engine_max_memory
+=== redpanda_transform_failures
 
-Maximum allowed memory (in bytes) allocated for a WebAssembly function.
-
-*Type*: gauge
-
-*Labels*:
-
-* `function_name`
-
----
-
-=== redpanda_wasm_binary_executable_memory_usage
-
-Amount of memory (in bytes) used by executable WebAssembly binaries.
-
-*Type*: gauge
-
----
-
-=== redpanda_transform_read_bytes
-
-Cumulative count of bytes read as input to data transforms.
-
-*Type*: counter
-
-*Labels*:
-
-* `function_name`
-
----
-
-=== redpanda_transform_write_bytes
-
-Cumulative count of bytes output from data transforms.
+Counter for each failure encountered by a data transform processor.
 
 *Type*: counter
 
@@ -1994,9 +1834,9 @@ Number of records pending processing in the input topic for a data transform.
 
 ---
 
-=== redpanda_transform_failures
+=== redpanda_transform_read_bytes
 
-Counter for each failure encountered by a data transform processor.
+Cumulative count of bytes read as input to data transforms.
 
 *Type*: counter
 
@@ -2017,6 +1857,62 @@ Current count of transform processors in a specific state (running, inactive, or
 * `function_name`
 
 * `state=("running" | "inactive" | "errored")`
+
+---
+
+=== redpanda_transform_write_bytes
+
+Cumulative count of bytes output from data transforms.
+
+*Type*: counter
+
+*Labels*:
+
+* `function_name`
+
+---
+
+=== redpanda_wasm_binary_executable_memory_usage
+
+Number of bytes (memory) used by executable WebAssembly binaries.
+
+*Type*: gauge
+
+---
+
+=== redpanda_wasm_engine_cpu_seconds_total
+
+Total CPU time (in seconds) consumed by WebAssembly functions.
+
+*Type*: counter
+
+*Labels*:
+
+* `function_name`
+
+---
+
+=== redpanda_wasm_engine_max_memory
+
+Maximum allowed memory (in bytes) allocated for a WebAssembly function.
+
+*Type*: gauge
+
+*Labels*:
+
+* `function_name`
+
+---
+
+=== redpanda_wasm_engine_memory_usage
+
+Current memory usage (in bytes) by a WebAssembly function.
+
+*Type*: gauge
+
+*Labels*:
+
+* `function_name`
 
 == Object storage metrics
 
@@ -2169,11 +2065,11 @@ Count of cache trim operations performed using the in-memory access tracker.
 
 === redpanda_cloud_storage_cloud_log_size
 
-Total size (in bytes) of the user-visible log data stored in Tiered Storage. This metric increases with every offloaded segment and decreases when segments are deleted due to retention or compaction.
+Total size (in bytes) of user-visible log data stored in Tiered Storage. This value increases with every segment offload and decreases when segments are deleted due to retention or compaction.
 
 *Type*: gauge
 
-*Usage*: Labeled by `redpanda_namespace` (e.g., `kafka`, `kafka_internal`, or `redpanda`), `redpanda_topic`, and `redpanda_partition`.
+*Usage*: Segmented by `redpanda_namespace` (e.g., `kafka`, `kafka_internal`, or `redpanda`), `redpanda_topic`, and `redpanda_partition`.
 
 ---
 
