@@ -1,0 +1,1312 @@
+= Redpanda Kubernetes Production Readiness Checklist
+:description: Comprehensive checklist for validating Redpanda deployments in Kubernetes against production readiness standards.
+:page-context-links: [{"name": "Linux", "to": "deploy:redpanda/linux/index.adoc" },{"name": "Kubernetes", "to": "deploy:redpanda/kubernetes/index.adoc" } ]
+:page-categories: Production, Deployment
+
+This checklist validates Redpanda deployments in Kubernetes against production readiness standards. Use this guide to ensure your cluster meets all critical requirements and follows recommended best practices for production deployments.
+
+NOTE: For non-Kubernetes deployments (Linux/VM-based), see the xref:deploy:redpanda/manual/production/production-readiness.adoc[Production Readiness Checklist for Linux].
+
+== Critical Production Requirements
+
+These checks are essential for a stable, reliable production deployment. All critical requirements must pass before going live.
+
+=== Authentication note
+
+The `rpk` commands throughout this checklist include SASL authentication flags (`-X user`, `-X pass`, `-X sasl.mechanism`).
+
+**If your cluster does not use SASL authentication**, you can omit these flags from all commands. For example:
+[,bash]
+----
+# With SASL authentication
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster health -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+
+# Without SASL authentication
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster health
+----
+
+Common SASL mechanisms are `SCRAM-SHA-256` or `SCRAM-SHA-512`. Update these values as needed for your deployment.
+
+=== Cluster health status
+
+Verify the cluster reports as healthy with no broker issues.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster health -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+All brokers must report `HEALTHY` status with zero leaderless partitions and zero under-replicated partitions.
+
+=== Minimum broker count (≥3)
+
+Ensure at least 3 brokers are running for production fault tolerance.
+
+Production clusters should have odd numbers of brokers (3, 5, 7, etc.) for optimal consensus behavior.
+
+Verify the running broker count:
+
+[,bash]
+----
+kubectl get pods -n <namespace> -l app.kubernetes.io/component=redpanda-statefulset
+----
+
+Expected output showing 3 or more brokers:
+[,bash,role=no-copy]
+----
+NAME         READY   STATUS    RESTARTS   AGE
+redpanda-0   2/2     Running   0          10d
+redpanda-1   2/2     Running   0          10d
+redpanda-2   2/2     Running   0          10d
+----
+
+Verify the configured replica count in your deployment:
+
+[tabs]
+======
+Helm::
++
+--
+[,bash]
+----
+helm get values redpanda -n <namespace> | grep -A 1 "statefulset:"
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+statefulset:
+  replicas: 3
+----
+--
+
+Operator::
++
+--
+[,bash]
+----
+kubectl get redpanda redpanda -n <namespace> -o jsonpath='{.spec.clusterSpec.statefulset.replicas}'
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+3
+----
+--
+======
+
+=== All brokers active membership
+
+Verify all brokers are in active state and not being decommissioned.
+
+Decommissioning is used to permanently remove a broker from the cluster, such as during node pool migrations or cluster downsizing. Brokers in decommissioned state should not be present in production clusters unless actively performing a planned migration.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk redpanda admin brokers list -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output showing all brokers with `active` membership status:
+[,bash,role=no-copy]
+----
+NODE-ID  NUM-CORES  MEMBERSHIP-STATUS  IS-ALIVE  BROKER-VERSION
+0        4          active             true      v24.2.4
+1        4          active             true      v24.2.4
+2        4          active             true      v24.2.4
+----
+
+All brokers must show `active` status. If any broker shows `draining` or `decommissioned`, investigate immediately.
+
+See xref:manage:cluster-maintenance/decommission-brokers.adoc[Decommission Brokers] for more information.
+
+=== No brokers in maintenance mode
+
+Ensure no brokers are currently in maintenance mode during normal operations.
+
+Maintenance mode is used when modifying brokers that will remain as members of the cluster, such as during rolling upgrades or hardware maintenance. While necessary during planned maintenance windows, brokers should not remain in maintenance mode during normal operations.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster maintenance status -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output showing no brokers in maintenance mode:
+[,bash,role=no-copy]
+----
+NODE-ID  ENABLED  FINISHED  ERRORS  PARTITIONS  ELIGIBLE  TRANSFERRING  FAILED
+0        false    -         -       -           -         -             -
+1        false    -         -       -           -         -             -
+2        false    -         -       -           -         -             -
+----
+
+All brokers should show `ENABLED: false`. If any broker shows `ENABLED: true` outside of a planned maintenance window, investigate immediately.
+
+See xref:manage:node-management.adoc#place-a-broker-in-maintenance-mode[Maintenance Mode] for more information.
+
+=== Consistent Redpanda version
+
+Ensure all brokers run the same Redpanda version.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk redpanda admin brokers list -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Version mismatches can cause compatibility issues and must be resolved.
+
+=== Version pinning
+
+**CRITICAL**: Pin specific versions for Redpanda and all related components (Console, Connectors) to prevent unexpected automatic upgrades that could introduce breaking changes or cause downtime during unplanned updates.
+
+Verify that versions are explicitly pinned in your deployment configuration:
+
+[tabs]
+======
+Helm::
++
+--
+[,yaml]
+----
+image:
+  tag: v24.2.4  # Pin specific Redpanda version
+
+console:
+  enabled: true
+  image:
+    tag: v2.4.5  # Pin specific Console version
+
+connectors:
+  enabled: true
+  image:
+    tag: v1.0.15  # Pin specific Connectors version
+----
+
+Verify pinned versions:
+[,bash]
+----
+helm get values redpanda -n <namespace>
+----
+
+Expected output showing explicit version tags (not `latest` or version ranges):
+[,bash,role=no-copy]
+----
+image:
+  tag: v24.2.4
+console:
+  image:
+    tag: v2.4.5
+connectors:
+  image:
+    tag: v1.0.15
+----
+--
+
+Operator::
++
+--
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    image:
+      tag: v24.2.4  # Pin specific Redpanda version
+
+  console:
+    enabled: true
+    image:
+      tag: v2.4.5  # Pin specific Console version
+
+  connectors:
+    enabled: true
+    image:
+      tag: v1.0.15  # Pin specific Connectors version
+----
+
+Verify pinned versions:
+[,bash]
+----
+kubectl get redpanda redpanda -n <namespace> -o yaml | grep -A 1 "tag:"
+----
+--
+======
+
+**Why this matters**:
+
+* Prevents automatic upgrades during unintended times (e.g., during high-traffic periods)
+* Ensures all environments (dev/staging/prod) run the same tested versions
+* Allows controlled upgrade testing in non-production environments first
+* Avoids compatibility issues between Redpanda and its components
+* Provides rollback capability to known-good versions
+
+**Avoid using**:
+* `latest` tag - always pulls the newest version
+* Version ranges (e.g., `v24.2.x`) - may auto-update to patch releases
+* Unspecified tags - defaults to latest or chart-defined versions
+
+=== Default topic replication factor (≥3)
+
+Verify the default replication factor is set appropriately for production.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get default_topic_replications -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+3
+----
+
+Setting `default_topic_replications` to 3 or greater ensures new topics are created with adequate fault tolerance.
+
+=== Existing topics replication factor (≥3)
+
+Check that all existing topics have adequate replication.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk topic list -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output showing replication factor ≥3 for all topics:
+[,bash,role=no-copy]
+----
+NAME              PARTITIONS  REPLICAS
+_schemas          1           3
+orders            12          3
+payments          8           3
+user-events       16          3
+----
+
+All production topics should have `REPLICAS` of 3 or greater. Topics with single-digit replication are at risk of data loss if a broker fails.
+
+See xref:manage:cluster-maintenance/topic-property-configuration.adoc#change-topic-replication-factor[Change Topic Replication Factor] if remediation is needed.
+
+=== Persistent storage configuration
+
+Verify using persistent storage (not hostPath or emptyDir) for data persistence.
+
+[,bash]
+----
+kubectl get pvc -n <namespace>
+----
+
+Expected output showing bound PersistentVolumeClaims:
+[,bash,role=no-copy]
+----
+NAME                    STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+datadir-redpanda-0      Bound    pvc-a1b2c3d4-e5f6-7890-abcd-ef1234567890   100Gi      RWO            fast-ssd       10d
+datadir-redpanda-1      Bound    pvc-b2c3d4e5-f6g7-8901-bcde-fg2345678901   100Gi      RWO            fast-ssd       10d
+datadir-redpanda-2      Bound    pvc-c3d4e5f6-g7h8-9012-cdef-gh3456789012   100Gi      RWO            fast-ssd       10d
+----
+
+Verify the StatefulSet uses PersistentVolumeClaims:
+[,bash]
+----
+kubectl describe statefulset -n <namespace> redpanda | grep -A 5 "Volume Claims"
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+Volume Claims:
+  Name:          datadir
+  StorageClass:  fast-ssd
+  Labels:        <none>
+  Annotations:   <none>
+  Capacity:      100Gi
+----
+
+HostPath and emptyDir storage are not suitable for production as they lack durability guarantees.
+
+=== RAID/LVM stripe configuration (multiple disks only)
+
+If using multiple physical disks, verify they are configured as RAID-0 or LVM stripe (not linear/concat).
+
+[,bash]
+----
+# Check block device configuration on nodes
+kubectl debug node/<node-name> -it -- chroot /host /bin/bash
+lsblk -o NAME,TYPE,SIZE,MOUNTPOINT,FSTYPE
+lvs -o lv_name,stripes,stripe_size
+mdadm --detail /dev/md*  # if using software RAID
+----
+
+Expected output for properly configured LVM stripe:
+[,bash,role=no-copy]
+----
+# lsblk output
+NAME          TYPE  SIZE   MOUNTPOINT        FSTYPE
+nvme0n1       disk  1.8T
+nvme1n1       disk  1.8T
+vg0-data      lvm   3.6T   /var/lib/redpanda xfs
+
+# lvs output - note stripes > 1 indicates striping
+LV    #Stripes StripeSize
+data  2        256.00k
+----
+
+Expected output for software RAID-0:
+[,bash,role=no-copy]
+----
+# mdadm output
+/dev/md0:
+    Raid Level : raid0
+    Array Size : 3515625472 (3.27 TiB)
+  Raid Devices : 2
+
+    Number   Major   Minor   RaidDevice State
+       0     259        0        0      active sync   /dev/nvme0n1
+       1     259        1        1      active sync   /dev/nvme1n1
+----
+
+Using LVM linear/concat or JBOD instead of stripe/RAID-0 across multiple disks will severely degrade performance. Each disk must be striped for optimal I/O throughput. Single disk configurations do not require striping.
+
+=== Storage performance requirements
+
+Ensure storage classes provide adequate IOPS and throughput for your workload.
+
+**Performance specifications:**
+
+* Use NVMe-based storage classes for production deployments
+* Minimum 16,000 IOPS (Input/Output Operations Per Second) required
+* Consider provisioned IOPS where available to meet or exceed the minimum
+* Enabling xref:develop:config-topics.adoc#configure-write-caching[write caching] can help Redpanda perform better in environments with disks that don't meet the recommended IOPS
+* NFS (Network File System) is not supported
+* Test storage performance under load
+
+**Multi-tenant disk warning:**
+
+WARNING: Avoid cloud instance types that use multi-tenant or shared disks, as these can lead to unpredictable performance due to noisy neighbor effects. Examples of instances with shared/multi-tenant storage include AWS is4gen.xlarge and similar instance types across cloud providers. Instead, use instances with dedicated local NVMe storage or provisioned IOPS volumes that guarantee consistent performance.
+
+Multi-tenant disks can experience:
+
+* Unpredictable latency spikes from other tenants' workloads
+* Inconsistent throughput that varies based on neighbor activity
+* IOPS throttling that impacts Redpanda's performance
+* Difficulty troubleshooting performance issues due to external factors
+
+See xref:deploy:redpanda/kubernetes/k-requirements.adoc#storage[Storage requirements] for detailed specifications and xref:deploy:redpanda/kubernetes/k-requirements.adoc#cloud-instance-types[Cloud Instance Types] for recommended instance types across AWS, Azure, and Google Cloud.
+
+**Volume sizing**:: Plan storage capacity for data growth and retention requirements.
++
+* Account for replication overhead
+* Include space for compaction operations
+* Monitor disk usage trends
+
+=== CPU and memory resource limits
+
+Verify pods have resource requests and limits configured.
+
+[,bash]
+----
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[?(@.name=="redpanda")].resources}' | jq
+----
+
+Expected output showing both requests and limits:
+[,bash,role=no-copy]
+----
+{
+  "limits": {
+    "cpu": "4",
+    "memory": "8Gi"
+  },
+  "requests": {
+    "cpu": "4",
+    "memory": "8Gi"
+  }
+}
+----
+
+All Redpanda pods must have:
+
+* CPU requests and limits configured and **identical** (`requests.cpu == limits.cpu`)
+* Memory requests and limits configured and **identical** (`requests.memory == limits.memory`)
+
+Setting requests equal to limits ensures the Pod receives the `Guaranteed` QoS class, which prevents CPU throttling and reduces the risk of Pod eviction.
+
+See xref:manage:kubernetes/k-manage-resources.adoc[Manage Pod Resources] for detailed configuration guidance.
+
+=== CPU to memory ratio (1:2 minimum)
+
+Ensure adequate memory allocation relative to CPU for optimal performance.
+
+Production deployments should provision at least 2 GiB of memory per CPU core.
+
+Verify the CPU to memory ratio in your configuration:
+
+[tabs]
+======
+Helm::
++
+--
+[,bash]
+----
+helm get values redpanda -n <namespace> | grep -A 2 "resources:"
+----
+
+Expected output showing proper ratio:
+[,bash,role=no-copy]
+----
+resources:
+  cpu:
+    cores: 4
+  memory:
+    container:
+      min: 8Gi
+      max: 8Gi
+----
+--
+
+Operator::
++
+--
+[,bash]
+----
+kubectl get redpanda redpanda -n <namespace> -o jsonpath='{.spec.clusterSpec.resources}' | jq
+----
+
+Expected output showing proper ratio:
+[,bash,role=no-copy]
+----
+{
+  "cpu": {
+    "cores": 4
+  },
+  "memory": {
+    "container": {
+      "min": "8Gi",
+      "max": "8Gi"
+    }
+  }
+}
+----
+--
+======
+
+In the examples above, 4 CPU cores with 8 GiB memory provides a 1:2 ratio (2 GiB per core).
+
+=== No fractional CPU requests
+
+Ensure CPU requests use whole numbers for consistent performance.
+
+Fractional CPUs can lead to performance variability in production. Use whole integer values (4, 8, 16 - not 3.5, 7.5).
+
+Verify CPU configuration:
+
+[,bash]
+----
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[?(@.name=="redpanda")].resources.requests.cpu}'
+----
+
+Expected output showing whole number:
+[,bash,role=no-copy]
+----
+4
+----
+
+Avoid fractional values like `3500m` (3.5 cores) or `7500m` (7.5 cores).
+
+**Resource capacity planning**:: Ensure nodes have adequate resources for the configured limits.
++
+* Verify cluster has sufficient total resources
+* Account for other workloads on shared nodes
+* Plan for resource growth and burst capacity
+
+=== Authorization enabled
+
+Verify Kafka authorization is enabled for access control.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get kafka_enable_authorization -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+true
+----
+
+Without authorization enabled, any client can access Kafka APIs without authentication. See xref:manage:security/authorization/index.adoc[Authorization] for configuration details.
+
+=== Developer mode disabled
+
+Ensure developer mode is disabled in production configuration.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get developer_mode -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+false
+----
+
+Developer mode should never be enabled in production environments. Developer mode disables fsync and bypasses safety checks designed for production workloads.
+
+=== Overprovisioned disabled
+
+Ensure overprovisioned mode is disabled for production stability.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get overprovisioned -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+false
+----
+
+Overprovisioned mode bypasses critical resource checks and should never be enabled in production. This mode is intended only for development environments with constrained resources.
+
+=== TLS configuration
+
+Configure TLS encryption for all client and inter-broker communication. TLS prevents eavesdropping and man-in-the-middle attacks on network traffic.
+
+Verify TLS is enabled on all listeners:
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config export -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism> | grep -A 10 "kafka_api:"
+----
+
+Expected output showing TLS configuration:
+[,bash,role=no-copy]
+----
+redpanda:
+  kafka_api:
+    - address: 0.0.0.0
+      port: 9093
+      name: internal
+      authentication_method: sasl
+  kafka_api_tls:
+    - name: internal
+      enabled: true
+      cert_file: /etc/tls/certs/tls.crt
+      key_file: /etc/tls/certs/tls.key
+----
+
+**Required TLS listeners:**
+
+* **kafka_api** - Client connections to Kafka API
+* **admin_api** - Administrative REST API access
+* **rpc_server** - Inter-broker communication
+* **schema_registry** - Schema Registry API (if used)
+
+Verify certificates are properly mounted:
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- ls -la /etc/tls/certs/
+----
+
+Expected output showing certificate files:
+[,bash,role=no-copy]
+----
+total 16
+-rw-r--r-- 1 redpanda redpanda 1234 Dec 15 10:00 ca.crt
+-rw-r--r-- 1 redpanda redpanda 1675 Dec 15 10:00 tls.crt
+-rw------- 1 redpanda redpanda 1704 Dec 15 10:00 tls.key
+----
+
+See xref:manage:security/encryption.adoc[TLS Encryption] for detailed configuration instructions.
+
+=== Authentication configuration
+
+Configure appropriate authentication mechanisms to control access to Redpanda resources.
+
+Verify SASL users are configured:
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk acl user list -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output showing configured users:
+[,bash,role=no-copy]
+----
+USERNAME
+admin
+app-producer
+app-consumer
+monitoring
+----
+
+**Authentication requirements:**
+
+* Set up SASL authentication for client connections
+* Configure TLS certificates for encryption (see TLS configuration above)
+* Implement proper user management with principle of least privilege
+* Configure ACLs (Access Control Lists) for resource authorization
+
+Verify ACLs are configured:
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk acl list -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output showing ACL rules:
+[,bash,role=no-copy]
+----
+PRINCIPAL       HOST  RESOURCE-TYPE  RESOURCE-NAME      OPERATION  PERMISSION
+User:app-producer  *     TOPIC          orders.*          WRITE      ALLOW
+User:app-consumer  *     TOPIC          orders.*          READ       ALLOW
+User:app-consumer  *     GROUP          consumer-group-1  READ       ALLOW
+----
+
+See xref:manage:security/authentication.adoc[Authentication] and xref:manage:security/authorization/index.adoc[Authorization] for configuration details.
+
+=== Network security
+
+Secure network access to the cluster using Kubernetes-native controls.
+
+Verify NetworkPolicies are configured:
+
+[,bash]
+----
+kubectl get networkpolicy -n <namespace>
+----
+
+Expected output showing network policies:
+[,bash,role=no-copy]
+----
+NAME                          POD-SELECTOR                        AGE
+redpanda-allow-internal       app.kubernetes.io/name=redpanda    10d
+redpanda-allow-clients        app.kubernetes.io/name=redpanda    10d
+redpanda-deny-all-ingress     app.kubernetes.io/name=redpanda    10d
+----
+
+Check NetworkPolicy rules:
+
+[,bash]
+----
+kubectl describe networkpolicy -n <namespace>
+----
+
+**Network security requirements:**
+
+* Configure NetworkPolicies to restrict pod-to-pod communication
+* Use TLS for all client connections (see TLS configuration)
+* Secure admin API endpoints with authentication and authorization
+* Limit ingress traffic to only necessary ports and sources
+* Use Kubernetes Services to control external access
+
+Verify services and exposed ports:
+
+[,bash]
+----
+kubectl get svc -n <namespace>
+----
+
+Expected output showing service configuration:
+[,bash,role=no-copy]
+----
+NAME               TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)
+redpanda           ClusterIP      None            <none>        9093/TCP,9644/TCP,8082/TCP
+redpanda-external  LoadBalancer   10.100.200.50   <pending>     9093:30001/TCP
+----
+
+See xref:manage:security/listener-configuration.adoc[Listener Configuration] for securing network endpoints.
+
+=== Pod Disruption Budget configured
+
+Set up PDBs to control voluntary disruptions during maintenance.
+
+[,bash]
+----
+kubectl get pdb -n <namespace>
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+NAME       MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+redpanda   N/A             1                 1                     10d
+----
+
+Production deployments must have a PodDisruptionBudget with `maxUnavailable: 1` to prevent simultaneous broker disruptions during voluntary operations like node drains, upgrades, or autoscaler actions.
+
+See xref:manage:kubernetes/k-pod-disruption-budgets.adoc[Pod Disruption Budgets] for configuration details.
+
+=== Rack awareness and topology spread
+
+Configure topology spread constraints to distribute brokers across availability zones.
+
+Verify pod distribution across zones:
+
+[,bash]
+----
+kubectl get pod -n <namespace> -o wide
+----
+
+Expected output showing pods spread across different zones:
+[,bash,role=no-copy]
+----
+NAME         READY   STATUS    NODE                          ZONE
+redpanda-0   2/2     Running   node-us-west-2a-1.internal    us-west-2a
+redpanda-1   2/2     Running   node-us-west-2b-1.internal    us-west-2b
+redpanda-2   2/2     Running   node-us-west-2c-1.internal    us-west-2c
+----
+
+Check node availability zone labels:
+
+[,bash]
+----
+kubectl get nodes --show-labels | grep topology.kubernetes.io/zone
+----
+
+**Configuration requirements:**
+
+* Configure `topologySpreadConstraints` to spread pods across zones
+* Use node labels for availability zone awareness (typically `topology.kubernetes.io/zone`)
+* Prevents single zone failures from affecting multiple brokers
+
+See xref:manage:kubernetes/k-rack-awareness.adoc[Rack Awareness in Kubernetes] for configuration details.
+
+=== Redpanda license verification
+
+Validate Enterprise license if using Enterprise features.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster license info -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output for valid license:
+[,bash,role=no-copy]
+----
+LICENSE INFORMATION
+===================
+Organization:      Your Company Name
+Type:              enterprise
+Expires:           Dec 31 2025
+----
+
+Production deployments using Enterprise features (Tiered Storage, Schema Registry, Continuous Data Balancing, etc.) must have a valid Enterprise license with sufficient expiration date.
+
+See xref:get-started:licensing/index.adoc[Redpanda Licensing] for more information.
+
+=== Operator CRDs validation (Operator deployments only)
+
+**CRITICAL**: If your deployment uses the Redpanda Operator, all required Custom Resource Definitions (CRDs) must be installed with compatible versions. Without correct CRDs, the Operator cannot manage the cluster, leading to configuration drift, failed updates, and potential data loss.
+
+Verify all required CRDs are installed:
+
+[,bash]
+----
+kubectl get crd | grep redpanda.com
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+clusters.cluster.redpanda.com
+topics.cluster.redpanda.com
+users.cluster.redpanda.com
+schemas.cluster.redpanda.com
+----
+
+Required CRDs:
+
+* `clusters.cluster.redpanda.com` - Manages Redpanda cluster configuration
+* `topics.cluster.redpanda.com` - Manages topic lifecycle
+* `users.cluster.redpanda.com` - Manages SASL users
+* `schemas.cluster.redpanda.com` - Manages Schema Registry schemas
+
+If any CRDs are missing or incompatible with your Operator version, the Operator will fail to reconcile resources.
+
+== Recommended Production Enhancements
+
+These checks improve operational robustness and performance but are not critical for basic functionality.
+
+=== Deployment method detection
+
+Verify that the deployment method (Helm or Operator) is correctly identified for your cluster. Understanding your deployment method is important for troubleshooting, upgrades, and configuration management.
+
+[tabs]
+======
+Helm::
++
+--
+[,bash]
+----
+helm list -n <namespace>
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+NAME     NAMESPACE  REVISION  UPDATED                               STATUS    CHART            APP VERSION
+redpanda redpanda   1         2024-01-15 10:30:00.123456 -0800 PST deployed  redpanda-5.0.0   v24.1.1
+----
+
+The presence of a Helm release indicates a Helm-managed deployment.
+--
+
+Operator::
++
+--
+[,bash]
+----
+kubectl get redpanda -n <namespace>
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+NAME       READY   STATUS
+redpanda   True    Redpanda reconciliation succeeded
+----
+
+The presence of a Redpanda custom resource indicates an Operator-managed deployment.
+--
+======
+
+**Why this matters**: Knowing your deployment method helps determine:
+
+* Which configuration approach to use (Helm values vs. Redpanda CR)
+* How to perform upgrades and rollbacks
+* Where to find deployment logs and troubleshooting information
+* Which documentation sections apply to your environment
+
+=== XFS filesystem for data directory
+
+Verify data directories use XFS filesystem for optimal performance.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- df -khT /var/lib/redpanda/data
+----
+
+Expected output showing XFS filesystem:
+[,bash,role=no-copy]
+----
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/nvme0n1   xfs   1.8T   14G  1.8T   1% /var/lib/redpanda/data
+----
+
+XFS provides better performance characteristics for Redpanda workloads compared to ext4. While ext4 is supported, XFS is strongly recommended for production deployments.
+
+**Storage performance tuning**:: Optimize storage configuration for production workloads.
++
+* Configure appropriate `vm.swappiness` settings
+* Tune filesystem mount options
+* Consider storage class performance characteristics
+
+=== Pod anti-affinity rules
+
+Configure pod anti-affinity to spread brokers across nodes.
+
+[,bash]
+----
+kubectl get statefulset redpanda -n <namespace> -o jsonpath='{.spec.template.spec.affinity}' | jq
+----
+
+Expected output showing pod anti-affinity rules:
+[,bash,role=no-copy]
+----
+{
+  "podAntiAffinity": {
+    "requiredDuringSchedulingIgnoredDuringExecution": [
+      {
+        "labelSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "redpanda"
+          }
+        },
+        "topologyKey": "kubernetes.io/hostname"
+      }
+    ]
+  }
+}
+----
+
+This prevents single node failures from affecting multiple brokers by ensuring each Redpanda pod runs on a different node.
+
+See xref:reference:k-redpanda-helm-spec.adoc#statefulset-podantiaffinity[Pod Anti-Affinity] configuration options.
+
+=== Node isolation configuration
+
+Configure taints/tolerations or nodeSelector for workload isolation.
+
+[,bash]
+----
+kubectl get statefulset redpanda -n <namespace> -o jsonpath='{.spec.template.spec.nodeSelector}' | jq
+----
+
+Example output showing node isolation:
+[,bash,role=no-copy]
+----
+{
+  "workload-type": "redpanda"
+}
+----
+
+Isolating Redpanda workloads on dedicated nodes improves performance predictability by preventing resource contention with other applications.
+
+**CPU pinning and NUMA awareness**:: Configure CPU affinity for optimal performance on multi-core systems.
+
+**Memory allocation strategy**:: Optimize memory settings for your workload patterns.
+
+=== Continuous data balancing enabled
+
+xref:manage:cluster-maintenance/continuous-data-balancing.adoc[Continuous Data Balancing] is a major benefit of Redpanda for managing production deployments. It automatically rebalances partition replicas across brokers based on disk usage and node changes, eliminating manual intervention and preventing performance degradation.
+
+**This feature should be enabled for all licensed production clusters.**
+
+Verify that Continuous Data Balancing is configured:
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get partition_autobalancing_mode -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+continuous
+----
+
+Setting this to `continuous` enables automatic partition rebalancing based on:
+
+* Node additions or removals
+* High disk usage conditions
+* Broker availability changes
+
+Without Continuous Data Balancing, partition distribution becomes skewed over time, leading to hotspots and manual rebalancing operations.
+
+=== Core balancing enabled
+
+Configure core balancing for CPU core partition distribution.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get core_balancing_on_core_count_change -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+true
+----
+
+When enabled, Redpanda continuously rebalances partitions between CPU cores on a broker for optimal resource utilization, especially beneficial after broker restarts or configuration changes.
+
+=== System requirements validation
+
+Run system checks to validate optimal configuration.
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk redpanda check -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output showing all checks passed:
+[,bash,role=no-copy]
+----
+CONDITION                         REQUIRED       CURRENT   SEVERITY  PASSED
+Data directory is writable        true           true      Fatal     true
+Free memory per CPU [MB]          >= 2048        8192      Warning   true
+NTP Synced                        true           true      Warning   true
+Swappiness                        1              1         Warning   true
+----
+
+Review any failed checks and remediate before proceeding to production. See xref:reference:rpk/rpk-redpanda/rpk-redpanda-check.adoc[rpk redpanda check] for details on each validation.
+
+=== Debug bundle generation
+
+Verify that you can successfully generate and collect a debug bundle from your cluster. This proactive check ensures that when an actual issue occurs and you need to contact Redpanda support, you won't face permission issues or silent collection failures that could delay troubleshooting.
+
+Generate a debug bundle:
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk debug bundle -o /tmp/bundle.zip
+----
+
+For additional options and arguments, see xref:reference:rpk/rpk-debug/rpk-debug-bundle.adoc[rpk debug bundle].
+
+Expected output:
+[,bash,role=no-copy]
+----
+Creating bundle file...
+Collecting cluster info...
+Collecting logs...
+Collecting configuration...
+Debug bundle saved to '/tmp/bundle.zip'
+----
+
+**Why this matters**: Debug bundles collect critical diagnostic information including:
+
+* Cluster configuration and metadata
+* Redpanda logs from all brokers
+* System resource usage and performance metrics
+* Kubernetes resource definitions
+
+**Common issues to watch for**:
+
+* Permission errors preventing log collection
+* Insufficient disk space for bundle creation
+* Network policies blocking bundle transfer
+* RBAC restrictions on accessing pod logs or exec
+
+Testing bundle generation early ensures this critical troubleshooting tool works when you need it most. Debug bundles are often required by Redpanda support to diagnose production issues efficiently.
+
+See xref:manage:kubernetes/troubleshooting/k-diagnostics-bundle.adoc[Diagnostics Bundles in Kubernetes] for detailed information about bundle contents and collection methods.
+
+=== Tiered Storage configuration
+
+Configure Tiered Storage for extended data retention using object storage. Tiered Storage automatically offloads older data to cloud storage (S3, GCS, Azure Blob), enabling extended retention without expanding local disk capacity.
+
+Verify Tiered Storage configuration:
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get cloud_storage_enabled -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output if Tiered Storage is enabled:
+[,bash,role=no-copy]
+----
+true
+----
+
+**Benefits of Tiered Storage:**
+
+* Reduces local storage costs by offloading cold data to cheaper object storage
+* Enables longer data retention periods without provisioning additional disk
+* Required for advanced features like Remote Read Replicas and Iceberg integration
+* Provides disaster recovery capabilities through cloud-backed data
+
+**Verification steps:**
+
+[,bash]
+----
+# Check bucket configuration
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get cloud_storage_bucket -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+
+# Check region/endpoint
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get cloud_storage_region -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+See xref:manage:tiered-storage.adoc[Tiered Storage] for configuration details and best practices.
+
+=== Security scanning
+
+Regularly scan container images and configurations for vulnerabilities to maintain security posture.
+
+**Container image scanning:**
+
+Verify that container images are scanned before deployment:
+
+[,bash]
+----
+# Check current image in use
+kubectl get statefulset redpanda -n <namespace> -o jsonpath='{.spec.template.spec.containers[?(@.name=="redpanda")].image}'
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+docker.redpanda.com/redpandadata/redpanda:v24.2.4
+----
+
+**Security scanning practices:**
+
+* Scan images using tools like Trivy, Snyk, or cloud-native scanners before deployment
+* Set up automated scanning in CI/CD pipelines
+* Monitor for CVE announcements and security advisories
+* Keep Redpanda and related components up to date with security patches
+* Review Kubernetes RBAC policies and ServiceAccount permissions
+
+**Configuration scanning:**
+
+[,bash]
+----
+# Scan Kubernetes manifests
+kubectl get redpanda,statefulset,deployment -n <namespace> -o yaml > cluster-config.yaml
+# Use kubesec, kube-bench, or similar tools to scan cluster-config.yaml
+----
+
+Establish a regular cadence for security scanning (e.g., weekly or with each deployment).
+
+=== Backup and recovery procedures
+
+Implement and test backup and recovery processes to ensure business continuity.
+
+**Backup strategy with Tiered Storage:**
+
+Tiered Storage provides built-in backup capabilities by storing data in object storage. Verify Tiered Storage is configured:
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get cloud_storage_enabled -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+**Recovery testing:**
+
+Regularly test recovery procedures to validate RTO/RPO targets:
+
+[,bash]
+----
+# Test topic restoration from Tiered Storage
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk topic describe <topic-name> -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+**Backup and recovery checklist:**
+
+* Configure and validate Tiered Storage for automatic data backup
+* Document recovery procedures for different failure scenarios
+* Test cluster recovery procedures in non-production environments
+* Establish Recovery Time Objective (RTO) and Recovery Point Objective (RPO)
+* Maintain runbooks for disaster recovery scenarios
+* Verify IAM roles/permissions for object storage access
+
+See xref:manage:whole-cluster-restore.adoc[Whole Cluster Restore] for detailed recovery procedures.
+
+=== Audit logging
+
+Enable and configure audit logging for compliance and security monitoring requirements.
+
+Verify audit logging configuration:
+
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get audit_enabled -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
+----
+
+Expected output if audit logging is enabled:
+[,bash,role=no-copy]
+----
+true
+----
+
+**Audit log verification:**
+
+Check where audit logs are being written:
+
+[,bash]
+----
+# Check audit log topic
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk topic list -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism> | grep audit
+----
+
+Expected output:
+[,bash,role=no-copy]
+----
+_redpanda.audit_log    1    3
+----
+
+**Audit logging best practices:**
+
+* Forward audit logs to SIEM (Security Information and Event Management) systems
+* Configure retention policies appropriate for compliance requirements
+* Monitor audit logs for suspicious activities
+* Exclude high-volume, low-value events to reduce noise
+* Ensure audit log topic has adequate replication and retention
+
+**Compliance considerations:**
+
+Audit logging may be required for:
+
+* SOC 2 compliance
+* HIPAA regulations
+* PCI DSS requirements
+* GDPR data access tracking
+* Internal security policies
+
+See xref:manage:audit-logging.adoc[Audit Logging] for configuration details and event types.
+
+== Monitoring and Observability
+
+**Monitoring setup**:: Deploy comprehensive monitoring for cluster health and performance.
++
+* Set up Prometheus metrics collection
+* Configure ServiceMonitor for automatic scraping
+* Validate metrics endpoint accessibility
++
+[,bash]
+----
+kubectl get servicemonitor -n <namespace>
+----
+
+**Grafana dashboards**:: Import and configure Redpanda monitoring dashboards.
++
+* Import official Redpanda dashboards
+* Verify dashboards display data correctly
+* Customize dashboards for your environment
+
+**Alerting rules**:: Implement alerting for critical metrics and conditions.
++
+* CPU and memory utilization alerts
+* Disk space alerts
+* Replication lag alerts
+* Broker health alerts
+
+**Log aggregation**:: Configure centralized log collection and analysis.
++
+* Forward Redpanda logs to central logging system
+* Set up log retention policies
+* Configure log-based alerting
+
+**Health checks**:: Implement application-level health checks.
++
+* Configure Kubernetes liveness and readiness probes
+* Set up external health monitoring
+* Define SLI/SLO metrics
+
+== Operational Readiness
+
+**Deployment automation**:: Implement Infrastructure as Code for reproducible deployments.
++
+* Use Helm charts or Kubernetes manifests in version control
+* Implement GitOps workflows
+* Automate testing and validation
+
+**Non-production environments**:: Maintain separate environments for testing and validation.
++
+* Set up dedicated dev/staging/production clusters
+* Test changes in non-production first
+* Mirror production configuration in staging
+
+**Upgrade procedures**:: Document and test cluster upgrade processes.
++
+* Plan for rolling upgrades with zero downtime
+* Test upgrade procedures in staging environments
+* Implement rollback capabilities
+* Document upgrade policy and procedures
+
+**Incident response**:: Prepare for operational incidents and outages.
++
+* Document troubleshooting procedures
+* Establish on-call processes
+* Create incident response playbooks
+
+**Resource quotas**:: Configure namespace resource quotas to prevent resource exhaustion.
++
+[,bash]
+----
+kubectl get resourcequota -n <namespace>
+----
+
+== Next Steps
+
+After completing this checklist:
+
+1. **Performance testing**: Conduct load testing to validate performance under expected traffic.
+2. **Disaster recovery testing**: Test backup and recovery procedures.
+3. **Security review**: Conduct security assessment and penetration testing.
+4. **Operational validation**: Verify monitoring, alerting, and incident response procedures.
+5. **Documentation**: Complete operational runbooks and troubleshooting guides.
