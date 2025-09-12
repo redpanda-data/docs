@@ -1,45 +1,97 @@
-= Access Control Lists
+= Configure Access Control Lists
 :page-categories: Management, Security
 :page-aliases: features:acls.adoc, security:acls.adoc
 // tag::single-source[]
-:description: Learn how to use ACLs to configure fine-grained access to provisioned users.
+:description: Learn how to use ACLs to configure fine-grained access to Redpanda resources.
 
-Access control lists (ACLs) provide a way to configure fine-grained access to provisioned users. ACLs work with SASL/SCRAM and with mTLS with principal mapping for authentication.
-
-== ACLs
-
-Use access control lists (ACLs) to manage user permissions. ACLs are assigned principals, which then access resources within Redpanda. Redpanda stores ACLs internally, replicated with glossterm:Raft[] to provide the same consensus guarantees as your data. 
+Access control lists (ACLs) provide a way to configure fine-grained access to Redpanda resources. ACLs are permission rules that determine which actions users or roles can perform on Redpanda resources. Redpanda stores ACLs internally, replicated with glossterm:Raft[] to provide the same consensus guarantees as your data.
 
 ifndef::env-cloud[]
-After you enable authorization, by default, only superusers have access to the resources. Redpanda recommends creating other users to effectively use Redpanda and then, create ACLs for them. You can manage ACLs with `rpk security acl`.
+After you enable authorization, access to Redpanda resources is limited to superusers. To follow <<acls-best-practices, security best practices>>, create standard users and use ACLs to grant only the permissions they need for specific resources.
 
-For complex organizational hierarchies or large numbers of users, consider using xref:manage:security/authorization/rbac.adoc[role-based access control] for a more flexible and efficient way to manage user permissions. 
+NOTE: For complex organizational hierarchies or large numbers of users, consider using xref:manage:security/authorization/rbac.adoc[role-based access control] for a more flexible and efficient way to manage user permissions. 
 
 endif::[]
 
 ifdef::env-cloud[]
-For complex organizational hierarchies or large numbers of users, consider using xref:security:authorization/rbac/rbac_dp.adoc[role-based access control] for a more flexible and efficient way to manage user permissions. 
+NOTE: For complex organizational hierarchies or large numbers of users, consider using xref:security:authorization/rbac/rbac_dp.adoc[role-based access control] for a more flexible and efficient way to manage user permissions. 
 
 endif::[]
 
-=== ACL terminology
+== ACLs overview
 
-Entities accessing the *resources* are called *principals*. A User:foo is the principal for user "foo". You can decide whether to allow or deny *permissions* to access to the resources.
+ACLs control access by defining:
 
-You can also specify the *hosts* for which they have access.
+* *Who* can access resources (principals - users or roles)
+* *What* they can access (clusters, topics, consumer groups, transactional IDs, Schema Registry subjects, and Schema Registry operations)
+* *How* they can interact with those resources (operations like read, write, describe)
+* *Where* they can connect from (host restrictions)
 
-This access is represented as *operations*, such as `read`, `write`, or `describe`, and the operations can be performed on *resources*, such as a topic. You can filter the resources by name.
+ACLs work with SASL/SCRAM and mTLS authentication methods to provide comprehensive security.
 
-ACL commands work on a multiplicative basis. If you set up two principals and two permissions, the result is four ACLs: both permissions for the first principal, as well as both permissions for the second principal. Adding two resources further doubles the ACLs created.
+== Manage ACLs
 
-TIP: Be as specific as possible when granting ACLs.
+You can create and manage ACLs in the following ways:
 
-Granting more ACLs than necessary per principal may inadvertently allow clients to do things they should not, such as deleting topics or joining the wrong consumer group.
+* *{ui}*: Select *Security* from the left navigation menu, select the *ACLs* tab. After the ACL is created, you can add users or roles to it. 
+* *Command Line*: Use the `rpk` command-line tool for programmatic management.
++
+For example, suppose you want to create a user named `analytics-user` who can read from topics starting with `logs-` and write to a topic called `processed-data`:
++
+[,bash]
+----
+# 1. Create the user
+rpk security user create analytics-user --password 'secure-password'
+
+# 2. Grant read access to topics with "logs-" prefix
+rpk security acl create --allow-principal analytics-user \
+  --operation read,describe --topic 'logs-' \
+  --resource-pattern-type prefixed
+
+# 3. Grant write access to the processed-data topic
+rpk security acl create --allow-principal analytics-user \
+  --operation write,describe --topic processed-data
+----
+
+== ACL terminology
+
+Understanding these terms helps you configure least-privilege access.
+
+[cols="1,2,2"]
+|===
+| Term | Definition | Example
+
+| Principal
+| The entity (user or role) requesting access
+| `User:analytics-user`, `RedpandaRole:data-engineers`
+
+| Resource
+| The Redpanda component being accessed (cluster, topic, consumer group, transactional ID, Schema Registry glossterm:subject[], and Schema Registry operation)
+| Topic: `sensor-data`, Group: `analytics-group`, Cluster: `kafka-cluster`
+
+| Operation
+| The action being performed on the resource
+| `READ`, `WRITE`, `CREATE`, `DELETE`, `DESCRIBE`
+
+| Host
+| The IP address or hostname from which access is allowed/denied
+| `192.168.1.100`, `*` (any host)
+
+| Permission
+| Whether access is allowed or denied
+| `ALLOW`, `DENY`
+|===
+
+An ACL rule combines these elements to create a permission statement:
+
+`ALLOW User:analytics-user to READ topic:sensor-data from host:192.168.1.100`
+
+ACL commands work on a multiplicative basis. If you specify two principals and two permissions, you create four ACLs: both permissions for each principal.
 
 [[principals]]
 === Principals
 
-All ACLs require a principal. A principal is composed of two parts: the type, and the name. Redpanda supports the type "User". When you create user "bar", Redpanda expects you to add ACLs for "User:bar".
+All ACLs require a principal. A principal is composed of two parts: the type, and the name. Redpanda supports the types "User" and "RedpandaRole". When you create user "bar", Redpanda expects you to add ACLs for "User:bar".
 
 The `--allow-principal` and `--deny-principal` flags add this prefix for you, if necessary.
 
@@ -57,63 +109,126 @@ When specifying hosts, you must pair the `--allow-host` flag with the `--allow-p
 
 A resource is what an ACL allows or denies access to. The following resources are available within Redpanda:
 
+- `cluster`
 - `topics`
 - `groups`
-- `cluster`
 - `transactionalid`
 
 Starting in v25.2, Redpanda also supports the following ACL resources for Schema Registry:
 
-* `registry`: Controls whether or not to grant ACL access to global, or top-level Schema Registry operations. Specify using the flag `registry-global`.
-* `subject`: Controls ACL access for specific Schema Registry subjects. Specify using the flag `registry-subject`.
+* `subject`: Controls ACL access for specific Schema Registry subjects. Specify using the flag `--registry-subject`.
+* `registry`: Controls whether or not to grant ACL access to global, or top-level Schema Registry operations. Specify using the flag `--registry-global`.
 
-Names for each of these resources can be specified with their respective flags.
+IMPORTANT: ACLs for Schema Registry must be enabled for each cluster. See xref:manage:schema-reg/schema-reg-authorization.adoc[].
 
 Resources combine with the operation that is allowed or denied on that resource. By default, resources are specified on an exact name match (a "literal" match).
+
+Names for each of these resources can be specified with their respective flags.
 
 Use the `--resource-pattern-type` flag to specify that a resource name is "prefixed", meaning to allow anything with the given prefix. A literal name of "foo" matches only the topic "foo", while the prefixed name of "foo-" matches both "foo-bar" and "foo-jazz". The special wildcard resource name '\*' matches any name of the given resource type (`--topic` '*' matches all topics).
 
 === Operations
 
-Paired with resources, operations are the actions that are allowed or denied.
-Redpanda supports the following operations:
+Operations define what actions are allowed or denied on resources. Here are the available operations with common use cases:
 
 |===
-| Operation | Description
-
-| ALL
-| Allows all operations below.
+| Operation | Description | Common use case
 
 | READ
-| Allows reading a given resource.
+| Allows reading data from a resource
+| Consumers reading from topics, fetching consumer group offsets
 
 | WRITE
-| Allows writing to a given resource.
+| Allows writing data to a resource
+| Producers publishing messages to topics
 
 | CREATE
-| Allows creating a given resource.
+| Allows creating new resources
+| Auto-creating topics, creating new consumer groups
 
 | DELETE
-| Allows deleting a given resource.
-
-| ALTER
-| Allows altering non-configurations.
+| Allows deleting resources
+| Removing topics, deleting consumer groups
 
 | DESCRIBE
-| Allows querying non-configurations.
+| Allows querying resource metadata
+| Listing topics, getting topic configurations
+
+| ALTER
+| Allows modifying resource properties
+| Changing topic partition counts, updating consumer group settings
 
 | DESCRIBE_CONFIGS
-| Allows describing configurations.
+| Allows viewing resource configurations
+| Reading topic settings, broker configurations
 
 | ALTER_CONFIGS
-| Allows altering configurations.
+| Allows modifying resource configurations
+| Changing topic retention policies, updating broker settings
+
+| IDEMPOTENT_WRITE
+| Allows idempotent produce semantics initialization
+| Required for idempotent producers (InitProducerID)
+
+| ALL
+| Grants all operations above
+| Administrative access to resources
 |===
+
+Common combinations:
+
+* Producer: `WRITE` + `DESCRIBE` on topics
+* Consumer: `READ` + `DESCRIBE` on topics, `READ` on consumer groups
+* Admin: `ALL` on cluster and specific resources
 
 === Producing/Consuming
 
-The following operations are necessary for each individual client request, where *resource* corresponds to the resource flag, and "for xyz" corresponds to the resource names in the request:
+For quick reference, here are the ACL requirements for common client scenarios:
 
-[.no-copy]
+[cols="1,3a"]
+|===
+| Client type | Required ACLs
+
+| Simple producer
+|
+* `WRITE` + `DESCRIBE` on target topics
+
+| Simple consumer
+|
+* `READ` + `DESCRIBE` on target topics
+* `READ` on consumer group
+
+| Transactional producer
+|
+* `WRITE` + `DESCRIBE` on target topics
+* `WRITE` on transactional ID
+
+| Consumer group admin
+|
+* `READ` + `DESCRIBE` on target topics
+* `READ` + `DESCRIBE` + `DELETE` on consumer groups
+|===
+
+Command examples:
+
+[,bash]
+----
+# Basic producer access
+rpk security acl create --allow-principal producer-user \
+  --operation write,describe --topic my-topic
+
+# Basic consumer access  
+rpk security acl create --allow-principal consumer-user \
+  --operation read,describe --topic my-topic
+rpk security acl create --allow-principal consumer-user \
+  --operation read --group my-consumer-group
+----
+
+The following operations are necessary for each individual client request, where *resource* corresponds to the resource flag, and "for xyz" corresponds to the resource names in the request.
+
+.Show operations
+[%collapsible]
+====
 ----
 PRODUCING/CONSUMING
 
@@ -253,8 +368,9 @@ ADMIN
 
     GetSchemaById           READ on SUBJECT for subject
 ----
+====
 
-To get this information at the CLI, run:
+To get this information with `rpk`, run:
 
 [,bash]
 ----
@@ -278,54 +394,97 @@ A client can be allowed access or denied access. By default, all permissions are
 
 Commands for managing users and ACLs work on a specific ACL basis, but listing and deleting ACLs works on filters. Filters allow matching many ACLs to be printed, listed, and deleted at the same time. Because this can be risky for deleting, the delete command prompts for confirmation by default.
 
-== rpk for managing users and ACLs
+== ACLs best practices
 
-The `rpk security acl` command manages your ACLs as well as your SASL/SCRAM users. 
+Follow these recommendations for secure and manageable ACL configurations.
+
+Security best practices:
+
+* Principle of least privilege: Grant only the minimum permissions required for each user or role
+* Avoid wildcards: Use specific resource names instead of `*` whenever possible
+* Separate environments: Use different principals for development, staging, and production
+* Regular audits: Periodically review and clean up unused ACLs
+
+Management best practices:
+
+* Use descriptive names: Choose clear user and topic names that indicate their purpose
+* Group related permissions: Create roles for users with similar access patterns
+* Document ACL decisions: Keep records of why specific permissions were granted
+
+Common pitfalls to avoid
+
+* Over-privileging: Granting `ALL` operations when specific ones would suffice
+* Forgetting consumer groups: Not granting necessary group permissions for consumers
+* Host restrictions: Accidentally blocking legitimate client connections with overly restrictive host rules
+* Pattern confusion: Mixing up literal vs. prefixed resource pattern types
+* Test ACLs: Verify permissions work as expected before deploying to production
+
+== Manage ACLs with rpk
+
+Use xref:reference:rpk/rpk-acl.adoc[`rpk security acl`] to manage ACLs and SASL/SCRAM users from the command line.
 
 ifndef::env-cloud[]
-If you're on Kubernetes, you can use `kubectl exec` to run `rpk` commands.
+On Kubernetes, you can use `kubectl exec` to run `rpk` commands.
 
 endif::[]
 
+=== Basic workflow
+
+Follow this typical workflow when setting up ACLs:
+
+1. *Create a user*: `rpk security user create <username> --password '<password>'`
+2. *Create ACLs*: `rpk security acl create --allow-principal <username> --operation <ops> --topic <topic>`
+3. *Verify access*: `rpk security acl list --allow-principal <username>`
+
+Example setup:
+
 [,bash]
 ----
-rpk security acl [command] [flags]
+# 1. Create user
+rpk security user create data-processor \
+  --password 'secure-password' \
+  -X admin.hosts=localhost:9644
+
+# 2. Grant topic access
+rpk security acl create --allow-principal data-processor \
+  --operation read,write,describe --topic 'data-*' \
+  --resource-pattern-type prefixed
+
+# 3. Grant consumer group access
+rpk security acl create --allow-principal data-processor \
+  --operation read,describe --group data-processing-group
+
+# 4. Verify the setup
+rpk security acl list --allow-principal data-processor
 ----
 
-For example, to create a user:
+=== Command overview
 
-[,bash]
-----
-rpk security user create Jack \
---password '<password>' \
--X admin.hosts=localhost:9644
-----
-
-`Created user 'Jack'`
-
-Here are all the available commands and how they interact with Redpanda:
+Here's how `rpk` commands interact with Redpanda:
 
 |===
-| Command | Protocol | Default Port
+| Command | Protocol | Default port | Purpose
 ifndef::env-cloud[]
 | user
 | Admin API
 | 9644
+| Manage SASL/SCRAM users
 endif::[]
 | list
 | Kafka API
 | 9092
+| View existing ACLs
 
 | create
 | Kafka API
 | 9092
+| Create new ACLs
 
 | delete
 | Kafka API
 | 9092
+| Remove ACLs
 |===
-
-For more information, see xref:reference:rpk/rpk-acl.adoc[`rpk security acl`].
 
 === Global flags
 
@@ -432,6 +591,12 @@ You can use the global flags and some other local flags. Following are the avail
 
 | --transactional-id
 | Transactional IDs to grant ACLs for (repeatable).
+
+| --registry-subject
+| Schema Registry subject to grant ACLs for (repeatable).
+
+| --registry-global
+| Grants ACLs for global Schema Registry operations (no name required).
 |===
 
 Examples:
@@ -527,6 +692,12 @@ You can use the global flags and some other local flags. Following are the avail
 
 | --transactional-id
 | Transactional IDs to list/remove ACLs for. (repeatable)
+
+| --registry-subject
+| Schema Registry subject(s) to list/remove ACLs for. (repeatable)
+
+| --registry-global
+| Match ACLs for global Schema Registry operations.
 |===
 
 === User
@@ -542,11 +713,9 @@ Following are the available global user flags:
 
 |===
 | Flag | Description | Supported Value
-ifndef::env-cloud[]
 | -X admin.hosts
-| The comma-separated list of Admin API addresses (IP:port). You must specify one for each broker.
+| The comma-separated list of IP addresses (IP:port). You must specify one for each broker.
 | strings
-endif::[]
 | -h, --help
 | -h, --help
 | Help.
