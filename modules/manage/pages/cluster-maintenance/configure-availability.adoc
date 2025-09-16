@@ -22,15 +22,53 @@ Redpanda also provides properties to manage the rate of connection creation:
 * xref:reference:properties/cluster-properties.adoc#kafka_connection_rate_limit_overrides[`kafka_connection_rate_limit_overrides`]: A list of IP addresses for which `kafka_connection_rate_limit` is overridden and doesn't apply.
 endif::[]
 
-ifdef::env-cloud[]
-IMPORTANT: Per-IP connection controls require Redpanda to see individual client IPs. If clients connect through PrivateLink endpoints, NAT gateways, or other shared-IP egress, the per-IP limit applies to the shared IP, affecting all clients behind it and preventing isolation of a single offending client.
-endif::[]
-
 [NOTE]
 ====
 * These connection limit properties are disabled by default. You must manually enable them.
 * Typically, a client opens two or three connections, so the total number of connections is not equal to the number of clients. For example, to support 100 clients, you might set your connection limit to 300.
 ====
+
+ifdef::env-cloud[]
+=== Configure connection count limit by client IP
+
+Use the `kafka_connections_max_per_ip` property to limit the number of connections from each client IP address. 
+
+IMPORTANT: Per-IP connection controls require Redpanda to see individual client IPs. If clients connect through PrivateLink endpoints, NAT gateways, or other shared-IP egress, the per-IP limit applies to the shared IP, affecting all clients behind it and preventing isolation of a single offending client.
+
+==== Configure the limit
+
+To configure `kafka_connections_max_per_ip` safely without disrupting legitimate clients, follow these steps:
+
+. Set up metrics scraping into your monitoring stack for the relevant cluster. See xref:manage:monitor-cloud.adoc[].
+
+. Monitor current connection patterns using the `redpanda_rpc_active_connections` metric with the `redpanda_server="kafka"` filter:
++
+```
+redpanda_rpc_active_connections{redpanda_id="CLOUD_CLUSTER_ID", redpanda_server="kafka"}
+```
+
+. Analyze the connection data to identify the normal range of connections per IP address during typical traffic cycles.
+
+. Set the `kafka_connections_max_per_ip` value based on your analysis: 
+** Use the upper bound of normal connections from step 3, OR
+** Use a lower value if you know the expected connections per client (typically 2-3 connections per client)
+
+. Continue monitoring the connection metrics after applying the limit to ensure:
+** Legitimate clients are not affected
+** The problematic client is properly controlled
+
+==== Limitations
+
+* Decreasing the limit does not terminate any currently open Kafka API connections.
+* This limit does not apply to Kafka HTTP Proxy connections.
+* The limit may negatively affect tail latencies across all client connections.
+* Clients behind NAT gateways or private links share the same IP address as seen by Redpanda brokers.
+* All clients behind the shared IP are collectively subject to the single `kafka_connections_max_per_ip` limit.
+* Connection rejections occur randomly among clients once the limit is reached. For example: If `kafka_connections_max_per_ip` is set to 100, but clients behind a NAT gateway collectively need 150 connections, whichever client attempts the 101st connection gets rejected.
+* Redpanda may modify this property during internal operations.
+* Availability incidents caused by misconfiguring this feature are excluded from the Redpanda Cloud SLA.
+
+endif::env-cloud[]
 
 == Configure client reconnections
 
