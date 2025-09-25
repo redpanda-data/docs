@@ -1,0 +1,293 @@
+= Redpanda Kubernetes Production Readiness Checklist
+:description: Comprehensive checklist for validating Redpanda deployments in Kubernetes against production readiness standards.
+:page-context-links: [{"name": "Linux", "to": "deploy:redpanda/linux/index.adoc" },{"name": "Kubernetes", "to": "deploy:redpanda/kubernetes/index.adoc" } ]
+:page-categories: Production, Deployment
+
+This checklist validates Redpanda deployments in Kubernetes against production readiness standards. Use the automated checker script to verify most requirements, and complete manual checks for comprehensive production preparation.
+
+TIP: The automated production readiness checker (`check-redpanda-readiness-modular.py`) can validate most of these requirements automatically. Run it against your Kubernetes deployment to get a comprehensive assessment.
+
+== Critical Production Requirements
+
+These checks are essential for a stable, reliable production deployment. All critical requirements should pass before going live.
+
+=== Deployment Method Validation
+
+==== Automated Checks
+
+**Deployment method detection**:: Verify that the deployment method (Helm or Operator) is properly detected and configured.
++
+[,bash]
+----
+./check-redpanda-readiness-modular.py -n <namespace> -d <deployment-name>
+----
+
+**Operator CRDs validation** (Operator deployments only):: Ensure all required Custom Resource Definitions are installed and available.
++
+Required CRDs:
++
+* `clusters.cluster.redpanda.com`
+* `topics.cluster.redpanda.com`
+* `users.cluster.redpanda.com`
+* `schemas.cluster.redpanda.com`
+
+=== Cluster Health and Configuration
+
+==== Automated Checks
+
+**Cluster health status**:: Verify the cluster reports as healthy with no broker issues.
++
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster health
+----
+
+**Minimum broker count (≥3)**:: Ensure at least 3 brokers are running for production fault tolerance.
++
+Production clusters should have odd numbers of brokers (3, 5, 7, etc.) for optimal consensus behavior.
+
+**Default topic replication factor (≥3)**:: Verify the default replication factor is set appropriately for production.
++
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get default_topic_replications
+----
+
+**Existing topics replication factor (≥3)**:: Check that all existing topics have adequate replication.
++
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk topic list
+----
+
+**No brokers in maintenance mode**:: Ensure no brokers are currently in maintenance mode during normal operations.
+
+**All brokers active membership**:: Verify all brokers are in active state and not being decommissioned.
+
+=== Storage Configuration
+
+==== Automated Checks
+
+**Persistent storage configuration**:: Verify using persistent storage (not hostPath) for data persistence.
++
+HostPath storage is not suitable for production as it lacks durability guarantees.
+
+==== Manual Checks
+
+**Storage class performance**:: Ensure storage classes provide adequate IOPS and throughput for your workload.
++
+* For high-throughput workloads: Use SSD-based storage classes
+* Consider provisioned IOPS where available
+* Test storage performance under load
+
+**Volume sizing**:: Plan storage capacity for data growth and retention requirements.
++
+* Account for replication overhead
+* Include space for compaction operations
+* Monitor disk usage trends
+
+=== Resource Allocation
+
+==== Automated Checks
+
+**CPU and memory resource limits**:: Verify pods have resource requests and limits configured.
++
+All Redpanda pods must have:
++
+* CPU requests and limits
+* Memory requests and limits
+
+**CPU to memory ratio (1:2 minimum)**:: Ensure adequate memory allocation relative to CPU for optimal performance.
++
+Production deployments should provision at least 2 GiB of memory per CPU core.
+
+==== Manual Checks
+
+**Resource capacity planning**:: Ensure nodes have adequate resources for the configured limits.
++
+* Verify cluster has sufficient total resources
+* Account for other workloads on shared nodes
+* Plan for resource growth and burst capacity
+
+=== Security Configuration
+
+==== Automated Checks
+
+**Authorization enabled**:: Verify Kafka authorization is enabled for access control.
++
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get kafka_enable_authorization
+----
+
+**Developer mode disabled**:: Ensure developer mode is disabled in production configuration.
++
+Developer mode should never be enabled in production environments.
+
+==== Manual Checks
+
+**Authentication configuration**:: Configure appropriate authentication mechanisms.
++
+* Set up SASL authentication for client connections
+* Configure TLS certificates for encryption
+* Implement proper user management and ACLs
+
+**Network security**:: Secure network access to the cluster.
++
+* Configure NetworkPolicies to restrict pod-to-pod communication
+* Use TLS for all client connections
+* Secure admin API endpoints
+
+== Recommended Production Enhancements
+
+These checks improve operational robustness and performance but are not critical for basic functionality.
+
+=== Cluster Configuration
+
+==== Automated Checks
+
+**Redpanda license verification**:: Validate Enterprise license if using Enterprise features.
+
+**Consistent Redpanda version**:: Ensure all brokers run the same Redpanda version.
++
+Version mismatches can cause compatibility issues and should be resolved.
+
+=== Storage Optimization
+
+==== Automated Checks
+
+**XFS filesystem for data directory**:: Verify data directories use XFS filesystem for optimal performance.
++
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- df -khT <data-directory>
+----
+
+==== Manual Checks
+
+**Storage performance tuning**:: Optimize storage configuration for production workloads.
++
+* Configure appropriate `vm.swappiness` settings
+* Tune filesystem mount options
+* Consider storage class performance characteristics
+
+=== Resource Optimization
+
+==== Automated Checks
+
+**Pod anti-affinity rules**:: Configure pod anti-affinity to spread brokers across nodes.
++
+This prevents single node failures from affecting multiple brokers.
+
+**Pod Disruption Budget configured**:: Set up PDBs to control voluntary disruptions during maintenance.
+
+**No fractional CPU requests**:: Ensure CPU requests use whole numbers for consistent performance.
++
+Fractional CPUs can lead to performance variability in production.
+
+**Node isolation configuration**:: Configure taints/tolerations or nodeSelector for workload isolation.
++
+Isolating Redpanda workloads improves performance predictability.
+
+==== Manual Checks
+
+**CPU pinning and NUMA awareness**:: Configure CPU affinity for optimal performance on multi-core systems.
+
+**Memory allocation strategy**:: Optimize memory settings for your workload patterns.
+
+=== Security Enhancements
+
+==== Automated Checks
+
+**Overprovisioned disabled**:: Ensure overprovisioned mode is disabled for production stability.
+
+**System requirements validation**:: Run system checks to validate optimal configuration.
++
+[,bash]
+----
+kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk redpanda check
+----
+
+==== Manual Checks
+
+**Security scanning**:: Regularly scan container images and configurations for vulnerabilities.
+
+**Backup and recovery procedures**:: Implement and test backup and recovery processes.
++
+* Configure topic backups
+* Test cluster recovery procedures
+* Document emergency response procedures
+
+**Audit logging**:: Enable and configure audit logging for compliance requirements.
+
+== Monitoring and Observability
+
+=== Manual Checks
+
+**Monitoring setup**:: Deploy comprehensive monitoring for cluster health and performance.
++
+* Set up Prometheus metrics collection
+* Configure Grafana dashboards
+* Implement alerting rules
+
+**Log aggregation**:: Configure centralized log collection and analysis.
++
+* Forward Redpanda logs to central logging system
+* Set up log retention policies
+* Configure log-based alerting
+
+**Health checks**:: Implement application-level health checks.
++
+* Configure Kubernetes liveness and readiness probes
+* Set up external health monitoring
+* Define SLI/SLO metrics
+
+== Operational Readiness
+
+=== Manual Checks
+
+**Deployment automation**:: Implement Infrastructure as Code for reproducible deployments.
++
+* Use Helm charts or Kubernetes manifests in version control
+* Implement GitOps workflows
+* Automate testing and validation
+
+**Upgrade procedures**:: Document and test cluster upgrade processes.
++
+* Plan for rolling upgrades with zero downtime
+* Test upgrade procedures in staging environments
+* Implement rollback capabilities
+
+**Incident response**:: Prepare for operational incidents and outages.
++
+* Document troubleshooting procedures
+* Establish on-call processes
+* Create incident response playbooks
+
+== Running the Automated Checker
+
+Use the automated checker to validate most requirements:
+
+[,bash]
+----
+# Basic check (shows only issues)
+./check-redpanda-readiness-modular.py -n <namespace> -d <deployment-name>
+
+# Verbose output (shows all results)
+./check-redpanda-readiness-modular.py -n <namespace> -d <deployment-name> -v
+
+# Generate JSON report
+./check-redpanda-readiness-modular.py -n <namespace> -d <deployment-name> -o report.json
+----
+
+The script automatically detects deployment methods and validates configurations against production standards.
+
+== Next Steps
+
+After completing this checklist:
+
+1. **Performance testing**: Conduct load testing to validate performance under expected traffic.
+2. **Disaster recovery testing**: Test backup and recovery procedures.
+3. **Security review**: Conduct security assessment and penetration testing.
+4. **Operational validation**: Verify monitoring, alerting, and incident response procedures.
+5. **Documentation**: Complete operational runbooks and troubleshooting guides.
