@@ -1,0 +1,283 @@
+= Shadowing
+:description: Set up disaster recovery for Redpanda clusters using Shadowing for cross-region replication.
+:env-linux: true
+:page-categories: Deployment
+
+Shadowing is Redpanda's enterprise-grade disaster recovery solution that establishes asynchronous, offset-preserving replication between two distinct Redpanda clusters. The replication stream ensures that the shadow cluster receives exact copies of the source cluster data, including offsets, timestamps, and cluster metadata. This creates a read-only shadow cluster that you can quickly promote to handle production traffic during a disaster.
+
+Unlike traditional replication tools that re-produce messages, Shadowing copies data at the byte level, ensuring shadow topics contain identical copies of source topics with preserved offsets and timestamps.
+
+Shadowing replicates:
+
+* **Topic data**: All records with preserved offsets and timestamps
+* **Topic configurations**: Partition counts, retention policies, and other settings
+* **Consumer group offsets**: Enables seamless consumer resumption after failover
+* **Access Control Lists (ACLs)**: User permissions and security policies
+* **Schema Registry data**: Schema definitions and compatibility settings
+
+== How Shadowing fits into disaster recovery
+
+Shadowing addresses enterprise disaster recovery requirements driven by regulatory compliance and business continuity needs. Organizations typically want to minimize both recovery time objective (RTO) and recovery point objective (RPO), and Shadowing asynchronous replication helps you achieve both goals by reducing data loss during regional outages and enabling rapid application recovery.
+
+The architecture follows an active-standby pattern. The source cluster processes all production traffic while the shadow cluster remains in read-only mode, continuously receiving updates. If a disaster occurs, you can promote the shadow topics using the Admin API or rpk, making them fully writable. At that point, you can redirect your applications to the shadow cluster, which becomes the new production cluster.
+
+Shadowing complements Redpanda's existing availability and recovery capabilities. High availability actively protects your day-to-day operations, handling reads and writes seamlessly during node or availability zone failures within a region. Shadowing is your insurance policy for catastrophic regional disasters.
+
+While Whole Cluster Restore provides point-in-time recovery from Tiered Storage, Shadowing delivers real-time, cross-region replication for mission-critical applications that require rapid failover with minimal data loss.
+
+// TODO: insert diagram. Possibly with a .gif animation showing cluster Cluster A being written and cluster B being replicated with a data flow arrow and geo-separation. Diagram must show Icons or labels for topics, configurations, offsets, ACLs, schemas that are being copied
+
+== Limitations
+
+Shadowing is designed for active-passive disaster recovery scenarios. Each shadow cluster can maintain only one shadow link.
+
+Shadowing operates exclusively in asynchronous mode and doesn't support active-active configurations. This means there will always be some replication lag. You cannot write to both clusters simultaneously.
+
+Data transforms are disabled on shadow clusters while Shadowing is active. Redpanda system topics (prefixed with `_redpanda` or `__redpanda`) and audit logs are excluded from replication to prevent system conflicts. During a disaster, audit log history from the source cluster is lost, though the shadow cluster begins generating new audit logs immediately after promotion.
+
+Once you promote shadow topics after a failover, automatic fallback to the original source cluster is not supported. You cannot modify shadow topics through the Kafka API while Shadowing is active.
+
+== Prerequisites
+
+=== Licensing and cluster requirements
+
+- You must have Enterprise Edition licenses on both clusters. 
+
+- Both clusters must run Redpanda version 25.3 or later. The shadow cluster can be one feature release ahead of the source cluster, but cannot skip feature releases. For example, if the source cluster runs version 25.3, the shadow cluster can run 25.3 or 26.1, but not 27.1.
+
+[TIP]
+====
+Deploy clusters in different geographic regions to protect against regional disasters.
+====
+
+=== Administrative access
+
+Superuser access is required on both clusters through rpk, the Admin API, or Redpanda Console to create and manage shadow links.
+
+=== Replication service permissions
+
+You must configure a service account on the source cluster with the following ACL permissions for shadow link replication:
+
+* **Topics**: `read` permission on all topics you want to replicate
+* **Topic configurations**: `describe_configs` permission on topics for configuration synchronization
+* **Consumer groups**: `describe` and `read` permission on consumer groups for offset replication
+* **ACLs**: `describe` permission on ACL resources to replicate security policies
+* **Cluster**: `describe` permission on the cluster resource for metadata access
+
+This service account authenticates from the shadow cluster to the source cluster and performs the actual data replication. The credentials for this account are provided when you set up the shadow link.
+
+=== Network and authentication
+
+You must configure network connectivity between clusters with appropriate firewall rules to allow the shadow cluster to connect to the source cluster for data replication. Shadowing uses a pull-based architecture where the shadow cluster fetches data from the source cluster.
+
+If using authentication for the shadow link connection, configure the source cluster with your chosen authentication method (SASL/SCRAM, TLS, mTLS) and ensure the shadow cluster has the proper credentials to authenticate to the source cluster.
+
+== Set up Shadowing
+
+// TODO: Introduce top level tasks:
+// - Identify/create filters
+// - Networking  
+// - Create shadow link
+
+== What gets replicated
+
+Shadowing replicates your topic data with complete fidelity, preserving all message records with their original offsets, timestamps, headers, and metadata. The partition structure remains identical between source and shadow clusters, ensuring applications can resume processing from the exact same position after failover.
+
+Consumer group data flows according to your group filters, replicating offsets and membership information for matched groups. Security configurations including ACLs, user roles, and SCRAM credentials replicate based on your security filters, while Schema Registry data synchronizes schema definitions, versions, and compatibility settings.
+
+The following topic properties are always replicated:
+
+* `partition.count`
+* `max.message.bytes`
+* `cleanup.policy`
+* `message.timestamp.type`
+
+The following topic properties are never replicated:
+
+* System-internal properties (prefixed with `_redpanda` or `__redpanda`)
+* Audit log configurations
+* Data transforms settings
+
+All other topic properties are replicated only when you explicitly specify them in your `mirrored_topic_properties` configuration. This includes common properties like `retention.ms`, `retention.bytes`, `segment.ms`, and `compression.type`. The filtering system you configure determines the precise scope of replication across all components, allowing you to balance comprehensive disaster recovery with operational efficiency.
+
+=== Set filters
+
+// TODO: add filter example rpk/admin API/console
+
+Filters control exactly what data Shadowing replicates from your source cluster. You define filters for topics, consumer groups, security settings, and Schema Registry data to create a targeted disaster recovery scope rather than replicating everything.
+
+Each filter uses two key settings: 
+
+* **Pattern type**: Determines how names are matched, either exact matches (`LITERAL`) or prefix matches (`PREFIX`).
+* **Filter type**: Specifies whether to include or exclude items that match the pattern. For example, you might include all topics starting with `production-` while excluding any topic named `test-data`.
+
+The filtering system processes rules in order and applies the most specific match. You can combine multiple filters to create precise replication rules, such as including all user topics but excluding temporary or internal topics. This selective approach helps optimize bandwidth usage and ensures your disaster recovery environment contains only the data you actually need for business continuity.
+
+=== Set topic replication options
+
+Shadowing supports both automatic and manual topic creation:
+
+* **Automatic topic creation**: Configure `topic_filters` in the `TopicMetadataSyncOptions` to automatically replicate topics matching patterns (using `PREFIX` pattern types or wildcards).
+* **Manual topic creation**: Use specific topic names with `PATTERN_TYPE_LITERAL` in the topic filters, or potentially configure the shadow link without filters and add topics individually.
+
+=== Create a shadow link
+
+You can establish a shadow link using either rpk, the Admin API, or Redpanda Console. Run the following rpk command from the shadow cluster to create a shadow link with the source cluster:
+
+[,bash]
+----
+rpk shadow create --config-file /path/to/shadow-config.yaml
+----
+
+[TIP]
+====
+Use `rpk profile` to save your cluster connection details and credentials for both source and shadow clusters, allowing you to easily switch between the two configurations.
+====
+
+==== Sample configuration file
+
+[,yaml]
+----
+# Sample ShadowLinkConfig YAML with all fields
+name: "link-single-docker"
+client_options:
+  bootstrap_servers:
+    - "broker1:9092"
+  source_cluster_id: "source-cluster-123"
+  
+  # TLS settings using file paths
+  tls_settings:
+    ca_path: "/path/to/ca.crt"
+    key_path: "/path/to/client.key"
+    cert_path: "/path/to/client.crt"
+  
+  # Alternative TLS settings using PEM content
+  # tls_settings:
+  #   ca: |
+  #     -----BEGIN CERTIFICATE-----
+  #     ... CA certificate content ...
+  #     -----END CERTIFICATE-----
+  #   key: |
+  #     -----BEGIN PRIVATE KEY-----
+  #     ... private key content ...
+  #     -----END PRIVATE KEY-----
+  #   key_fingerprint: "sha256fingerprint"
+  #   cert: |
+  #     -----BEGIN CERTIFICATE-----
+  #     ... client certificate content ...
+  #     -----END CERTIFICATE-----
+  
+  authentication_configuration:
+    username: "shadow-user"
+    password: "shadow-password"
+    scram_mechanism: "SCRAM-SHA-256"  # or "SCRAM-SHA-512"
+  
+  metadata_max_age_ms: 10000
+  connection_timeout_ms: 1000
+  retry_backoff_ms: 100
+  fetch_wait_max_ms: 100
+  fetch_min_bytes: 1
+  fetch_max_bytes: 1048576
+topic_metadata_sync_options:
+  interval: "30s"
+  topic_filters:
+    - pattern_type: "LITERAL"
+      filter_type: "INCLUDE"
+      name: "important-topic"
+    - pattern_type: "PREFIX"
+      filter_type: "INCLUDE"
+      name: "user-events-"
+    - pattern_type: "LITERAL"
+      filter_type: "EXCLUDE"
+      name: "internal-topic"
+  shadowed_topic_properties:
+    - "retention.ms"
+    - "segment.ms"
+    - "compression.type"
+consumer_offset_sync_options:
+  interval: "30s"
+  enabled: true
+  group_filters:
+    - pattern_type: "LITERAL"
+      filter_type: "INCLUDE"
+      name: "*"
+    - pattern_type: "PREFIX"
+      filter_type: "EXCLUDE"
+      name: "test-"
+security_sync_options:
+  interval: "30s"
+  enabled: true
+  role_filters:
+    - pattern_type: "LITERAL"
+      filter_type: "INCLUDE"
+      name: "admin"
+    - pattern_type: "PREFIX"
+      filter_type: "INCLUDE"
+      name: "user-"
+  scram_cred_filters:
+    - pattern_type: "LITERAL"
+      filter_type: "INCLUDE"
+      name: "*"
+  acl_filters:
+    - resource_filter:
+        resource_type: "TOPIC"
+        pattern_type: "LITERAL"
+        name: "important-topic"
+      access_filter:
+        principal: "User:shadow-user"
+        operation: "READ"
+        permission_type: "ALLOW"
+        host: "*"
+    - resource_filter:
+        resource_type: "GROUP"
+        pattern_type: "PREFIX" 
+        name: "consumer-group-"
+      access_filter:
+        principal: "User:shadow-user"
+        operation: "READ"
+        permission_type: "ALLOW"
+        host: "10.0.0.0/8"
+----
+
+For the complete reference, see Admin API v2 reference.
+
+== Failover
+
+// TODO: explain what failover is, how do we activate it per topic and per cluster
+
+== Monitoring and troubleshooting
+
+List existing shadow links:
+
+[,bash]
+----
+rpk shadow list
+----
+
+Check your shadow link status to ensure proper operation:
+
+[,bash]
+----
+rpk shadow status <my-disaster-recovery-link>
+----
+
+This displays replication lag, connection health, and the status of individual synchronization tasks.
+
+// TODO: expand on status/describe
+
+=== Metrics
+
+Shadowing provides several metrics to track replication performance and health:
+
+// TODO: Update the new metric names 
+
+* `redpanda_panda_link_mirror_lag` - Measures replication lag between source and shadow clusters
+* `redpanda_panda_link_total_bytes_fetched` - Total bytes retrieved from the source cluster
+* `redpanda_panda_link_total_bytes_written` - Total bytes written to the shadow cluster
+* `redpanda_panda_link_total_records_fetched` - Number of records retrieved from source
+* `redpanda_panda_link_total_records_written` - Number of records written to shadow
+* `redpanda_panda_link_client_quota_throttle_time` - Time spent throttled due to quota limits
+* `redpanda_panda_link_client_errors` - Count of client connection errors
+* `redpanda_panda_link_partition_mirrors_state` - State of individual partition mirrors
+
+For complete metrics reference, see xref:reference:public-metrics-reference.adoc[].
