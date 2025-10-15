@@ -428,9 +428,110 @@ For the complete reference, see link:/api/doc/admin/[Admin API v2 reference^].
 
 == Failover
 
-// TODO: explain what failover is, how do we activate it per topic and per cluster
+Failover is the process of promoting shadow topics or an entire shadow cluster from read-only replicas to fully writable resources. You can fail over individual topics for selective workload migration or fail over the entire cluster for comprehensive disaster recovery. This critical operation transforms your shadow resources into operational production assets, allowing you to redirect application traffic when the source cluster becomes unavailable.
 
-== Monitoring and troubleshooting
+=== Understanding failover behavior
+
+When you initiate failover, Redpanda performs the following operations:
+
+1. **Stops replication**: Halts all data fetching from the source cluster for the specified topics or entire shadow link
+2. **Promotes topics**: Converts read-only shadow topics into regular, writable topics
+3. **Updates topic state**: Changes topic status from `ACTIVE` to `PROMOTING`, then `PROMOTED`
+
+The failover process is irreversible. Once topics are promoted, they cannot return to shadow mode, and automatic fallback to the original source cluster is not supported.
+
+=== Failover granularity options
+
+You can perform failover at two levels of granularity:
+
+**Individual topic failover:**
+[,bash]
+----
+rpk shadow failover <my-disaster-recovery-link> --topic prod-orders
+----
+
+This promotes only the specified shadow topic while leaving other topics in the shadow link still replicating. Use this approach when you need to selectively fail over specific workloads or when testing failover procedures.
+
+**Complete shadow link failover (cluster failover):**
+[,bash]
+----
+rpk shadow failover <my-disaster-recovery-link> --all
+----
+
+This promotes all shadow topics associated with the shadow link simultaneously, effectively failing over the entire cluster's replicated data. Use this approach during a complete regional disaster when you need to activate the entire shadow cluster as your new production environment.
+
+=== Failover states
+
+==== Shadow link states
+
+The shadow link itself has a simple state model:
+
+* **`ACTIVE`**: Shadow link is operating normally, replicating data
+* **`PAUSED`**: Shadow link is temporarily stopped but not failed over
+
+Shadow links do not have dedicated failover states. Instead, the link's operational status is determined by the collective state of its shadow topics.
+
+==== Shadow topic states
+
+Individual shadow topics progress through specific states during failover:
+
+* **`ACTIVE`**: Normal replication state before failover
+* **`FAILING_OVER`**: Failover initiated, replication stopping
+* **`PROMOTING`**: Converting from shadow topic to regular topic
+* **`PROMOTED`**: Failover completed successfully, topic fully writable
+
+==== Monitoring failover progress
+
+Monitor failover progress using the status command:
+
+[,bash]
+----
+rpk shadow status <my-disaster-recovery-link>
+----
+
+The output shows individual topic states and any issues encountered during the promotion process.
+
+=== Post-failover cluster behavior
+
+After successful failover, your shadow cluster exhibits the following characteristics:
+
+**Topic accessibility:**
+* Promoted topics become fully writable and readable
+* Applications can produce and consume messages normally
+* All Kafka APIs are available for promoted topics
+* Original offsets and timestamps are preserved
+
+**Shadow link status:**
+* The shadow link remains but stops replicating data
+* Link status shows topics in `PROMOTED` state
+* You can safely delete the shadow link after successful failover
+
+**Operational limitations:**
+* No automatic fallback mechanism to the original source cluster
+* Data transforms remain disabled until you manually re-enable them
+* Audit log history from the source cluster is not available (new audit logs begin immediately)
+
+=== Failover considerations and limitations
+
+**Data consistency:**
+* Some data loss may occur due to replication lag at the time of failover
+* Consumer group offsets are preserved, allowing applications to resume from their last committed position
+* In-flight transactions at the source cluster are not replicated and will be lost
+
+**recovery-point-objective (RPO):**
+The amount of potential data loss depends on replication lag when disaster occurs. Monitor lag metrics to understand your effective RPO.
+
+**Network partitions:**
+If the source cluster becomes accessible again after failover, do not attempt to write to both clusters simultaneously. This creates a scenario with potential data inconsistencies, since metadata starts to diverge.
+
+**Testing requirements:**
+Regularly test failover procedures in non-production environments to validate your disaster recovery processes and measure RTO.
+
+== Monitoring
+
+Monitoring your shadow links ensures proper replication performance and helps you understand your disaster recovery readiness. Use rpk commands, metrics, and status information to track shadow link health and troubleshoot issues.
+
+=== Status commands
 
 List existing shadow links:
 
@@ -446,23 +547,56 @@ Check your shadow link status to ensure proper operation:
 rpk shadow status <my-disaster-recovery-link>
 ----
 
-This displays replication lag, connection health, and the status of individual synchronization tasks.
+This displays replication lag, connection health, and the status of individual synchronization tasks. The status output includes:
 
-// TODO: expand on status/describe
+* **Shadow link state**: Overall operational state (`ACTIVE` or `PAUSED`)
+* **Individual topic states**: Current state of each replicated topic
+* **Task status**: Health of replication tasks across brokers
+* **Lag information**: Replication lag per partition
 
+[[shadow-link-metrics]]
 === Metrics
 
-Shadowing provides several metrics to track replication performance and health:
+Shadowing provides comprehensive metrics to track replication performance and health:
 
-// TODO: Update the new metric names 
+* `redpanda_shadow_link_shadow_lag` - The lag of the shadow partition against the source partition, calculated as source partition LSO minus shadow partition HWM. Monitor this gauge metric by `shadow_link_name`, `topic`, and `partition` to understand replication lag for each partition.
 
-* `redpanda_panda_link_mirror_lag` - Measures replication lag between source and shadow clusters
-* `redpanda_panda_link_total_bytes_fetched` - Total bytes retrieved from the source cluster
-* `redpanda_panda_link_total_bytes_written` - Total bytes written to the shadow cluster
-* `redpanda_panda_link_total_records_fetched` - Number of records retrieved from source
-* `redpanda_panda_link_total_records_written` - Number of records written to shadow
-* `redpanda_panda_link_client_quota_throttle_time` - Time spent throttled due to quota limits
-* `redpanda_panda_link_client_errors` - Count of client connection errors
-* `redpanda_panda_link_partition_mirrors_state` - State of individual partition mirrors
+* `redpanda_shadow_link_total_bytes_fetched` - The total number of bytes fetched by a sharded replicator (bytes received by the client). This count metric is labeled by `shadow_link_name` and `shard` to track data transfer volume from the source cluster.
+
+* `redpanda_shadow_link_total_bytes_written` - The total number of bytes written by a sharded replicator (bytes written to the write_at_offset_stm). This count metric uses `shadow_link_name` and `shard` labels to monitor data written to the shadow cluster.
+
+* `redpanda_shadow_link_client_errors` - The number of errors seen by the client. Track this count metric by `shadow_link_name` and `shard` to identify connection or protocol issues between clusters.
+
+* `redpanda_shadow_link_shadow_topic_state` - Number of shadow topics in the respective states. This gauge metric is labeled by `shadow_link_name` and `state` to monitor topic state distribution across your shadow links.
+
+* `redpanda_shadow_link_total_records_fetched` - The total number of records fetched by the sharded replicator (records received by the client). Monitor this count metric by `shadow_link_name` and `shard` to track message throughput from the source.
+
+* `redpanda_shadow_link_total_records_written` - The total number of records written by a sharded replicator (records written to the write_at_offset_stm). This count metric uses `shadow_link_name` and `shard` labels to monitor message throughput to the shadow cluster.
 
 For complete metrics reference, see xref:reference:public-metrics-reference.adoc[].
+
+=== Monitoring best practices
+
+==== Health check procedures
+
+Establish regular monitoring workflows to ensure shadow link health:
+
+**Health checks:**
+[,bash]
+----
+# Check all shadow links are active
+rpk shadow list | grep -v "ACTIVE" || echo "All shadow links healthy"
+
+# Monitor lag for critical topics  
+rpk shadow status <disaster-recovery-link> | grep -E "LAG|Lag"
+----
+
+==== Alerting thresholds
+
+Configure monitoring alerts for:
+
+* **High replication lag**: When `redpanda_shadow_link_shadow_lag` exceeds your RPO requirements
+* **Connection errors**: When `redpanda_shadow_link_client_errors` increases rapidly
+* **Shadow link state changes**: When shadow links move from `ACTIVE` to `PAUSED`
+* **Topic state changes**: When topics move to `FAULTED` state
+* **Throughput drops**: When bytes/records fetched drops significantly
