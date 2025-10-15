@@ -1,0 +1,206 @@
+= Emergency Shadowing Failover
+:description: Step-by-step emergency runbook for failing over Redpanda Shadow Links during disasters.
+:env-linux: true
+:page-categories: Management, High Availability, Disaster Recovery, Emergency Response
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+This runbook provides step-by-step procedures for emergency failover when your primary Redpanda cluster becomes unavailable. Follow these procedures only during active disasters when immediate failover is required.
+
+[IMPORTANT]
+====
+This is an emergency procedure. For planned failover testing or regular shadow link management, see xref:deploy:redpanda/manual/resilience/shadowing.adoc[].
+====
+
+== Pre-disaster checklist
+
+Before a disaster occurs, ensure you have:
+
+* [ ] Access to shadow cluster administrative credentials
+* [ ] Shadow link names and configuration details documented
+* [ ] Application connection strings for the shadow cluster prepared
+* [ ] Emergency contact information for your team
+
+== Emergency failover procedure
+
+=== Step 1: Assess the situation
+
+Confirm that failover is necessary:
+
+[,bash]
+----
+# Check if the primary cluster is responding
+rpk cluster info --brokers <primary-cluster-brokers>
+
+# If primary cluster is down, check shadow cluster health
+rpk cluster info --brokers <shadow-cluster-brokers>
+----
+
+**Decision point**: If the primary cluster is responsive, consider whether failover is actually needed. Partial outages may not require full disaster recovery.
+
+=== Step 2: Verify shadow cluster status
+
+Check the health of your shadow links:
+
+[,bash]
+----
+# List all shadow links
+rpk shadow list
+
+# Check status of your disaster recovery link
+rpk shadow status <disaster-recovery-link-name>
+----
+
+**Look for**:
+* Shadow link state should be `ACTIVE`
+* Topics should be in `ACTIVE` state (not `FAULTED`)
+* Replication lag should be reasonable for your RPO requirements
+
+=== Step 3: Document current state
+
+Record the current lag and status before proceeding:
+
+[,bash]
+----
+# Capture current status for post-mortem analysis
+rpk shadow status <disaster-recovery-link-name> > failover-status-$(date +%Y%m%d-%H%M%S).log
+----
+
+**Critical**: Note the replication lag to estimate potential data loss.
+
+=== Step 4: Initiate failover
+
+For complete cluster failover (recommended during disasters):
+
+[,bash]
+----
+# Fail over all topics in the shadow link
+rpk shadow failover <disaster-recovery-link-name> --all --no-confirm
+----
+
+For selective topic failover (if only specific services are affected):
+
+[,bash]
+----
+# Fail over individual topics
+rpk shadow failover <disaster-recovery-link-name> --topic <critical-topic-1> --no-confirm
+rpk shadow failover <disaster-recovery-link-name> --topic <critical-topic-2> --no-confirm
+----
+
+=== Step 5: Monitor failover progress
+
+Track the promotion process:
+
+[,bash]
+----
+# Monitor status until all topics show PROMOTED
+watch -n 5 "rpk shadow status <disaster-recovery-link-name>"
+----
+
+**Wait for**: All critical topics to reach `PROMOTED` state before proceeding.
+
+=== Step 6: Update application configuration
+
+Redirect your applications to the shadow cluster:
+
+1. **Update connection strings** in your applications to point to shadow cluster brokers
+2. **Update DNS records** if using DNS-based service discovery
+3. **Restart applications** to pick up new connection settings
+4. **Verify connectivity** from application hosts to shadow cluster
+
+=== Step 7: Verify application functionality
+
+Test critical application workflows:
+
+[,bash]
+----
+# Verify applications can produce messages
+rpk topic produce <critical-topic> --brokers <shadow-cluster-brokers>
+
+# Verify applications can consume messages
+rpk topic consume <critical-topic> --brokers <shadow-cluster-brokers> --num 1
+----
+
+**Test**:
+* Message production and consumption
+* Consumer group functionality
+* Critical business workflows
+
+=== Step 8: Clean up and stabilize
+
+Once applications are running normally:
+
+[,bash]
+----
+# Optional: Delete the shadow link (no longer needed)
+rpk shadow delete <disaster-recovery-link-name> --no-confirm
+----
+
+**Document**:
+* Time of failover initiation and completion
+* Applications affected and recovery times
+* Data loss estimates based on replication lag
+* Issues encountered during failover
+
+== Troubleshooting common issues
+
+=== Shadow link in PAUSED state
+
+**Problem**: Shadow link shows `PAUSED` instead of `ACTIVE`
+
+**Solution**:
+[,bash]
+----
+# Resume the shadow link
+rpk shadow resume <disaster-recovery-link-name>
+
+# Wait for it to return to ACTIVE state
+rpk shadow status <disaster-recovery-link-name>
+----
+
+=== Topics stuck in FAILING_OVER state
+
+**Problem**: Topics remain in `FAILING_OVER` state for extended periods
+
+**Solution**:
+* Check shadow cluster logs for errors
+* Ensure sufficient resources (CPU, memory, disk) on shadow cluster
+* Verify network connectivity between shadow cluster nodes
+
+=== Application connection failures
+
+**Problem**: Applications cannot connect to shadow cluster after failover
+
+**Solution**:
+* Verify shadow cluster broker endpoints are correct
+* Check security group and firewall rules
+* Confirm authentication credentials are valid for shadow cluster
+* Test network connectivity from application hosts
+
+=== Consumer group offset issues
+
+**Problem**: Consumers start from beginning or wrong positions
+
+**Solution**:
+* Verify consumer group offsets were replicated (check your filters)
+* Use `rpk group describe <group-name>` to check offset positions
+* If necessary, manually reset offsets to appropriate positions
+
+== Recovery planning
+
+After successful failover:
+
+1. **Assess primary cluster**: Determine root cause of the outage
+2. **Plan recovery**: Decide whether to restore primary cluster or establish new primary
+3. **Data synchronization**: Plan how to synchronize any data produced during failover
+4. **Reverse replication**: Consider setting up shadowing in the opposite direction
+
+== Post-incident actions
+
+1. **Document the incident**: Record timeline, impact, and lessons learned
+2. **Update runbooks**: Improve procedures based on what you learned
+3. **Test regularly**: Schedule regular disaster recovery drills
+4. **Review monitoring**: Ensure monitoring caught the issue appropriately
