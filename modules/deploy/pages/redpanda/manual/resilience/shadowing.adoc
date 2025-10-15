@@ -79,10 +79,11 @@ If using xref:manage:security/authentication.adoc[authentication] for the shadow
 
 == Set up Shadowing
 
-// TODO: Introduce top level tasks:
-// - Identify/create filters
-// - Networking  
-// - Create shadow link
+Setting up Shadowing involves:
+
+* **Understanding replication behavior**: Review what topic properties, consumer groups, and security settings Redpanda automatically replicates versus what requires explicit configuration
+* **Configuring filters**: Define which topics, consumer groups, and ACLs should replicate by creating include/exclude patterns that match your disaster recovery requirements
+* **Creating a shadow link**: Establish the connection between clusters using rpk, the Admin API, or Redpanda Console with authentication and network settings
 
 == What gets replicated
 
@@ -121,16 +122,64 @@ Additional topic properties are replicated only when you explicitly specify them
 
 === Set filters
 
-// TODO: add filter example rpk/admin API/console
+Filters control exactly what data Shadowing replicates from your source cluster. You can define filters for topics, consumer groups, security settings, and ACLs to create a targeted disaster recovery scope rather than replicating everything.
 
-Filters control exactly what data Shadowing replicates from your source cluster. You define filters for topics, consumer groups, security settings, and Schema Registry data to create a targeted disaster recovery scope rather than replicating everything.
+==== Filter types and patterns
 
-Each filter uses two key settings: 
+Each filter uses two key settings:
 
-* **Pattern type**: Determines how names are matched, either exact matches (`LITERAL`) or prefix matches (`PREFIX`).
-* **Filter type**: Specifies whether to include or exclude items that match the pattern. For example, you might include all topics starting with `production-` while excluding any topic named `test-data`.
+* **Pattern type**: Determines how names are matched
+  - `LITERAL`: Matches names exactly (including the special wildcard `*` to match all items)
+  - `PREFIX`: Matches names that start with the specified string
+* **Filter type**: Specifies whether to include or exclude matching items
+  - `INCLUDE`: Replicate items that match the pattern
+  - `EXCLUDE`: Skip items that match the pattern
 
-The filtering system processes rules in order and applies the most specific match. You can combine multiple filters to create precise replication rules, such as including all user topics but excluding temporary or internal topics. This selective approach helps optimize bandwidth usage and ensures your disaster recovery environment contains only the data you actually need for business continuity.
+==== Filter processing rules
+
+Redpanda processes filters in the order you define them and applies the first matching rule. Design your filter lists carefully:
+
+1. **Order matters**: Place more specific filters before general ones
+2. **First match wins**: Once a name matches a filter, subsequent filters are ignored for that item
+3. **Default behavior**: Items that don't match any filter are excluded from replication
+
+==== Common filtering patterns
+
+**Replicate all topics except test topics:**
+[,yaml]
+----
+auto_create_shadow_topic_filters:
+  - pattern_type: "PREFIX"
+    filter_type: "EXCLUDE" 
+    name: "test-"
+  - pattern_type: "LITERAL"
+    filter_type: "INCLUDE"
+    name: "*"
+----
+
+**Replicate only production topics:**
+[,yaml]
+----
+auto_create_shadow_topic_filters:
+  - pattern_type: "PREFIX"
+    filter_type: "INCLUDE"
+    name: "prod-"
+  - pattern_type: "PREFIX" 
+    filter_type: "INCLUDE"
+    name: "production-"
+----
+
+**Replicate specific consumer groups:**
+[,yaml]
+----
+group_filters:
+  - pattern_type: "LITERAL"
+    filter_type: "INCLUDE"
+    name: "critical-app-consumers"
+  - pattern_type: "PREFIX"
+    filter_type: "INCLUDE" 
+    name: "prod-consumer-"
+----
 
 ==== System topic filtering rules
 
@@ -141,7 +190,45 @@ Redpanda system topics have specific filtering restrictions:
 * Wildcard `*` filters will not match topics that start with `_redpanda` or `__redpanda`
 * To shadow specific system topics, you must provide explicit literal filters for those individual topics
 
-=== Set topic replication options
+==== ACL filtering
+
+ACL filters are more complex as they filter based on both resource and access properties:
+
+[,yaml]
+----
+acl_filters:
+  # Include read permissions for production topics
+  - resource_filter:
+      resource_type: "TOPIC"
+      pattern_type: "PREFIX"
+      name: "prod-"
+    access_filter:
+      principal: "User:app-user"
+      operation: "READ"
+      permission_type: "ALLOW" 
+      host: "*"
+  # Include consumer group permissions
+  - resource_filter:
+      resource_type: "GROUP"
+      pattern_type: "LITERAL"
+      name: "*"
+    access_filter:
+      principal: "User:app-user" 
+      operation: "READ"
+      permission_type: "ALLOW"
+      host: "*"
+----
+
+==== Generate a sample configuration
+
+Use rpk to generate a sample configuration file with common filter patterns:
+
+[,bash]
+----
+rpk shadow config generate --output shadow-link-config.yaml
+----
+
+This creates a template configuration file that you can customize for your environment.
 
 Shadowing supports both automatic and manual topic creation:
 
