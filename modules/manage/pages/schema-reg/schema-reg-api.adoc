@@ -976,9 +976,13 @@ Curl::
 --
 ====
 
-== Use READONLY mode for disaster recovery
+== Set Schema Registry mode
 
-The `/mode` endpoint allows you to put Schema Registry in read-only or read-write mode. A read-only Schema Registry does not accept direct writes. An active production cluster can replicate schemas to a read-only Schema Registry to keep it in sync, for example using Redpanda's https://github.com/redpanda-data/schema-migration/[Schema Migration tool^]. Users in the disaster recovery (DR) site cannot update schemas directly, so the DR cluster has an exact replica of the schemas in production. In a failover due to a disaster or outage, you can set Schema Registry to read-write mode, taking over for the failed cluster and ensuring availability.
+The `/mode` endpoint allows you to put Schema Registry in read-only, read-write, or import mode.
+
+* In read-write mode (the default), you can both register and look up schemas.
+* In <<use-readonly-mode-for-disaster-recovery,read-only mode>>, you can only look up schemas. This mode is most useful for standby clusters in a disaster recovery setup.
+* In <<use-import-mode-for-migration,import mode>>, you can only register schemas. This mode is most useful for target clusters in a migration setup.
 
 If authentication is enabled on Schema Registry, only superusers can change global and subject-level modes.
 
@@ -986,28 +990,68 @@ If authentication is enabled on Schema Registry, only superusers can change glob
 
 To link:/api/doc/schema-registry/operation/operation-get_mode[query the global mode] for Schema Registry:
 
+[tabs]
+====
+rpk::
++
+--
+```bash
+rpk registry mode get --global
+```
+--
+
+Curl::
++
 ```bash
 curl http://localhost:8081/mode
 ```
+====
 
 === Set global mode
 
+[tabs]
+====
+rpk::
++
+--
+```bash
+rpk registry mode set --mode <mode> --global
+```
+--
+
+Curl::
++
 ```bash
 curl -X PUT -H "Content-Type: application/vnd.schemaregistry.v1+json" --data '{"mode": <mode>}' http://localhost:8081/mode
 ```
+====
 
 Replace the `<mode>` placeholder with the desired mode:
 
 - `READONLY`
 - `READWRITE`
+- `IMPORT`
 
 === Get mode for a subject
 
 This request returns an error if there is no specific mode set for the subject:
 
+[tabs]
+====
+rpk::
++
+--
+```bash
+rpk registry mode get <subject-name>
+```
+--
+
+Curl::
++
 ```bash
 curl http://localhost:8081/mode/<subject>
 ```
+====
 
 To retrieve the mode regardless of whether or not the subject has a specific mode, use the `defaultToGlobal` parameter:
 
@@ -1019,9 +1063,83 @@ This request returns the mode that is enforced. If the subject is set to a speci
 
 === Set mode for a subject
 
+[tabs]
+====
+rpk::
++
+--
+```bash
+rpk registry mode set <subject-name> --mode READONLY
+```
+--
+
+Curl::
++
 ```bash
 curl -X PUT -H "Content-Type: application/vnd.schemaregistry.v1+json" --data '{"mode": "READONLY"}' http://localhost:8081/mode/<subject>
 ```
+====
+
+=== Use READONLY mode for disaster recovery
+
+A read-only Schema Registry does not accept direct writes. An active production cluster can replicate schemas to a read-only Schema Registry to keep it in sync, for example using Redpanda's https://github.com/redpanda-data/schema-migration/[Schema Migration tool^]. Users in the disaster recovery (DR) site cannot update schemas directly, so the DR cluster has an exact replica of the schemas in production. In a failover due to a disaster or outage, you can set Schema Registry to read-write mode, taking over for the failed cluster and ensuring availability.
+
+=== Use IMPORT mode for migration
+
+Set the target Schema Registry to import mode to:
+
+- Bypass compatibility checks when registering schemas.
+- Specify a specific schema ID and version for the registered schema, so you can retain the same IDs and version from the original Schema Registry and keep topic data associated with the correct schema.
+
+To enable import mode, you need either superuser access, or a Schema Reigstry ACL with the `alter_configs` operation on the `registry` resource. See xref:manage:schema-reg/schema-reg-authorization.adoc#enable-schema-registry-authorization[Enable Schema Registry Authorization] to learn how to enable schema registry authorization for your cluster.
+
+[CAUTION]
+====
+In Redpanda versions before 25.3, you could specify a schema ID or version when registering a schema in read-write mode.
+
+Starting with 25.3, read-write mode returns an error when you try to register a schema with a specific ID or version. If you have custom scripts that rely on the ability to specify an ID or version with Redpanda 25.2 and earlier, you must do either of the following:
+
+* Omit the ID and version fields when registering a schema. The schema will be registered under a new ID and version.
+* Change the Schema Registry or the subject to import mode.
+====
+
+To force enable import mode:
+
+[tabs]
+====
+rpk::
++
+--
+```bash
+rpk registry mode set --mode IMPORT --global --force
+```
+--
+
+Curl::
++
+```bash
+curl -X PUT -H "Content-Type: application/vnd.schemaregistry.v1+json" --data '{"mode": "IMPORT"}' http://localhost:8081/mode?force=true
+```
+====
+
+To register a schema with a specific ID and version:
+
+[tabs]
+====
+rpk::
++
+--
+```bash
+rpk registry schema create <subject-name> --schema order.proto --id 1 --schema-version 4
+```
+--
+
+Curl::
++
+```bash
+curl -X POST -H "Content-Type: application/vnd.schemaregistry.v1+json" --data '{"schema": "syntax = \"proto3\";\nmessage Order {\n  string id = 1;\n}", "schemaType": "PROTOBUF", "id": 1, "version": 4}' http://localhost:8081/subjects/<subject-name>/versions
+```
+====
 
 == Retrieve serialized schemas
 
