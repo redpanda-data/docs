@@ -8,7 +8,7 @@
 include::shared:partial$enterprise-license.adoc[]
 ====
 
-Shadowing is Redpanda's enterprise-grade disaster recovery solution that establishes asynchronous, offset-preserving replication between two distinct Redpanda clusters. The replication stream ensures that the shadow cluster receives exact copies of the source cluster data, including offsets, timestamps, and cluster metadata. This creates a read-only shadow cluster that you can quickly promote to handle production traffic during a disaster.
+Shadowing is Redpanda's enterprise-grade disaster recovery solution that establishes asynchronous, offset-preserving replication between two distinct Redpanda clusters. The replication stream ensures that the shadow cluster receives exact copies of the source cluster data, including offsets, timestamps, and cluster metadata. This creates a read-only shadow cluster that you can quickly failover to handle production traffic during a disaster.
 
 [IMPORTANT]
 ====
@@ -29,7 +29,7 @@ Shadowing replicates:
 
 Shadowing addresses enterprise disaster recovery requirements driven by regulatory compliance and business continuity needs. Organizations typically want to minimize both recovery time objective (RTO) and recovery point objective (RPO), and Shadowing asynchronous replication helps you achieve both goals by reducing data loss during regional outages and enabling rapid application recovery.
 
-The architecture follows an active-standby pattern. The source cluster processes all production traffic while the shadow cluster remains in read-only mode, continuously receiving updates. If a disaster occurs, you can promote the shadow topics using the Admin API or `rpk`, making them fully writable. At that point, you can redirect your applications to the shadow cluster, which becomes the new production cluster.
+The architecture follows an active-standby pattern. The source cluster processes all production traffic while the shadow cluster remains in read-only mode, continuously receiving updates. If a disaster occurs, you can failover the shadow topics using the Admin API or `rpk`, making them fully writable. At that point, you can redirect your applications to the shadow cluster, which becomes the new production cluster.
 
 Shadowing complements Redpanda's existing availability and recovery capabilities. xref:deploy:redpanda/manual/high-availability.adoc[High availability] actively protects your day-to-day operations, handling reads and writes seamlessly during node or availability zone failures within a region. Shadowing is your insurance policy for catastrophic regional disasters.
 
@@ -43,9 +43,9 @@ Shadowing is designed for active-passive disaster recovery scenarios. Each shado
 
 Shadowing operates exclusively in asynchronous mode and doesn't support active-active configurations. This means there will always be some replication lag. You cannot write to both clusters simultaneously.
 
-xref:develop:data-transforms/index.adoc[Data transforms] are disabled on shadow clusters while Shadowing is active. During a disaster, xref:manage:audit-logging.adoc[audit log] history from the source cluster is lost, though the shadow cluster begins generating new audit logs immediately after promotion.
+xref:develop:data-transforms/index.adoc[Data transforms] are disabled on shadow clusters while Shadowing is active. During a disaster, xref:manage:audit-logging.adoc[audit log] history from the source cluster is lost, though the shadow cluster begins generating new audit logs immediately after the failover.
 
-After you promote shadow topics with a failover, automatic fallback to the original source cluster is not supported. 
+After you failover shadow topics, automatic fallback to the original source cluster is not supported.
 
 [INFO]
 ====
@@ -441,17 +441,17 @@ See also: link:/api/doc/admin/[Admin API v2 reference^]
 
 == Failover
 
-Failover is the process of promoting shadow topics or an entire shadow cluster from read-only replicas to fully writable resources. You can fail over individual topics for selective workload migration or fail over the entire cluster for comprehensive disaster recovery. This critical operation transforms your shadow resources into operational production assets, allowing you to redirect application traffic when the source cluster becomes unavailable.
+Failover is the process of failing shadow topics or an entire shadow cluster from read-only replicas to fully writable resources. You can fail over individual topics for selective workload migration or fail over the entire cluster for comprehensive disaster recovery. This critical operation transforms your shadow resources into operational production assets, allowing you to redirect application traffic when the source cluster becomes unavailable.
 
 === Understanding failover behavior
 
 When you initiate failover, Redpanda performs the following operations:
 
 1. **Stops replication**: Halts all data fetching from the source cluster for the specified topics or entire shadow link
-2. **Promotes topics**: Converts read-only shadow topics into regular, writable topics
-3. **Updates topic state**: Changes topic status from `ACTIVE` to `PROMOTING`, then `PROMOTED`
+2. **Failedover topics**: Converts read-only shadow topics into regular, writable topics
+3. **Updates topic state**: Changes topic status from `ACTIVE` to `FAILING_OVER`, then `FAILED_OVER`
 
-The failover process is irreversible. After topics are promoted, they cannot return to shadow mode, and automatic fallback to the original source cluster is not supported.
+The failover process is irreversible. After topics are failedover, they cannot return to shadow mode, and automatic fallback to the original source cluster is not supported.
 
 === Failover granularity options
 
@@ -463,7 +463,7 @@ You can perform failover at two levels of granularity:
 rpk shadow failover <my-disaster-recovery-link> --topic prod-orders
 ----
 
-This promotes only the specified shadow topic while leaving other topics in the shadow link still replicating. Use this approach when you need to selectively fail over specific workloads or when testing failover procedures.
+This failsover only the specified shadow topic while leaving other topics in the shadow link still replicating. Use this approach when you need to selectively fail over specific workloads or when testing failover procedures.
 
 **Complete shadow link failover (cluster failover):**
 [,bash]
@@ -471,7 +471,7 @@ This promotes only the specified shadow topic while leaving other topics in the 
 rpk shadow failover <my-disaster-recovery-link> --all
 ----
 
-This promotes all shadow topics associated with the shadow link simultaneously, effectively failing over the entire cluster's replicated data. Use this approach during a complete regional disaster when you need to activate the entire shadow cluster as your new production environment.
+This failsover all shadow topics associated with the shadow link simultaneously, effectively failing over the entire cluster's replicated data. Use this approach during a complete regional disaster when you need to activate the entire shadow cluster as your new production environment.
 
 **Force delete shadow link (emergency failover):**
 [,bash]
@@ -479,11 +479,11 @@ This promotes all shadow topics associated with the shadow link simultaneously, 
 rpk shadow delete <my-disaster-recovery-link> --force
 ----
 
-Force deleting a shadow link immediately promotes all topics in the link, bypassing the normal failover state transitions. Use this approach only when topics are stuck in transitional states and you need immediate access to all replicated data.
+Force deleting a shadow link immediately failsover all topics in the link, bypassing the normal failover state transitions. Use this approach only when topics are stuck in transitional states and you need immediate access to all replicated data.
 
 [WARNING]
 ====
-Force deleting a shadow link is irreversible and immediately promotes all topics. This should only be used as a last resort when normal failover procedures fail.
+Force deleting a shadow link is irreversible and immediately failsover all topics. This should only be used as a last resort when normal failover procedures fail.
 ====
 
 === Failover states
@@ -503,8 +503,7 @@ Individual shadow topics progress through specific states during failover:
 
 * **`ACTIVE`**: Normal replication state before failover
 * **`FAILING_OVER`**: Failover initiated, replication stopping
-* **`PROMOTING`**: Converting from shadow topic to regular topic
-* **`PROMOTED`**: Failover completed successfully, topic fully writable
+* **`FAILED_OVER`**: Failover completed successfully, topic fully writable
 
 ==== Monitoring failover progress
 
@@ -515,7 +514,7 @@ Monitor failover progress using the status command:
 rpk shadow status <my-disaster-recovery-link>
 ----
 
-The output shows individual topic states and any issues encountered during the promotion process.
+The output shows individual topic states and any issues encountered during the failover process.
 
 === Post-failover cluster behavior
 
@@ -523,15 +522,15 @@ After successful failover, your shadow cluster exhibits the following characteri
 
 **Topic accessibility:**
 
-* Promoted topics become fully writable and readable.
+* Failedover topics become fully writable and readable.
 * Applications can produce and consume messages normally.
-* All Kafka APIs are available for promoted topics.
+* All Kafka APIs are available for failedover topics.
 * Original offsets and timestamps are preserved.
 
 **Shadow link status:**
 
 * The shadow link remains but stops replicating data.
-* Link status shows topics in `PROMOTED` state.
+* Link status shows topics in `FAILED_OVER` state.
 * You can safely delete the shadow link after successful failover.
 
 **Operational limitations:**
