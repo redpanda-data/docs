@@ -986,6 +986,16 @@ The `/mode` endpoint allows you to put Schema Registry in read-only, read-write,
 
 If authentication is enabled on Schema Registry, only superusers can change global and subject-level modes.
 
+[CAUTION]
+====
+*Breaking change in Redpanda 25.3:* In Redpanda versions before 25.3, you could specify a schema ID or version when registering a schema in read-write mode.
+
+Starting with 25.3, read-write mode returns an error when you try to register a schema with a specific ID or version. If you have custom scripts that rely on the ability to specify an ID or version with Redpanda 25.2 and earlier, you must do either of the following:
+
+* Omit the ID and version fields when registering a schema. The schema will be registered under a new ID and version.
+* Change the Schema Registry or the subject to import mode.
+====
+
 === Get global mode
 
 To link:/api/doc/schema-registry/operation/operation-get_mode[query the global mode] for Schema Registry:
@@ -1008,6 +1018,8 @@ curl http://localhost:8081/mode
 ====
 
 === Set global mode
+
+Set the mode for Schema Registry at a global level. This mode applies to all subjects that do not have a specific mode set.
 
 [tabs]
 ====
@@ -1034,7 +1046,7 @@ Replace the `<mode>` placeholder with the desired mode:
 
 === Get mode for a subject
 
-This request returns an error if there is no specific mode set for the subject:
+To look up the mode for a specific subject:
 
 [tabs]
 ====
@@ -1049,17 +1061,19 @@ rpk registry mode get <subject-name>
 Curl::
 +
 ```bash
-curl http://localhost:8081/mode/<subject>
+curl http://localhost:8081/mode/<subject>?defaultToGlobal=true
 ```
 ====
 
-To retrieve the mode regardless of whether or not the subject has a specific mode, use the `defaultToGlobal` parameter:
+This request returns the mode that is enforced. If the subject is set to a specific mode (to override the global mode), it returns the override mode. Otherwise, it returns the global mode.
+
+To retrieve the subject-level override if it exists, use:
 
 ```bash
-curl http://localhost:8081/mode/<subject>?defaultToGlobal=true
+curl http://localhost:8081/mode/<subject>
 ```
 
-This request returns the mode that is enforced. If the subject is set to a specific mode (to override the global mode), it will return the override mode, otherwise it returns the global mode.
+This request returns an error if there is no specific mode set for the subject.
 
 === Set mode for a subject
 
@@ -1091,20 +1105,13 @@ Set the target Schema Registry to import mode to:
 - Bypass compatibility checks when registering schemas.
 - Specify a specific schema ID and version for the registered schema, so you can retain the same IDs and version from the original Schema Registry and keep topic data associated with the correct schema.
 
-To enable import mode, you need either superuser access, or a Schema Reigstry ACL with the `alter_configs` operation on the `registry` resource. See xref:manage:schema-reg/schema-reg-authorization.adoc#enable-schema-registry-authorization[Enable Schema Registry Authorization] to learn how to enable schema registry authorization for your cluster.
+To enable import mode, you must have:
 
-[CAUTION]
-====
-In Redpanda versions before 25.3, you could specify a schema ID or version when registering a schema in read-write mode.
-
-Starting with 25.3, read-write mode returns an error when you try to register a schema with a specific ID or version. If you have custom scripts that rely on the ability to specify an ID or version with Redpanda 25.2 and earlier, you must do either of the following:
-
-* Omit the ID and version fields when registering a schema. The schema will be registered under a new ID and version.
-* Change the Schema Registry or the subject to import mode.
-====
-
-To force enable import mode:
-
+* Either superuser access, or a Schema Registry ACL with the `alter_configs` operation on the `registry` resource. See xref:manage:schema-reg/schema-reg-authorization.adoc#enable-schema-registry-authorization[Enable Schema Registry Authorization] to learn how to enable schema registry authorization for your cluster.
+* An empty registry or subject. That is, either no schemas have ever been registered, or you must <<hard-delete-a-schema,hard-delete>> all schemas that were registered.
++
+To bypass the check for an empty registry when setting the global mode to import:
++
 [tabs]
 ====
 rpk::
@@ -1122,7 +1129,7 @@ curl -X PUT -H "Content-Type: application/vnd.schemaregistry.v1+json" --data '{"
 ```
 ====
 
-To register a schema with a specific ID and version:
+Use import mode to register a schema with a specific ID and version:
 
 [tabs]
 ====
