@@ -1,0 +1,223 @@
+= Manage Roles with the Redpanda Operator
+:description: Use the RedpandaRole resource to declaratively create and manage roles as part of a Redpanda deployment. Each RedpandaRole resource defines a set of permissions that can be assigned to multiple users, providing role-based access control (RBAC) for your Redpanda cluster.
+:page-categories: Management, Security
+:env-kubernetes: true
+
+With the Redpanda Operator, you can declaratively create and manage Redpanda roles using xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-role[RedpandaRole custom resources] (resources) in Kubernetes. Each RedpandaRole resource defines a set of permissions that can be assigned to multiple users, providing role-based access control (RBAC) for your Redpanda cluster. The role controller, a component of the Redpanda Operator, keeps the corresponding Redpanda role in sync with the RedpandaRole resource.
+
+NOTE: RedpandaRole resources do not create users. Users must already exist in the Redpanda cluster before they can be assigned to roles, unless they are OIDC principals. OIDC principals do not need to be created as users in the cluster. Use xref:manage:kubernetes/security/authentication/k-user-controller.adoc[User resources] to create and manage Redpanda users.
+
+== What are roles and why use them?
+
+Think of roles like job titles in a company. Instead of giving each employee individual permissions for every door, system, and resource, you create job titles (roles) like "Developer," "Manager," or "Security Guard." Each job title comes with a specific set of permissions, and you assign employees to those job titles.
+
+In Redpanda, roles work the same way:
+
+* **Without roles**: You set up permissions individually for each user. If you have 10 developers who all need the same access to certain topics, you configure the same permissions 10 times.
+
+* **With roles**: You create a "Developer" role once with all the necessary permissions, then assign all 10 developers to that role. When you need to change what developers can access, you update the role once instead of updating 10 individual users.
+
+== Prerequisites
+
+You must have the following:
+
+* *Kubectl*: Ensure you have the https://kubernetes.io/docs/tasks/tools/#kubectl[kubectl^] command-line tool installed and configured to communicate with your cluster.
+* *Redpanda Operator*: Ensure you have at least version 25.2 of the xref:deploy:deployment-option/self-hosted/kubernetes/k-production-deployment.adoc[Redpanda Operator].
+* *Redpanda cluster with SASL enabled*: Ensure you have a Redpanda resource deployed with xref:manage:kubernetes/security/authentication/k-authentication.adoc#enable[SASL authentication enabled].
+* *Existing users*: If you plan to assign users to roles, ensure the users already exist in your Redpanda cluster. You can create users using xref:manage:kubernetes/security/authentication/k-user-controller.adoc[User resources].
+
+== Create a role
+
+You can use the RedpandaRole resource to:
+
+- <<with-authorization, Create a role with authorization rules (ACLs)>>
+- <<with-principals, Create a role with principals (users)>>
+- <<authorization-only, Create authorization rules for an existing role>>
+
+Each Role instance is responsible for managing both the role membership (principals) and the role's ACLs within the Redpanda cluster. You cannot use one RedpandaRole resource to manage the principals and another resource to manage the ACLs. Only one Role instance is allowed per role in the Redpanda cluster.
+
+[[with-authorization]]
+=== Create a role with authorization rules
+
+- *Use case*: You want to create a role that defines permissions and assign users to inherit those permissions. This is the most common use case for role-based access control, where you define permissions once and apply them to multiple users.
+- *What happens when deleted*: Both the role and its associated ACLs are removed. Users assigned to the role lose the permissions granted by this role but retain any other permissions they have.
+
+This example shows how to create a role with both principals and authorization rules.
+
+.`read-only-role.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/role-crds.feature[tags=manage-roles-with-authorization,indent=0]
+----
+
+[[with-principals]]
+=== Create a role with principals
+
+- *Use case*: You want to create a role and assign users (principals) to it. This is useful for grouping users together without necessarily defining permissions at the role level, allowing you to manage group membership centrally.
+- *What happens when deleted*: The role is deleted, but users assigned to the role remain in the cluster. Any ACLs defined at the user level are unaffected.
+
+This example shows how to create a role and assign principals to it.
+
+.`admin-role.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/role-crds.feature[tags=manage-roles-with-principals,indent=0]
+----
+
+[[authorization-only]]
+=== Create authorization rules for an existing role
+
+- *Use case*: You want to manage ACLs for an existing role in the Redpanda cluster, but not modify the role's membership. Use this option if role membership is managed by another process or tool, and you only want to control what resources the role can access.
+- *What happens when deleted*: The ACLs are removed, but the role and its members remain. This is useful when you want to revoke permissions but retain the role structure for future use.
+
+This example shows how to manage only the ACLs for an existing role in the Redpanda cluster.
+
+.`authorization-only-role.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/role-crds.feature[tags=manage-authz-only-roles,indent=0]
+----
+
+== Configuration
+
+The following sections provide guidance on setting up role membership, managing authorization rules, and defining ACLs within your Kubernetes environment. These recommendations ensure proper role management while minimizing manual interventions and preventing potential security issues.
+
+You can find all configuration options for the RedpandaRedpandaRole resource in the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-role[CRD reference].
+
+=== Choose a role name
+
+The `metadata.name` field in the RedpandaRedpandaRole resource is used to specify the role name. Keep in mind the following best practices when choosing a role name:
+
+- *Unique*: Ensure each role has a unique name to avoid conflicts. The role name must be unique within the Redpanda cluster.
+- *Descriptive*: Choose a name that identifies the purpose or permissions of the role. For example, use names like `data-readers` or `topic-admins`.
+- *Stable*: Avoid changing role names frequently. Role names are tied to authorization rules (ACLs) and user assignments. Renaming a role involves deleting and recreating the role.
+
+[,yaml]
+----
+metadata:
+  name: read-only-role
+----
+
+In this example, `read-only-role` is the role name, which will be referenced in authorization rules and user assignments.
+
+=== Configure principals
+
+The xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-rolespec[`spec.principals`] field allows you to specify which users are assigned to the role. Principals are specified in the format `User:<username>`.
+
+IMPORTANT: Users must already exist in the Redpanda cluster before they can be assigned to a role. The RedpandaRole resource does not create users that don't exist.
+
+[source,yaml]
+----
+spec:
+  principals:
+    - User:alice
+    - User:bob
+----
+
+When users are assigned to a role, they inherit all the permissions defined in the role's ACLs. If a role has no ACLs defined, the users gain no additional permissions from the role membership.
+
+=== Define authorization rules
+
+The xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-roleauthorizationspec[`spec.authorization`] field allows you to manage ACLs for the role. ACLs define the permissions that all members of the role have over specific resources in Redpanda, such as topics, consumer groups, and clusters.
+
+You can define ACLs for a role by specifying which resources members can access and the operations they are permitted to perform. Here's an example configuration for managing ACLs:
+
+[source,yaml]
+----
+spec:
+  authorization:
+    acls:
+      - type: allow
+        resource:
+          type: topic
+          name: public-
+          patternType: prefixed
+        operations: [Read, Describe]
+----
+
+- `type`: Defines whether the ACL allows or denies access. Acceptable values: `allow`, `deny`.
+- `resource.type`: Specifies the resource type. Acceptable values: `topic`, `group`, `cluster`, `transactionalId`.
+- `patternType`: Specifies how the resource name is interpreted. Acceptable values: `literal`, `prefixed`. Default: `literal`.
++
+TIP: Using `literal` names for resources ensures that only the exact resources you intend are accessible. Use `prefixed` patterns cautiously to avoid accidental permission grants.
+- `operations`: Lists the allowed operations, such as `Read`, `Write`, `Create`, and `Delete`.
+
+You can find all configuration options for authorization in the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-roleauthorizationspec[RoleAuthorizationSpec] of the CRD reference.
+
+For more details about ACLs, including supported operations and resources in Redpanda, see xref:manage:security/authorization/acl.adoc[].
+
+== Deploy a RedpandaRole resource
+
+To deploy a RedpandaRole resource, apply the manifest to the same namespace as your Redpanda cluster:
+
+[,bash]
+----
+kubectl apply -f <manifest-filename>.yaml --namespace <namespace>
+----
+
+- Replace `<manifest-filename>` with the filename of your manifest.
+- Replace `<namespace>` with the namespace in which you deployed Redpanda.
+
+== Verify a role
+
+After deploying a RedpandaRole resource, verify that the Redpanda Operator reconciled it:
+
+[,bash]
+----
+kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
+----
+
+== Update a role
+
+To update a role, edit the RedpandaRole resource configuration and apply the changes.
+
+[,bash]
+----
+kubectl apply -f <manifest-filename>.yaml --namespace <namespace>
+----
+
+== Delete a role
+
+To delete a role, delete the RedpandaRole resource:
+
+[,bash]
+----
+kubectl delete -f <manifest-filename>.yaml --namespace <namespace>
+----
+
+When a RedpandaRole resource is deleted, its underlying data is removed as well. If the role has ACLs, those ACLs are also removed.
+
+Deleting a RedpandaRole resource has different impacts depending on how it is configured:
+
+- **Principals-only**: When a RedpandaRole resource that manages only principals is deleted, the role is removed from the cluster. However, any ACLs not managed by the same resource will remain in place.
+- **Authorization-only**: When a RedpandaRole resource that manages only ACLs is deleted, the ACLs are removed, but the role and its members remain in the cluster.
+- **Full role management (both principals and authorization)**: When the resource manages both membership and ACLs, the role and its associated ACLs are removed.
+
+== Best practices
+
+When working with RedpandaRole resources, consider the following best practices:
+
+=== Role design
+
+- *Principle of least privilege*: Grant only the minimum permissions necessary for users to perform their tasks.
+- *Logical grouping*: Create roles that align with job functions or responsibilities rather than individual users.
+- *Naming conventions*: Use consistent, descriptive names that indicate the role's purpose, such as `topic-readers` or `admin-users`.
+
+=== Permission management
+
+- *Prefer role-based over user-based ACLs*: When possible, assign permissions to roles rather than individual users to simplify management.
+- *Use specific resource patterns*: Prefer `literal` patterns over `prefixed` patterns unless you specifically need pattern matching.
+- *Regular reviews*: Periodically review role permissions to ensure they remain appropriate and necessary.
+
+=== Integration with User resources
+
+- *Consistent management*: If you're using both Role and User resources, establish clear guidelines about which permissions are managed at the role level versus the user level.
+- *Avoid conflicts*: Be careful not to create conflicting ACLs between Role and User resources for the same users.
+
+== Suggested reading
+
+* xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-role[RedpandaRole resource]
+* xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-rolelist[RoleList resource]
+* xref:manage:kubernetes/security/authentication/k-user-controller.adoc[Manage Users and ACLs]
+* xref:manage:security/authorization/rbac.adoc[Role-Based Access Control (RBAC)]
+* xref:manage:security/authorization/acl.adoc[Access Control Lists (ACLs)]
