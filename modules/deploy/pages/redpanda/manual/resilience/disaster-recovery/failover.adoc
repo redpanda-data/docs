@@ -1,0 +1,130 @@
+= Failover
+:description: Execute Redpanda Disaster Recovery (Shadowing) failover procedures to transform shadow topics into fully writable resources during disasters.
+:page-categories: Management, High Availability, Disaster Recovery
+
+include::shared:partial$enterprise-feature.adoc[]
+
+include::shared:partial$emergency-shadowing-callout.adoc[]
+
+Failover is the process of modifying shadow topics or an entire shadow cluster from read-only replicas to fully writable resources, and ceasing replication from the source cluster. You can fail over individual topics for selective workload migration or fail over the entire cluster for comprehensive disaster recovery. This critical operation transforms your shadow resources into operational production assets, allowing you to redirect application traffic when the source cluster becomes unavailable.
+
+== Failover behavior
+
+When you initiate failover, Redpanda performs the following operations:
+
+1. **Stops replication**: Halts all data fetching from the source cluster for the specified topics or entire shadow link
+2. **Failover topics**: Converts read-only shadow topics into regular, writable topics
+3. **Updates topic state**: Changes topic status from `ACTIVE` to `FAILING_OVER`, then `FAILED_OVER`
+
+Topic failover is irreversible. Once failed over, topics cannot return to shadow mode, and automatic fallback to the original source cluster is not supported.
+
+== Failover granularity options
+
+You can perform failover at two levels of granularity:
+
+**Individual topic failover:**
+[,bash]
+----
+rpk shadow failover <shadow-link-name> --topic <topic-name>
+----
+
+This failover applies only to the specified shadow topic, while leaving other topics in the shadow link still replicating. Use this approach when you need to selectively failover specific workloads or when testing failover procedures.
+
+**Complete shadow link failover (cluster failover):**
+[,bash]
+----
+rpk shadow failover <shadow-link-name> --all
+----
+
+This failover applies to all shadow topics associated with the shadow link simultaneously, effectively failing over the entire cluster's replicated data. Use this approach during a complete regional disaster when you need to activate the entire shadow cluster as your new production environment.
+
+**Force delete shadow link (emergency failover):**
+[,bash]
+----
+rpk shadow delete <shadow-link-name> --force
+----
+
+[WARNING]
+====
+Force deleting a shadow link is irreversible and immediately fails over all topics in the link, bypassing the normal failover state transitions. This action should only be used as a last resort when topics are stuck in transitional states and you need immediate access to all replicated data.
+====
+
+== Failover states
+
+=== Shadow link states
+
+The shadow link itself has a simple state model:
+
+* **`ACTIVE`**: Shadow link is operating normally, replicating data
+
+Shadow links do not have dedicated failover states. Instead, the link's operational status is determined by the collective state of its shadow topics.
+
+=== Shadow topic states
+
+Individual shadow topics progress through specific states during failover:
+
+* **`ACTIVE`**: Normal replication state before failover
+* **`FAULTED`**: Shadow topic has encountered an error and is not replicating
+* **`FAILING_OVER`**: Failover initiated, replication stopping
+* **`FAILED_OVER`**: Failover completed successfully, topic fully writable
+
+=== Monitor failover progress
+
+Monitor failover progress using the status command:
+
+[,bash]
+----
+rpk shadow status <shadow-link-name>
+----
+
+The output shows individual topic states and any issues encountered during the failover process.
+
+**Task states during monitoring:**
+
+* **`ACTIVE`**: Task is operating normally and replicating data
+* **`FAULTED`**: Task encountered an error and requires attention
+* **`NOT_RUNNING`**: Task is not currently executing
+* **`LINK_UNAVAILABLE`**: Task cannot communicate with the source cluster
+
+== Post-failover cluster behavior
+
+After successful failover, your shadow cluster exhibits the following characteristics:
+
+**Topic accessibility:**
+
+* Failed over topics become fully writable and readable.
+* Applications can produce and consume messages normally.
+* All Kafka APIs are available for failedover topics.
+* Original offsets and timestamps are preserved.
+
+**Shadow link status:**
+
+* The shadow link remains but stops replicating data.
+* Link status shows topics in `FAILED_OVER` state.
+* You can safely delete the shadow link after successful failover.
+
+**Operational limitations:**
+
+* No automatic fallback mechanism to the original source cluster.
+* Data transforms remain disabled until you manually re-enable them.
+* Audit log history from the source cluster is not available (new audit logs begin immediately).
+
+== Failover considerations and limitations
+
+**Data consistency:**
+
+* Some data loss may occur due to replication lag at the time of failover.
+* Consumer group offsets are preserved, allowing applications to resume from their last committed position.
+* In-flight transactions at the source cluster are not replicated and will be lost.
+
+**Recovery-point-objective (RPO):**
+
+The amount of potential data loss depends on replication lag when disaster occurs. Monitor lag metrics to understand your effective RPO.
+
+**Network partitions:**
+
+If the source cluster becomes accessible again after failover, do not attempt to write to both clusters simultaneously. This creates a scenario with potential data inconsistencies, since metadata starts to diverge.
+
+**Testing requirements:**
+
+Regularly test failover procedures in non-production environments to validate your disaster recovery processes and measure RTO.
