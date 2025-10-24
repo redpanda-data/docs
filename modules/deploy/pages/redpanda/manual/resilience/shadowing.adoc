@@ -104,7 +104,7 @@ The following topic properties are always replicated:
 * Partition count
 * `max.message.bytes`
 * `cleanup.policy`
-* `message.timestamp.type`
+* `timestamp.type`
 
 The following topic properties are never replicated:
 
@@ -230,6 +230,25 @@ acl_filters:
       permission_type: "ALLOW"
       host: "*"
 ----
+
+==== Schema Registry synchronization
+
+Shadowing can replicate Schema Registry data by shadowing the `_schemas` system topic. When enabled, this provides byte-for-byte replication of schema definitions, versions, and compatibility settings.
+
+To enable Schema Registry synchronization, add the following to your shadow link configuration:
+
+[,yaml]
+----
+schema_registry_sync_options:
+  shadow_schema_registry_topic: {}
+----
+
+**Requirements:**
+- The `_schemas` topic must exist on the source cluster
+- The `_schemas` topic must not exist on the shadow cluster, or must be empty
+- Once enabled, the `_schemas` topic will be replicated completely
+
+**Important:** Once the `_schemas` topic becomes a shadow topic, it cannot be stopped without either failing over the topic or deleting it entirely.
 
 ==== Generate a sample configuration
 
@@ -399,6 +418,10 @@ topic_metadata_sync_options:
     - "retention.ms"                     # Topic retention time
     - "segment.ms"                       # Segment roll time
     - "<CUSTOM_PROPERTY>"                # Examples: "compression.type", "min.insync.replicas"
+  # Starting offset for new shadow topic partitions (defaults to earliest)
+  # earliest: {}                         # Start from the beginning of the topic
+  # latest: {}                           # Start from the latest offset
+  # timestamp: "2023-01-01T00:00:00Z"    # Start from records at or after this timestamp
 
 consumer_offset_sync_options:
   interval: "30s"                        # How often to sync consumer group offsets
@@ -410,6 +433,9 @@ consumer_offset_sync_options:
     - pattern_type: "LITERAL"
       filter_type: "EXCLUDE"
       name: "<EXCLUDED_GROUP>"           # Examples: "test-consumer", "debug-group"
+
+schema_registry_sync_options:            # Schema Registry synchronization options
+  shadow_schema_registry_topic: {}       # Enable byte-for-byte _schemas topic replication
 
 security_sync_options:
   interval: "30s"                        # How often to sync security settings
@@ -497,6 +523,7 @@ Shadow links do not have dedicated failover states. Instead, the link's operatio
 Individual shadow topics progress through specific states during failover:
 
 * **`ACTIVE`**: Normal replication state before failover
+* **`FAULTED`**: Shadow topic has encountered an error and is not replicating
 * **`FAILING_OVER`**: Failover initiated, replication stopping
 * **`FAILED_OVER`**: Failover completed successfully, topic fully writable
 
@@ -577,8 +604,8 @@ rpk shadow status <my-disaster-recovery-link>
 This displays replication lag, connection health, and the status of individual synchronization tasks. The status output includes:
 
 * **Shadow link state**: Overall operational state (`ACTIVE`)
-* **Individual topic states**: Current state of each replicated topic
-* **Task status**: Health of replication tasks across brokers
+* **Individual topic states**: Current state of each replicated topic (`ACTIVE`, `FAULTED`, `FAILING_OVER`, `FAILED_OVER`)
+* **Task status**: Health of replication tasks across brokers (`ACTIVE`, `FAULTED`, `NOT_RUNNING`, `LINK_UNAVAILABLE`)
 * **Lag information**: Replication lag per partition
 
 [[shadow-link-metrics]]
@@ -644,6 +671,8 @@ Configure monitoring alerts for:
 * **High replication lag**: When `redpanda_shadow_link_shadow_lag` exceeds your RPO requirements
 * **Connection errors**: When `redpanda_shadow_link_client_errors` increases rapidly
 * **Topic state changes**: When topics move to `FAULTED` state
+* **Task failures**: When replication tasks enter `FAULTED` or `NOT_RUNNING` states
+* **Link unavailability**: When tasks show `LINK_UNAVAILABLE` indicating source cluster connectivity issues
 * **Throughput drops**: When bytes/records fetched drops significantly
 
 == Disaster readiness checklist
