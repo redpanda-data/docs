@@ -1,0 +1,78 @@
+= How Shadowing works
+:description: Set up disaster recovery for Redpanda clusters using Shadowing for cross-region replication.
+:page-aliases: deploy:redpanda/manual/resilience/shadowing.adoc
+:env-linux: true
+:page-categories: Management, High Availability, Disaster Recovery
+
+include::shared:partial$enterprise-license.adoc[]
+
+Shadowing is Redpanda's enterprise-grade disaster recovery solution that establishes asynchronous, offset-preserving replication between two distinct Redpanda clusters. A cluster is able to create a dedicated client that continuously replicates source cluster data, including offsets, timestamps, and cluster metadata. This creates a read-only shadow cluster that you can quickly failover to handle production traffic during a disaster.
+
+include::shared:partial$emergency-shadowing-callout.adoc[]
+
+Unlike traditional replication tools that re-produce messages, Shadowing copies data at the byte level, ensuring shadow topics contain identical copies of source topics with preserved offsets and timestamps.
+
+Shadowing replicates:
+
+* **Topic data**: All records with preserved offsets and timestamps
+* **Topic configurations**: Partition counts, retention policies, and other xref:reference:properties/topic-properties.adoc[topic properties]
+* **Consumer group offsets**: Enables seamless consumer resumption after failover
+* **Access Control Lists (ACLs)**: User permissions and security policies
+* **Schema Registry data**: Schema definitions and compatibility settings
+
+== How Shadowing fits into disaster recovery
+
+Shadowing addresses enterprise disaster recovery requirements driven by regulatory compliance and business continuity needs. Organizations typically want to minimize both recovery time objective (RTO) and recovery point objective (RPO), and Shadowing asynchronous replication helps you achieve both goals by reducing data loss during regional outages and enabling rapid application recovery.
+
+The architecture follows an active-passive pattern. The source cluster processes all production traffic while the shadow cluster remains in read-only mode, continuously receiving updates. If a disaster occurs, you can failover the shadow topics using the Admin API or `rpk`, making them fully writable. At that point, you can redirect your applications to the shadow cluster, which becomes the new production cluster.
+
+Shadowing complements Redpanda's existing availability and recovery capabilities. xref:deploy:redpanda/manual/high-availability.adoc[High availability] actively protects your day-to-day operations, handling reads and writes seamlessly during node or availability zone failures within a region. Shadowing is your safety net for catastrophic regional disasters. While xref:deploy:redpanda/manual/resilience/disaster-recovery/whole-cluster-restore.adoc[Whole Cluster Restore] provides point-in-time recovery from xref:manage:tiered-storage.adoc[Tiered Storage], Shadowing delivers near real-time, cross-region replication for mission-critical applications that require rapid failover with minimal data loss.
+
+// TODO: insert diagram. Possibly with a .gif animation showing cluster Cluster A being written and cluster B being replicated with a data flow arrow and geo-separation. Diagram must show Icons or labels for topics, configurations, offsets, ACLs, schemas that are being copied
+
+== Limitations
+
+Shadowing is designed for active-passive disaster recovery scenarios. Each shadow cluster can maintain only one shadow link.
+
+Shadowing operates exclusively in asynchronous mode and doesn't support active-active configurations. This means there will always be some replication lag. You cannot write to both clusters simultaneously.
+
+xref:develop:data-transforms/index.adoc[Data transforms] are disabled on shadow clusters while Shadowing is active. During a disaster, xref:manage:audit-logging.adoc[audit log] history from the source cluster is lost, though the shadow cluster begins generating new audit logs immediately after the failover.
+
+After you failover shadow topics, automatic fallback to the original source cluster is not supported.
+
+[CAUTION]
+====
+Do not modify synced topic properties on shadow topics. These properties revert to source topic values.
+====
+
+== Setup and Configuration
+
+Choose your implementation approach:
+
+* **xref:./setup.adoc[Setup and Configuration]** - Initial shadow configuration, authentication, and topic selection
+* **xref:./monitor.adoc[Monitoring and Operations]** - Health checks, lag monitoring, and operational procedures
+* **xref:./failover.adoc[Planned Failover]** - Controlled disaster recovery testing and migrations
+* **xref:./disaster-response.adoc[Disaster response procedures]** - Rapid disaster response procedures
+
+== Disaster readiness checklist
+
+Before a disaster occurs, ensure you have:
+
+* [ ] Access to shadow cluster administrative credentials
+* [ ] Shadow link names and configuration details, and networking documented
+* [ ] Application connection strings for the shadow cluster prepared
+* [ ] Tested failover procedures in a non-production environment
+
+== Next steps
+
+After setting up Shadowing for your Redpanda clusters, consider these additional steps:
+
+* **Test your disaster recovery procedures**: Regularly practice failover scenarios in a non-production environment. See xref:./disaster-response.adoc[Disaster response procedures] for step-by-step disaster procedures.
+
+* **Monitor shadow link health**: Set up alerting on the metrics described above to ensure early detection of replication issues.
+
+* **Implement automated failover**: Consider developing automation scripts that can detect outages and initiate failover based on predefined criteria.
+
+* **Review security policies**: Ensure your ACL filters replicate the appropriate security settings for your disaster recovery environment.
+
+* **Document your configuration**: Maintain up-to-date documentation of your shadow link configuration, including network settings, authentication details, and filter definitions.
