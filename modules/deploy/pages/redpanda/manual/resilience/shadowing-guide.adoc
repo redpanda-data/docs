@@ -36,13 +36,25 @@ Confirm that failover is necessary:
 [,bash]
 ----
 # Check if the primary cluster is responding
-rpk cluster info --brokers <primary-cluster-brokers>
+rpk cluster info --brokers prod-cluster-1.example.com:9092,prod-cluster-2.example.com:9092
 
 # If primary cluster is down, check shadow cluster health
-rpk cluster info --brokers <shadow-cluster-brokers>
+rpk cluster info --brokers shadow-cluster-1.example.com:9092,shadow-cluster-2.example.com:9092
 ----
 
 **Decision point**: If the primary cluster is responsive, consider whether failover is actually needed. Partial outages may not require full disaster recovery.
+
+**Examples that require full failover:**
+* Primary cluster is completely unreachable (network partition, regional outage)
+* Multiple broker failures preventing writes to critical topics
+* Data center failure affecting majority of brokers
+* Persistent authentication or authorization failures across the cluster
+
+**Examples that may NOT require failover:**
+* Single broker failure with sufficient replicas remaining
+* Temporary network connectivity issues affecting some clients
+* High latency or performance degradation (but cluster still functional)
+* Non-critical topic or partition unavailability
 
 [[verify-shadow-status]]
 === Verify shadow cluster status
@@ -55,10 +67,10 @@ Check the health of your shadow links:
 rpk shadow list
 
 # Check the configuration of your shadow link
-rpk shadow describe <disaster-recovery-link-name>
+rpk shadow describe <shadow-link-name>
 
 # Check the status of your disaster recovery link
-rpk shadow status <disaster-recovery-link-name>
+rpk shadow status <shadow-link-name>
 ----
 
 Verify that the following conditions exist before proceeding with failover:
@@ -66,6 +78,14 @@ Verify that the following conditions exist before proceeding with failover:
 * Shadow link state should be `ACTIVE`.
 * Topics should be in `ACTIVE` state (not `FAULTED`).
 * Replication lag should be reasonable for your RPO requirements.
+
+**Understanding replication lag:**
+
+Use `rpk shadow status <shadow-link-name>` to check lag, which shows the message count difference between source and shadow partitions:
+
+* **Acceptable lag examples**: 0-1000 messages for low-throughput topics, 0-10000 messages for high-throughput topics
+* **Concerning lag examples**: Growing lag over 50,000 messages, or lag that continuously increases without recovering
+* **Critical lag examples**: Lag exceeding your data loss tolerance (for example, if you can only afford to lose 1 minute of data, lag should represent less than 1 minute of typical message volume)
 
 [[document-state]]
 === Document current state
@@ -75,10 +95,12 @@ Record the current lag and status before proceeding:
 [,bash]
 ----
 # Capture current status for post-mortem analysis
-rpk shadow status <disaster-recovery-link-name> > failover-status-$(date +%Y%m%d-%H%M%S).log
+rpk shadow status <shadow-link-name> > failover-status-$(date +%Y%m%d-%H%M%S).log
 ----
 
-IMPORTANT: Note the replication lag to estimate potential data loss.
+----
+
+IMPORTANT: Note the replication lag to estimate potential data loss during failover.
 
 [[initiate-failover]]
 === Initiate failover
@@ -88,7 +110,7 @@ A complete cluster failover is appropriate If you observe that the source cluste
 [,bash]
 ----
 # Fail over all topics in the shadow link
-rpk shadow failover <disaster-recovery-link-name> --all
+rpk shadow failover <shadow-link-name> --all
 ----
 
 For selective topic failover (when only specific services are affected):
@@ -96,8 +118,8 @@ For selective topic failover (when only specific services are affected):
 [,bash]
 ----
 # Fail over individual topics
-rpk shadow failover <disaster-recovery-link-name> --topic <critical-topic-1>
-rpk shadow failover <disaster-recovery-link-name> --topic <critical-topic-2>
+rpk shadow failover <shadow-link-name> --topic <topic-name>
+rpk shadow failover <shadow-link-name> --topic <topic-name>
 ----
 
 [[monitor-progress]]
@@ -108,10 +130,12 @@ Track the failover process:
 [,bash]
 ----
 # Monitor status until all topics show FAILED_OVER
-watch -n 5 "rpk shadow status <disaster-recovery-link-name>"
+watch -n 5 "rpk shadow status <shadow-link-name>"
 
 # Check detailed topic status and lag during emergency
-rpk shadow status <disaster-recovery-link-name> --print-topic
+rpk shadow status <shadow-link-name> --print-topic
+----
+
 ----
 
 **Wait for**: All critical topics to reach `FAILED_OVER` state before proceeding.
@@ -129,10 +153,10 @@ Test critical application workflows:
 [,bash]
 ----
 # Verify applications can produce messages
-rpk topic produce <critical-topic> --brokers <shadow-cluster-brokers>
+rpk topic produce <topic-name> --brokers <shadow-cluster-address>:9092
 
-# Verify applications can consume messages
-rpk topic consume <critical-topic> --brokers <shadow-cluster-brokers> --num 1
+# Verify applications can consume messages  
+rpk topic consume <topic-name> --brokers <shadow-cluster-address>:9092 --num 1
 ----
 
 Test message production and consumption, consumer group functionality, and critical business workflows to ensure everything is working properly.
@@ -145,7 +169,7 @@ After all applications are running normally:
 [,bash]
 ----
 # Optional: Delete the shadow link (no longer needed)
-rpk shadow delete <disaster-recovery-link-name>
+rpk shadow delete <shadow-link-name>
 ----
 
 Document the time of failover initiation and completion, applications affected and recovery times, data loss estimates based on replication lag, and issues encountered during failover.
@@ -163,7 +187,7 @@ If topics remain stuck after addressing these cluster health issues and you need
 [,bash]
 ----
 # Force delete the shadow link to failover all topics
-rpk shadow delete <disaster-recovery-link-name> --force
+rpk shadow delete <shadow-link-name> --force
 ----
 
 [WARNING]
@@ -187,18 +211,20 @@ Force deleting a shadow link immediately fails over all topics in the link. This
 
 **Problem**: Consumers start from beginning or wrong positions
 
-**Solution**: Verify consumer group offsets were replicated (check your filters) and use `rpk group describe <group-name>` to check offset positions. If necessary, manually reset offsets to appropriate positions.
+**Solution**: Verify consumer group offsets were replicated (check your filters) and use `rpk group describe <group-name>` to check offset positions. If necessary, manually reset offsets to appropriate positions. See link:https://support.redpanda.com/hc/en-us/articles/23499121317399-How-to-manage-consumer-group-offsets-in-Redpanda[How to manage consumer group offsets in Redpanda^] for detailed reset procedures.
 
-== Recovery planning
+== Next steps
 
-After successful failover:
+After successful failover, focus on recovery planning and process improvement. Begin by assessing the source cluster failure and determining whether to restore the original cluster or permanently promote the shadow cluster as your new primary.
+
+**Immediate recovery planning:**
 
 1. **Assess source cluster**: Determine root cause of the outage
-2. **Plan recovery**: Decide whether to restore source cluster or promote shadow cluster permanently
+2. **Plan recovery**: Decide whether to restore source cluster or promote shadow cluster permanently  
 3. **Data synchronization**: Plan how to synchronize any data produced during failover
 4. **Fail forward**: Create a new shadow link with the failed over shadow cluster as source to maintain a DR cluster
 
-== Post-incident actions
+**Process improvement:**
 
 1. **Document the incident**: Record timeline, impact, and lessons learned
 2. **Update runbooks**: Improve procedures based on what you learned
