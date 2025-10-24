@@ -1,0 +1,115 @@
+= Monitor Shadowing
+:description: Monitor Shadowing health with status commands, metrics, and best practices for tracking replication performance.
+:page-categories: Management, Monitoring, Disaster Recovery
+
+include::shared:partial$enterprise-license.adoc[]
+
+Monitor your shadow links to ensure proper replication performance and understand your disaster recovery readiness. Use `rpk` commands, metrics, and status information to track shadow link health and troubleshoot issues.
+
+== Status commands
+
+List existing shadow links:
+
+[,bash]
+----
+rpk shadow list
+----
+
+View shadow link configuration details:
+
+[,bash]
+----
+rpk shadow describe <my-disaster-recovery-link>
+----
+
+This command shows the complete configuration of the shadow link, including connection settings, filters, and synchronization options.
+
+Check your shadow link status to ensure proper operation:
+
+[,bash]
+----
+rpk shadow status <shadow-link-name>
+----
+
+**Status command options:**
+
+[,bash]
+----
+rpk shadow status <shadow-link-name>
+----
+
+For troubleshooting specific issues, you can use command options to show individual status sections. See the rpk reference for available status options.
+
+The status output includes:
+
+* **Shadow link state**: Overall operational state (`ACTIVE`)
+* **Individual topic states**: Current state of each replicated topic (`ACTIVE`, `FAULTED`, `FAILING_OVER`, `FAILED_OVER`)
+* **Task status**: Health of replication tasks across brokers (`ACTIVE`, `FAULTED`, `NOT_RUNNING`, `LINK_UNAVAILABLE`)
+* **Lag information**: Replication lag per partition showing source vs shadow watermarks
+
+[[shadow-link-metrics]]
+== Metrics
+
+Shadowing provides comprehensive metrics to track replication performance and health:
+
+[cols="1,1,2"]
+|===
+|Metric |Type |Description
+
+|`redpanda_shadow_link_shadow_lag`
+|Gauge
+|The lag of the shadow partition against the source partition, calculated as source partition LSO minus shadow partition HWM. Monitor by `shadow_link_name`, `topic`, and `partition` to understand replication lag for each partition.
+
+|`redpanda_shadow_link_total_bytes_fetched`
+|Count
+|The total number of bytes fetched by a sharded replicator (bytes received by the client). Labeled by `shadow_link_name` and `shard` to track data transfer volume from the source cluster.
+
+|`redpanda_shadow_link_total_bytes_written`
+|Count
+|The total number of bytes written by a sharded replicator (bytes written to the write_at_offset_stm). Uses `shadow_link_name` and `shard` labels to monitor data written to the shadow cluster.
+
+|`redpanda_shadow_link_client_errors`
+|Count
+|The number of errors seen by the client. Track by `shadow_link_name` and `shard` to identify connection or protocol issues between clusters.
+
+|`redpanda_shadow_link_shadow_topic_state`
+|Gauge
+|Number of shadow topics in the respective states. Labeled by `shadow_link_name` and `state` to monitor topic state distribution across your shadow links.
+
+|`redpanda_shadow_link_total_records_fetched`
+|Count
+|The total number of records fetched by the sharded replicator (records received by the client). Monitor by `shadow_link_name` and `shard` to track message throughput from the source.
+
+|`redpanda_shadow_link_total_records_written`
+|Count
+|The total number of records written by a sharded replicator (records written to the write_at_offset_stm). Uses `shadow_link_name` and `shard` labels to monitor message throughput to the shadow cluster.
+|===
+
+See also: xref:reference:public-metrics-reference.adoc[]
+
+== Monitoring best practices
+
+=== Health check procedures
+
+Establish regular monitoring workflows to ensure shadow link health:
+
+**Health checks:**
+[,bash]
+----
+# Check all shadow links are active
+rpk shadow list | grep -v "ACTIVE" || echo "All shadow links healthy"
+
+# Monitor lag for critical topics  
+rpk shadow status <shadow-link-name> | grep -E "LAG|Lag"
+----
+
+=== Alert thresholds
+
+Configure monitoring alerts for:
+
+* **High replication lag**: When `redpanda_shadow_link_shadow_lag` exceeds your RPO requirements
+* **Connection errors**: When `redpanda_shadow_link_client_errors` increases rapidly
+* **Topic state changes**: When topics move to `FAULTED` state
+* **Task failures**: When replication tasks enter `FAULTED` or `NOT_RUNNING` states
+* **Link unavailability**: When tasks show `LINK_UNAVAILABLE` indicating source cluster connectivity issues
+* **Throughput drops**: When bytes/records fetched drops significantly
