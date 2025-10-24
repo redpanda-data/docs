@@ -12,7 +12,7 @@ Shadowing is Redpanda's enterprise-grade disaster recovery solution that establi
 
 [IMPORTANT]
 ====
-**Experiencing an active disaster?** See xref:deploy:redpanda/manual/resilience/emergency-shadowing.adoc[Emergency Shadowing Failover] for immediate step-by-step emergency procedures.
+**Experiencing an active disaster?** See xref:deploy:redpanda/manual/resilience/shadowing-guide.adoc[Emergency Shadowing Failover] for immediate step-by-step emergency procedures.
 ====
 
 Unlike traditional replication tools that re-produce messages, Shadowing copies data at the byte level, ensuring shadow topics contain identical copies of source topics with preserved offsets and timestamps.
@@ -163,7 +163,7 @@ Redpanda processes filters in the order you define them with exclude filters tak
 auto_create_shadow_topic_filters:
   - pattern_type: "PREFIX"
     filter_type: "EXCLUDE" 
-    name: "test-"
+    name: "test-"                        # Exclude all test topics
   - pattern_type: "LITERAL"
     filter_type: "INCLUDE"
     name: "*"
@@ -175,10 +175,10 @@ auto_create_shadow_topic_filters:
 auto_create_shadow_topic_filters:
   - pattern_type: "PREFIX"
     filter_type: "INCLUDE"
-    name: "prod-"
+    name: "prod-"                        # Include production topics
   - pattern_type: "PREFIX" 
     filter_type: "INCLUDE"
-    name: "production-"
+    name: "production-"                  # Alternative production prefix
 ----
 
 **Replicate specific consumer groups:**
@@ -187,11 +187,31 @@ auto_create_shadow_topic_filters:
 group_filters:
   - pattern_type: "LITERAL"
     filter_type: "INCLUDE"
-    name: "critical-app-consumers"
+    name: "critical-app-consumers"       # Include specific consumer group
   - pattern_type: "PREFIX"
     filter_type: "INCLUDE" 
-    name: "prod-consumer-"
+    name: "prod-consumer-"               # Include production consumers
 ----
+
+==== Schema Registry synchronization
+
+Shadowing can replicate Schema Registry data by shadowing the `_schemas` system topic. When enabled, this provides byte-for-byte replication of schema definitions, versions, and compatibility settings.
+
+To enable Schema Registry synchronization, add the following to your shadow link configuration:
+
+[,yaml]
+----
+schema_registry_sync_options:
+  shadow_schema_registry_topic: {}
+----
+
+**Requirements:**
+- The `_schemas` topic must exist on the source cluster
+- The `_schemas` topic must not exist on the shadow cluster, or must be empty
+- Once enabled, the `_schemas` topic will be replicated completely
+
+**Important:** Once the `_schemas` topic becomes a shadow topic, it cannot be stopped without either failing over the topic or deleting it entirely.
+
 
 ==== System topic filtering rules
 
@@ -211,24 +231,24 @@ By default all ACLs are replicated. This is recommended in order to ensure that 
 acl_filters:
   # Include read permissions for production topics
   - resource_filter:
-      resource_type: "TOPIC"
-      pattern_type: "PREFIX"
-      name: "prod-"
+      resource_type: "TOPIC"            # Filter by topic resource
+      pattern_type: "PREFIX"            # Match by prefix
+      name: "prod-"                     # Production topic prefix
     access_filter:
-      principal: "User:app-user"
-      operation: "READ"
-      permission_type: "ALLOW" 
-      host: "*"
+      principal: "User:app-user"        # Application service user
+      operation: "READ"                 # Read operation
+      permission_type: "ALLOW"          # Allow permission
+      host: "*"                         # Any host
   # Include consumer group permissions
   - resource_filter:
-      resource_type: "GROUP"
-      pattern_type: "LITERAL"
-      name: "*"
+      resource_type: "GROUP"            # Filter by consumer group
+      pattern_type: "LITERAL"           # Exact match
+      name: "*"                         # All consumer groups
     access_filter:
-      principal: "User:app-user" 
-      operation: "READ"
-      permission_type: "ALLOW"
-      host: "*"
+      principal: "User:app-user"        # Same application user
+      operation: "READ"                 # Read operation
+      permission_type: "ALLOW"          # Allow permission
+      host: "*"                         # Any host
 ----
 
 ==== Schema Registry synchronization
@@ -256,7 +276,7 @@ Use `rpk` to generate a sample configuration file with common filter patterns:
 
 [,bash]
 ----
-rpk shadow config generate --output shadow-link-config.yaml
+rpk shadow config generate --output shadow-config.yaml
 ----
 
 This creates a template configuration file that you can customize for your environment.
@@ -293,9 +313,9 @@ Specify multiple bootstrap servers in your shadow link configuration for high av
 ----
 client_options:
   bootstrap_servers:
-    - "source-broker-1.example.com:9092"
-    - "source-broker-2.example.com:9092" 
-    - "source-broker-3.example.com:9092"
+    - "<source-broker-1>:<port>"         # Example: "source-broker-1.example.com:9092"
+    - "<source-broker-2>:<port>"         # Example: "source-broker-2.example.com:9092" 
+    - "<source-broker-3>:<port>"         # Example: "source-broker-3.example.com:9092"
 ----
 
 The shadow cluster uses these addresses to discover all brokers in the source cluster. If one bootstrap server is unavailable, the shadow cluster tries the next one in the list.
@@ -309,11 +329,12 @@ For production deployments, secure the network connection between clusters:
 ----
 client_options:
   tls_settings:
-    enabled: <ENABLE_TLS>                # Enable TLS using system trust store, example: true
-    ca_path: "<CA_CERT_PATH>"            # Path to CA certificate, example: "/etc/ssl/certs/ca.crt"
+    enabled: <enable-tls>                # Enable TLS using system trust store, example: true
+    ca_path: "<ca-cert-path>"            # Path to CA certificate, example: "/etc/ssl/certs/ca.crt"
     # Optional client certificates for mTLS
-    key_path: "<CLIENT_KEY_PATH>"        # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
-    cert_path: "<CLIENT_CERT_PATH>"      # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
+    key_path: "<client-key-path>"        # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
+    cert_path: "<client-cert-path>"      # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
+    do_not_set_sni_hostname: <sni-setting>  # Optional: Skip SNI hostname when using TLS, example: false
 ----
 
 **Authentication:**
@@ -321,9 +342,9 @@ client_options:
 ----
 client_options:
   authentication_configuration:
-    username: "shadow-replication-user"
-    password: "secure-password"
-    scram_mechanism: "SCRAM-SHA-256"
+    username: "<sasl-username>"          # SASL/SCRAM username, example: "shadow-replication-user"
+    password: "<sasl-password>"          # SASL/SCRAM password, example: "secure-password"
+    scram_mechanism: "<scram-mechanism>" # SCRAM mechanism, options: "SCRAM-SHA-256", "SCRAM-SHA-512"
 ----
 
 ==== Connection tuning
@@ -333,9 +354,9 @@ Adjust connection parameters based on your network characteristics. For example:
 [,yaml]
 ----
 client_options:
-  connection_timeout_ms: 1000      # Default 1000ms, increase for high-latency networks
-  retry_backoff_ms: 100            # Default 100ms, backoff between connection retries  
-  metadata_max_age_ms: 10000       # Default 10000ms, how often to refresh cluster metadata
+  connection_timeout_ms: <timeout-ms>        # Default 1000ms, increase for high-latency networks
+  retry_backoff_ms: <backoff-ms>             # Default 100ms, backoff between connection retries  
+  metadata_max_age_ms: <metadata-age-ms>     # Default 10000ms, how often to refresh cluster metadata
 ----
 
 === Create a shadow link
@@ -344,8 +365,19 @@ You can establish a shadow link using either xref:get-started:rpk/index.adoc[`rp
 
 [,bash]
 ----
-rpk shadow create --config-file /path/to/shadow-config.yaml
+rpk shadow create --config-file shadow-config.yaml
 ----
+
+=== Update an existing shadow link
+
+If you need to modify a shadow link configuration after creation, use the update command:
+
+[,bash]
+----
+rpk shadow update <shadow-link-name>
+----
+
+This opens your default editor to modify the shadow link configuration. Only changed fields are updated on the server. The shadow link name cannot be changed - you must delete and recreate the link to rename it.
 
 [TIP]
 ====
@@ -360,22 +392,25 @@ Use xref:get-started:config-rpk-profile.adoc[`rpk profile`] to save your cluster
 [,yaml]
 ----
 # Sample ShadowLinkConfig YAML with all fields
-name: "<SHADOW_LINK_NAME>"              # Unique name for this shadow link, example: "production-dr"
+name: "<shadow-link-name>"              # Unique name for this shadow link, example: "production-dr"
 client_options:
   bootstrap_servers:                     # Source cluster brokers to connect to
-    - "<SOURCE_BROKER_1>:<PORT>"         # Example: "prod-kafka-1.example.com:9092"
-    - "<SOURCE_BROKER_2>:<PORT>"         # Example: "prod-kafka-2.example.com:9092"
-    - "<SOURCE_BROKER_3>:<PORT>"         # Example: "prod-kafka-3.example.com:9092"
-  source_cluster_id: "<CLUSTER_ID>"      # Optional: Expected source cluster ID for validation, example: "prod-cluster-123"
+    - "<source-broker-1>:<port>"         # Example: "prod-kafka-1.example.com:9092"
+    - "<source-broker-2>:<port>"         # Example: "prod-kafka-2.example.com:9092"
+    - "<source-broker-3>:<port>"         # Example: "prod-kafka-3.example.com:9092"
+  source_cluster_id: "<cluster-id>"      # Optional: Expected source cluster ID for validation, example: "prod-cluster-123"
   
   # TLS settings using file paths
   tls_settings:
-    ca_path: "<CA_CERT_PATH>"            # Path to CA certificate, example: "/etc/ssl/certs/ca.crt"
-    key_path: "<CLIENT_KEY_PATH>"        # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
-    cert_path: "<CLIENT_CERT_PATH>"      # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
+    enabled: true                        # Enable TLS
+    ca_path: "<ca-cert-path>"            # Path to CA certificate, example: "/etc/ssl/certs/ca.crt"
+    key_path: "<client-key-path>"        # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
+    cert_path: "<client-cert-path>"      # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
+    do_not_set_sni_hostname: false      # Optional: Skip SNI hostname when using TLS (default: false)
   
   # Alternative TLS settings using PEM content
   # tls_settings:
+  #   enabled: true                      # Enable TLS
   #   ca: |                              # CA certificate in PEM format
   #     -----BEGIN CERTIFICATE-----
   #     ... CA certificate content ...
@@ -388,10 +423,11 @@ client_options:
   #     -----BEGIN CERTIFICATE-----
   #     ... client certificate content ...
   #     -----END CERTIFICATE-----
+  #   do_not_set_sni_hostname: false    # Optional: Skip SNI hostname when using TLS (default: false)
   
   authentication_configuration:
-    username: "<SASL_USERNAME>"          # SASL/SCRAM username, example: "shadow-replication-user"
-    password: "<SASL_PASSWORD>"          # SASL/SCRAM password, example: "secure-password-123"
+    username: "<sasl-username>"          # SASL/SCRAM username, example: "shadow-replication-user"
+    password: "<sasl-password>"          # SASL/SCRAM password, example: "secure-password-123"
     scram_mechanism: "SCRAM-SHA-256"     # SCRAM mechanism: "SCRAM-SHA-256" or "SCRAM-SHA-512"
   
   # Connection tuning - adjust based on network characteristics
@@ -401,23 +437,24 @@ client_options:
   fetch_wait_max_ms: 100                 # Max time to wait for fetch requests (default: 100ms)
   fetch_min_bytes: 1                     # Min bytes per fetch (default: 1)
   fetch_max_bytes: 1048576               # Max bytes per fetch (default: 1MB)
+  fetch_partition_max_bytes: 1048576     # Max bytes per partition fetch (default: 1MB)
 
 topic_metadata_sync_options:
   interval: "30s"                        # How often to sync topic metadata (examples: "30s", "1m", "5m")
   auto_create_shadow_topic_filters:      # Filters for automatic topic creation
     - pattern_type: "PREFIX"             # Match topics starting with this prefix
       filter_type: "INCLUDE"
-      name: "<TOPIC_PREFIX>"             # Examples: "prod-", "production-", "app-"
+      name: "<topic-prefix>"             # Examples: "prod-", "production-", "app-"
     - pattern_type: "LITERAL"            # Exclude specific topics
       filter_type: "EXCLUDE"
-      name: "<EXCLUDED_TOPIC>"           # Examples: "temp-data", "test-topic"
+      name: "<excluded-topic>"           # Examples: "temp-data", "test-topic"
     - pattern_type: "LITERAL"            # Include all remaining topics (wildcard)
       filter_type: "INCLUDE"
       name: "*"
   synced_shadow_topic_properties:        # Additional topic properties to sync (beyond defaults)
     - "retention.ms"                     # Topic retention time
     - "segment.ms"                       # Segment roll time
-    - "<CUSTOM_PROPERTY>"                # Examples: "compression.type", "min.insync.replicas"
+    - "<custom-property>"                # Examples: "compression.type", "min.insync.replicas"
   # Starting offset for new shadow topic partitions (defaults to earliest)
   # earliest: {}                         # Start from the beginning of the topic
   # latest: {}                           # Start from the latest offset
@@ -429,10 +466,10 @@ consumer_offset_sync_options:
   group_filters:                         # Filters for consumer groups to sync
     - pattern_type: "PREFIX"
       filter_type: "INCLUDE"
-      name: "<CONSUMER_GROUP_PREFIX>"    # Examples: "prod-consumer-", "app-"
+      name: "<consumer-group-prefix>"    # Examples: "prod-consumer-", "app-"
     - pattern_type: "LITERAL"
       filter_type: "EXCLUDE"
-      name: "<EXCLUDED_GROUP>"           # Examples: "test-consumer", "debug-group"
+      name: "<excluded-group>"           # Examples: "test-consumer", "debug-group"
 
 schema_registry_sync_options:            # Schema Registry synchronization options
   shadow_schema_registry_topic: {}       # Enable byte-for-byte _schemas topic replication
@@ -440,24 +477,16 @@ schema_registry_sync_options:            # Schema Registry synchronization optio
 security_sync_options:
   interval: "30s"                        # How often to sync security settings
   enabled: true                          # Enable security settings synchronization
-  role_filters:                          # Filters for user roles to sync
-    - pattern_type: "LITERAL"
-      filter_type: "INCLUDE"
-      name: "<ROLE_NAME>"                # Examples: "application-user", "read-only"
-  scram_cred_filters:                    # Filters for SCRAM credentials to sync
-    - pattern_type: "PREFIX"
-      filter_type: "EXCLUDE"
-      name: "<ADMIN_PREFIX>"             # Examples: "admin-", "root-"
   acl_filters:                           # Filters for ACLs to sync
     - resource_filter:
         resource_type: "TOPIC"           # Resource type: "TOPIC", "GROUP", "CLUSTER"
         pattern_type: "PREFIX"           # Pattern type: "LITERAL", "PREFIX", "PREFIXED"
-        name: "<RESOURCE_PATTERN>"       # Examples: "prod-", "app-data-"
+        name: "<resource-pattern>"       # Examples: "prod-", "app-data-"
       access_filter:
-        principal: "User:<USERNAME>"     # Principal name, example: "User:app-service"
+        principal: "User:<username>"     # Principal name, example: "User:app-service"
         operation: "READ"                # Operation: "READ", "WRITE", "CREATE", "DELETE", "ALTER", "DESCRIBE", "ANY"
         permission_type: "ALLOW"         # Permission: "ALLOW" or "DENY"
-        host: "<HOST_PATTERN>"           # Host pattern, examples: "*", "10.0.0.0/8", "app-server.example.com"
+        host: "<host-pattern>"           # Host pattern, examples: "*", "10.0.0.0/8", "app-server.example.com"
 ----
 ====
 
@@ -484,7 +513,7 @@ You can perform failover at two levels of granularity:
 **Individual topic failover:**
 [,bash]
 ----
-rpk shadow failover <my-disaster-recovery-link> --topic prod-orders
+rpk shadow failover <shadow-link-name> --topic <topic-name>
 ----
 
 This failover applies only to the specified shadow topic, while leaving other topics in the shadow link still replicating. Use this approach when you need to selectively failover specific workloads or when testing failover procedures.
@@ -492,7 +521,7 @@ This failover applies only to the specified shadow topic, while leaving other to
 **Complete shadow link failover (cluster failover):**
 [,bash]
 ----
-rpk shadow failover <my-disaster-recovery-link> --all
+rpk shadow failover <shadow-link-name> --all
 ----
 
 This failover applies to all shadow topics associated with the shadow link simultaneously, effectively failing over the entire cluster's replicated data. Use this approach during a complete regional disaster when you need to activate the entire shadow cluster as your new production environment.
@@ -500,7 +529,7 @@ This failover applies to all shadow topics associated with the shadow link simul
 **Force delete shadow link (emergency failover):**
 [,bash]
 ----
-rpk shadow delete <my-disaster-recovery-link> --force
+rpk shadow delete <shadow-link-name> --force
 ----
 
 [WARNING]
@@ -533,10 +562,17 @@ Monitor failover progress using the status command:
 
 [,bash]
 ----
-rpk shadow status <my-disaster-recovery-link>
+rpk shadow status <shadow-link-name>
 ----
 
 The output shows individual topic states and any issues encountered during the failover process.
+
+**Task states during monitoring:**
+
+* **`ACTIVE`**: Task is operating normally and replicating data
+* **`FAULTED`**: Task encountered an error and requires attention
+* **`NOT_RUNNING`**: Task is not currently executing
+* **`LINK_UNAVAILABLE`**: Task cannot communicate with the source cluster
 
 === Post-failover cluster behavior
 
@@ -594,19 +630,41 @@ List existing shadow links:
 rpk shadow list
 ----
 
+View shadow link configuration details:
+
+[,bash]
+----
+rpk shadow describe <my-disaster-recovery-link>
+----
+
+This command shows the complete configuration of the shadow link, including connection settings, filters, and synchronization options.
+
 Check your shadow link status to ensure proper operation:
 
 [,bash]
 ----
-rpk shadow status <my-disaster-recovery-link>
+rpk shadow status <shadow-link-name>
 ----
 
-This displays replication lag, connection health, and the status of individual synchronization tasks. The status output includes:
+**Status command options:**
+
+[,bash]
+----
+# Show all status sections (default)
+rpk shadow status <shadow-link-name> --print-all
+
+# Show only specific sections
+rpk shadow status <shadow-link-name> --print-overview    # Basic link information
+rpk shadow status <shadow-link-name> --print-task       # Task status across brokers  
+rpk shadow status <shadow-link-name> --print-topic      # Detailed topic status and lag
+----
+
+The status output includes:
 
 * **Shadow link state**: Overall operational state (`ACTIVE`)
 * **Individual topic states**: Current state of each replicated topic (`ACTIVE`, `FAULTED`, `FAILING_OVER`, `FAILED_OVER`)
 * **Task status**: Health of replication tasks across brokers (`ACTIVE`, `FAULTED`, `NOT_RUNNING`, `LINK_UNAVAILABLE`)
-* **Lag information**: Replication lag per partition
+* **Lag information**: Replication lag per partition showing source vs shadow watermarks
 
 [[shadow-link-metrics]]
 === Metrics
@@ -661,7 +719,7 @@ Establish regular monitoring workflows to ensure shadow link health:
 rpk shadow list | grep -v "ACTIVE" || echo "All shadow links healthy"
 
 # Monitor lag for critical topics  
-rpk shadow status <disaster-recovery-link> | grep -E "LAG|Lag"
+rpk shadow status <shadow-link-name> | grep -E "LAG|Lag"
 ----
 
 ==== Alert thresholds
@@ -688,7 +746,7 @@ Before a disaster occurs, ensure you have:
 
 After setting up Shadowing for your Redpanda clusters, consider these additional steps:
 
-* **Test your disaster recovery procedures**: Regularly practice failover scenarios in a non-production environment. See xref:deploy:redpanda/manual/resilience/emergency-shadowing.adoc[Emergency Shadowing Guide] for step-by-step emergency procedures.
+* **Test your disaster recovery procedures**: Regularly practice failover scenarios in a non-production environment. See xref:deploy:redpanda/manual/resilience/shadowing-guide.adoc[Emergency Shadowing Guide] for step-by-step emergency procedures.
 
 * **Monitor shadow link health**: Set up alerting on the metrics described above to ensure early detection of replication issues.
 
