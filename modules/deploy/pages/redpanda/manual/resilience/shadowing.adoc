@@ -8,7 +8,7 @@
 include::shared:partial$enterprise-license.adoc[]
 ====
 
-Shadowing is Redpanda's enterprise-grade disaster recovery solution that establishes asynchronous, offset-preserving replication between two distinct Redpanda clusters. The replication stream ensures that the shadow cluster receives exact copies of the source cluster data, including offsets, timestamps, and cluster metadata. This creates a read-only shadow cluster that you can quickly failover to handle production traffic during a disaster.
+Shadowing is Redpanda's enterprise-grade disaster recovery solution that establishes asynchronous, offset-preserving replication between two distinct Redpanda clusters. A cluster is able to create a dedicated client that continuously replicates source cluster data, including offsets, timestamps, and cluster metadata. This creates a read-only shadow cluster that you can quickly failover to handle production traffic during a disaster.
 
 [IMPORTANT]
 ====
@@ -29,9 +29,9 @@ Shadowing replicates:
 
 Shadowing addresses enterprise disaster recovery requirements driven by regulatory compliance and business continuity needs. Organizations typically want to minimize both recovery time objective (RTO) and recovery point objective (RPO), and Shadowing asynchronous replication helps you achieve both goals by reducing data loss during regional outages and enabling rapid application recovery.
 
-The architecture follows an active-standby pattern. The source cluster processes all production traffic while the shadow cluster remains in read-only mode, continuously receiving updates. If a disaster occurs, you can failover the shadow topics using the Admin API or `rpk`, making them fully writable. At that point, you can redirect your applications to the shadow cluster, which becomes the new production cluster.
+The architecture follows an active-passive pattern. The source cluster processes all production traffic while the shadow cluster remains in read-only mode, continuously receiving updates. If a disaster occurs, you can failover the shadow topics using the Admin API or `rpk`, making them fully writable. At that point, you can redirect your applications to the shadow cluster, which becomes the new production cluster.
 
-Shadowing complements Redpanda's existing availability and recovery capabilities. xref:deploy:redpanda/manual/high-availability.adoc[High availability] actively protects your day-to-day operations, handling reads and writes seamlessly during node or availability zone failures within a region. Shadowing is your insurance policy for catastrophic regional disasters. While xref:manage:whole-cluster-restore.adoc[Whole Cluster Restore] provides point-in-time recovery from xref:manage:tiered-storage.adoc[Tiered Storage], Shadowing delivers real-time, cross-region replication for mission-critical applications that require rapid failover with minimal data loss.
+Shadowing complements Redpanda's existing availability and recovery capabilities. xref:deploy:redpanda/manual/high-availability.adoc[High availability] actively protects your day-to-day operations, handling reads and writes seamlessly during node or availability zone failures within a region. Shadowing is your safety net for catastrophic regional disasters. While xref:manage:whole-cluster-restore.adoc[Whole Cluster Restore] provides point-in-time recovery from xref:manage:tiered-storage.adoc[Tiered Storage], Shadowing delivers near real-time, cross-region replication for mission-critical applications that require rapid failover with minimal data loss.
 
 // TODO: insert diagram. Possibly with a .gif animation showing cluster Cluster A being written and cluster B being replicated with a data flow arrow and geo-separation. Diagram must show Icons or labels for topics, configurations, offsets, ACLs, schemas that are being copied
 
@@ -56,7 +56,7 @@ Do not modify synced topic properties on shadow topics. These properties revert 
 
 - You must have xref:get-started:licensing/overview.adoc[Enterprise Edition] licenses on both clusters. 
 
-- Both clusters must be running Redpanda v25.3 or later. The shadow cluster can be one feature release ahead of the source cluster, but cannot skip feature releases. For example, if the source cluster runs v25.3, the shadow cluster can run v25.3 or v26.1, but not v27.1.
+- Both clusters must be running Redpanda v25.3 or later. 
 
 [TIP]
 ====
@@ -204,7 +204,7 @@ Redpanda system topics have specific filtering restrictions:
 
 ==== ACL filtering
 
-ACL filters are more complex as they filter based on both resource and access properties:
+By default all ACLs are replicated. This is recommended in order to ensure that your shadow cluster has the same permissions as your source cluster. ACL filters should be used with care:
 
 [,yaml]
 ----
@@ -439,14 +439,14 @@ See also: link:/api/doc/admin/[Admin API v2 reference^]
 
 == Failover
 
-Failover is the process of failing shadow topics or an entire shadow cluster from read-only replicas to fully writable resources. You can fail over individual topics for selective workload migration or fail over the entire cluster for comprehensive disaster recovery. This critical operation transforms your shadow resources into operational production assets, allowing you to redirect application traffic when the source cluster becomes unavailable.
+Failover is the process of modifying shadow topics or an entire shadow cluster from read-only replicas to fully writable resources, and ceasing replication from the source cluster. You can fail over individual topics for selective workload migration or fail over the entire cluster for comprehensive disaster recovery. This critical operation transforms your shadow resources into operational production assets, allowing you to redirect application traffic when the source cluster becomes unavailable.
 
 === Understanding failover behavior
 
 When you initiate failover, Redpanda performs the following operations:
 
 1. **Stops replication**: Halts all data fetching from the source cluster for the specified topics or entire shadow link
-2. **Failedover topics**: Converts read-only shadow topics into regular, writable topics
+2. **Failover topics**: Converts read-only shadow topics into regular, writable topics
 3. **Updates topic state**: Changes topic status from `ACTIVE` to `FAILING_OVER`, then `FAILED_OVER`
 
 The failover process is irreversible. After topics are failedover, they cannot return to shadow mode, and automatic fallback to the original source cluster is not supported.
