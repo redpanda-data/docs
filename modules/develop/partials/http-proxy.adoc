@@ -1,4 +1,19 @@
+ifdef::env-cloud[]
+:install-rpk-doc: manage:rpk/rpk-install.adoc
+:rpk-profile-doc: manage:rpk/config-rpk-profile.adoc
+endif::[]
+ifndef::env-cloud[]
+:install-rpk-doc: get-started:rpk-install.adoc
+:rpk-profile-doc: get-started:config-rpk-profile.adoc
+endif::[]
+
 Redpanda HTTP Proxy (`pandaproxy`) allows access to your data through a REST API. For example, you can list topics or brokers, get events, produce events, subscribe to events from topics using consumer groups, and commit offsets for a consumer.
+
+See the link:/api/doc/http-proxy/[HTTP Proxy API reference] for a full list of available endpoints.
+
+ifdef::env-cloud[]
+NOTE: The HTTP Proxy API is supported for BYOC and Dedicated clusters only.
+endif::[]
 
 == Prerequisites
 
@@ -42,77 +57,192 @@ spec:
 --
 =====
 
-NOTE: The remainder of this section is based on the assumption that the HTTP Proxy port is 8082, your container (or Pod in Kubernetes) is named `redpanda-0`, and your namespace is `panda-ns` (in Kubernetes).
-
-=== Configure rpk
-
-Make sure `rpk` is configured for your Redpanda deployment, so you can use it to create a topic:
-
-[tabs]
-=====
-Docker::
-+
---
-[,bash]
-----
-alias rpk="docker exec -ti redpanda-0 rpk"
-----
-
---
-Kubernetes::
-+
---
-[,bash]
-----
-alias rpk="kubectl -n panda-ns exec -ti redpanda-0 -c redpanda -- rpk"
-----
-
---
-=====
+NOTE: The remainder of this guide is based on the assumption that the HTTP Proxy port is 8082.
 endif::[]
-
 
 ifdef::env-cloud[]
 === Start Redpanda
 
-////
-We should add here how cloud users can find the host address.
-All of the examples have a <host-address> placeholder.
-We should also tell users to find out if SASL is enabled and if so, tell them to add the extra auth flags.
-////
-
 To log in to your Redpanda Cloud account, run `rpk cloud login`.
 
-HTTP Proxy is enabled by default on port 8082. To change the proxy port, edit `redpanda.yaml`:
+HTTP Proxy is enabled by default on port 30082. For clusters with private connectivity (AWS PrivateLink, GCP Private Service Connect, and Azure Private Link) enabled, the default seed port for HTTP Proxy is 30282. 
 
-[,yaml]
-----
-...
-pandaproxy:
-  pandaproxy_api:
-    - address: 0.0.0.0
-      port: 8082
-...
-----
+You can find the HTTP Proxy endpoint on the *How to connect* section of the cluster overview in the Cloud UI.
 
-NOTE: The rest of this section assumes that the HTTP Proxy port is `8082`.
+NOTE: The rest of this guide assumes that the HTTP Proxy port is `30082`.
 
 endif::[]
 
-=== Create a topic
+== Authenticate with HTTP Proxy
 
-Create a topic to use with HTTP Proxy:
+HTTP Proxy supports authentication using SCRAM credentials or OIDC tokens.
+The authentication method depends on
+ifndef::env-cloud[]
+the xref:reference:properties/broker-properties.adoc#http_proxy_auth_method[`authentication_method`] broker property and 
+endif::[]
+the cluster's xref:reference:properties/cluster-properties.adoc#http_authentication[`http_authentication`] settings.
 
+=== SCRAM Authentication
+
+If HTTP Proxy is configured to support SASL, you can provide the SCRAM username and password as part of the Basic Authentication header in your request. For example, to list topics as an authenticated user:
+
+[tabs]
+=====
+curl::
++
+--
+ifndef::env-cloud[]
 [,bash]
 ----
-rpk topic create test_topic -p 3
+curl -s -u "<username>:<password>" "http://<host-address>:8082/topics"
 ----
+endif::[]
+ifdef::env-cloud[]
+[,bash]
+----
+curl -s -u "<username>:<password>" "http://<host-address>:30082/topics"
+----
+endif::[]
+--
 
-For more information, see xref:reference:rpk/rpk-topic/rpk-topic-create.adoc[rpk Commands].
+NodeJS::
++
+--
+ifndef::env-cloud[]
+[,javascript]
+----
+let options = {
+  auth: { username: "<username>", password: "<password>" },
+};
+axios
+  .get("http://<host-address>:8082/topics", options)
+  .then(response => console.log(response.data))
+  .catch(error => console.error(error));
+----
+endif::[]
+ifdef::env-cloud[]
+[,javascript]
+----
+let options = {
+  auth: { username: "<username>", password: "<password>" },
+};
 
-=== Set up libraries
+axios
+  .get("http://<host-address>:30082/topics", options)
+  .then(response => console.log(response.data))
+  .catch(error => console.error(error));
+----
+endif::[]
+--
+
+Python::
++
+--
+ifndef::env-cloud[]
+[,python]
+----
+auth = ("<username>", "<password>")
+res = requests.get("http://<host-address>:8082/topics", auth=auth).json()
+pretty(res)
+----
+endif::[]
+ifdef::env-cloud[]
+[,python]
+----
+auth = ("<username>", "<password>")
+res = requests.get("http://<host-address>:30082/topics", auth=auth).json()
+pretty(res)
+----
+endif::[]
+
+--
+=====
+
+=== OIDC Authentication
+
+If HTTP Proxy is configured to support OIDC, you can provide an OIDC token in the Authorization header. For example:
+
+[tabs]
+=====
+curl::
++
+--
+ifndef::env-cloud[]
+[,bash]
+----
+curl -s -H "Authorization: Bearer <oidc-token>" "http://<host-address>:8082/topics"
+----
+endif::[]
+ifdef::env-cloud[]
+[,bash]
+----
+curl -s -H "Authorization: Bearer <oidc-token>" "http://<host-address>:30082/topics"
+----
+endif::[]
+--
+
+NodeJS::
++
+--
+ifndef::env-cloud[]
+[,javascript]
+----
+let options = {
+  headers: { Authorization: `Bearer <oidc-token>` },
+};
+
+axios
+  .get("http://<host-address>:8082/topics", options)
+  .then(response => console.log(response.data))
+  .catch(error => console.error(error));
+----
+endif::[]
+ifdef::env-cloud[]
+[,javascript]
+----
+let options = {
+  headers: { Authorization: `Bearer <oidc-token>` },
+};
+
+axios
+  .get("http://<host-address>:30082/topics", options)
+  .then(response => console.log(response.data))
+  .catch(error => console.error(error));
+----
+endif::[]
+--
+
+Python::
++
+--
+ifndef::env-cloud[]
+[,python]
+----
+headers = {"Authorization": "Bearer <oidc-token>"}
+res = requests.get("http://<host-address>:8082/topics", headers=headers).json()
+pretty(res)
+----
+endif::[]
+ifdef::env-cloud[]
+[,python]
+----
+headers = {"Authorization": "Bearer <oidc-token>"}
+res = requests.get("http://<host-address>:30082/topics", headers=headers).json()
+pretty(res)
+----
+endif::[]
+--
+=====
+
+ifndef::env-cloud[]
+For details about configuring OIDC authentication, see xref:manage:security/authentication.adoc#oidc-http[OIDC Authentication].
+endif::[]
+
+== Set up libraries
 
 You need an app that calls the HTTP Proxy endpoint. This app can be curl (or a similar CLI), or it could be your own custom app written in any language. Below are curl, JavaScript and Python examples.
+
+NOTE: In the examples, `<host-address>` refers to your Redpanda cluster's hostname or IP address. All following examples use a `base_uri` variable that combines the protocol, host, and port for consistency across curl, JavaScript, and Python examples.
 
 [tabs]
 =====
@@ -120,6 +250,21 @@ curl::
 +
 --
 Curl is likely already installed on your system. If not, see https://curl.se/download.html[curl download instructions^].
+
+Set the base URI for your HTTP Proxy:
+
+ifndef::env-cloud[]
+[,bash]
+----
+base_uri="http://<host-address>:8082"
+----
+endif::[]
+ifdef::env-cloud[]
+[,bash]
+----
+base_uri="http://<host-address>:30082"
+----
+endif::[]
 
 --
 NodeJS::
@@ -136,12 +281,22 @@ npm install axios
 
 Import the library into your code:
 
+ifndef::env-cloud[]
 [,javascript]
 ----
 const axios = require('axios');
 
 const base_uri = 'http://<host-address>:8082';
 ----
+endif::[]
+ifdef::env-cloud[]
+[,javascript]
+----
+const axios = require('axios');
+
+const base_uri = 'http://<host-address>:30082';
+----
+endif::[]
 
 --
 Python::
@@ -156,6 +311,7 @@ pip install requests
 
 Import the library into your code:
 
+ifndef::env-cloud[]
 [,python]
 ----
 import requests
@@ -166,9 +322,35 @@ def pretty(text):
 
 base_uri = "http://<host-address>:8082"
 ----
+endif::[]
+ifdef::env-cloud[]
+[,python]
+----
+import requests
+import json
+
+def pretty(text):
+  print(json.dumps(text, indent=2))
+
+base_uri = "http://<host-address>:30082"
+----
+endif::[]
 
 --
 =====
+
+== Create a topic
+
+To create a test topic for this guide, use xref:{install-rpk-doc}[`rpk`]. You can configure `rpk` for your Redpanda deployment, using xref:{rpk-profile-doc}[profiles], flags, or xref:reference:rpk/rpk-x-options.adoc#environment-variables[environment variables]. 
+
+To create a topic named `test_topic` with three partitions, run:
+
+[,bash]
+----
+rpk topic create test_topic -p 3
+----
+
+For more information, see the xref:reference:rpk/rpk-topic/rpk-topic-create.adoc[rpk topic create] reference.
 
 == Access your data
 
@@ -183,7 +365,7 @@ curl::
 --
 [,bash]
 ----
-curl -s "<host-address>:8082/topics"
+curl -s "$base_uri/topics"
 ----
 
 --
@@ -244,7 +426,7 @@ curl::
 ----
 curl -s \
   -X POST \
-  "http://<host-address>:8082/topics/test_topic" \
+  "$base_uri/topics/test_topic" \
   -H "Content-Type: application/vnd.kafka.json.v2+json" \
   -d '{
   "records":[
@@ -340,7 +522,7 @@ curl::
 [,bash]
 ----
 curl -s \
-  "http://<host-address>:8082/topics/test_topic/partitions/0/records?offset=0&timeout=1000&max_bytes=100000"\
+  "$base_uri/topics/test_topic/partitions/0/records?offset=0&timeout=1000&max_bytes=100000"\
   -H "Accept: application/vnd.kafka.json.v2+json"
 ----
 
@@ -395,6 +577,50 @@ Expected output:
 [{"topic":"test_topic","key":null,"value":"Redpanda","partition":0,"offset":0}]
 ----
 
+=== Get list of brokers
+
+[tabs]
+=====
+curl::
++
+--
+[,bash]
+----
+curl "$base_uri/brokers"
+----
+
+--
+NodeJS::
++
+--
+[,javascript]
+----
+axios
+  .get(`${base_uri}/brokers`)
+  .then(response => console.log(response.data))
+  .catch(error => console.error(error));
+----
+
+--
+Python::
++
+--
+[,python]
+----
+res = requests.get(f"{base_uri}/brokers").json()
+pretty(res)
+----
+
+--
+=====
+
+Expected output:
+
+[,bash]
+----
+{brokers: [0]}
+----
+
 === Create a consumer
 
 To retrieve events from a topic using consumers, you must create a consumer and a consumer group, and then subscribe the consumer instance to a topic. Each action involves a different endpoint and method.
@@ -410,7 +636,7 @@ curl::
 ----
 curl -s \
   -X POST \
-  "http://<host-address>:8082/consumers/test_group"\
+  "$base_uri/consumers/test_group" \
   -H "Content-Type: application/vnd.kafka.v2+json" \
   -d '{
   "format":"json",
@@ -477,15 +703,23 @@ pretty(res)
 
 Expected output:
 
+ifndef::env-cloud[]
 [,bash]
 ----
 {"instance_id":"test_consumer","base_uri":"http://127.0.0.1:8082/consumers/test_group/instances/test_consumer"}
 ----
+endif::[]
+ifdef::env-cloud[]
+[,bash]
+----
+{"instance_id":"test_consumer","base_uri":"http://<host-address>:30082/consumers/test_group/instances/test_consumer"}
+----
+endif::[]
 
 [NOTE]
 ====
 - Consumers expire after five minutes of inactivity. To prevent this from happening, try consuming events within a loop. If the consumer has expired, you can create a new one with the same name.
-- The output `base_uri` will be used in subsequent `curl` requests.
+- The output `base_uri` is the full URL path for this specific consumer instance and differs from the `base_uri` variable used in the code examples.
 ====
 
 === Subscribe to the topic
@@ -501,7 +735,7 @@ curl::
 ----
 curl -s -o /dev/null -w "%{http_code}" \
   -X POST \
-  "<base-uri>/subscription"\
+  "$base_uri/consumers/test_group/instances/test_consumer/subscription"\
   -H "Content-Type: application/vnd.kafka.v2+json" \
   -d '{
   "topics": [
@@ -561,7 +795,7 @@ curl::
 [,bash]
 ----
 curl -s \
-  "<base-uri>/records?timeout=1000&max_bytes=100000"\
+  "$base_uri/consumers/test_group/instances/test_consumer/records?timeout=1000&max_bytes=100000"\
   -H "Accept: application/vnd.kafka.json.v2+json"
 ----
 
@@ -626,7 +860,10 @@ curl::
 ----
 curl -s \
    -X 'GET' \
-  '<base-uri>/offsets' \
+  curl -s -o /dev/null -w "%{http_code}" \
+-X 'POST' \
+"$base_uri/consumers/test_group/instances/test_consumer/offsets" \
+-H 'accept: application/vnd.kafka.v2+json' \
   -H 'accept: application/vnd.kafka.v2+json' \
   -H 'Content-Type: application/vnd.kafka.v2+json' \
   -d '{
@@ -686,7 +923,7 @@ curl::
 ----
 curl -s -o /dev/null -w "%{http_code}" \
 -X 'POST' \
-'<base-uri>/offsets' \
+"$base_uri/consumers/test_group/instances/test_consumer/offsets" \
 -H 'accept: application/vnd.kafka.v2+json' \
 -H 'Content-Type: application/vnd.kafka.v2+json' \
 -d '{
@@ -762,50 +999,6 @@ res = requests.post(
 
 Expected output: none.
 
-=== Get list of brokers
-
-[tabs]
-=====
-curl::
-+
---
-[,bash]
-----
-curl "http://<host-address>:8082/brokers"
-----
-
---
-NodeJS::
-+
---
-[,javascript]
-----
-axios
-  .get(`${base_uri}/brokers`)
-  .then(response => console.log(response.data))
-  .catch(error => console.error(error));
-----
-
---
-Python::
-+
---
-[,python]
-----
-res = requests.get(f"{base_uri}/brokers").json()
-pretty(res)
-----
-
---
-=====
-
-Expected output:
-
-[,bash]
-----
-{brokers: [0]}
-----
-
 === Delete a consumer
 
 To remove a consumer from a group, send a DELETE request as shown below:
@@ -819,7 +1012,7 @@ curl::
 ----
 curl -s -o /dev/null -w "%{http_code}" \
    -X 'DELETE' \
-  '<base-uri>' \
+  "$base_uri/consumers/test_group/instances/test_consumer" \
   -H 'Content-Type: application/vnd.kafka.v2+json'
 ----
 
@@ -851,107 +1044,6 @@ res = requests.delete(
 --
 =====
 
-== Authenticate with HTTP Proxy
-
-HTTP Proxy supports authentication using SCRAM credentials or OIDC tokens.
-The authentication method depends on
-ifndef::env-cloud[]
-the xref:reference:properties/broker-properties.adoc#http_proxy_auth_method[`authentication_method`] broker property and 
-endif::[]
-the cluster's xref:reference:properties/cluster-properties.adoc#http_authentication[`http_authentication`] settings.
-
-=== SCRAM Authentication
-
-If HTTP Proxy is configured to support SASL, you can provide the SCRAM username and password as part of the Basic Authentication header in your request. For example, to list topics as an authenticated user:
-
-[tabs]
-=====
-curl::
-+
---
-[,bash]
-----
-curl -s -u "<username>:<password>" "<host-address>:8082/topics"
-----
-
---
-NodeJS::
-+
---
-[,javascript]
-----
-let options = {
-  auth: { username: "<username>", password: "<password>" },
-};
-
-axios
-  .get(`${base_uri}/topics`, options)
-  .then(response => console.log(response.data))
-  .catch(error => console.error(error));
-----
-
---
-Python::
-+
---
-[,python]
-----
-auth = ("<username>", "<password>")
-res = requests.get(f"{base_uri}/topics", auth=auth).json()
-pretty(res)
-----
-
---
-=====
-
-=== OIDC Authentication
-
-If HTTP Proxy is configured to support OIDC, you can provide an OIDC token in the Authorization header. For example:
-
-[tabs]
-=====
-curl::
-+
---
-[,bash]
-----
-curl -s -H "Authorization: Bearer <oidc-token>" "<host-address>:8082/topics"
-----
-
---
-NodeJS::
-+
---
-[,javascript]
-----
-let options = {
-  headers: { Authorization: `Bearer <oidc-token>` },
-};
-
-axios
-  .get(`${base_uri}/topics`, options)
-  .then(response => console.log(response.data))
-  .catch(error => console.error(error));
-----
-
---
-Python::
-+
---
-[,python]
-----
-headers = {"Authorization": "Bearer <oidc-token>"}
-res = requests.get(f"{base_uri}/topics", headers=headers).json()
-pretty(res)
-----
-
---
-=====
-
-ifndef::env-cloud[]
-For details about configuring OIDC authentication, see xref:manage:security/authentication.adoc#oidc-http[OIDC Authentication].
-endif::[]
-
 == Use Swagger with HTTP Proxy
 
 You can use Swagger UI to test and interact with Redpanda HTTP Proxy endpoints.
@@ -976,4 +1068,11 @@ Verify that the Docker container has been added and is running:
 
 In a browser, enter `<host-address>` in the address bar to open the Swagger console.
 
-Change the URL to `http://<host-address>:8082/v1`, and click `Explore` to update the page with Redpanda HTTP Proxy endpoints. You can call the endpoints in any application and language that supports web interactions. The following examples show how to call the endpoints using curl, NodeJS, and Python.
+ifndef::env-cloud[]
+Change the URL to `http://<host-address>:8082/v1`, and click `Explore` to update the page with Redpanda HTTP Proxy endpoints.
+endif::env-cloud[]
+ifdef::env-cloud[]
+Change the URL to `http://<host-address>:30082/v1`, and click `Explore` to update the page with Redpanda HTTP Proxy endpoints.
+endif::env-cloud[]
+
+You can call the endpoints in any application and language that supports web interactions.
