@@ -270,6 +270,27 @@ Redpanda’s default configuration supports exactly-once processing. To preserve
 
 To help avoid common pitfalls and optimize performance, consider the following when configuring transactional workloads in Redpanda:
 
+=== Tune producer ID limits
+
+For production environments with heavy producer usage, configure xref:reference:properties/cluster-properties.adoc#max_concurrent_producer_ids[`max_concurrent_producer_ids`] to prevent out-of-memory (OOM) crashes. The default unlimited value can lead to unbounded memory growth, especially with transactions or idempotent producers.
+
+Calculate an appropriate value based on your expected concurrent producers:
+
+* **Lower bound**: `kafka_connections_max` ÷ `number_of_shards` (assumes each producer connects to only one shard)
+* **Upper bound**: `topic_partitions_per_shard` × `kafka_connections_max` (assumes producers connect to all shards)  
+* **Recommended starting point**: Use a value between these bounds, considering your application's produce patterns
+
+Applications with wide fan-out patterns (producers writing to many partitions across multiple shards) need values closer to the upper bound.
+
+Monitor these metrics to determine if the limit is being reached:
+
+* xref:reference:internal-metrics-reference.adoc#vectorized_cluster_producer_state_manager_evicted_producers[`vectorized_cluster_producer_state_manager_evicted_producers`]: Number of evicted producers (should be 0 in steady state)
+* xref:reference:internal-metrics-reference.adoc#vectorized_cluster_producer_state_manager_producer_manager_total_active_producers[`vectorized_cluster_producer_state_manager_producer_manager_total_active_producers`]: Current number of active producers per shard
+
+If `evicted_producers` > 0, the shard is exceeding the configured limit. For applications with long-running transactions, ensure xref:reference:properties/cluster-properties.adoc#transactional_id_expiration_ms[`transactional_id_expiration_ms`] accommodates your typical transaction lifetime to avoid premature producer ID expiration.
+
+=== Configure transaction timeouts and limits
+
 * If a consumer is configured to use the read_committed isolation level, it can only process successfully committed transactions. As a result, an ongoing transaction with a large timeout that becomes stuck could prevent the consumer from processing other committed transactions.
 +
 To avoid this, don't set the transaction timeout client setting (`transaction.timeout.ms` in the Kafka Java client implementation) to a value that is too high. The longer the timeout, the longer consumers may be blocked. 
