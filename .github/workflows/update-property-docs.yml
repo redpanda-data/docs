@@ -50,7 +50,6 @@ jobs:
       - name: Determine tag
         id: tag
         run: |
-          # Prefer input tag (workflow_dispatch), else use repository_dispatch payload
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
           elif [ -n "${{ github.event.client_payload.tag }}" ]; then
@@ -60,8 +59,33 @@ jobs:
             exit 1
           fi
 
-      - name: Generate property docs
+      - name: Check if tag is newer than antora.yml latest
+        id: version_check
         run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          CURRENT=$(grep 'latest-redpanda-tag:' antora.yml | awk '{print $2}' | tr -d '"')
+
+          echo "📄 Current latest-redpanda-tag in antora.yml: $CURRENT"
+          echo "🔖 Incoming tag: $TAG"
+
+          # Strip leading 'v' for numeric comparison
+          CUR_NUM=$(echo "$CURRENT" | sed 's/^v//')
+          NEW_NUM=$(echo "$TAG" | sed 's/^v//')
+
+          # Compare semver using sort -V
+          if [ "$(printf "%s\n%s" "$CUR_NUM" "$NEW_NUM" | sort -V | tail -n1)" = "$NEW_NUM" ] && [ "$CUR_NUM" != "$NEW_NUM" ]; then
+            echo "$TAG is newer than $CURRENT"
+            echo "is_newer=true" >> $GITHUB_OUTPUT
+          else
+            echo "$TAG is not newer than $CURRENT — skipping doc generation"
+            echo "is_newer=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate property docs
+        if: steps.version_check.outputs.is_newer == 'true'
+        run: |
+          set -euo pipefail
           echo "Running doc generation for: ${{ steps.tag.outputs.tag }}"
           npx doc-tools generate property-docs \
             --tag "${{ steps.tag.outputs.tag }}" \
@@ -72,6 +96,7 @@ jobs:
           GITHUB_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
 
       - name: Create pull request
+        if: steps.version_check.outputs.is_newer == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ env.ACTIONS_BOT_TOKEN }}
@@ -81,3 +106,7 @@ jobs:
           body: |
             This PR auto-generates updated Redpanda property documentation for **${{ steps.tag.outputs.tag }}**.
           labels: auto-docs
+
+      - name: Skip notice
+        if: steps.version_check.outputs.is_newer != 'true'
+        run: echo "🟡 Skipping doc generation — tag is not newer than latest-redpanda-tag in antora.yml."
