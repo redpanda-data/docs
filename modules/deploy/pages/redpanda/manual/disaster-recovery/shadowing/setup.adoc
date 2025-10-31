@@ -1,0 +1,510 @@
+= Configure Shadowing
+:description: Set up Shadowing for disaster recovery, including cross-region replication, data filters, networking, and authentication.
+:env-linux: true
+:page-categories: Management, High Availability, Disaster Recovery
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+== Prerequisites
+
+=== License and cluster requirements
+
+- You must have xref:get-started:licensing/overview.adoc[Enterprise Edition] licenses on both clusters. 
+
+- Both clusters must be running Redpanda v25.3 or later. 
+
+[TIP]
+====
+Deploy clusters in different geographic regions to protect against regional disasters.
+====
+
+=== Administrative access
+
+Superuser access is required on both clusters through xref:get-started:rpk/index.adoc[`rpk`], the Admin API, or xref:console:index.adoc[Redpanda Console] to create and manage shadow links.
+
+=== Replication service permissions
+
+You must configure a service account on the source cluster with the following xref:manage:security/authorization/acl.adoc[ACL] permissions for shadow link replication:
+
+* **Topics**: `read` permission on all topics you want to replicate
+* **Topic configurations**: `describe_configs` permission on topics for configuration synchronization
+* **Consumer groups**: `describe` and `read` permission on consumer groups for offset replication
+* **ACLs**: `describe` permission on ACL resources to replicate security policies
+* **Cluster**: `describe` permission on the cluster resource to access ACLs
+
+This service account authenticates from the shadow cluster to the source cluster and performs the actual data replication. The credentials for this account are provided when you set up the shadow link.
+
+=== Network and authentication
+
+You must configure network connectivity between clusters with appropriate firewall rules to allow the shadow cluster to connect to the source cluster for data replication. Shadowing uses a pull-based architecture where the shadow cluster fetches data from the source cluster. For detailed networking configuration, see <<networking>>.
+
+If using xref:manage:security/authentication.adoc[authentication] for the shadow link connection, configure the source cluster with your chosen authentication method (SASL/SCRAM, TLS, mTLS) and ensure the shadow cluster has the proper credentials to authenticate to the source cluster.
+
+== Set up Shadowing
+
+To set up Shadowing:
+
+* **Configure filters**: Define which topics, consumer groups, and ACLs should replicate by creating include/exclude patterns that match your disaster recovery requirements. See <<set-filters>>.
+* **Create a shadow link**: Establish the connection between clusters using `rpk`, the Admin API, or Redpanda Console with authentication and network settings. See <<create-a-shadow-link>>.
+
+== What gets replicated
+
+Shadowing replicates your topic data with complete fidelity, preserving all message records with their original offsets, timestamps, headers, and metadata. The partition structure remains identical between source and shadow clusters, ensuring applications can resume processing from the exact same position after failover.
+
+Consumer group data flows according to your group filters, replicating offsets and membership information for matched groups. ACLs replicate based on your security filters. Schema Registry data synchronizes schema definitions, versions, and compatibility settings.
+
+The following topic properties are always replicated:
+
+* Partition count
+* `max.message.bytes`
+* `cleanup.policy`
+* `timestamp.type`
+
+The following topic properties are never replicated:
+
+* `redpanda.remote.readreplica`
+* `redpanda.remote.recovery`
+* `redpanda.remote.allowgaps`
+* `redpanda.virtual.cluster.id`
+* `redpanda.leaders.preference`
+* `redpanda.cloud_topic.enabled`
+
+
+By default, Redpanda always syncs the following topic properties:
+
+* `compression.type`
+* `retention.bytes`
+* `retention.ms`
+* `delete.retention.ms`
+* `replication.factor`
+* `min.compaction.lag.ms`
+* `max.compaction.lag.ms`
+
+Additional topic properties are replicated only when you explicitly specify them in your `synced_shadow_topic_properties` configuration. Set `exclude_default` to `true` if you want to sync only the properties listed in `synced_shadow_topic_properties`. The filtering system you configure determines the precise scope of replication across all components, allowing you to balance comprehensive disaster recovery with operational efficiency.
+
+== Set filters
+
+Filters determine which resources Shadowing automatically creates when establishing your shadow link.
+
+Topic filters select which topics Shadowing automatically creates as shadow topics when they appear on the source cluster. Once Shadowing creates a shadow topic, it continues replicating until you failover the topic, delete it, or delete the entire shadow link.
+
+Consumer group and ACL filters control which groups and security policies replicate to maintain application functionality.
+
+=== Filter types and patterns
+
+Each filter uses two key settings:
+
+* **Pattern type**: Determines how names are matched
+  - `LITERAL`: Matches names exactly (including the special wildcard `*` to match all items)
+  - `PREFIX`: Matches names that start with the specified string
+* **Filter type**: Specifies whether to INCLUDE or EXCLUDE matching items
+  - `INCLUDE`: Replicate items that match the pattern
+  - `EXCLUDE`: Skip items that match the pattern
+
+=== Filter processing rules
+
+Redpanda processes filters in the order you define them with EXCLUDE filters taking precedence. Design your filter lists carefully:
+
+1. **Exclude filters win**: If any EXCLUDE filter matches a resource, it is excluded regardless of INCLUDE filters
+2. **Order matters for INCLUDE filters**: Among INCLUDE filters, the first match determines the result
+3. **Default behavior**: Items that don't match any filter are excluded from replication
+
+=== Common filtering patterns
+
+Replicate all topics except test topics:
+[,yaml]
+----
+auto_create_shadow_topic_filters:
+  - pattern_type: "PREFIX"
+    filter_type: "EXCLUDE" 
+    name: "test-"                        # Exclude all test topics
+  - pattern_type: "LITERAL"
+    filter_type: "INCLUDE"
+    name: "*"
+----
+
+Replicate only production topics:
+[,yaml]
+----
+auto_create_shadow_topic_filters:
+  - pattern_type: "PREFIX"
+    filter_type: "INCLUDE"
+    name: "prod-"                        # Include production topics
+  - pattern_type: "PREFIX" 
+    filter_type: "INCLUDE"
+    name: "production-"                  # Alternative production prefix
+----
+
+Replicate specific consumer groups:
+[,yaml]
+----
+group_filters:
+  - pattern_type: "LITERAL"
+    filter_type: "INCLUDE"
+    name: "critical-app-consumers"       # Include specific consumer group
+  - pattern_type: "PREFIX"
+    filter_type: "INCLUDE" 
+    name: "prod-consumer-"               # Include production consumers
+----
+
+=== Schema Registry synchronization
+
+Shadowing can replicate Schema Registry data by shadowing the `_schemas` system topic. When enabled, this provides byte-for-byte replication of schema definitions, versions, and compatibility settings.
+
+To enable Schema Registry synchronization, add the following to your shadow link configuration:
+
+[,yaml]
+----
+schema_registry_sync_options:
+  shadow_schema_registry_topic: {}
+----
+
+**Requirements:**
+
+- The `_schemas` topic must exist on the source cluster
+- The `_schemas` topic must not exist on the shadow cluster, or must be empty
+- Once enabled, the `_schemas` topic will be replicated completely
+
+**Important:** Once the `_schemas` topic becomes a shadow topic, it cannot be stopped without either failing over the topic or deleting it entirely.
+
+
+=== System topic filtering rules
+
+Redpanda system topics have the following specific filtering restrictions:
+
+* Literal filters for `__consumer_offsets` and `_redpanda.audit_log` are rejected.
+* Prefix filters for topics starting with `_redpanda` or `__redpanda` are rejected.  
+* Wildcard `*` filters will not match topics that start with `_redpanda` or `__redpanda`.
+* To shadow specific system topics, you must provide explicit literal filters for those individual topics.
+
+=== ACL filtering
+
+By default all ACLs are replicated. This is recommended in order to ensure that your shadow cluster has the same permissions as your source cluster. ACL filters should be used with care:
+
+[,yaml]
+----
+acl_filters:
+  # Include read permissions for production topics
+  - resource_filter:
+      resource_type: "TOPIC"            # Filter by topic resource
+      pattern_type: "PREFIX"            # Match by prefix
+      name: "prod-"                     # Production topic prefix
+    access_filter:
+      principal: "User:app-user"        # Application service user
+      operation: "READ"                 # Read operation
+      permission_type: "ALLOW"          # Allow permission
+      host: "*"                         # Any host
+  # Include consumer group permissions
+  - resource_filter:
+      resource_type: "GROUP"            # Filter by consumer group
+      pattern_type: "LITERAL"           # Exact match
+      name: "*"                         # All consumer groups
+    access_filter:
+      principal: "User:app-user"        # Same application user
+      operation: "READ"                 # Read operation
+      permission_type: "ALLOW"          # Allow permission
+      host: "*"                         # Any host
+----
+
+=== Consumer group filtering and behavior
+
+Consumer group filters determine which consumer groups have their offsets replicated to the shadow cluster. By default, all consumer groups are replicated unless you specify filters.
+
+[,yaml]
+----
+consumer_offset_sync_options:
+  enabled: true
+  interval: "30s"
+  group_filters:
+    - pattern_type: "PREFIX"
+      filter_type: "INCLUDE"
+      name: "prod-consumer-"             # Include production consumer groups
+    - pattern_type: "LITERAL"
+      filter_type: "EXCLUDE"
+      name: "test-consumer-group"        # Exclude specific test groups
+----
+
+**Important consumer group considerations:**
+
+**Avoid name conflicts:** If you plan to consume data from the shadow cluster, do not use the same consumer group names as those used on the source cluster. While this won't break shadow linking, it can impact your RPO/RTO because conflicting group names may interfere with offset replication and consumer resumption during disaster recovery.
+
+**Offset clamping:** When Redpanda replicates consumer group offsets from the source cluster, offsets are automatically "clamped" during the commit process. If a replicated offset is above the high watermark (HWM) of the shadow partition, Redpanda clamps the offset to the shadow partition's HWM. This ensures offsets remain valid and prevents consumers from seeking beyond available data on the shadow cluster.
+
+=== Schema Registry synchronization
+
+Shadowing can replicate Schema Registry data by shadowing the `_schemas` system topic. When enabled, this provides byte-for-byte replication of schema definitions, versions, and compatibility settings.
+
+To enable Schema Registry synchronization, add the following to your shadow link configuration:
+
+[,yaml]
+----
+schema_registry_sync_options:
+  shadow_schema_registry_topic: {}
+----
+
+**Requirements:**
+
+- The `_schemas` topic must exist on the source cluster
+- The `_schemas` topic must not exist on the shadow cluster, or must be empty
+- Once enabled, the `_schemas` topic will be replicated completely
+
+**Important:** Once the `_schemas` topic becomes a shadow topic, it cannot be stopped without either failing over the topic or deleting it entirely.
+
+=== Starting offset for new shadow topics
+
+When a shadow topic is created for the first time, you can control where replication begins on the source topic. This setting only applies to empty shadow partitions and is crucial for disaster recovery planning.
+
+[,yaml]
+----
+topic_metadata_sync_options:
+  start_offset:
+    earliest: {}                         # Start from the beginning of the source topic
+    # OR use one of these alternatives:
+    # latest: {}                         # Start from the most recent offset
+    # timestamp: "2025-01-01T00:00:00Z"  # Start from records at or after this timestamp
+----
+
+**Starting offset options:**
+
+* **`earliest`** (default): Replicates all existing data from the source topic. Use this for complete disaster recovery where you need full data history.
+
+* **`latest`**: Starts replication from the current end of the source topic, skipping existing data. Use this when you only need new data for disaster recovery and want to minimize initial replication time.
+
+* **`timestamp`**: Starts replication from the first record with a timestamp at or after the specified time. Use this for point-in-time disaster recovery scenarios.
+
+[IMPORTANT]
+====
+The starting offset only affects **new shadow topics**. Once a shadow topic exists and has data, changing this setting has no effect on that topic's replication.
+====
+
+=== Generate a sample configuration
+
+Use `rpk` to generate a sample configuration file with common filter patterns:
+
+[,bash]
+----
+rpk shadow config generate --output shadow-config.yaml
+----
+
+This creates a template configuration file that you can customize for your environment.
+
+=== Networking
+
+Configure network connectivity between your source and shadow clusters to enable shadow link replication. The shadow cluster initiates connections to the source cluster using a pull-based architecture.
+
+For additional details about networking, see <<network-and-authentication>>.
+
+==== Connection requirements
+
+* **Direction**: Shadow cluster connects to source cluster (outbound from shadow, inbound to source)
+* **Protocol**: Kafka protocol over TCP (default port 9092, or your configured listener ports)
+* **Persistence**: Connections remain active for continuous replication
+
+==== Firewall configuration
+
+You must configure firewall rules to allow the shadow cluster to reach the source cluster.
+
+**On the source cluster network:**
+
+* Allow inbound TCP connections on Kafka listener ports (typically 9092).
+* Allow connections from the shadow cluster's IP addresses or subnets.
+
+**On the shadow cluster network:**
+
+* Allow outbound TCP connections to the source cluster's Kafka listener ports.
+* Ensure DNS resolution works for source cluster hostnames.
+
+==== Bootstrap servers
+
+Specify multiple bootstrap servers in your shadow link configuration for high availability:
+
+[,yaml]
+----
+client_options:
+  bootstrap_servers:
+    - "<source-broker-1>:<port>"         # Example: "source-broker-1.example.com:9092"
+    - "<source-broker-2>:<port>"         # Example: "source-broker-2.example.com:9092" 
+    - "<source-broker-3>:<port>"         # Example: "source-broker-3.example.com:9092"
+----
+
+The shadow cluster uses these addresses to discover all brokers in the source cluster. If one bootstrap server is unavailable, the shadow cluster tries the next one in the list.
+
+==== Network security
+
+For production deployments, secure the network connection between clusters:
+
+**TLS encryption:**
+[,yaml]
+----
+client_options:
+  tls_settings:
+    enabled: <enable-tls>                # Enable TLS using system trust store, example: true
+    ca_path: "<ca-cert-path>"            # Path to CA certificate, example: "/etc/ssl/certs/ca.crt"
+    # Optional client certificates for mTLS
+    key_path: "<client-key-path>"        # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
+    cert_path: "<client-cert-path>"      # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
+    do_not_set_sni_hostname: <sni-setting>  # Optional: Skip SNI hostname when using TLS, example: false
+----
+
+**Authentication:**
+[,yaml]
+----
+client_options:
+  authentication_configuration:
+    username: "<sasl-username>"          # SASL/SCRAM username, example: "shadow-replication-user"
+    password: "<sasl-password>"          # SASL/SCRAM password, example: "secure-password"
+    scram_mechanism: "<scram-mechanism>" # SCRAM mechanism, options: "SCRAM-SHA-256", "SCRAM-SHA-512"
+----
+
+==== Connection tuning
+
+Adjust connection parameters based on your network characteristics. For example:
+
+[,yaml]
+----
+client_options:
+  # Connection and metadata settings
+  connection_timeout_ms: <timeout-ms>        # Default 1000ms, increase for high-latency networks
+  retry_backoff_ms: <backoff-ms>             # Default 100ms, backoff between connection retries  
+  metadata_max_age_ms: <metadata-age-ms>     # Default 10000ms, how often to refresh cluster metadata
+  
+  # Fetch request settings
+  fetch_wait_max_ms: <fetch-wait-ms>         # Default 500ms, max time to wait for fetch requests
+  fetch_min_bytes: <fetch-min-bytes>         # Default 5MB, minimum bytes to fetch per request
+  fetch_max_bytes: <fetch-max-bytes>         # Default 20MB, maximum bytes to fetch per request
+  fetch_partition_max_bytes: <fetch-partition-max-bytes>  # Default 1MB, maximum bytes to fetch per partition
+----
+
+=== Create a shadow link
+
+You can establish a shadow link using either xref:get-started:rpk/index.adoc[`rpk`], the Admin API, or xref:console:index.adoc[Redpanda Console]. For example, to create a shadow link with the source cluster, run the following `rpk` command from the shadow cluster:
+
+[,bash]
+----
+rpk shadow create --config-file shadow-config.yaml
+----
+
+=== Update an existing shadow link
+
+If you need to modify a shadow link configuration after creation, use the update command:
+
+[,bash]
+----
+rpk shadow update <shadow-link-name>
+----
+
+This opens your default editor to modify the shadow link configuration. Only changed fields are updated on the server. The shadow link name cannot be changed - you must delete and recreate the link to rename it.
+
+[TIP]
+====
+Use xref:get-started:config-rpk-profile.adoc[`rpk profile`] to save your cluster connection details and credentials for both source and shadow clusters, allowing you to easily switch between the two configurations.
+====
+
+==== Sample configuration file
+
+.Explore the configuration file
+[%collapsible]
+====
+[,yaml]
+----
+# Sample ShadowLinkConfig YAML with all fields
+name: "<shadow-link-name>"              # Unique name for this shadow link, example: "production-dr"
+client_options:
+  bootstrap_servers:                     # Source cluster brokers to connect to
+    - "<source-broker-1>:<port>"         # Example: "prod-kafka-1.example.com:9092"
+    - "<source-broker-2>:<port>"         # Example: "prod-kafka-2.example.com:9092"
+    - "<source-broker-3>:<port>"         # Example: "prod-kafka-3.example.com:9092"
+  source_cluster_id: "<cluster-id>"      # Optional: Expected source cluster ID for validation, example: "prod-cluster-123"
+  
+  # TLS settings using file paths
+  tls_settings:
+    enabled: true                        # Enable TLS
+    ca_path: "<ca-cert-path>"            # Path to CA certificate, example: "/etc/ssl/certs/ca.crt"
+    key_path: "<client-key-path>"        # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
+    cert_path: "<client-cert-path>"      # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
+    do_not_set_sni_hostname: false      # Optional: Skip SNI hostname when using TLS (default: false)
+  
+  # Alternative TLS settings using PEM content
+  # tls_settings:
+  #   enabled: true                      # Enable TLS
+  #   ca: |                              # CA certificate in PEM format
+  #     -----BEGIN CERTIFICATE-----
+  #     ... CA certificate content ...
+  #     -----END CERTIFICATE-----
+  #   key: |                             # Client private key in PEM format
+  #     -----BEGIN PRIVATE KEY-----
+  #     ... private key content ...
+  #     -----END PRIVATE KEY-----
+  #   cert: |                            # Client certificate in PEM format
+  #     -----BEGIN CERTIFICATE-----
+  #     ... client certificate content ...
+  #     -----END CERTIFICATE-----
+  #   do_not_set_sni_hostname: false    # Optional: Skip SNI hostname when using TLS (default: false)
+  
+  authentication_configuration:
+    username: "<sasl-username>"          # SASL/SCRAM username, example: "shadow-replication-user"
+    password: "<sasl-password>"          # SASL/SCRAM password, example: "secure-password-123"
+    scram_mechanism: "SCRAM-SHA-256"     # SCRAM mechanism: "SCRAM-SHA-256" or "SCRAM-SHA-512"
+  
+  # Connection tuning - adjust based on network characteristics
+  metadata_max_age_ms: 10000             # How often to refresh cluster metadata (default: 10000ms)
+  connection_timeout_ms: 1000            # Connection timeout (default: 1000ms, increase for high latency)
+  retry_backoff_ms: 100                  # Backoff between retries (default: 100ms)
+  fetch_wait_max_ms: 500                 # Max time to wait for fetch requests (default: 500ms)
+  fetch_min_bytes: 5242880               # Min bytes per fetch (default: 5MB)
+  fetch_max_bytes: 20971520              # Max bytes per fetch (default: 20MB)
+  fetch_partition_max_bytes: 1048576     # Max bytes per partition fetch (default: 1MB)
+
+topic_metadata_sync_options:
+  interval: "30s"                        # How often to sync topic metadata (examples: "30s", "1m", "5m")
+  auto_create_shadow_topic_filters:      # Filters for automatic topic creation
+    - pattern_type: "PREFIX"             # Match topics starting with this prefix
+      filter_type: "INCLUDE"
+      name: "<topic-prefix>"             # Examples: "prod-", "production-", "app-"
+    - pattern_type: "LITERAL"            # Exclude specific topics
+      filter_type: "EXCLUDE"
+      name: "<excluded-topic>"           # Examples: "temp-data", "test-topic"
+    - pattern_type: "LITERAL"            # Include all remaining topics (wildcard)
+      filter_type: "INCLUDE"
+      name: "*"
+  synced_shadow_topic_properties:        # Additional topic properties to sync (beyond defaults)
+    - "retention.ms"                     # Topic retention time
+    - "segment.ms"                       # Segment roll time
+    - "<custom-property>"                # Examples: "compression.type", "min.insync.replicas"
+  start_offset:
+    earliest: {}                         # Start from the beginning of source topics (default)
+
+consumer_offset_sync_options:
+  interval: "30s"                        # How often to sync consumer group offsets
+  enabled: true                          # Enable consumer offset synchronization
+  group_filters:                         # Filters for consumer groups to sync
+    - pattern_type: "PREFIX"
+      filter_type: "INCLUDE"
+      name: "<consumer-group-prefix>"    # Examples: "prod-consumer-", "app-"
+    - pattern_type: "LITERAL"
+      filter_type: "EXCLUDE"
+      name: "<excluded-group>"           # Examples: "test-consumer", "debug-group"
+
+schema_registry_sync_options:            # Schema Registry synchronization options
+  shadow_schema_registry_topic: {}       # Enable byte-for-byte _schemas topic replication
+
+security_sync_options:
+  interval: "30s"                        # How often to sync security settings
+  enabled: true                          # Enable security settings synchronization
+  acl_filters:                           # Filters for ACLs to sync
+    - resource_filter:
+        resource_type: "TOPIC"           # Resource type: "TOPIC", "GROUP", "CLUSTER"
+        pattern_type: "PREFIX"           # Pattern type: "LITERAL", "PREFIX", "PREFIXED"
+        name: "<resource-pattern>"       # Examples: "prod-", "app-data-"
+      access_filter:
+        principal: "User:<username>"     # Principal name, example: "User:app-service"
+        operation: "READ"                # Operation: "READ", "WRITE", "CREATE", "DELETE", "ALTER", "DESCRIBE", "ANY"
+        permission_type: "ALLOW"         # Permission: "ALLOW" or "DENY"
+        host: "<host-pattern>"           # Host pattern, examples: "*", "10.0.0.0/8", "app-server.example.com"
+----
+====
+
+See also: link:/api/doc/admin/[Admin API v2 reference^]
