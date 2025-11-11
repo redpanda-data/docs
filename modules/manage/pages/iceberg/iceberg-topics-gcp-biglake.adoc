@@ -1,0 +1,366 @@
+= Use Iceberg Topics with GCP BigLake
+:description: Add Redpanda topics as Iceberg tables to your Google BigLake data lakehouse that you can query from Google BigQuery.
+:page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+// tag::single-source[]
+ifndef::env-cloud[]
+:rp_version: 25.3
+:rpk_install_doc: get-started:rpk-install.adoc
+endif::[]
+
+This guide walks you through querying Redpanda topics as Iceberg tables stored in Google Cloud Storage, using a REST catalog integration with https://cloud.google.com/biglake/docs/introduction[Google BigLake^]. In this guide, you do the following:
+
+- Create Google Cloud resources such as a storage bucket and service account
+- Grant permissions to the service account to access Iceberg data in the bucket
+- Create a catalog in BigLake
+- Configure the BigLake integration for your Redpanda cluster
+- Query the Iceberg data in Google BigQuery
+
+This guide also includes optional steps to deploy a Redpanda quickstart cluster on a GCP VM instance using Docker Compose, which you can use to quickly test the BigLake Iceberg integration.
+
+For general information about Iceberg catalog integrations in Redpanda, see xref:manage:iceberg/use-iceberg-catalogs.adoc[].
+
+NOTE: Check the https://cloud.google.com/biglake[BigLake product page^] for the latest status and availability of the REST Catalog API.
+
+== Prerequisites
+
+* A Google Cloud Platform (GCP) project.
++
+If you do not have permissions to manage GCP resources such as VMs, storage buckets, and service accounts in your project, ask your project owner to create or update them for you.
+* The https://docs.cloud.google.com/sdk/docs/install[`gcloud` CLI^] installed and configured for your GCP project.
+* https://cloud.google.com/biglake/docs/enable-biglake-api[BigLake API^] enabled for your GCP project.
+* Redpanda v{full-version} or later. Your Redpanda cluster must be deployed on GCP VMs.
+* `rpk` xref:{rpk_install_doc}[installed or updated] to the latest version.
+ifndef::env-cloud[]
+* xref:manage:tiered-storage.adoc#configure-object-storage[Object storage configured] for your cluster and xref:manage:tiered-storage.adoc#enable-tiered-storage[Tiered Storage enabled] for the topics for which you want to generate Iceberg tables.
++
+You also use the GCS bucket URI to set the warehouse location for the BigLake catalog.
+endif::[]
+
+== Limitations
+
+=== Multi-region bucket support
+
+BigLake metastore does not support multi-region buckets. Use single-region buckets to store your Iceberg topics.
+
+=== Catalog deletion
+
+Currently, it is not possible to delete non-empty BigLake Iceberg catalogs through the BigLake interface. If you need to reconfigure your setup, create a new bucket or use the REST API to remove the existing catalog.
+
+=== Topic names
+
+BigLake does not support Iceberg table names that contain dots (`.`). When creating Iceberg topics in Redpanda that you plan to access through BigLake, either:
+
+- Use the `iceberg_topic_name_dot_replacement` cluster property to set a replacement string for dots in topic names. Ensure that the replacement value does not cause table name collisions. For example, `current.orders` and `current_orders` would both map to the same table name if you set the replacement to an underscore (`_`).
+- Ensure that the new topic names do not include dots.
+
+You must also set the `iceberg_dlq_table_suffix` property to a value that does not include dots or tildes (`~`). See <<configure-redpanda-for-iceberg>> for the list of cluster properties to set when enabling the BigLake REST catalog integration.
+
+== Set up Google Cloud resources
+
+=== Create a service account for Redpanda
+
+If you don't already have a Google Cloud service account to use, create a new service account that will be used by the VMs running Redpanda. Redpanda uses this account for writing data to Tiered Storage, Iceberg data and metadata, and for interacting with the BigLake catalog:
+
+[,bash]
+----
+gcloud iam service-accounts create <service-account-name> --display-name "<display-name>"
+----
+
+Replace the placeholder values:
+
+* `<service-account-name>`: You can use a https://docs.cloud.google.com/iam/docs/service-accounts-create[name^] that contains lowercase alphanumeric characters and dashes. 
+* `<display-name>`: Enter a display name for the service account.
+
+=== Grant required permissions
+
+Grant the necessary permissions to your service account. To run the following commands, replace the placeholder values:
+
+* `<service-account-name>`: The name of your service account.
+* `<bucket-name>`: The name of your storage bucket.
+
+. Grant the service account the https://docs.cloud.google.com/storage/docs/access-control/iam-roles[Storage Object Admin role^] to access the bucket:
++
+[,bash]
+----
+gcloud storage buckets add-iam-policy-binding gs://<bucket-name> \
+  --member="serviceAccount:<service-account-name>@$(gcloud config get-value project).iam.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
+----
+
+. Grant https://docs.cloud.google.com/iam/docs/roles-permissions/serviceusage[Service Usage Consumer^] and https://docs.cloud.google.com/iam/docs/roles-permissions/biglake#biglake.editor[BigLake Editor^] roles for using the Iceberg REST catalog:
++
+[,bash]
+----
+gcloud projects add-iam-policy-binding $(gcloud config get-value project) \
+  --member="serviceAccount:<service-account-name>@$(gcloud config get-value project).iam.gserviceaccount.com" \
+  --role="roles/serviceusage.serviceUsageConsumer"
+
+gcloud projects add-iam-policy-binding $(gcloud config get-value project) \
+  --member="serviceAccount:<service-account-name>@$(gcloud config get-value project).iam.gserviceaccount.com" \
+  --role="roles/biglake.editor"
+----
+
+=== Create a BigLake catalog
+
+Create a BigLake Iceberg REST catalog using the `gcloud` CLI:
+
+NOTE: This command is currently pre-GA and may change. Check the https://docs.cloud.google.com/sdk/gcloud/reference/alpha/biglake/iceberg/catalogs/create[gcloud reference^] for the latest information.
+
+[,bash]
+----
+gcloud alpha biglake iceberg catalogs create <bucket-name> --catalog-type=gcs-bucket --project=<gcp-project-id>
+----
+
+Replace the placeholder values:
+
+* `<bucket-name>`: Use the name of your storage bucket as the catalog ID.
+* `<gcp-project-id>`: Your GCP project ID.
+
+== Optional: Deploy Redpanda quickstart on GCP
+
+If you want to quickly test Iceberg topics in BigLake, you can deploy a test environment using the Redpanda Self-Managed quickstart. In this section, you create a new storage bucket for Tiered Storage and Iceberg data. You configure a Redpanda cluster for the BigLake catalog integration and deploy the cluster on a GCP Linux VM instance using Docker Compose.
+
+NOTE: If you already have a Redpanda cluster deployed on GCP, skip to <<configure-redpanda-for-iceberg>>.
+
+=== Create a storage bucket
+
+Create a new Google Cloud Storage bucket to store Iceberg data:
+
+[,bash]
+----
+gcloud storage buckets create gs://<bucket-name> --location=<region>
+----
+
+Replace the placeholder values:
+
+* `<bucket-name>`: A globally unique name for your bucket.
+* `<region>`: The region where you want to create the bucket, for example, `europe-west2`.
+
+NOTE: Ensure that the service account you created earlier has the <<grant-required-permissions,required permissions>> to access this bucket.
+
+=== Create VM instances
+
+Create a VM instance to run Redpanda:
+
+[,bash]
+----
+gcloud compute instances create <instance-name> \
+    --zone=<zone> \
+    --machine-type=e2-medium \
+    --service-account=<service-account-name>@$(gcloud config get-value project).iam.gserviceaccount.com \
+    --scopes=https://www.googleapis.com/auth/cloud-platform \
+    --create-disk=auto-delete=yes,boot=yes,device-name=<instance-name>,image=projects/debian-cloud/global/images/debian-12-bookworm-v20251014,mode=rw,size=20,type=pd-standard
+----
+
+Replace the placeholder values:
+
+* `<instance-name>`: A name for your VM instance.
+* `<service-account-name>`: The name of the service account you created earlier.
+* `<zone>`: The fully-qualified zone name, for example, `europe-west2-a`.
+
+=== Install and configure Redpanda
+
+. Connect to your VM instance. It may take a few moments for the instance to be ready to accept SSH connections:
++
+[,bash]
+----
+gcloud compute ssh --zone <zone> <instance-name>
+----
+
+. Install Docker and Docker Compose following the https://docs.docker.com/engine/install/debian/[Docker installation guide^] for Debian.
++
+[,bash]
+----
+# Add Docker's official GPG key:
+sudo apt-get update
+sudo apt-get install ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+# Add the repository to Apt sources:
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt-get update
+
+# Install Docker Engine, CLI, and Compose
+sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+----
+
+. Download the Redpanda Self-Managed quickstart files:
++
+[,bash,subs="attributes+"]
+----
+mkdir redpanda-quickstart && cd redpanda-quickstart && \ <1>
+ifdef::page-component-version-is-latest[]
+curl -sSL https://docs.redpanda.com/redpanda-quickstart.tar.gz | tar xzf - && \ <2>
+endif::[]
+ifndef::page-component-version-is-latest[]
+curl -sSL https://docs.redpanda.com/{page-component-version}-redpanda-quickstart.tar.gz | tar xzf - && \ <2>
+endif::[]
+cd docker-compose <3>
+----
+<1> Create and navigate to the `redpanda-quickstart` directory.
+<2> Download and extract the archive.
+<3> Navigate to the Docker Compose configuration directory.
+
+. Edit the `bootstrap.yaml` file to enable Tiered Storage and Iceberg features. Add or modify these sections:
++
+[,yaml]
+----
+# Enable Tiered Storage
+cloud_storage_enabled: true
+cloud_storage_region: n/a # GCP does not require region to be set
+cloud_storage_api_endpoint: storage.googleapis.com
+cloud_storage_api_endpoint_port: 443
+cloud_storage_disable_tls: false
+cloud_storage_bucket: <bucket-name>
+cloud_storage_credentials_source: gcp_instance_metadata
+
+# Configure Iceberg REST catalog integration with BigLake
+iceberg_enabled: true
+iceberg_catalog_type: rest
+iceberg_rest_catalog_endpoint: https://biglake.googleapis.com/iceberg/v1/restcatalog
+iceberg_rest_catalog_oauth2_server_uri: https://oauth2.googleapis.com/token
+iceberg_rest_catalog_authentication_mode: gcp
+iceberg_rest_catalog_warehouse: gs://<bucket-name>/
+iceberg_rest_catalog_gcp_user_project: <gcp-project-id>
+iceberg_dlq_table_suffix: _dlq
+----
++
+--
+* Replace `<bucket-name>` with your bucket name and `<gcp-project-id>` with your Google Cloud project ID.
+* You must set the `iceberg_dlq_table_suffix` property to a value that does not include dots or tildes (`~`). The example above uses `_dlq` as the suffix for the xref:manage:iceberg/about-iceberg-topics.adoc#troubleshoot-errors[dead-letter queue (DLQ) table].
+--
++
+NOTE: If you edit `bootstrap.yml`, you can skip the cluster configuration step in <<configure-redpanda-for-iceberg>> and proceed to the next step in that section to enable Iceberg for a topic.
+
+. Start Redpanda:
++
+[,bash]
+----
+docker compose up -d
+----
+
+. Install and configure `rpk`:
++
+[,bash]
+----
+sudo apt-get install unzip
+
+curl -LO https://github.com/redpanda-data/redpanda/releases/latest/download/rpk-linux-amd64.zip &&
+  mkdir -p ~/.local/bin &&
+  export PATH="~/.local/bin:$PATH" &&
+  unzip rpk-linux-amd64.zip -d ~/.local/bin/
+
+rpk profile create quickstart --from-profile rpk-profile.yaml
+----
+
+== Configure Redpanda for Iceberg
+
+. Edit your cluster configuration to set the `iceberg_enabled` property to `true`, and set the catalog integration properties listed in the example below.
+ifndef::env-cloud[]
++
+Run `rpk cluster config edit` to update these properties:
++
+[,yaml]
+----
+iceberg_enabled: true
+iceberg_catalog_type: rest
+iceberg_rest_catalog_endpoint: https://biglake.googleapis.com/iceberg/v1/restcatalog
+iceberg_rest_catalog_oauth2_server_uri: https://oauth2.googleapis.com/token
+iceberg_rest_catalog_authentication_mode: gcp
+iceberg_rest_catalog_warehouse: gs://<bucket-name>/
+iceberg_rest_catalog_gcp_user_project: <gcp-project-id>
+iceberg_dlq_table_suffix: _dlq
+----
++
+--
+* Replace `<bucket-name>` with your bucket name and `<gcp-project-id>` with your Google Cloud project ID.
+* You must set the `iceberg_dlq_table_suffix` property to a value that does not include dots or tildes (`~`). The example above uses `_dlq` as the suffix for the xref:manage:iceberg/about-iceberg-topics.adoc#troubleshoot-errors[dead-letter queue (DLQ) table].
+--
+
+ifndef::env-cloud[]
+. If you change the configuration for a running cluster, you must restart that cluster now.
+endif::[]
+
+. Enable the REST catalog integration for a topic by configuring the topic property `redpanda.iceberg.mode`. The following examples show how to use xref:get-started:rpk-install.adoc[`rpk`] to either create a new topic or alter the configuration for an existing topic and set the Iceberg mode to `key_value`. The `key_value` mode creates a two-column Iceberg table for the topic, with one column for the record metadata including the key, and another binary column for the record's value. See xref:manage:iceberg/choose-iceberg-mode.adoc[] for more details on Iceberg modes.  
++
+.Create a new topic and set `redpanda.iceberg.mode`:
+[,bash]
+----
+rpk topic create <topic-name> --topic-config=redpanda.iceberg.mode=key_value
+----
++
+.Set `redpanda.iceberg.mode` for an existing topic:
+[,bash]
+----
+rpk topic alter-config <topic-name> --set redpanda.iceberg.mode=key_value
+---- 
++
+[NOTE]
+====
+If you're using the Self-managed quickstart for testing, your Redpanda cluster includes a `transactions` topic with data in it, and a sample schema in the Schema Registry. To enable Iceberg for the `transactions` topic, run:
+
+[,bash]
+----
+rpk topic alter-config transactions --set redpanda.iceberg.mode=value_schema_latest:subject=transactions
+----
+====
+
+It may take a few moments for the Iceberg data to become available in BigLake.
+
+== Query Iceberg topics in BigQuery
+
+. Navigate to the https://console.cloud.google.com/bigquery[BigQuery console^].
+
+. Query your Iceberg topic using SQL. For example, to query the `transactions` topic in the quickstart cluster:
++
+[,sql]
+----
+SELECT
+    *
+FROM `<bucket-name>>redpanda`.transactions
+ORDER BY
+    redpanda.timestamp DESC
+LIMIT 10
+----
++
+Replace `<bucket-name>` with your bucket name.
+
+Your Redpanda topic is now available as Iceberg tables in BigLake, allowing you to run analytics queries directly on your streaming data.
+
+== Optional: Clean up resources
+
+When you're finished with the quickstart example, you can clean up the resources you created:
+
+[,bash]
+----
+# Delete VM instances
+gcloud compute instances delete <instance-name> --zone=<zone>
+
+# Delete the storage bucket
+gcloud storage buckets delete gs://<bucket-name>
+
+# Delete the service account
+gcloud iam service-accounts delete <service-account-name>@$(gcloud config get-value project).iam.gserviceaccount.com
+----
+
+NOTE: Manually delete the BigLake catalog using the https://docs.cloud.google.com/bigquery/docs/reference/biglake/rest/v1/projects.locations.catalogs/delete[REST API^].
+
+include::shared:partial$suggested-reading.adoc[]
+
+- xref:manage:iceberg/use-iceberg-catalogs.adoc[]
+- xref:manage:iceberg/query-iceberg-topics.adoc[]
+- https://cloud.google.com/biglake/docs/introduction[Google BigLake documentation^]
+
+// end::single-source[]
