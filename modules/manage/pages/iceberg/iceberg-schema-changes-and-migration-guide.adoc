@@ -1,0 +1,145 @@
+= Iceberg Schema Changes and Migration Guide for Redpanda v25.3
+:description: Information about breaking schema changes for Iceberg topics in Redpanda v25.3, and actions to take when upgrading.
+:page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
+
+Redpanda v25.3 introduces changes that break table compatibility for Iceberg topics. Before you upgrade to v25.3, you must take specific actions to ensure that your Iceberg topics and their associated tables continue to function correctly.
+
+== Breaking changes
+
+The following table lists the schema changes introduced in Redpanda v25.3.
+
+|===
+| Field | Iceberg type translation before v25.3 | Iceberg type translation starting in v25.3 | Impact
+
+| `redpanda.timestamp` column 
+| `timestamp` type 
+| `timestamptz` (timestamp with time zone) type
+| Affects all tables created by Iceberg topics, including DLQ tables.
+
+| `redpanda.headers.key` column 
+| `binary` type 
+| `string` type 
+| Affects all tables created by Iceberg topics, including DLQ tables.
+
+| Avro optionals (two-field union of `[null, <FIELD>]`)
+| Single-field struct type
+| Optional `FIELD`
+| Affects tables created by Iceberg topics that use Avro optionals.
+
+| Avro union 
+| 
+| Field names use the type names
+| Affects tables created by Iceberg topics that use Avro unions.
+
+| Avro and Protobuf enums 
+| `integer` type
+| `string` type
+| Affects tables created by Iceberg topics that use Avro or Protobuf enums.
+
+|===
+
+== Upgrade steps
+
+When upgrading to Redpanda v25.3, you must perform these steps to migrate Iceberg topics to the new schema translation and ensure your topics continue to function correctly. Failure to perform these steps will result in data being sent to the DLQ table until you make the Iceberg tables conformant to the new schemas (step 4).
+
+. Before upgrading to v25.3, disable Iceberg on all Iceberg topics by setting the `redpanda.iceberg.mode` topic property to `disabled`. This step ensures that no additional Parquet files are written by Iceberg topics.
+. xref:upgrade:rolling-upgrade.adoc#perform-a-rolling-upgrade[Perform a rolling upgrade] to v25.3, restarting the cluster in the process.
+. Query the `GetCoordinatorState` Admin API endpoint repeatedly for these Iceberg topics to migrate to the new schema, until there are no more pending entries in the coordinator for the given topics. This step confirms that all Parquet files written pre-upgrade have been committed to the Iceberg tables.
++
+[,bash]
+----
+# Pass the comma-separated list of Iceberg topics into "topics_filter" 
+curl -s \
+    --header 'Content-Type: application/json' \
+    --data '{"topics_filter": ["<list-of-topics-to-migrate>"]}' \
+    localhost:9644/redpanda.core.admin.internal.datalake.v1.DatalakeService/GetCoordinatorState | jq
+----
++
+.Sample output
+[,bash,.no-copy]
+----
+{
+  "state": {
+    "topicStates": {
+      "topic_to_migrate": {
+        "revision": "9",
+        "partitionStates": {
+          "0": {
+            "pendingEntries": [
+              {
+                "data": {
+                  "startOffset": "12",
+                  "lastOffset": "15",
+                  "dataFiles": [
+                    {
+                      "remotePath": "redpanda-iceberg-catalog/redpanda/topic_to_migrate/data/0-871734c9-e266-41fa-a34d-2afba2828c0d.parquet",
+                      "rowCount": "4",
+                      "fileSizeBytes": "1426",
+                      "tableSchemaId": 0,
+                      "partitionSpecId": 0,
+                      "partitionKey": []
+                    }
+                  ],
+                  "dlqFiles": [],
+                  "kafkaProcessedBytes": "289"
+                },
+                "addedPendingAt": "6"
+              }
+            ],
+            "lastCommitted": "11"
+          }
+        },
+        "lifecycleState": "LIFECYCLE_STATE_LIVE",
+        "totalKafkaProcessedBytes": "79"
+      }
+    }
+  }
+}
+----
++
+To check for remaining pending files:
++
+[,bash]
+----
+curl -s \
+    --header 'Content-Type: application/json' \
+    --data '{}' \
+    localhost:9644/redpanda.core.admin.internal.datalake.v1.DatalakeService/GetCoordinatorState \
+    | jq  '[.state.topicStates[].partitionStates[].pendingEntries | length] | any(. > 0)'
+----
++
+If the query returns `true`, there are pending files and you need to wait longer before proceeding to the next step.
+
+. Migrate Iceberg topics to the new schema translation and ensure they are conformant with the breaking change.
++
+Run SQL queries to rename affected columns for each Iceberg table you want to migrate to the new schema. In addition to renaming the existing columns, Redpanda automatically adds new columns that use the original name, but with the new types:
++
+[,sql]
+----
+/*
+`redpanda.timestamp` renamed to `redpanda.timestamp_v1` (`timestamp` type), 
+new `redpanda.timestamp` (`timestamptz` type) column added
+*/
+ALTER TABLE redpanda.<name-of-topic-to-migrate>
+RENAME COLUMN redpanda.timestamp TO timestamp_v1;
+
+/*
+`redpanda.headers.key` renamed to `key_v1` (`binary` type), 
+new `redpanda.headers.key` (`string` type) column added
+*/
+ALTER TABLE redpanda.<name-of-topic-to-migrate>
+RENAME COLUMN redpanda.headers.key TO key_v1;
+----
++
+NOTE: Redpanda will not write new data to the renamed columns. You must take care to avoid adding fields to the Kafka schema that collide with the new names.
++
+You can then continue to query the data in the original columns, but using their new column names only. To query both older data and new data that use the new types, you must update your queries to account for both the renamed columns and the new columns that use the original name.
++
+[,sql]
+----
+SELECT count(*) FROM redpanda.<name-of-migrated-topic>
+  WHERE redpanda.timestamp >= '2025-01-01 00:00:00'
+  OR redpanda.timestamp_v1 >= '2025-01-01 00:00:00';
+----
+
+. Re-enable Iceberg on all Iceberg topics.
