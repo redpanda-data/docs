@@ -1,7 +1,16 @@
 = Manage Throughput
 :description: Learn how to manage the throughput of Kafka traffic.
 :page-categories: Management, Networking
+
 // tag::single-source[]
+ifdef::env-cloud[]
+:monitor-doc: manage:monitor-cloud.adoc#throughput
+:connected-clients-api-doc-ref: link:/api/doc/cloud-dataplane/operation/operation-monitoringservice_listkafkaconnections
+endif::[]
+ifndef::env-cloud[]
+:monitor-doc: manage:monitoring.adoc#throughput
+:connected-clients-api-doc-ref: link:/api/doc/admin/v2/operation/operation-redpanda-core-admin-v2-clusterservice-listkafkaconnections
+endif::[]
 
 Redpanda supports throughput throttling on both ingress and egress independently, and allows configuration at the broker and client levels. This helps prevent clients from causing unbounded network and disk usage on brokers. You can configure limits at two levels:
 
@@ -14,6 +23,404 @@ ifdef::env-cloud[]
 
 NOTE: Throughput throttling is supported for BYOC and Dedicated clusters only.
 endif::[]
+
+== View connected client details
+
+You may find it helpful to check the xref:{monitor-doc}[current produce and consume throughput] of a client before you configure throughput quotas.
+
+ifndef::env-cloud[]
+Use the xref:reference:rpk/rpk-cluster/rpk-cluster-connections-list.adoc[`rpk cluster connections list`] command or the {connected-clients-api-doc-ref}[ListKafkaConnections] Admin API endpoint to view detailed information about active Kafka client connections.
+endif::[]
+
+ifdef::env-cloud[]
+Use the xref:reference:rpk/rpk-cluster/rpk-cluster-connections-list.adoc[`rpk cluster connections list`] command or the {connected-clients-api-doc-ref}[`GET /v1/monitoring/kafka/connections`] Data Plane API endpoint to view detailed information about active Kafka client connections.
+endif::[]
+
+For example, to view a cluster's connected clients in order of highest current produce throughput, run:
+
+[tabs]
+======
+rpk::
++
+--
+[,bash]
+----
+rpk cluster connections list --order-by="recent_request_statistics.produce_bytes desc"
+----
+
+[,bash,role="no-copy no-wrap"]
+----
+UID                                   STATE  USER             CLIENT-ID             IP:PORT           NODE  SHARD  OPEN-TIME  IDLE           PROD-TPUT/SEC  FETCH-TPUT/SEC  REQS/MIN
+b20601a3-624c-4a8c-ab88-717643f01d56  OPEN   UNAUTHENTICATED  perf-producer-client  127.0.0.1:55012   0     0      9s         0s             78.9MB         0B              292
+36338ca5-86b7-4478-ad23-32d49cfaef61  OPEN   UNAUTHENTICATED  rpk                   127.0.0.1:49722   0     0      13s        13.694243104s  0B             0B              1
+7e277ef6-0176-4007-b100-6581bfde570f  OPEN   UNAUTHENTICATED  rpk                   127.0.0.1:49736   0     0      13s        10.093957335s  0B             0B              2
+567d9918-d3dc-4c74-ab5d-85f70cd3ee35  OPEN   UNAUTHENTICATED  rpk                   127.0.0.1:49748   0     0      13s        0.591413542s   0B             0B              5
+08616f21-08f9-46e7-8f06-964bd8240d9b  OPEN   UNAUTHENTICATED  rpk                   127.0.0.1:49764   0     0      13s        10.094602845s  0B             0B              2
+e4d5b57e-5c76-4975-ada8-17a88d68a62d  OPEN   UNAUTHENTICATED  rpk                   127.0.0.1:54992   0     0      10s        0.302090085s   0B             14.5MB          27
+b41584f3-2662-4185-a4b8-0d8510f5c780  OPEN   UNAUTHENTICATED  perf-producer-client  127.0.0.1:55002   0     0      8s         7.743592270s   0B             0B              1
+62fde947-411d-4ea8-9461-3becc2631b46  CLOSED UNAUTHENTICATED  rpk                   127.0.0.1:48578   0     0      26s        0.000737836s   0B             0B              1
+95387e2e-2ec4-4040-aa5e-4257a3efa1a2  CLOSED UNAUTHENTICATED  rpk                   127.0.0.1:48564   0     0      26s        0.208180826s   0B             0B              1
+----
+--
+
+ifndef::env-cloud[]
+curl::
++
+--
+[,bash]
+----
+curl -s -X POST \
+  --header "Content-Type: application/json" \
+  --data '{
+    "filter": "",
+    "order_by": "recent_request_statistics.produce_bytes desc"
+  }' \
+  "localhost:9644/redpanda.core.admin.v2.ClusterService/ListKafkaConnections"
+----
+
+.Show example API response
+[%collapsible]
+====
+[,json,role=no-copy,lines=55]
+----
+{
+  "connections": [
+    {
+      "nodeId": 0,
+      "shardId": 0,
+      "uid": "b20601a3-624c-4a8c-ab88-717643f01d56",
+      "state": "KAFKA_CONNECTION_STATE_OPEN",
+      "openTime": "2025-10-15T14:15:15.755065000Z",
+      "closeTime": "1970-01-01T00:00:00.000000000Z",
+      "authenticationInfo": {
+        "state": "AUTHENTICATION_STATE_UNAUTHENTICATED",
+        "mechanism": "AUTHENTICATION_MECHANISM_UNSPECIFIED",
+        "userPrincipal": ""
+      },
+      "listenerName": "",
+      "tlsInfo": {
+        "enabled": false
+      },
+      "source": {
+        "ipAddress": "127.0.0.1",
+        "port": 55012
+      },
+      "clientId": "perf-producer-client",
+      "clientSoftwareName": "apache-kafka-java",
+      "clientSoftwareVersion": "3.9.0",
+      "transactionalId": "my-tx-id",
+      "groupId": "",
+      "groupInstanceId": "",
+      "groupMemberId": "",
+      "apiVersions": {
+        "18": 4,
+        "22": 3,
+        "3": 12,
+        "24": 3,
+        "0": 7
+      },
+      "idleDuration": "0s",
+      "inFlightRequests": {
+        "sampledInFlightRequests": [
+          {
+            "apiKey": 0,
+            "inFlightDuration": "0.000406892s"
+          }
+        ],
+        "hasMoreRequests": false
+      },
+      "totalRequestStatistics": {
+        "produceBytes": "78927173",
+        "fetchBytes": "0",
+        "requestCount": "4853",
+        "produceBatchCount": "4849"
+      },
+      "recentRequestStatistics": {
+        "produceBytes": "78927173",
+        "fetchBytes": "0",
+        "requestCount": "4853",
+        "produceBatchCount": "4849"
+      }
+    },
+    ...
+  ]
+  "totalSize": "9"
+}
+----
+====
+--
+endif::[]
+
+ifdef::env-cloud[]
+Data Plane API::
++
+--
+[,bash]
+----
+curl \
+  --request GET 'https://<dataplane-api-url>/v1/monitoring/kafka/connections' \
+  --header "Authorization: Bearer $ACCESS_TOKEN" \
+  --data '{
+    "filter": "",
+    "order_by": "recent_request_statistics.produce_bytes desc"
+  }'
+----
+
+.Show example API response
+[%collapsible]
+====
+[,json,role=no-copy,lines=54]
+----
+{
+  "connections": [
+    {
+      "node_id": 0,
+      "shard_id": 0,
+      "uid": "b20601a3-624c-4a8c-ab88-717643f01d56",
+      "state": "KAFKA_CONNECTION_STATE_OPEN",
+      "open_time": "2025-10-15T14:15:15.755065000Z",
+      "close_time": "1970-01-01T00:00:00.000000000Z",
+      "authentication_info": {
+        "state": "AUTHENTICATION_STATE_UNAUTHENTICATED",
+        "mechanism": "AUTHENTICATION_MECHANISM_UNSPECIFIED",
+        "user_principal": ""
+      },
+      "listener_name": "",
+      "tls_info": {
+        "enabled": false
+      },
+      "source": {
+        "ip_address": "127.0.0.1",
+        "port": 55012
+      },
+      "client_id": "perf-producer-client",
+      "client_software_name": "apache-kafka-java",
+      "client_software_version": "3.9.0",
+      "transactional_id": "my-tx-id",
+      "group_id": "",
+      "group_instance_id": "",
+      "group_member_id": "",
+      "api_versions": {
+        "18": 4,
+        "22": 3,
+        "3": 12,
+        "24": 3,
+        "0": 7
+      },
+      "idle_duration": "0s",
+      "in_flight_requests": {
+        "sampled_in_flight_requests": [
+          {
+            "api_key": 0,
+            "in_flight_duration": "0.000406892s"
+          }
+        ],
+        "has_more_requests": false
+      },
+      "total_request_statistics": {
+        "produce_bytes": "78927173",
+        "fetch_bytes": "0",
+        "request_count": "4853",
+        "produce_batch_count": "4849"
+      },
+      "recent_request_statistics": {
+        "produce_bytes": "78927173",
+        "fetch_bytes": "0",
+        "request_count": "4853",
+        "produce_batch_count": "4849"
+      }
+    },
+    ...
+  ],
+  "total_size": "9"
+}
+----
+====
+--
+endif::[]
+======
+
+To view connections for a specific client, you can use a filter expression:
+
+[tabs]
+======
+rpk::
++
+--
+[,bash]
+----
+rpk cluster connections list --client-id="perf-producer-client"
+----
+
+[,bash,role="no-copy no-wrap"]
+----
+UID                                   STATE  USER             CLIENT-ID             IP:PORT           NODE  SHARD  OPEN-TIME  IDLE          PROD-TPUT/SEC  FETCH-TPUT/SEC  REQS/MIN
+b41584f3-2662-4185-a4b8-0d8510f5c780  OPEN   UNAUTHENTICATED  perf-producer-client  127.0.0.1:55002   0     0      8s         7.743592270s  0B             0B              1
+b20601a3-624c-4a8c-ab88-717643f01d56  OPEN   UNAUTHENTICATED  perf-producer-client  127.0.0.1:55012   0     0      9s         0s            78.9MB         0B              292
+----
+--
+
+ifndef::env-cloud[]
+curl::
++
+--
+[,bash]
+----
+curl -s -X POST \
+  --header "Content-Type: application/json" \
+  --data '{
+    "filter": "client_id = \"perf-producer-client\""
+  }' \
+  "localhost:9644/redpanda.core.admin.v2.ClusterService/ListKafkaConnections"
+----
+
+.Show example API response
+[%collapsible]
+====
+[,json,lines=24]
+----
+{
+  "connections": [
+    {
+      "nodeId": 0,
+      "shardId": 0,
+      "uid": "b41584f3-2662-4185-a4b8-0d8510f5c780",
+      "state": "KAFKA_CONNECTION_STATE_OPEN",
+      "openTime": "2025-10-15T14:15:15.219538000Z",
+      "closeTime": "1970-01-01T00:00:00.000000000Z",
+      "authenticationInfo": {
+        "state": "AUTHENTICATION_STATE_UNAUTHENTICATED",
+        "mechanism": "AUTHENTICATION_MECHANISM_UNSPECIFIED",
+        "userPrincipal": ""
+      },
+      "listenerName": "",
+      "tlsInfo": {
+        "enabled": false
+      },
+      "source": {
+        "ipAddress": "127.0.0.1",
+        "port": 55002
+      },
+      "clientId": "perf-producer-client",
+      "clientSoftwareName": "apache-kafka-java",
+      "clientSoftwareVersion": "3.9.0",
+      "transactionalId": "",
+      "groupId": "",
+      "groupInstanceId": "",
+      "groupMemberId": "",
+      "apiVersions": {
+        "18": 4,
+        "3": 12,
+        "10": 4
+      },
+      "idleDuration": "7.743592270s",
+      "inFlightRequests": {
+        "sampledInFlightRequests": [],
+        "hasMoreRequests": false
+      },
+      "totalRequestStatistics": {
+        "produceBytes": "0",
+        "fetchBytes": "0",
+        "requestCount": "3",
+        "produceBatchCount": "0"
+      },
+      "recentRequestStatistics": {
+        "produceBytes": "0",
+        "fetchBytes": "0",
+        "requestCount": "3",
+        "produceBatchCount": "0"
+      }
+    },
+    ...
+  ],
+  "totalSize": "2"
+}
+----
+====
+--
+endif::[]
+
+ifdef::env-cloud[]
+Data Plane API::
++
+--
+[,bash]
+----
+curl \
+  --request GET 'https://<dataplane-api-url>/v1/monitoring/kafka/connections' \
+  --header "Authorization: Bearer $ACCESS_TOKEN" \
+  --data '{
+    "filter": "client_id = \"perf-producer-client\""
+  }' 
+----
+
+.Show example API response
+[%collapsible]
+====
+[,json,lines=23]
+----
+{
+  "connections": [
+    {
+      "node_id": 0,
+      "shard_id": 0,
+      "uid": "b41584f3-2662-4185-a4b8-0d8510f5c780",
+      "state": "KAFKA_CONNECTION_STATE_OPEN",
+      "open_time": "2025-10-15T14:15:15.219538000Z",
+      "close_time": "1970-01-01T00:00:00.000000000Z",
+      "authentication_info": {
+        "state": "AUTHENTICATION_STATE_UNAUTHENTICATED",
+        "mechanism": "AUTHENTICATION_MECHANISM_UNSPECIFIED",
+        "user_principal": ""
+      },
+      "listener_name": "",
+      "tls_info": {
+        "enabled": false
+      },
+      "source": {
+        "ip_address": "127.0.0.1",
+        "port": 55002
+      },
+      "client_id": "perf-producer-client",
+      "client_software_name": "apache-kafka-java",
+      "client_software_version": "3.9.0",
+      "transactional_id": "",
+      "group_id": "",
+      "group_instance_id": "",
+      "group_member_id": "",
+      "api_versions": {
+        "18": 4,
+        "3": 12,
+        "10": 4
+      },
+      "idle_duration": "7.743592270s",
+      "in_flight_requests": {
+        "sampled_in_flight_requests": [],
+        "has_more_requests": false
+      },
+      "total_request_statistics": {
+        "produce_bytes": "0",
+        "fetch_bytes": "0",
+        "request_count": "3",
+        "produce_batch_count": "0"
+      },
+      "recent_request_statistics": {
+        "produce_bytes": "0",
+        "fetch_bytes": "0",
+        "request_count": "3",
+        "produce_batch_count": "0"
+      }
+    },
+    ...
+  ],
+  "total_size": "2"
+}
+----
+====
+--
+endif::[]
+======
+
 
 == Throughput throttling enforcement
 
@@ -277,5 +684,9 @@ TRACE 2024-06-14 15:37:44,835 [shard  2:main] kafka_quotas - quota_manager.cc:36
 TRACE 2024-06-14 15:37:59,195 [shard  2:main] kafka_quotas - quota_manager.cc:361 - request: ctx:{quota_type: produce_quota, client_id: {rpk}}, key:k_client_id{rpk}, value:{limit: {1111}, rule: kafka_client_default}, bytes: 1316, delay:184518451ns, capped_delay:184518451ns
 TRACE 2024-06-14 15:37:59,195 [shard  2:main] kafka_quotas - connection_context.cc:605 - [127.0.0.1:58636] throttle request:{snc:0, client:184}, enforce:{snc:-14359, client:-14359}, key:0, request_size:1316
 ----
+
+== See also
+
+- xref:manage:cluster-maintenance/configure-client-connections.adoc[Configure Client Connections]
 
 // end::single-source[]

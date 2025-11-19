@@ -111,6 +111,13 @@ NOTE: If you don't specify the fully qualified Protobuf message name, Redpanda p
 
 == How Iceberg modes translate to table format
 
+ifndef::env-cloud[]
+[IMPORTANT]
+====
+include::upgrade:partial$iceberg-breaking-changes.adoc[]
+====
+endif::[]
+
 Redpanda generates an Iceberg table with the same name as the topic. In each mode, Redpanda writes to a `redpanda` table column that stores a single Iceberg https://iceberg.apache.org/spec/#nested-types[struct^] per record, containing nested columns of the metadata from each record, including the record key, headers, timestamp, the partition it belongs to, and its offset. 
 
 For example, if you produce to a topic `ClickEvent` according to the following Avro schema:
@@ -143,11 +150,12 @@ The `key_value` mode writes to the following table format:
 ----
 CREATE TABLE ClickEvent (
     redpanda struct<
-        partition: integer NOT NULL,
-        timestamp: timestamp NOT NULL,
-        offset:    long NOT NULL,
-        headers:   array<struct<key: binary NOT NULL, value: binary>>,
-        key:       binary
+        partition:      integer,
+        timestamp:      timestamptz,
+        offset:         long,
+        headers:        array<struct<key: string, value: binary>>,
+        key:            binary,
+        timestamp_type: integer
     >,
     value binary
 )
@@ -161,11 +169,12 @@ The `value_schema_id_prefix` and `value_schema_latest` modes can use the schema 
 ----
 CREATE TABLE ClickEvent (
     redpanda struct<
-        partition: integer NOT NULL,
-        timestamp: timestamp NOT NULL,
-        offset:    long NOT NULL,
-        headers:   array<struct<key: binary NOT NULL, value: binary>>,
-        key:       binary
+        partition: integer,
+        timestamp:      timestamptz,
+        offset:         long,
+        headers:        array<struct<key: string, value: binary>>,
+        key:            binary,
+        timestamp_type: integer
     >,
     user_id integer NOT NULL,
     event_type string,
@@ -213,11 +222,12 @@ Avro::
 
 There are some cases where the Avro type does not map directly to an Iceberg type and Redpanda applies the following transformations:
 
+* Enums are translated into the Iceberg `string` type.
 * Different flavors of time (such as `time-millis`) and timestamp (such as `timestamp-millis`) types are translated to the same Iceberg `time` and `timestamp` types, respectively.
 * Avro unions are flattened to Iceberg structs with optional fields. For example:
 ** The union `["int", "long", "float"]` is represented as an Iceberg struct `struct<0 INT NULLABLE, 1 LONG  NULLABLE, 2 FLOAT NULLABLE>`.
 ** The union `["int", null, "float"]` is represented as an Iceberg struct `struct<0 INT NULLABLE, 1 FLOAT NULLABLE>`.
-* All fields are required by default. (Avro always sets a default in binary representation.)
+* Two-field unions that contain `null` are represented as a single optional field only (no struct). For example, the union `["null", "long"]` is represented as `long`.
 
 Some Avro types are not supported:
 
@@ -250,7 +260,7 @@ Protobuf::
 There are some cases where the Protobuf type does not map directly to an Iceberg type and Redpanda applies the following transformations:
 
 * Repeated values are translated into Iceberg `list` types.
-* Enums are translated into Iceberg `int` types based on the integer value of the enumerated type.
+* Enums are translated into the Iceberg `string` type.
 * `uint32` and `fixed32` are translated into Iceberg `long` types as that is the existing semantic for unsigned 32-bit values in Iceberg.
 * `uint64` and `fixed64` values are translated into their Base-10 string representation.
 * `google.protobuf.Timestamp` is translated into `timestamp` in Iceberg.
@@ -344,6 +354,6 @@ The following are not supported for JSON Schema:
 
 // end::single-source[]
 
-== See also
+include::shared:partial$suggested-reading.adoc[]
 
 - xref:reference:properties/topic-properties.adoc#redpanda-iceberg-mode[`redpanda.iceberg.mode` topic property reference]
