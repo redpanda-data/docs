@@ -72,6 +72,63 @@ To set up Shadowing:
 * **Configure filters**: Define which topics, consumer groups, and ACLs should replicate by creating include/exclude patterns that match your disaster recovery requirements. See <<set-filters>>.
 * **Create a shadow link**: Establish the connection between clusters using `rpk`, the Admin API, or Redpanda Console with authentication and network settings. See <<create-a-shadow-link>>.
 
+== Shadow Link Tasks
+
+Shadow linking operates through specialized tasks that handle different aspects of replication. Each task corresponds to a configuration section in your shadow link setup and runs continuously to maintain synchronization with the source cluster.
+
+[#source-topic-sync-task]
+=== Source Topic Sync Task
+
+The **Source Topic Sync Task** manages topic discovery and metadata synchronization. This task periodically queries the source cluster to discover available topics, applies your configured topic filters to determine which topics should become shadow topics, and synchronizes topic properties between clusters.
+
+The task is controlled by the `topic_metadata_sync_options` configuration section, which includes:
+
+* **Auto-creation filters**: Determines which source topics automatically become shadow topics
+* **Property synchronization**: Controls which topic properties replicate from source to shadow
+* **Starting offset**: Sets where new shadow topics begin replication (earliest, latest, or timestamp-based)
+* **Sync interval**: How frequently to check for new topics and property changes
+
+When this task discovers a new topic that matches your filters, it creates the corresponding shadow topic and begins replication from your configured starting offset.
+
+[#consumer-group-shadowing-task]
+=== Consumer Group Shadowing Task
+
+The **Consumer Group Shadowing task** replicates consumer group offsets and membership information from the source cluster. This ensures that consumer applications can resume processing from the correct position after failover.
+
+The task is controlled by the `consumer_offset_sync_options` configuration section, which includes:
+
+* **Group filters**: Determines which consumer groups have their offsets replicated
+* **Sync interval**: How frequently to synchronize consumer group offsets
+* **Offset clamping**: Automatically adjusts replicated offsets to valid ranges on the shadow cluster
+
+This task runs on brokers that host the `__consumer_offsets` topic and continuously tracks consumer group coordinators to optimize offset synchronization.
+
+[#security-migrator-task]
+=== Security Migrator Task
+
+The **Security Migrator task** replicates security policies, primarily ACLs (Access Control Lists), from the source cluster to maintain consistent authorization across both environments.
+
+The task is controlled by the `security_sync_options` configuration section, which includes:
+
+* **ACL filters**: Determines which security policies replicate
+* **Sync interval**: How frequently to synchronize security settings
+
+By default, all ACLs replicate to ensure your shadow cluster maintains the same security posture as your source cluster.
+
+=== Task Status and Monitoring
+
+Each task reports its status through the shadow link status API. Task states include:
+
+* **`ACTIVE`**: Task is running normally and performing synchronization
+* **`PAUSED`**: Task has been manually paused through configuration
+* **`FAULTED`**: Task encountered an error and requires attention
+* **`NOT_RUNNING`**: Task is not currently executing
+* **`LINK_UNAVAILABLE`**: Task cannot communicate with the source cluster
+
+You can pause individual tasks by setting the `paused` field to `true` in the corresponding configuration section. This allows you to selectively disable parts of the replication process without affecting the entire shadow link.
+
+For monitoring task health and troubleshooting task issues, see xref:disaster-recovery:shadowing:monitor.adoc[Monitor Shadow Links].
+
 == What gets replicated
 
 Shadowing replicates your topic data with complete fidelity, preserving all message records with their original offsets, timestamps, headers, and metadata. The partition structure remains identical between source and shadow clusters, ensuring applications can resume processing from the exact same position after failover.
@@ -82,7 +139,7 @@ Partition count is always replicated to ensure the shadow topic matches the sour
 
 === Topic properties replication
 
-For topic properties, Redpanda follows these replication rules:
+The <<source-topic-sync-task,Source Topic Sync task>> handles topic property replication. For topic properties, Redpanda follows these replication rules:
 
 **Never replicated:**
 
@@ -210,7 +267,7 @@ Redpanda system topics have the following specific filtering restrictions:
 
 === ACL filtering
 
-By default all ACLs are replicated. This is recommended in order to ensure that your shadow cluster has the same permissions as your source cluster. ACL filters should be used with care:
+ACLs are replicated by the <<security-migrator-task,Security Migrator task>>. This is recommended to ensure that your shadow cluster has the same permissions as your source cluster. To configure ACL filters:
 
 [,yaml]
 ----
@@ -239,7 +296,9 @@ acl_filters:
 
 === Consumer group filtering and behavior
 
-Consumer group filters determine which consumer groups have their offsets replicated to the shadow cluster. By default, all consumer groups are replicated unless you specify filters.
+Consumer group filters determine which consumer groups have their offsets replicated to the shadow cluster by the <<consumer-group-shadowing-task,Consumer Group Shadowing task>>. 
+
+Offset replication operates selectively within each consumer group. Only committed offsets for active shadow topics are synchronized, even if the consumer group has offsets for additional topics that aren't being shadowed. For example, if consumer group "app-consumers" has committed offsets for "orders", "payments", and "inventory" topics, but only "orders" is an active shadow topic, then only the "orders" offsets will be replicated to the shadow cluster.
 
 [,yaml]
 ----
@@ -259,11 +318,11 @@ consumer_offset_sync_options:
 
 **Avoid name conflicts:** If you plan to consume data from the shadow cluster, do not use the same consumer group names as those used on the source cluster. While this won't break shadow linking, it can impact your RPO/RTO because conflicting group names may interfere with offset replication and consumer resumption during disaster recovery.
 
-**Offset clamping:** When Redpanda replicates consumer group offsets from the source cluster, offsets are automatically "clamped" during the commit process. If a replicated offset is above the high watermark (HWM) of the shadow partition, Redpanda clamps the offset to the shadow partition's HWM. This ensures offsets remain valid and prevents consumers from seeking beyond available data on the shadow cluster.
+**Offset clamping:** When Redpanda replicates consumer group offsets from the source cluster, offsets are automatically "clamped" during the commit process on the shadow cluster. If a committed offset from the source cluster is above the high watermark (HWM) of the corresponding shadow partition, Redpanda clamps the offset to the shadow partition's HWM before committing it to the shadow cluster. This ensures offsets remain valid and prevents consumers from seeking beyond available data on the shadow cluster.
 
 === Starting offset for new shadow topics
 
-When a shadow topic is created for the first time, you can control where replication begins on the source topic. This setting only applies to empty shadow partitions and is crucial for disaster recovery planning.
+When the <<source-topic-sync-task,Source Topic Sync task>> creates a shadow topic for the first time, you can control where replication begins on the source topic. This setting only applies to empty shadow partitions and is crucial for disaster recovery planning. Changing this configuration only affects new shadow topics, existing shadow topics continue replicating from their current position.
 
 [,yaml]
 ----
