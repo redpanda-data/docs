@@ -557,6 +557,53 @@ Example:
 }
 ```
 
+### Prefix self-managed-only links
+
+Some documentation pages only exist in self-managed deployments, not in cloud-docs. When adding related_topics links, prefix these with `self-managed-only:` so the build system can handle them appropriately.
+
+Common self-managed-only pages:
+- Kubernetes-specific pages: `manage:kubernetes/`
+- Some cluster maintenance pages: `manage:cluster-maintenance/configure-client-connections.adoc`
+- Some topic properties that don't exist in cloud: `reference:properties/topic-properties.adoc#segmentms`
+
+Example:
+```json
+{
+  "kafka_connections_max": {
+    "related_topics": [
+      "self-managed-only:xref:manage:cluster-maintenance/configure-client-connections.adoc#limit-client-connections[Limit client connections]"
+    ]
+  }
+}
+```
+
+When you see build errors like:
+```
+ERROR (asciidoctor): target of xref not found: manage:kubernetes/security/authentication/k-authentication.adoc
+```
+
+Fix by adding the `self-managed-only:` prefix:
+```json
+{
+  "related_topics": [
+    "self-managed-only:xref:manage:kubernetes/security/authentication/k-authentication.adoc[Link Text]"
+  ]
+}
+```
+
+Use the `fix-cloud-links.py` script to automatically identify and prefix these links:
+```bash
+python3 fix-cloud-links.py
+```
+
+### Remove duplicate links
+
+Always remove duplicates from related_topics lists to keep them clean:
+
+```bash
+python3 remove-duplicate-links.py
+```
+
 ---
 
 ## Best practices
