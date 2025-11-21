@@ -67,6 +67,22 @@ If using xref:manage:security/authentication.adoc[authentication] for the shadow
 
 == Set up Shadowing
 
+[TIP]
+====
+**Quick start**: Generate a configuration template to get started quickly:
+
+[,bash]
+----
+# Generate a sample configuration file with placeholder values
+rpk shadow config generate -o shadow-config.yaml
+
+# Or generate a template with detailed field documentation
+rpk shadow config generate --print-template -o shadow-config-template.yaml
+----
+
+This creates a complete YAML configuration file that you can customize for your environment. The template includes all available fields with comments explaining their purpose.
+====
+
 To set up Shadowing:
 
 * **Configure filters**: Define which topics, consumer groups, and ACLs should replicate by creating include/exclude patterns that match your disaster recovery requirements. See <<set-filters>>.
@@ -202,37 +218,40 @@ Redpanda processes filters in the order you define them with EXCLUDE filters tak
 Replicate all topics except test topics:
 [,yaml]
 ----
-auto_create_shadow_topic_filters:
-  - pattern_type: "PREFIX"
-    filter_type: "EXCLUDE" 
-    name: "test-"                        # Exclude all test topics
-  - pattern_type: "LITERAL"
-    filter_type: "INCLUDE"
-    name: "*"
+topic_metadata_sync_options:
+  auto_create_shadow_topic_filters:
+  - pattern_type: PREFIX
+    filter_type: EXCLUDE
+    name: test-                        # Exclude all test topics
+  - pattern_type: LITERAL
+    filter_type: INCLUDE
+    name: '*'                         # Include all other topics
 ----
 
 Replicate only production topics:
 [,yaml]
 ----
-auto_create_shadow_topic_filters:
-  - pattern_type: "PREFIX"
-    filter_type: "INCLUDE"
-    name: "prod-"                        # Include production topics
-  - pattern_type: "PREFIX" 
-    filter_type: "INCLUDE"
-    name: "production-"                  # Alternative production prefix
+topic_metadata_sync_options:
+  auto_create_shadow_topic_filters:
+  - pattern_type: PREFIX
+    filter_type: INCLUDE
+    name: prod-                       # Include production topics
+  - pattern_type: PREFIX
+    filter_type: INCLUDE
+    name: production-                 # Alternative production prefix
 ----
 
 Replicate specific consumer groups:
 [,yaml]
 ----
-group_filters:
-  - pattern_type: "LITERAL"
-    filter_type: "INCLUDE"
-    name: "critical-app-consumers"       # Include specific consumer group
-  - pattern_type: "PREFIX"
-    filter_type: "INCLUDE" 
-    name: "prod-consumer-"               # Include production consumers
+consumer_offset_sync_options:
+  group_filters:
+  - pattern_type: LITERAL
+    filter_type: INCLUDE
+    name: critical-app-consumers      # Include specific consumer group
+  - pattern_type: PREFIX
+    filter_type: INCLUDE
+    name: prod-consumer-              # Include production consumers
 ----
 
 === Schema Registry synchronization
@@ -271,27 +290,28 @@ ACLs are replicated by the <<security-migrator-task,Security Migrator task>>. Th
 
 [,yaml]
 ----
-acl_filters:
+security_sync_options:
+  acl_filters:
   # Include read permissions for production topics
   - resource_filter:
-      resource_type: "TOPIC"            # Filter by topic resource
-      pattern_type: "PREFIX"            # Match by prefix
-      name: "prod-"                     # Production topic prefix
+      resource_type: TOPIC            # Filter by topic resource
+      pattern_type: PREFIXED          # Match by prefix
+      name: prod-                     # Production topic prefix
     access_filter:
-      principal: "User:app-user"        # Application service user
-      operation: "READ"                 # Read operation
-      permission_type: "ALLOW"          # Allow permission
-      host: "*"                         # Any host
+      principal: User:app-user        # Application service user
+      operation: READ                 # Read operation
+      permission_type: ALLOW          # Allow permission
+      host: '*'                       # Any host
   # Include consumer group permissions
   - resource_filter:
-      resource_type: "GROUP"            # Filter by consumer group
-      pattern_type: "LITERAL"           # Exact match
-      name: "*"                         # All consumer groups
+      resource_type: GROUP            # Filter by consumer group
+      pattern_type: LITERAL           # Exact match
+      name: '*'                       # All consumer groups
     access_filter:
-      principal: "User:app-user"        # Same application user
-      operation: "READ"                 # Read operation
-      permission_type: "ALLOW"          # Allow permission
-      host: "*"                         # Any host
+      principal: User:app-user        # Same application user
+      operation: READ                 # Read operation
+      permission_type: ALLOW          # Allow permission
+      host: '*'                       # Any host
 ----
 
 === Consumer group filtering and behavior
@@ -303,15 +323,15 @@ Offset replication operates selectively within each consumer group. Only committ
 [,yaml]
 ----
 consumer_offset_sync_options:
-  enabled: true
-  interval: "30s"
+  interval: 30s                      # How often to sync consumer group offsets
+  paused: false                       # Enable consumer offset synchronization
   group_filters:
-    - pattern_type: "PREFIX"
-      filter_type: "INCLUDE"
-      name: "prod-consumer-"             # Include production consumer groups
-    - pattern_type: "LITERAL"
-      filter_type: "EXCLUDE"
-      name: "test-consumer-group"        # Exclude specific test groups
+  - pattern_type: PREFIX
+    filter_type: INCLUDE
+    name: prod-consumer-              # Include production consumer groups
+  - pattern_type: LITERAL
+    filter_type: EXCLUDE
+    name: test-consumer-group         # Exclude specific test groups
 ----
 
 **Important consumer group considerations:**
@@ -327,11 +347,21 @@ When the <<source-topic-sync-task,Source Topic Sync task>> creates a shadow topi
 [,yaml]
 ----
 topic_metadata_sync_options:
-  start_offset:
-    earliest: {}                         # Start from the beginning of the source topic
-    # OR use one of these alternatives:
-    # latest: {}                         # Start from the most recent offset
-    # timestamp: "2025-01-01T00:00:00Z"  # Start from records at or after this timestamp
+  start_at_earliest: {}
+----
+
+Alternatively, to start from the most recent offset:
+[,yaml]
+----
+topic_metadata_sync_options:
+  start_at_latest: {}
+----
+
+Or to start from a specific timestamp:
+[,yaml]
+----
+topic_metadata_sync_options:
+  start_at_timestamp: 2024-01-01T00:00:00Z
 ----
 
 **Starting offset options:**
@@ -353,7 +383,7 @@ Use `rpk` to generate a sample configuration file with common filter patterns:
 
 [,bash]
 ----
-rpk shadow config generate --output shadow-config.yaml
+rpk shadow config generate -o shadow-config.yaml
 ----
 
 This creates a template configuration file that you can customize for your environment. For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-config-generate.adoc[`rpk shadow config generate`].
@@ -391,10 +421,10 @@ Specify multiple bootstrap servers in your shadow link configuration for high av
 [,yaml]
 ----
 client_options:
-  bootstrap_servers:
-    - "<source-broker-1>:<port>"         # Example: "source-broker-1.example.com:9092"
-    - "<source-broker-2>:<port>"         # Example: "source-broker-2.example.com:9092" 
-    - "<source-broker-3>:<port>"         # Example: "source-broker-3.example.com:9092"
+  bootstrap_servers:                  # Source cluster brokers to connect to
+  - <source-broker-1>:<port>          # Example: "prod-kafka-1.example.com:9092"
+  - <source-broker-2>:<port>          # Example: "prod-kafka-2.example.com:9092"
+  - <source-broker-3>:<port>          # Example: "prod-kafka-3.example.com:9092"
 ----
 
 The shadow cluster uses these addresses to discover all brokers in the source cluster. If one bootstrap server is unavailable, the shadow cluster tries the next one in the list.
@@ -408,12 +438,12 @@ For production deployments, secure the network connection between clusters:
 ----
 client_options:
   tls_settings:
-    enabled: <enable-tls>                # Enable TLS using system trust store, example: true
-    ca_path: "<ca-cert-path>"            # Path to CA certificate, example: "/etc/ssl/certs/ca.crt"
-    # Optional client certificates for mTLS
-    key_path: "<client-key-path>"        # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
-    cert_path: "<client-cert-path>"      # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
-    do_not_set_sni_hostname: <sni-setting>  # Optional: Skip SNI hostname when using TLS, example: false
+    enabled: true                     # Enable TLS
+    tls_file_settings:
+      ca_path: <ca-cert-path>         # Path to CA certificate, example: "/etc/ssl/certs/ca.crt"
+      key_path: <client-key-path>     # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
+      cert_path: <client-cert-path>   # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
+    do_not_set_sni_hostname: false   # Optional: Skip SNI hostname when using TLS (default: false)
 ----
 
 **Authentication:**
@@ -421,9 +451,10 @@ client_options:
 ----
 client_options:
   authentication_configuration:
-    username: "<sasl-username>"          # SASL/SCRAM username, example: "shadow-replication-user"
-    password: "<sasl-password>"          # SASL/SCRAM password, example: "secure-password"
-    scram_mechanism: "<scram-mechanism>" # SCRAM mechanism, options: "SCRAM-SHA-256", "SCRAM-SHA-512"
+    scram_configuration:
+      username: <sasl-username>       # SASL/SCRAM username, example: "shadow-replication-user"
+      password: <sasl-password>       # SASL/SCRAM password, example: "secure-password-123"
+      scram_mechanism: SCRAM_SHA_256  # SCRAM mechanism: "SCRAM_SHA_256" or "SCRAM_SHA_512"
 ----
 
 ==== Connection tuning
@@ -434,15 +465,15 @@ Adjust connection parameters based on your network characteristics. For example:
 ----
 client_options:
   # Connection and metadata settings
-  connection_timeout_ms: <timeout-ms>        # Default 1000ms, increase for high-latency networks
-  retry_backoff_ms: <backoff-ms>             # Default 100ms, backoff between connection retries  
-  metadata_max_age_ms: <metadata-age-ms>     # Default 10000ms, how often to refresh cluster metadata
+  connection_timeout_ms: 1000         # Default 1000ms, increase for high-latency networks
+  retry_backoff_ms: 100               # Default 100ms, backoff between connection retries
+  metadata_max_age_ms: 10000          # Default 10000ms, how often to refresh cluster metadata
   
   # Fetch request settings
-  fetch_wait_max_ms: <fetch-wait-ms>         # Default 500ms, max time to wait for fetch requests
-  fetch_min_bytes: <fetch-min-bytes>         # Default 5MB, minimum bytes to fetch per request
-  fetch_max_bytes: <fetch-max-bytes>         # Default 20MB, maximum bytes to fetch per request
-  fetch_partition_max_bytes: <fetch-partition-max-bytes>  # Default 1MB, maximum bytes to fetch per partition
+  fetch_wait_max_ms: 500              # Default 500ms, max time to wait for fetch requests
+  fetch_min_bytes: 5242880            # Default 5MB, minimum bytes to fetch per request
+  fetch_max_bytes: 20971520           # Default 20MB, maximum bytes to fetch per request
+  fetch_partition_max_bytes: 1048576  # Default 1MB, maximum bytes to fetch per partition
 ----
 
 === Create a shadow link
@@ -482,99 +513,78 @@ Use xref:get-started:config-rpk-profile.adoc[`rpk profile`] to save your cluster
 [,yaml]
 ----
 # Sample ShadowLinkConfig YAML with all fields
-name: "<shadow-link-name>"              # Unique name for this shadow link, example: "production-dr"
+name: <shadow-link-name>              # Unique name for this shadow link, example: "production-dr"
 client_options:
-  bootstrap_servers:                     # Source cluster brokers to connect to
-    - "<source-broker-1>:<port>"         # Example: "prod-kafka-1.example.com:9092"
-    - "<source-broker-2>:<port>"         # Example: "prod-kafka-2.example.com:9092"
-    - "<source-broker-3>:<port>"         # Example: "prod-kafka-3.example.com:9092"
-  source_cluster_id: "<cluster-id>"      # Optional: Expected source cluster ID for validation, example: "prod-cluster-123"
+  bootstrap_servers:                  # Source cluster brokers to connect to
+  - <source-broker-1>:<port>          # Example: "prod-kafka-1.example.com:9092"
+  - <source-broker-2>:<port>          # Example: "prod-kafka-2.example.com:9092"
+  - <source-broker-3>:<port>          # Example: "prod-kafka-3.example.com:9092"
+  source_cluster_id: <cluster-id>     # Optional: Expected source cluster ID for validation, example: "prod-cluster-123"
   
   # TLS settings using file paths
   tls_settings:
-    enabled: true                        # Enable TLS
-    ca_path: "<ca-cert-path>"            # Path to CA certificate, example: "/etc/ssl/certs/ca.crt"
-    key_path: "<client-key-path>"        # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
-    cert_path: "<client-cert-path>"      # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
-    do_not_set_sni_hostname: false      # Optional: Skip SNI hostname when using TLS (default: false)
-  
-  # Alternative TLS settings using PEM content
-  # tls_settings:
-  #   enabled: true                      # Enable TLS
-  #   ca: |                              # CA certificate in PEM format
-  #     -----BEGIN CERTIFICATE-----
-  #     ... CA certificate content ...
-  #     -----END CERTIFICATE-----
-  #   key: |                             # Client private key in PEM format
-  #     -----BEGIN PRIVATE KEY-----
-  #     ... private key content ...
-  #     -----END PRIVATE KEY-----
-  #   cert: |                            # Client certificate in PEM format
-  #     -----BEGIN CERTIFICATE-----
-  #     ... client certificate content ...
-  #     -----END CERTIFICATE-----
-  #   do_not_set_sni_hostname: false    # Optional: Skip SNI hostname when using TLS (default: false)
+    enabled: true                     # Enable TLS
+    tls_file_settings:
+      ca_path: <ca-cert-path>         # Path to CA certificate, example: "/etc/ssl/certs/ca.crt"
+      key_path: <client-key-path>     # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
+      cert_path: <client-cert-path>   # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
+    do_not_set_sni_hostname: false   # Optional: Skip SNI hostname when using TLS (default: false)
   
   authentication_configuration:
-    username: "<sasl-username>"          # SASL/SCRAM username, example: "shadow-replication-user"
-    password: "<sasl-password>"          # SASL/SCRAM password, example: "secure-password-123"
-    scram_mechanism: "SCRAM-SHA-256"     # SCRAM mechanism: "SCRAM-SHA-256" or "SCRAM-SHA-512"
+    scram_configuration:
+      username: <sasl-username>       # SASL/SCRAM username, example: "shadow-replication-user"
+      password: <sasl-password>       # SASL/SCRAM password, example: "secure-password-123"
+      scram_mechanism: SCRAM_SHA_256  # SCRAM mechanism: "SCRAM_SHA_256" or "SCRAM_SHA_512"
   
   # Connection tuning - adjust based on network characteristics
-  metadata_max_age_ms: 10000             # How often to refresh cluster metadata (default: 10000ms)
-  connection_timeout_ms: 1000            # Connection timeout (default: 1000ms, increase for high latency)
-  retry_backoff_ms: 100                  # Backoff between retries (default: 100ms)
-  fetch_wait_max_ms: 500                 # Max time to wait for fetch requests (default: 500ms)
-  fetch_min_bytes: 5242880               # Min bytes per fetch (default: 5MB)
-  fetch_max_bytes: 20971520              # Max bytes per fetch (default: 20MB)
-  fetch_partition_max_bytes: 1048576     # Max bytes per partition fetch (default: 1MB)
+  metadata_max_age_ms: 10000          # How often to refresh cluster metadata (default: 10000ms)
+  connection_timeout_ms: 1000         # Connection timeout (default: 1000ms, increase for high latency)
+  retry_backoff_ms: 100               # Backoff between retries (default: 100ms)
+  fetch_wait_max_ms: 500              # Max time to wait for fetch requests (default: 500ms)
+  fetch_min_bytes: 5242880            # Min bytes per fetch (default: 5MB)
+  fetch_max_bytes: 20971520           # Max bytes per fetch (default: 20MB)
+  fetch_partition_max_bytes: 1048576  # Max bytes per partition fetch (default: 1MB)
 
 topic_metadata_sync_options:
-  interval: "30s"                        # How often to sync topic metadata (examples: "30s", "1m", "5m")
-  auto_create_shadow_topic_filters:      # Filters for automatic topic creation
-    - pattern_type: "PREFIX"             # Match topics starting with this prefix
-      filter_type: "INCLUDE"
-      name: "<topic-prefix>"             # Examples: "prod-", "production-", "app-"
-    - pattern_type: "LITERAL"            # Exclude specific topics
-      filter_type: "EXCLUDE"
-      name: "<excluded-topic>"           # Examples: "temp-data", "test-topic"
-    - pattern_type: "LITERAL"            # Include all remaining topics (wildcard)
-      filter_type: "INCLUDE"
-      name: "*"
-  synced_shadow_topic_properties:        # Additional topic properties to sync (beyond defaults)
-    - "retention.ms"                     # Topic retention time
-    - "segment.ms"                       # Segment roll time
-    - "<custom-property>"                # Examples: "compression.type", "min.insync.replicas"
-  start_offset:
-    earliest: {}                         # Start from the beginning of source topics (default)
+  interval: 30s                       # How often to sync topic metadata (examples: "30s", "1m", "5m")
+  auto_create_shadow_topic_filters:   # Filters for automatic topic creation
+  - pattern_type: LITERAL             # Include all topics (wildcard)
+    filter_type: INCLUDE
+    name: '*'
+  - pattern_type: PREFIX              # Exclude topics with specific prefix
+    filter_type: EXCLUDE
+    name: <topic-prefix-to-exclude>   # Examples: "temp-", "test-", "debug-"
+  synced_shadow_topic_properties:     # Additional topic properties to sync (beyond defaults)
+  - retention.ms                      # Topic retention time
+  - segment.ms                        # Segment roll time
+  exclude_default: false              # Include default properties (compression, retention, etc.)
+  start_at_earliest: {}               # Start from the beginning of source topics (default)
+  paused: false                       # Enable topic metadata synchronization
 
 consumer_offset_sync_options:
-  interval: "30s"                        # How often to sync consumer group offsets
-  enabled: true                          # Enable consumer offset synchronization
-  group_filters:                         # Filters for consumer groups to sync
-    - pattern_type: "PREFIX"
-      filter_type: "INCLUDE"
-      name: "<consumer-group-prefix>"    # Examples: "prod-consumer-", "app-"
-    - pattern_type: "LITERAL"
-      filter_type: "EXCLUDE"
-      name: "<excluded-group>"           # Examples: "test-consumer", "debug-group"
-
-schema_registry_sync_options:            # Schema Registry synchronization options
-  shadow_schema_registry_topic: {}       # Enable byte-for-byte _schemas topic replication
+  interval: 30s                       # How often to sync consumer group offsets
+  paused: false                       # Enable consumer offset synchronization
+  group_filters:                      # Filters for consumer groups to sync
+  - pattern_type: LITERAL
+    filter_type: INCLUDE
+    name: '*'                         # Include all consumer groups
 
 security_sync_options:
-  interval: "30s"                        # How often to sync security settings
-  enabled: true                          # Enable security settings synchronization
-  acl_filters:                           # Filters for ACLs to sync
-    - resource_filter:
-        resource_type: "TOPIC"           # Resource type: "TOPIC", "GROUP", "CLUSTER"
-        pattern_type: "PREFIX"           # Pattern type: "LITERAL", "PREFIX", "PREFIXED"
-        name: "<resource-pattern>"       # Examples: "prod-", "app-data-"
-      access_filter:
-        principal: "User:<username>"     # Principal name, example: "User:app-service"
-        operation: "READ"                # Operation: "READ", "WRITE", "CREATE", "DELETE", "ALTER", "DESCRIBE", "ANY"
-        permission_type: "ALLOW"         # Permission: "ALLOW" or "DENY"
-        host: "<host-pattern>"           # Host pattern, examples: "*", "10.0.0.0/8", "app-server.example.com"
+  interval: 30s                       # How often to sync security settings
+  paused: false                       # Enable security settings synchronization
+  acl_filters:                        # Filters for ACLs to sync
+  - resource_filter:
+      resource_type: TOPIC            # Resource type: "TOPIC", "GROUP", "CLUSTER"
+      pattern_type: PREFIXED          # Pattern type: "LITERAL", "PREFIX", "PREFIXED"
+      name: <resource-pattern>        # Examples: "prod-", "app-data-"
+    access_filter:
+      principal: User:<username>      # Principal name, example: "User:app-service"
+      operation: ANY                  # Operation: "READ", "WRITE", "CREATE", "DELETE", "ALTER", "DESCRIBE", "ANY"
+      permission_type: ALLOW          # Permission: "ALLOW" or "DENY"
+      host: '*'                       # Host pattern, examples: "*", "10.0.0.0/8", "app-server.example.com"
+
+schema_registry_sync_options:         # Schema Registry synchronization options
+  shadow_schema_registry_topic: {}    # Enable byte-for-byte _schemas topic replication
 ----
 ====
 
