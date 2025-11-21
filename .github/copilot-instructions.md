@@ -546,14 +546,36 @@ These metadata items are displayed in the metadata table, not in the description
 
 Use AsciiDoc formatting in descriptions:
 - `` `property_name` `` for property names
-- `xref:path/to/doc.adoc[Link Text]` for cross-references
+- `xref:module:path/to/doc.adoc[Link Text]` for cross-references (always use full resource IDs with module prefix)
 - `<<anchor,text>>` for internal document references
 - `\n\n` for paragraph breaks
+
+Important: Always use full Antora resource IDs with module prefixes in xref links, never relative paths.
+
+Wrong:
+```json
+{
+  "description": "When `segment.bytes` is set, it overrides xref:./cluster-properties.adoc#log_segment_size[`log_segment_size`]."
+}
+```
+
+Right:
+```json
+{
+  "description": "When `segment.bytes` is set, it overrides xref:reference:properties/cluster-properties.adoc#log_segment_size[`log_segment_size`]."
+}
+```
+
+Common module prefixes:
+- `reference:` for reference documentation (properties, API, etc.)
+- `manage:` for management and operations documentation
+- `deploy:` for deployment documentation
+- `get-started:` for getting started guides
 
 Example:
 ```json
 {
-  "description": "The maximum segment size for topics. When `segment.bytes` is set, it overrides the cluster property xref:./cluster-properties.adoc#log_segment_size[`log_segment_size`].\n\nLarger segments improve throughput but increase latency for tiered storage operations."
+  "description": "The maximum segment size for topics. When `segment.bytes` is set, it overrides the cluster property xref:reference:properties/cluster-properties.adoc#log_segment_size[`log_segment_size`].\n\nLarger segments improve throughput but increase latency for tiered storage operations."
 }
 ```
 
@@ -591,18 +613,15 @@ Fix by adding the `self-managed-only:` prefix:
 }
 ```
 
-Use the `fix-cloud-links.py` script to automatically identify and prefix these links:
-```bash
-python3 fix-cloud-links.py
-```
 
 ### Remove duplicate links
 
-Always remove duplicates from related_topics lists to keep them clean:
+Always remove duplicates from related_topics lists to keep them clean.
 
-```bash
-python3 remove-duplicate-links.py
-```
+
+### Normalize xref links to full resource IDs
+
+After updating overrides, normalize all xref links to use full Antora resource IDs.
 
 ---
 
@@ -882,6 +901,8 @@ Property description rules (mandatory):
 - When comparing descriptions, check every single property across all files
 - Keep descriptions focused on behavior, not metadata
 - Use AsciiDoc formatting for cross-references and inline code
+- Always use full Antora resource IDs with module prefixes in xref links (e.g., `reference:properties/cluster-properties.adoc`, not `./cluster-properties.adoc`)
+- Prefix self-managed-only links with `self-managed-only:`
 
 Remember:
 - Always read the override file first
@@ -891,5 +912,6 @@ Remember:
 - Verify changes in generated files
 - Clean up inappropriate content from descriptions
 - Remove any deprecated property overrides
+- Normalize all xref links to full resource IDs
 
 ---
