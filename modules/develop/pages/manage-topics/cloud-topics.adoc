@@ -10,7 +10,15 @@ include::shared:partial$enterprise-license.adoc[]
 ====
 endif::[]
 
-Starting in v25.3, Redpanda provides Cloud Topics to support multi-modal streaming workloads in the most cost-effective way possible. While standard Kafka xref:config-topics.adoc[topics] are ideal for latency-sensitive, high-throughput workloads (for example, for audit logs), Cloud Topics are optimized for high-throughput, cost-sensitive workloads that can tolerate higher latencies. Instead of replicating every byte across expensive network links, Cloud Topics leverage durable, inexpensive Cloud object storage (S3, GCS, MinIO) as the primary mechanism for backing up data. The difference in response time is typically 500ms, which is only impactful for latency-sensitive applications.
+Starting in v25.3, Redpanda provides Cloud Topics to support multi-modal streaming workloads in the most cost-effective way possible: as a configurable option on a single cluster. While standard Redpanda xref:config-topics.adoc[topics] that use local storage or Tiered Storage are ideal for latency-sensitive, low-throughput workloads (for example, for audit logs), Cloud Topics are optimized for latency-tolerant, high-throughput workloads where cloud provider infrastructure costs (especially cross-AZ networking charges) are a major consideration that can become the dominant cost driver at high throughput. These workloads can include observability streams, offline analytics, AI/ML model training data feeds, or development environments where streaming latency isn't critical.
+
+Instead of replicating every byte across expensive network links, Cloud Topics leverage durable, inexpensive Cloud object storage (S3, ADLS,GCS, MinIO) as the primary mechanism for backing up data. This eliminates over 90% of the cost of replicating data over network links in multi-AZ or multi-region clusters. The difference in end-to-end latency is typically between 500ms-1s, which is often acceptable for many streaming workloads, and can unlock new streaming use cases that were previously not cost effective.
+
+:tip-caption: Cost savings example
+
+TIP: In a cloud environment tested by Redpanda, the networking costs of data replication to run a single 100MBps workload were reduced from over $10,000 per month to $80 per month. While this does not represent 100% of total operating costs (Kafka batch sizes can affect this cost reduction slightly), at high throughputs this savings still accounts for the majority of cloud provider expense, reducing the total infrastructure cost of running Kafka workloads by an order of magnitude or more.
+
+:tip-caption: Tip
 
 == Prerequisites
 
@@ -20,10 +28,12 @@ ifndef::env-cloud[]
 +
 [NOTE]
 ====
-Be sure to set the following cluster-level properties to `false` to disable Tiered Storage for new topics:
+When you enabled Tiered Storage at the cluster level, the default is that all new topics are Tiered Storage (or standard) topics. However, if you plan to use Cloud Topics for all new topics in a Redpanda cluster, be sure to set the following cluster-level properties to `false`:
 
 * config_ref:cloud_storage_enable_remote_write,false,properties/object-storage-properties[]
 * config_ref:cloud_storage_enable_remote_read,false,properties/object-storage-properties[]
+
+This ensures that newly-created Redpanda topics are Cloud Topics by default.
 
 For details, see xref:manage:tiered-storage.adoc#enable-tiered-storage-for-a-cluster[Enable Tiered Storage for a cluster].
 ====
@@ -31,12 +41,24 @@ For details, see xref:manage:tiered-storage.adoc#enable-tiered-storage-for-a-clu
 - xref:manage:tiered-storage.adoc#configure-object-storage[Configure object storage].
 - You must have an Enterprise license.
 
-To check if you already have a license key applied to your cluster:
+To check your license status:
 
 [,bash]
 ----
 rpk cluster license info
 ----
+
+If you intend to use Docker Compose while working with Cloud Topics, see the https://docs.docker.com/compose/install/[Docker Compose installation documentation^]. To verify you have it installed, run:
+
+[source,bash]
+----
+docker compose version
+----
+
+You should see the installed Docker Compose version.
+
+For more details about using Docker Compose with Redpanda, see the xref:get-started:quick-start.adoc[Redpanda Self-Managed Quickstart].
+
 endif::[]
 
 == Limitations
@@ -48,42 +70,29 @@ Not all Redpanda features are available when using Cloud Topics (beta). The foll
 - Topic recovery
 - Remote Read Replicas
 
-Also note that Cloud Topics do not work in simple Docker containers unless Cloud storage is set up in them.
+IMPORTANT: You should expect to throw away any cluster running Cloud Topics (beta) after it becomes generally available (GA). Redpanda may be unable to continue using Cloud Topics created with the beta version, and you may be unable to upgrade to future versions. Also, any topic specified to be a Cloud Topic cannot be subsequently converted back to a standard Redpanda topic that uses local or Tiered Storage.
 
-IMPORTANT: You should expect to throw away any cluster running Cloud Topics (beta) after it becomes generally available (GA). Redpanda will be unable to continue using data that was generated by the beta version of this feature. Also, any topic specified to be a Cloud Topic cannot subsequently be converted back to a standard Kafka topic.
+== Enable Cloud Topics for your cluster
 
-== Set up Cloud Topics
-
-To set up Cloud Topics:
-
-. Enable the Cloud Topic for your cluster.
-
-. Create the Cloud Topic.
-
-You can make a topic a Cloud Topic only at creation time.
-
-IMPORTANT: Once you create a Cloud Topic, you cannot subsequently convert it back into a standard Kafka topic.
-
-=== Enable Cloud Topics for your cluster
-
-Run the `rpk cluster config set` command, then edit the following required property:
-
-[,properties]
-----
-unstable_beta_feature_cloud_topics_enabled: true
-----
-
-=== Create a Cloud Topic
-
-Run the following command to create a Cloud Topic:
+You must first enable Cloud Topics for your cluster:
 
 [,bash]
 ----
-rpk topic create -c redpanda.cloud_topic.enable=true <new-cloud-topic-name>
+rpk cluster config set unstable_beta_feature_cloud_topics_enabled=true
+Successfully updated configuration. New configuration version is 3.
+----
+
+Once enabled, create the Cloud Topic:
+
+[,bash]
+----
+rpk topic create -c cloud_topics_enabled=true <new-cloud-topic-name>
 TOPIC                    STATUS
 audit.analytics.may2025  OK
 ----
 
-NOTE: For non-replicated cross-AZ traffic (for example, for producers), if your throughput costs remain elevated, you can use xref:../produce-data/leader-pinning.adoc[leader pinning], which positions a topic's partition leader close to the producers, and helps eliminate this traffic.
+You can make a topic a Cloud Topic only at topic creation time.
+
+NOTE: In addition to replication, cross-AZ ingress (Producer) and egress (Consumer) traffic can also contribute substantially to cloud networking cots. When running multi-AZ clusters in general, Redpanda strongly recommends using xref:../consume-data/follower-fetching.adoc[Follower Fetching], which allows consumers to avoid crossing network zones. When possible, you can use xref:../produce-data/leader-pinning.adoc[leader pinning], which positions a topic's partition leader close to the producers, providing a similar benefit for ingress traffic. These features can add additional savings to the replication cost savings of Cloud Topics.
 
 // end::single-source[]
