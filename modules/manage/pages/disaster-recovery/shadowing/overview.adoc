@@ -52,6 +52,123 @@ Shadowing for disaster recovery currently has the following limitations:
 * During a disaster, xref:manage:audit-logging.adoc[audit log] history from the source cluster is lost, though the shadow cluster begins generating new audit logs immediately after the failover.
 * After you failover shadow topics, automatic fallback to the original source cluster is not supported.
 
+== Shadow link tasks
+
+Shadow linking operates through specialized tasks that handle different aspects of replication. Each task corresponds to a configuration section in your shadow link setup and runs continuously to maintain synchronization with the source cluster.
+
+[tabs]
+====
+Source Topic Sync::
++
+--
+[#source-topic-sync-task]
+The **Source Topic Sync task** manages topic discovery and metadata synchronization. This task periodically queries the source cluster to discover available topics, applies your configured topic filters to determine which topics should become shadow topics, and synchronizes topic properties between clusters.
+
+The task is controlled by the `topic_metadata_sync_options` configuration section, which includes:
+
+* **Auto-creation filters**: Determines which source topics automatically become shadow topics
+* **Property synchronization**: Controls which topic properties replicate from source to shadow
+* **Starting offset**: Sets where new shadow topics begin replication (earliest, latest, or timestamp-based)
+* **Sync interval**: How frequently to check for new topics and property changes
+
+When this task discovers a new topic that matches your filters, it creates the corresponding shadow topic and begins replication from your configured starting offset.
+--
+
+Consumer Group Shadowing::
++
+--
+[#consumer-group-shadowing-task]
+The **Consumer Group Shadowing task** replicates consumer group offsets and membership information from the source cluster. This ensures that consumer applications can resume processing from the correct position after failover.
+
+The task is controlled by the `consumer_offset_sync_options` configuration section, which includes:
+
+* **Group filters**: Determines which consumer groups have their offsets replicated
+* **Sync interval**: How frequently to synchronize consumer group offsets
+* **Offset clamping**: Automatically adjusts replicated offsets to valid ranges on the shadow cluster
+
+This task runs on brokers that host the `__consumer_offsets` topic and continuously tracks consumer group coordinators to optimize offset synchronization.
+--
+
+Security Migrator::
++
+--
+[#security-migrator-task]
+The **Security Migrator task** replicates security policies, primarily ACLs (access control lists), from the source cluster to maintain consistent authorization across both environments.
+
+The task is controlled by the `security_sync_options` configuration section, which includes:
+
+* **ACL filters**: Determines which security policies replicate
+* **Sync interval**: How frequently to synchronize security settings
+
+By default, all ACLs replicate to ensure your shadow cluster maintains the same security posture as your source cluster.
+--
+====
+
+=== Task status and monitoring
+
+Each task reports its status through the shadow link status API. Task states include:
+
+* **`ACTIVE`**: Task is running normally and performing synchronization
+* **`PAUSED`**: Task has been manually paused through configuration
+* **`FAULTED`**: Task encountered an error and requires attention
+* **`NOT_RUNNING`**: Task is not currently executing
+* **`LINK_UNAVAILABLE`**: Task cannot communicate with the source cluster
+
+You can pause individual tasks by setting the `paused` field to `true` in the corresponding configuration section. This allows you to selectively disable parts of the replication process without affecting the entire shadow link.
+
+For monitoring task health and troubleshooting task issues, see xref:manage:disaster-recovery/shadowing/monitor.adoc[Monitor Shadow Links].
+
+== What gets replicated
+
+Shadowing replicates your topic data with complete fidelity, preserving all message records with their original offsets, timestamps, headers, and metadata. The partition structure remains identical between source and shadow clusters, ensuring applications can resume processing from the exact same position after failover.
+
+Consumer group data flows according to your group filters, replicating offsets and membership information for matched groups. ACLs replicate based on your security filters. Schema Registry data synchronizes schema definitions, versions, and compatibility settings.
+
+Partition count is always replicated to ensure the shadow topic matches the source topic's partition structure.
+
+=== Topic properties replication
+
+The <<shadow-link-tasks,Source Topic Sync task>> handles topic property replication. For topic properties, Redpanda follows these replication rules:
+
+[cols="1,1,1"]
+
+|===
+|Never replicated |Always replicated |Always replicated +
+(unless `exclude_default` is `true`)
+
+|`redpanda.remote.readreplica`
+|`max.message.bytes`
+|`compression.type`
+
+|`redpanda.remote.recovery`
+|`cleanup.policy`
+|`retention.bytes`
+
+|`redpanda.remote.allowgaps`
+|`message.timestamp.type`
+|`retention.ms`
+
+|`redpanda.virtual.cluster.id`
+|
+|`delete.retention.ms`
+
+|`redpanda.leaders.preference`
+|
+|`replication.factor`
+
+|`redpanda.cloud_topic.enabled`
+|
+|`min.compaction.lag.ms`
+
+|
+|
+|`max.compaction.lag.ms`
+|===
+
+To replicate additional topic properties, explicitly list them in `synced_shadow_topic_properties`.
+
+The filtering system you configure determines the precise scope of replication across all components, allowing you to balance comprehensive disaster recovery with operational efficiency.
+
 == Best practices
 
 To ensure reliable disaster recovery with Shadowing:
@@ -66,10 +183,10 @@ endif::[]
 
 Choose your implementation approach:
 
-* **xref:./setup.adoc[Setup and Configuration]** - Initial shadow configuration, authentication, and topic selection
-* **xref:./monitor.adoc[Monitoring and Operations]** - Health checks, lag monitoring, and operational procedures
-* **xref:./failover.adoc[Planned Failover]** - Controlled disaster recovery testing and migrations
-* **xref:./failover-runbook.adoc[Failover Runbook]** - Rapid disaster response procedures
+* **xref:./setup.adoc[Setup and Configuration]**: Initial shadow configuration, authentication, and topic selection
+* **xref:./monitor.adoc[Monitoring and Operations]**: Health checks, lag monitoring, and operational procedures
+* **xref:./failover.adoc[Planned Failover]**: Controlled disaster recovery testing and migrations
+* **xref:./failover-runbook.adoc[Failover Runbook]**: Rapid disaster response procedures
 
 ifndef::env-cloud[]
 [TIP]
