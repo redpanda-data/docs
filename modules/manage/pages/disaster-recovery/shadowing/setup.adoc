@@ -119,104 +119,6 @@ To set up Shadowing:
 * **Configure filters**: Define which topics, consumer groups, and ACLs should replicate by creating include/exclude patterns that match your disaster recovery requirements. See <<set-filters>>.
 * **Create a shadow link**: Establish the connection between clusters using `rpk`, the API, or Redpanda Console with authentication and network settings. See <<create-a-shadow-link>>.
 
-== Shadow link tasks
-
-Shadow linking operates through specialized tasks that handle different aspects of replication. Each task corresponds to a configuration section in your shadow link setup and runs continuously to maintain synchronization with the source cluster.
-
-[#source-topic-sync-task]
-=== Source Topic Sync task
-
-The **Source Topic Sync task** manages topic discovery and metadata synchronization. This task periodically queries the source cluster to discover available topics, applies your configured topic filters to determine which topics should become shadow topics, and synchronizes topic properties between clusters.
-
-The task is controlled by the `topic_metadata_sync_options` configuration section, which includes:
-
-* **Auto-creation filters**: Determines which source topics automatically become shadow topics
-* **Property synchronization**: Controls which topic properties replicate from source to shadow
-* **Starting offset**: Sets where new shadow topics begin replication (earliest, latest, or timestamp-based)
-* **Sync interval**: How frequently to check for new topics and property changes
-
-When this task discovers a new topic that matches your filters, it creates the corresponding shadow topic and begins replication from your configured starting offset.
-
-[#consumer-group-shadowing-task]
-=== Consumer Group Shadowing task
-
-The **Consumer Group Shadowing task** replicates consumer group offsets and membership information from the source cluster. This ensures that consumer applications can resume processing from the correct position after failover.
-
-The task is controlled by the `consumer_offset_sync_options` configuration section, which includes:
-
-* **Group filters**: Determines which consumer groups have their offsets replicated
-* **Sync interval**: How frequently to synchronize consumer group offsets
-* **Offset clamping**: Automatically adjusts replicated offsets to valid ranges on the shadow cluster
-
-This task runs on brokers that host the `__consumer_offsets` topic and continuously tracks consumer group coordinators to optimize offset synchronization.
-
-[#security-migrator-task]
-=== Security Migrator task
-
-The **Security Migrator task** replicates security policies, primarily ACLs (access control lists), from the source cluster to maintain consistent authorization across both environments.
-
-The task is controlled by the `security_sync_options` configuration section, which includes:
-
-* **ACL filters**: Determines which security policies replicate
-* **Sync interval**: How frequently to synchronize security settings
-
-By default, all ACLs replicate to ensure your shadow cluster maintains the same security posture as your source cluster.
-
-=== Task status and monitoring
-
-Each task reports its status through the shadow link status API. Task states include:
-
-* **`ACTIVE`**: Task is running normally and performing synchronization
-* **`PAUSED`**: Task has been manually paused through configuration
-* **`FAULTED`**: Task encountered an error and requires attention
-* **`NOT_RUNNING`**: Task is not currently executing
-* **`LINK_UNAVAILABLE`**: Task cannot communicate with the source cluster
-
-You can pause individual tasks by setting the `paused` field to `true` in the corresponding configuration section. This allows you to selectively disable parts of the replication process without affecting the entire shadow link.
-
-For monitoring task health and troubleshooting task issues, see xref:manage:disaster-recovery/shadowing/monitor.adoc[Monitor Shadow Links].
-
-== What gets replicated
-
-Shadowing replicates your topic data with complete fidelity, preserving all message records with their original offsets, timestamps, headers, and metadata. The partition structure remains identical between source and shadow clusters, ensuring applications can resume processing from the exact same position after failover.
-
-Consumer group data flows according to your group filters, replicating offsets and membership information for matched groups. ACLs replicate based on your security filters. Schema Registry data synchronizes schema definitions, versions, and compatibility settings.
-
-Partition count is always replicated to ensure the shadow topic matches the source topic's partition structure.
-
-=== Topic properties replication
-
-The <<source-topic-sync-task,Source Topic Sync task>> handles topic property replication. For topic properties, Redpanda follows these replication rules:
-
-**Never replicated:**
-
-* `redpanda.remote.readreplica`
-* `redpanda.remote.recovery`
-* `redpanda.remote.allowgaps`
-* `redpanda.virtual.cluster.id`
-* `redpanda.leaders.preference`
-* `redpanda.cloud_topic.enabled`
-
-**Always replicated:**
-
-* `max.message.bytes`
-* `cleanup.policy`
-* `message.timestamp.type`
-
-**Always replicated, unless you set `exclude_default` to `true`:**
-
-* `compression.type`
-* `retention.bytes`
-* `retention.ms`
-* `delete.retention.ms`
-* `replication.factor`
-* `min.compaction.lag.ms`
-* `max.compaction.lag.ms`
-
-To replicate additional topic properties, explicitly list them in `synced_shadow_topic_properties`.
-
-The filtering system you configure determines the precise scope of replication across all components, allowing you to balance comprehensive disaster recovery with operational efficiency.
-
 == Set filters
 
 Filters determine which resources Shadowing automatically creates when establishing your shadow link.
@@ -510,7 +412,9 @@ client_options:
 == Create a shadow link
 
 ifdef::env-cloud[]
-You can establish a shadow link using either `rpk`, the Data Plane API, or the Redpanda Cloud UI. For example, to create a shadow link with the source cluster, run the following `rpk` command from the shadow cluster:
+You can establish a shadow link using either `rpk`, the Data Plane API, or the Redpanda Cloud UI. 
+
+To create a shadow link with the source cluster using `rpk`, run the following command from the shadow cluster:
 endif::[]
 
 ifndef::env-cloud[]
@@ -526,7 +430,7 @@ For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-creat
 
 == Update an existing shadow link
 
-If you need to modify a shadow link configuration after creation, use the update command:
+To modify a shadow link configuration after creation, run:
 
 [,bash]
 ----
