@@ -1,7 +1,7 @@
 = Deploy Redpanda for Production in Kubernetes
 :description: Deploy a Redpanda cluster in Kubernetes.
 :tags: ["Kubernetes"]
-:page-aliases: deploy:deployment-option/self-hosted/kubernetes/kubernetes-best-practices.adoc, deploy:deployment-option/self-hosted/kubernetes/redpanda-cluster-recommendations.adoc, deploy:deployment-option/self-hosted/kubernetes/kubernetes-deploy.adoc, deploy:deployment-option/self-hosted/kubernetes/k-25.1-beta.adoc, deploy:deployment-option/self-hosted/kubernetes/k-production-deployment.adoc
+:page-aliases: deploy:deployment-option/self-hosted/kubernetes/kubernetes-best-practices.adoc, deploy:deployment-option/self-hosted/kubernetes/redpanda-cluster-recommendations.adoc, deploy:deployment-option/self-hosted/kubernetes/kubernetes-deploy.adoc, deploy:deployment-option/self-hosted/kubernetes/k-25.1-beta.adoc, deploy:deployment-option/self-hosted/kubernetes/k-production-deployment.adoc, deploy:redpanda/kubernetes/k-25.2-beta.adoc
 :page-toclevels: 1
 :env-kubernetes: true
 :page-categories: Deployment, GitOps
@@ -18,7 +18,7 @@ You must already have a ConfigMap that stores your `io-config.yaml` file. See xr
 
 To deploy Redpanda and Redpanda Console, you can use the following tools:
 
-- *Redpanda Operator*: The Redpanda Operator extends Kubernetes with custom resource definitions (CRDs), allowing you to define Redpanda clusters as native Kubernetes resources. The resource that the Redpanda Operator uses to represent a Redpanda cluster is the Redpanda resource.
+- *Redpanda Operator*: The Redpanda Operator extends Kubernetes with custom resource definitions (CRDs), allowing you to define Redpanda clusters as native Kubernetes resources. The resource that the Redpanda Operator uses to represent a Redpanda cluster is the Redpanda resource. The Redpanda Operator can be deployed in either cluster scope (managing resources across all namespaces) or namespace scope (managing resources within a single namespace).
 - *Helm*: https://helm.sh/docs[Helm^] is a package manager for Kubernetes, which simplifies the process of defining, installing, and upgrading Kubernetes applications. Helm uses charts, a collection of files that describe a related set of Kubernetes resources, to deploy applications in a Kubernetes cluster.
 
 TIP: For more details about the differences between these two methods, see xref:deploy:redpanda/kubernetes/k-deployment-overview.adoc[].
@@ -29,7 +29,12 @@ Operator::
 +
 --
 
-NOTE: The Redpanda Operator is namespace scoped. You must install the Redpanda Operator in the same namespace as your Redpanda resource (Redpanda cluster).
+The Redpanda Operator can be deployed in two different scopes:
+
+- *Cluster scope* (recommended): The Redpanda Operator manages Redpanda resources across all namespaces in your Kubernetes cluster. This provides centralized management and is ideal for production environments.
+- *Namespace scope*: The Redpanda Operator manages Redpanda resources only within a specific namespace. This provides better isolation and is suitable when you need strict namespace boundaries.
+
+WARNING: Do not run multiple Redpanda Operators in different scopes (cluster and namespace scope) in the same cluster as this can cause resource conflicts.
 
 . Make sure that you have permission to install custom resource definitions (CRDs):
 +
@@ -54,7 +59,7 @@ helm install cert-manager jetstack/cert-manager \
 +
 The Redpanda Helm chart enables TLS by default and uses cert-manager to manage TLS certificates.
 
-. Deploy the Redpanda Operator.
+. Deploy the Redpanda Operator in your chosen scope:
 +
 include::deploy:partial$kubernetes/deploy-operator.adoc[]
 
@@ -78,6 +83,7 @@ apiVersion: cluster.redpanda.com/v1alpha2
 kind: Redpanda
 metadata:
   name: redpanda
+  namespace: <cluster-namespace>
 spec:
   clusterSpec:
     #enterprise:
@@ -99,6 +105,7 @@ spec:
 ----
 +
 - `metadata.name`: Name to assign the Redpanda cluster.
+- `metadata.namespace`: For cluster-scoped deployment, specify any namespace. For namespace-scoped deployment, must be the same namespace where the Redpanda Operator is deployed.
 - xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-api-redpanda-v1alpha2-redpandaclusterspec[`spec.clusterSpec`]: This is where you can override default values in the Redpanda Helm chart. Here, you mount the <<prerequisites, I/O configuration file>> to the Pods that run Redpanda. For other configuration details, see <<Production considerations>>.
 - `spec.clusterSpec.enterprise`: If you want to use enterprise features in Redpanda, uncomment this section and add the details of a Secret that stores your Enterprise Edition license key. For details, see xref:get-started:licensing/index.adoc[].
 - `spec.clusterSpec.image.tag`: Deploys the latest version of Redpanda.
@@ -107,15 +114,13 @@ spec:
 . Apply the Redpanda resource:
 +
 ```bash
-kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+kubectl apply -f redpanda-cluster.yaml
 ```
-+
-NOTE: The Redpanda resource must be deployed in the same namespace as the Redpanda Operator. Each new deployment of Redpanda requires a separate namespace.
 
 . Wait for the Redpanda Operator to deploy Redpanda using the Helm chart:
 +
 ```bash
-kubectl get redpanda --namespace <namespace> --watch
+kubectl get redpanda --namespace <cluster-namespace> --watch
 ```
 +
 [.no-copy]
@@ -127,7 +132,7 @@ redpanda   True    Redpanda reconciliation succeeded
 This step may take a few minutes. You can watch for new Pods to make sure that the deployment is progressing:
 +
 ```bash
-kubectl get pod --namespace <namespace>
+kubectl get pod --namespace <cluster-namespace>
 ```
 +
 If it's taking too long, see xref:manage:kubernetes/troubleshooting/k-troubleshoot.adoc[Troubleshooting].
@@ -135,7 +140,7 @@ If it's taking too long, see xref:manage:kubernetes/troubleshooting/k-troublesho
 . Verify that each Redpanda broker is scheduled on only one Kubernetes node:
 +
 ```bash
-kubectl get pod --namespace <namespace>  \
+kubectl get pod --namespace <cluster-namespace>  \
   -o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name -l \
   app.kubernetes.io/component=redpanda-statefulset
 ```
@@ -249,6 +254,160 @@ example-worker    redpanda-2
 
 --
 ====
+
+== Deploy multiple Redpanda clusters
+
+You can deploy multiple Redpanda clusters in the same Kubernetes cluster. This is useful for creating separate environments (such as production, staging, and development) or for organizing clusters by application or team.
+
+[tabs]
+====
+Operator::
++
+--
+
+When using the Redpanda Operator, you can deploy multiple Redpanda clusters by creating separate Redpanda custom resources.
+
+*Requirements:*
+
+- Use a cluster-scoped Redpanda Operator deployment (recommended) or separate namespace-scoped operators in different namespaces
+- Each cluster must be deployed in a unique namespace
+- Configure unique external port numbers for each cluster to avoid conflicts
+
+. Create a second Redpanda cluster in a different namespace:
++
+.`redpanda-cluster-two.yaml`
+[,yaml,subs="attributes+"]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda-staging
+  namespace: redpanda-staging
+spec:
+  clusterSpec:
+    image:
+      tag: {latest-redpanda-tag}
+    listeners:
+      kafka:
+        external:
+          default:
+            advertisedPorts: [31093] <1>
+      admin:
+        external:
+          default:
+            advertisedPorts: [31645] <1>
+      http:
+        external:
+          default:
+            advertisedPorts: [30083] <1>
+      rpc:
+        port: 33146 <1>
+      schemaRegistry:
+        external:
+          default:
+            advertisedPorts: [30084] <1>
+    statefulset:
+      extraVolumes: |-
+        - name: redpanda-io-config
+          configMap:
+            name: redpanda-io-config
+      extraVolumeMounts: |-
+        - name: redpanda-io-config
+          mountPath: /etc/redpanda-io-config
+      additionalRedpandaCmdFlags:
+        - "--io-properties-file=/etc/redpanda-io-config/io-config.yaml"
+----
++
+<1> Configure unique port numbers for each cluster to avoid conflicts. Ensure these ports don't conflict with your first cluster's configuration.
+
+. Apply the second Redpanda resource:
++
+```bash
+kubectl apply -f redpanda-cluster-two.yaml
+```
+
+. Wait for the second cluster to be ready:
++
+```bash
+kubectl get redpanda --namespace redpanda-staging --watch
+```
+
+--
+Helm::
++
+--
+
+When using Helm, deploy multiple Redpanda clusters by using separate namespaces and unique release names for each deployment.
+
+*Requirements:*
+
+- Each cluster must be deployed in a unique namespace
+- Use unique Helm release names for each deployment
+- Configure unique external port numbers for each cluster to avoid conflicts
+
+. Create configuration values for your second cluster:
++
+.`redpanda-staging-values.yaml`
+[,yaml,subs="attributes+"]
+----
+image:
+  tag: {latest-redpanda-tag}
+nameOverride: 'redpanda-staging'
+fullnameOverride: 'redpanda-staging'
+listeners:
+  kafka:
+    external:
+      default:
+        advertisedPorts: [31093] <1>
+  admin:
+    external:
+      default:
+        advertisedPorts: [31645] <1>
+  http:
+    external:
+      default:
+        advertisedPorts: [30083] <1>
+  rpc:
+    port: 33146 <1>
+  schemaRegistry:
+    external:
+      default:
+        advertisedPorts: [30084] <1>
+statefulset:
+  extraVolumes: |-
+    - name: redpanda-io-config
+      configMap:
+        name: redpanda-io-config
+  extraVolumeMounts: |-
+    - name: redpanda-io-config
+      mountPath: /etc/redpanda-io-config
+  additionalRedpandaCmdFlags:
+    - "--io-properties-file=/etc/redpanda-io-config/io-config.yaml"
+----
++
+<1> Configure unique port numbers for each cluster to avoid conflicts. Ensure these ports don't conflict with your first cluster's configuration.
+
+. Install the second Redpanda cluster using a unique release name and namespace:
++
+[source,bash,subs="attributes+"]
+----
+helm install redpanda-staging redpanda/redpanda \
+  --version {latest-redpanda-helm-chart-version} \
+  --namespace redpanda-staging \
+  --create-namespace \
+  --values redpanda-staging-values.yaml
+----
+
+. Wait for the second cluster to be ready:
++
+```bash
+kubectl --namespace redpanda-staging rollout status statefulset redpanda-staging --watch
+```
+
+--
+====
+
+IMPORTANT: When deploying multiple clusters, ensure that external listener ports are unique across all clusters to prevent conflicts. Also consider resource allocation and node capacity when planning multiple cluster deployments.
 
 
 [[config]]
@@ -593,7 +752,6 @@ rbac:
   annotations: {}
 ----
 
-NOTE: If you use the Redpanda Operator, you must also deploy the Redpanda Operator Helm chart with `rbac.createRPKBundleCRs` set to `true` to give it the required roles.
 
 See also: xref:manage:kubernetes/k-rack-awareness.adoc[]
 
