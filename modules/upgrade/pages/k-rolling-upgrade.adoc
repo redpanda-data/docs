@@ -98,9 +98,12 @@ Under-replicated partitions: [] <3>
 [[upgrade]]
 == Perform a rolling upgrade
 
-Performing a rolling upgrade allows you to update the version of Redpanda managed by the Redpanda Helm chart without downtime. This process ensures that each broker is sequentially updated and restarted, minimizing the impact on your environment.
+Performing a rolling upgrade allows you to update the version of Redpanda without downtime. This process ensures that each broker is sequentially updated and restarted, minimizing the impact on your environment.
 
-You can use two methods to upgrade a Redpanda cluster in Kubernetes. The first method is to upgrade the Helm release to a newer version of the Redpanda Helm chart that uses the desired Redpanda version as a default. The second method is to update the existing Helm release to use a newer Redpanda image. The first method is preferred because upgrading the entire chart ensures that any new parameters required to configure the cluster are defined.
+The upgrade process depends on your deployment method:
+
+- **Redpanda Operator**: Update the Redpanda custom resource to specify a new Helm chart version or Redpanda image tag. The operator manages the upgrade process.
+- **Helm**: Either upgrade to a newer version of the Redpanda Helm chart (recommended) or update the Redpanda image tag in your existing Helm release. Upgrading the chart is preferred because it ensures that any new configuration parameters are included.
 
 Upgrading a Redpanda cluster in Kubernetes triggers a sequential restart of the Pods managed by the StatefulSet. During each broker's restart, the following steps occur:
 
@@ -114,18 +117,50 @@ Operator::
 +
 --
 
-. xref:upgrade:k-compatibility.adoc[Review the Kubernetes compatibility matrix] and determine the version of the Redpanda Operator that is compatible with the Helm chart version you plan to use. The Redpanda Operator must be able to understand and manage the Helm chart and the Redpanda version you are deploying. If you need to upgrade, see xref:upgrade:k-upgrade-operator.adoc[].
+. xref:upgrade:k-compatibility.adoc[Review the Kubernetes compatibility matrix] and https://github.com/redpanda-data/redpanda-operator/releases[review the Redpanda Operator release notes^] to determine the version of the Redpanda Operator that is compatible with the Helm chart and Redpanda version you plan to use.
++
+The Redpanda Operator and Helm chart follow the same versioning scheme as Redpanda core (for example, operator version 25.1.1 deploys Redpanda 25.1 by default). Each operator version supports the corresponding Redpanda version ±1 minor version.
 
-. Check the default Redpanda version of a chart to make sure that it uses the version that you want to upgrade your cluster to.
+. If you need to upgrade the Redpanda Operator:
++
+.. Back up your current Helm values for the Redpanda Operator:
 +
 [source,bash]
 ----
-helm show chart --version <chart-version> redpanda/redpanda | grep  "appVersion"
+helm get values redpanda-controller --namespace <namespace> > redpanda-operator-values-backup.yaml
+----
+
+.. Upgrade the Redpanda Operator to a version compatible with your target Redpanda version:
++
+[source,bash]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm repo update
+helm upgrade redpanda-controller redpanda/operator \
+  --namespace <namespace> \
+  --version <operator-version> \
+  --set crds.enabled=true
 ----
 +
-Replace `<chart-version>` with the version number of a newer chart.
+Replace `<operator-version>` with the version of the Redpanda Operator you want to upgrade to.
 
-. Upgrade the Redpanda version by either updating the Helm chart version or the Redpanda image.
+.. Verify that the operator deployment is successfully rolled out:
++
+[source,bash]
+----
+kubectl --namespace <namespace> rollout status --watch deployment/redpanda-controller-operator
+----
++
+.Expected output
+[%collapsible]
+====
+[.no-copy]
+----
+deployment "redpanda-controller-operator" successfully rolled out
+----
+====
+
+. Upgrade the Redpanda cluster by updating the Redpanda image tag in your Redpanda resource:
 +
 .`redpanda-cluster.yaml`
 [source,yaml]
@@ -135,20 +170,16 @@ kind: Redpanda
 metadata:
   name: redpanda
 spec:
-  chartRef:
-    chartVersion: <helm-chart-version> <1>
   clusterSpec:
     image:
-      # Optional
-      tag: <new-version> <2>
+      tag: <new-version> <1>
     statefulset:
       # Optional
-      terminationGracePeriodSeconds: <grace-period> <3>
+      terminationGracePeriodSeconds: <grace-period> <2>
 ----
 +
-<1> The version of the Redpanda Helm chart to deploy.
-<2> If you need to upgrade to an intermediate version of Redpanda, use this setting to specify the version of Redpanda to deploy. This version overrides the default one in the Helm chart. Replace `<new-version>` with a valid version tag.
-<3> The xref:reference:k-redpanda-helm-spec.adoc#statefulsetterminationgraceperiodseconds[`statefulset.terminationGracePeriodSeconds`] setting defines how long Kubernetes will wait for the broker to shut down gracefully before forcefully terminating it. The default value is 90 seconds, which is enough for most clusters, but might require adjustment based on your workload. Modify this setting in your Helm values file if your Redpanda brokers have high loads or hold large amounts of data, as they might need more time to shut down gracefully.
+<1> The version of Redpanda to deploy (for example, `v25.2.1`). The operator automatically uses the appropriate Helm chart version for the specified Redpanda version.
+<2> The xref:reference:k-redpanda-helm-spec.adoc#statefulsetterminationgraceperiodseconds[`statefulset.terminationGracePeriodSeconds`] setting defines how long Kubernetes will wait for the broker to shut down gracefully before forcefully terminating it. The default value is 90 seconds, which is enough for most clusters, but might require adjustment based on your workload. Modify this setting if your Redpanda brokers have high loads or hold large amounts of data, as they might need more time to shut down gracefully.
 
 . Apply the Redpanda resource to deploy the Redpanda cluster:
 +
@@ -248,6 +279,17 @@ redpanda-post-upgrade-ljqpr             0/1     Completed
 kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
   rpk redpanda admin brokers list
 ```
+
+. If you upgraded from operator v25.1.x to v25.2.x or later, check for Console migration warnings:
++
+When upgrading across this version boundary, Redpanda Console is automatically upgraded from v2 to v3. The operator attempts to migrate your Console configuration automatically. If any configuration settings cannot be migrated, warnings are added to the Console custom resource status.
++
+[,bash]
+----
+kubectl get console <console-name> --namespace <namespace> -o jsonpath='{.status.warnings}'
+----
++
+If warnings are present, review them and manually update your Console configuration as needed. For details about migrating to Console v3, see xref:migrate:console-v3.adoc[].
 
 == Roll back
 
