@@ -11,6 +11,268 @@ For details on the new authentication and authorization system, see xref:console
 
 TIP: Use the <<migrator, migration tool>> to convert your v2 configuration to v3 format.
 
+== Choose your migration path
+
+Your migration approach depends on how you deploy Redpanda Console.
+
+=== Kubernetes with Redpanda Operator
+
+The operator automatically migrates most v2 configurations when you upgrade. Review the <<automatic-migration-in-kubernetes>> section to understand what's handled automatically and what requires manual intervention.
+
+=== Other deployment methods
+
+Manually migrate your configuration using this guide and the <<migrator, migration tool>>. Start with <<authentication-and-authorization-migration>>.
+
+== Pre-migration checklist
+
+Review your v2 configuration and check which of these breaking changes apply to you:
+
+* [ ] Have you configured Console with authentication? You must choose a v3 strategy. See <<authentication-decision>>.
+* [ ] Do you use OIDC groups for authorization? They are not supported in v3. See <<oidc-groups-and-realms>>.
+* [ ] Do you configure more than one OIDC provider? You can use only one provider in v3. See <<multiple-oidc-providers>>.
+* [ ] Is your Schema Registry configured under `kafka.schemaRegistry`? Move the configuration to the top level in v3. See <<schema-registry-moves-to-top-level>>.
+* [ ] Are your role bindings in a separate file? Move role bindings to inline configuration in v3. See <<configuration-location-change>>.
+
+=== Authentication decision
+
+You must decide on your v3 authentication strategy before migrating.
+
+==== User impersonation (recommended)
+
+Use this option when you want each user's Console session to use their own Redpanda credentials.
+
+Console role bindings are ignored. Authorization happens in Redpanda with ACLs. Users must be provisioned in Redpanda.
+
+==== Static credentials
+
+Use this option when you want Console to use a shared service account to access Redpanda.
+
+Console role bindings still apply. One set of credentials is used for all backend API calls.
+
+NOTE: For most deployments, user impersonation provides better security and auditability.
+
+=== Track your migration progress
+
+Use this checklist to track your migration:
+
+[%interactive]
+* [ ] Reviewed <<pre-migration-checklist,breaking changes and pre-migration checklist>>
+* [ ] Decided on <<key-authentication-decision,authentication strategy>> (impersonation or static credentials)
+* [ ] Tested configuration with <<migrator,migration tool>>
+* [ ] Updated <<authentication-and-authorization-migration,authentication configuration>>
+* [ ] Migrated <<role-bindings-migration,role bindings>> (if applicable)
+* [ ] Configured <<migrate-redpanda-console-roles-to-redpanda-acls,ACLs in Redpanda>> (if using impersonation)
+* [ ] Updated <<configuration-structure-changes,Schema Registry configuration location>>
+* [ ] Updated <<configuration-structure-changes,serialization and Kafka Connect configuration>>
+* [ ] Deployed updated configuration
+* [ ] Validated <<validate-migration,user login works>>
+* [ ] Validated <<validate-migration,resource access works>> (topics, groups, Schema Registry)
+* [ ] Reviewed and resolved all <<manual-configuration-steps,warnings>> (Kubernetes deployments)
+
+== Automatic migration in Kubernetes
+
+When you deploy Redpanda Console v3 using the Redpanda Operator, the operator automatically attempts to migrate your v2 configuration from the Redpanda custom resource's `console` stanza to the new Console custom resource. The migration process handles as many configuration mappings as possible, but some features require manual intervention.
+
+IMPORTANT: The automatic migration only applies when transitioning from the Redpanda CRD's `console` stanza to the Console CRD. If you directly configure the Console CRD yourself, no automatic migration or normalization is performed.
+
+=== Migration workflow
+
+When you upgrade to Console v3 with the Redpanda Operator:
+
+. The operator attempts automatic migration using the mappings described in <<supported-configuration-mappings>>
+. Warnings are generated for unsupported configurations and added to the Console custom resource
+. You review the warnings and manually configure unsupported features
+. You validate that authentication and authorization work as expected
+
+=== Check for migration warnings
+
+Before reviewing the migration details, check if your Console custom resource has warnings:
+
+[,bash]
+----
+kubectl get console <console-name> -n <namespace> -o jsonpath='{.spec.warnings}'
+----
+
+If you see warnings, they indicate configurations that need your attention. Common warnings and their solutions are documented in <<unsupported-features>>.
+
+If you don't see warnings, review the <<supported-configuration-mappings>> to verify the automatic migration matches your expectations, especially around authentication strategy (impersonation vs static credentials).
+
+=== Supported configuration mappings
+
+The operator automatically migrates the following configuration fields:
+
+.Authentication settings
+[cols="2,2,3"]
+|===
+|v2 Configuration |v3 Configuration |Notes
+
+|`login.jwtSecret`
+|`authentication.jwtSigningKey`
+|Direct mapping
+
+|`login.useSecureCookies`
+|`authentication.useSecureCookies`
+|Direct mapping
+
+|`login.plain`
+|`authentication.basic`
+|Direct mapping
+
+|`login.[provider]`
+|`authentication.oidc`
+|Only one provider is selected if multiple are configured. See <<unsupported-features>>.
+|===
+
+.Schema Registry settings
+[cols="2,2,3"]
+|===
+|v2 Configuration |v3 Configuration |Notes
+
+|`kafka.schemaRegistry.username`
+|`schemaRegistry.authentication.basic.username`
+|Moved to top-level `schemaRegistry` stanza
+
+|`kafka.schemaRegistry.password`
+|`schemaRegistry.authentication.basic.password`
+|Moved to top-level `schemaRegistry` stanza
+
+|`kafka.schemaRegistry.bearerToken`
+|`schemaRegistry.authentication.bearerToken`
+|Moved to top-level `schemaRegistry` stanza
+
+|`kafka.schemaRegistry.*`
+|`schemaRegistry.*`
+|`impersonateUser` automatically set to `true` when credentials are absent
+
+|`kafka.schemaRegistry.*` (other settings)
+|`schemaRegistry.*`
+|All remaining Schema Registry configuration migrated to top level
+|===
+
+.Kafka and serialization settings
+[cols="2,2,3"]
+|===
+|v2 Configuration |v3 Configuration |Notes
+
+|`kafka.protobuf`
+|`serde.protobuf`
+|Moved to dedicated `serde` stanza
+
+|`kafka.cbor`
+|`serde.cbor`
+|Moved to dedicated `serde` stanza
+
+|`kafka.messagePack`
+|`serde.messagePack`
+|Moved to dedicated `serde` stanza
+
+|`console.maxDeserializationPayloadSize`
+|`serde.maxDeserializationPayloadSize`
+|Moved to `serde` stanza
+
+|N/A
+|`kafka.sasl.enabled` and `kafka.sasl.impersonateUser`
+|Both set to `true` by default in v3
+|===
+
+.Other mappings
+[cols="2,2,3"]
+|===
+|v2 Configuration |v3 Configuration |Notes
+
+|`connect`
+|`kafkaConnect`
+|Renamed
+
+|`redpanda.adminApi` credentials
+|`redpanda.adminApi.authentication.basic.*`
+|Converted to structured authentication
+
+|Role bindings (user subjects)
+|`authorization.roleBindings`
+|Only user subjects are migrated. Group subjects are removed with warnings.
+|===
+
+=== Unsupported features
+
+The following v2 features are not supported in v3 and cannot be automatically migrated. The operator generates warnings when it encounters these configurations.
+
+==== Multiple OIDC providers
+
+[cols="1,2,2",options="header"]
+|===
+|What changed |Impact |Action required
+
+|V2 allowed multiple OIDC providers (Google, GitHub, Keycloak, Okta, generic OIDC). V3 supports only one.
+|Operator selects one provider; others are discarded
+|Review selected provider in warnings. If you need additional authentication methods, configure them separately.
+|===
+
+.Example warning
+[.no-copy]
+----
+Elected 'github' as OIDC provider out of [github, google, keycloak, oidc]. Only one provider is supported in v3.
+----
+
+==== OIDC groups and realms
+
+Breaking change with significant migration effort required.
+
+[cols="1,2,2",options="header"]
+|===
+|What changed |Impact |Action required
+
+|OIDC-based group authorization removed. `realm` and `directory` fields removed from OIDC provider configurations.
+|Group-based access control no longer works
+|Map OIDC groups to Redpanda RBAC roles. Provision users in Redpanda with appropriate ACLs. See <<migrate-redpanda-console-roles-to-redpanda-acls>>.
+|===
+
+.Example warnings
+[.no-copy]
+----
+Removed 'realm' from 'oidc'. OIDC groups are not supported in v3. Create Roles in Redpanda instead.
+
+Removed 'directory' from 'oidc'. OIDC groups are not supported in v3. Create Roles in Redpanda instead.
+----
+
+==== Group-based role bindings
+
+[cols="1,2,2",options="header"]
+|===
+|What changed |Impact |Action required
+
+|V2 role bindings could include group subjects. V3 only supports user subjects.
+|Group subjects are removed from role bindings during migration
+|If using impersonation: Provision individual users with ACLs in Redpanda. If using static credentials: Create individual user role bindings.
+|===
+
+.Example warning
+[.no-copy]
+----
+Removed group subject from role binding 'viewer'. Groups are not supported in v3.
+----
+
+=== Manual configuration steps
+
+After the operator completes automatic migration, review any warnings and complete the manual configuration steps:
+
+. Check for warnings:
++
+[,bash]
+----
+kubectl get console <console-name> -n <namespace> -o jsonpath='{.spec.warnings}'
+----
+
+. Review each warning against the <<unsupported-features>> section above
+
+. Complete the required actions for each unsupported feature
+
+. Update your Console custom resource with any manual configuration changes
+
+. Validate the migration using the steps in <<validate-migration>>
+
+For details on the `warnings` field structure, see xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-consolespec[ConsoleSpec].
+
 == Authentication and authorization migration
 
 In v2, authentication and authorization was handled by the Redpanda Console. In v3, Redpanda Console uses the same authentication and authorization system as Redpanda. This change unifies the authentication and authorization model across Redpanda and Redpanda Console, enabling a more consistent and secure experience.
@@ -147,7 +409,7 @@ login:
 ----
 
 .V3 Google OIDC
-[source,yaml,role="no-wrap"]
+[,yaml,role="no-wrap"]
 ----
 kafka:
   sasl:
@@ -169,18 +431,29 @@ authentication: <2>
 
 Redpanda requires a JWT-encoded access token for authentication. While most identity providers issue JWTs, some (like Google) follow the OAuth spec and issue opaque tokens instead. Since Redpanda relies on JWTs to introspect the audience and subject, providers that do not support JWT access tokens cannot be used for authentication.
 
-=== Role bindings
+=== Role bindings migration
 
-In Redpanda Console v2, role bindings could be configured in a separate file. In v3, role bindings are configured directly in the `authorization.roleBindings` stanza of the main configuration file.
+In v3, role bindings continue to control access to Redpanda Console when using static credentials. However, with user impersonation enabled, role bindings are ignored, and authorization is handled directly by Redpanda using ACLs.
 
-If you do **not** use impersonation, you can continue to use role bindings to control access within Redpanda Console. Each role binding maps users to roles in Redpanda Console using their login type and identity.
+[cols="1,2",options="header"]
+|===
+|Authentication strategy |Role bindings behavior
 
-Here is an example of how to migrate role bindings from a separate file to the main configuration:
+|User impersonation
+|Role bindings are ignored. Authorization is handled by Redpanda ACLs.
+
+|Static credentials
+|Role bindings apply to control Console access.
+|===
+
+==== Configuration location change
+
+In v2, role bindings could be configured in a separate file. In v3, role bindings are configured directly in the `authorization.roleBindings` stanza of the main configuration file.
 
 [.side-by-side]
 --
 .V2 role bindings
-[source,yaml,role="no-wrap"]
+[,yaml,role="no-wrap"]
 ----
 enterprise:
   rbac:
@@ -199,7 +472,7 @@ roleBindings:
 ----
 
 .V3 role bindings
-[source,yaml,role="no-wrap"]
+[,yaml,role="no-wrap"]
 ----
 authorization:
   roleBindings:
@@ -210,6 +483,15 @@ authorization:
 ----
 --
 
+==== Group subject removal
+
+Breaking change: V2 role bindings could reference group subjects (from OIDC providers). V3 only supports user subjects.
+
+If you use OIDC groups for authorization, you must <<migrate-acls, migrate to Redpanda ACLs>>.
+
+During automatic migration in Kubernetes, group subjects are removed and warnings are generated. See <<group-based-role-bindings>>.
+
+[[migrate-acls]]
 ==== Migrate Redpanda Console roles to Redpanda ACLs
 
 If you are using *impersonation* in v3, `roleBindings` are ignored. Instead, access is controlled by Redpanda using ACLs and RBAC.
@@ -261,9 +543,13 @@ For details, see:
 - xref:manage:security/authorization/acl.adoc[]
 - xref:console:config/security/authorization.adoc[]
 
-== Schema Registry migration
+== Configuration structure changes
 
-In v2, the Schema Registry configuration was nested under the `kafka` stanza. In v3, this configuration is now a top-level stanza.
+V3 reorganizes several configuration sections to create a clearer structure. This section covers the changes to Schema Registry, serialization settings, and Kafka Connect.
+
+=== Schema Registry moves to top level
+
+In v2, the Schema Registry configuration was nested under the `kafka` stanza. In v3, this configuration is now a top-level stanza with structured authentication.
 
 [.side-by-side]
 --
@@ -292,7 +578,7 @@ kafka:
 ----
 
 .V3 Schema Registry
-[source,yaml,role="no-wrap"]
+[,yaml,role="no-wrap"]
 ----
 schemaRegistry:
   enabled: true
@@ -313,9 +599,13 @@ schemaRegistry:
 ----
 --
 
-== Serde and Kafka Connect migration
+=== Serialization consolidated under serde
 
-In v3, all serialization settings are consolidated under the `serde` stanza. The connect configuration has been renamed to `kafkaConnect`, and the `console.maxDeserializationPayloadSize` setting is now part of the `serde` configuration.
+In v3, all serialization settings are consolidated under the `serde` stanza. The `console.maxDeserializationPayloadSize` setting moves to the `serde` configuration.
+
+=== Kafka Connect renamed to kafkaConnect
+
+The `connect` configuration stanza is renamed to `kafkaConnect` for clarity.
 
 [.side-by-side]
 --
@@ -373,7 +663,110 @@ To check for migration warnings:
 kubectl get console <console-name> -n <namespace> -o jsonpath='{.spec.warnings}'
 ----
 
-If warnings are present, they describe which fields from your v2 configuration require manual intervention. Review these warnings and update your Console configuration accordingly. For details on the `warnings` field, see xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-consolespec[ConsoleSpec].
+If warnings are present, they describe which fields from your v2 configuration require manual intervention. Review these warnings and update your Console configuration accordingly. For a comprehensive list of automatically migrated configurations and unsupported features that generate warnings, see <<automatic-migration-in-kubernetes>>. For details on the `warnings` field, see xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-consolespec[ConsoleSpec].
+
+== Troubleshooting
+
+=== Users cannot log in after migration
+
+If users are unable to log in after migration, review the following common causes and solutions.
+
+==== Users not provisioned in Redpanda
+
+When using impersonation, users must exist in Redpanda as SASL/SCRAM users.
+
+To create a user in Redpanda, use the following command:
+
+[,bash]
+----
+rpk security user create alice -p <password>
+----
+
+For more information, see xref:manage:security/authentication.adoc[].
+
+==== OIDC provider mismatch
+
+If you had multiple OIDC providers in v2, only one was selected during migration.
+
+Check which provider was selected:
+
+[,bash]
+----
+kubectl get console <name> -o jsonpath='{.spec.warnings}'
+----
+
+Review the warning message and ensure your users are authenticating with the selected provider.
+
+==== JWT token requirement not met
+
+Some identity providers (like Google) issue opaque tokens instead of JWT tokens. Redpanda requires JWT-encoded access tokens.
+
+To resolve this, use an identity provider that issues JWT access tokens, or configure your provider to issue JWTs. See <<migrate-from-oidc-providers>> for details.
+
+=== Users can log in but cannot access resources
+
+If users can log in but cannot access topics, consumer groups, or Schema Registry, review the following common causes and solutions.
+
+==== Missing ACLs with user impersonation
+
+When using user impersonation, user credentials are forwarded to Redpanda. Users must have appropriate ACLs configured in Redpanda.
+
+To check and create ACLs:
+
+[,bash]
+----
+# Check existing ACLs for user
+rpk security acl list --principal User:alice
+
+# Grant read access to topics
+rpk security acl create \
+  --allow-principal User:alice \
+  --operation read,describe \
+  --topic '*'
+
+# Grant access to consumer groups
+rpk security acl create \
+  --allow-principal User:alice \
+  --operation read,describe \
+  --group '*'
+----
+
+For more information on mapping Console roles to Redpanda ACLs, see <<migrate-redpanda-console-roles-to-redpanda-acls>>.
+
+==== Role bindings not migrated correctly
+
+When using static credentials, verify that role bindings are correctly configured in the `authorization.roleBindings` stanza.
+
+To resolve this, review your v3 configuration and ensure role bindings match your v2 configuration. See <<role-bindings-migration>>.
+
+=== Schema Registry or Kafka Connect not working
+
+If Schema Registry or Kafka Connect API calls fail after migration, review the following common causes and solutions.
+
+==== Configuration location changed
+
+Schema Registry and Kafka Connect configuration moved to different locations in v3.
+
+To resolve this, verify that:
+
+* Schema Registry configuration is at the top level under `schemaRegistry`, not under `kafka.schemaRegistry`
+* Kafka Connect configuration is under `kafkaConnect`, not `connect`
+* Authentication is configured under `schemaRegistry.authentication` with the new structure
+
+See <<configuration-structure-changes>> for examples.
+
+==== Impersonation settings incorrect
+
+If impersonation is enabled but not configured correctly, API calls may fail.
+
+To resolve this, ensure `impersonateUser` settings match your authentication strategy:
+
+* For user impersonation: Set `schemaRegistry.authentication.impersonateUser: true`
+* For static credentials: Set `impersonateUser: false` and configure static credentials
+
+=== Migration warnings persist after manual fixes (Kubernetes)
+
+Warnings in the Console CR are informational and indicate what was changed during migration. They do not automatically clear after you resolve the issues. You can safely ignore warnings once you've addressed the underlying configuration problems and validated that Console works correctly.
 
 [[migrator]]
 == Redpanda Console migration tool
