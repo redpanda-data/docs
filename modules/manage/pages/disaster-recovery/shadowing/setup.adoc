@@ -105,17 +105,30 @@ endif::[]
 To set up Shadowing, you need to create a shadow link and configure filters to select which topics, consumer groups, and ACLs to replicate. 
 
 ifdef::env-cloud[]
-You can set up Shadowing with the Redpanda Cloud UI, `rpk`, or the Data Plane API. 
+You can set up Shadowing with the Redpanda Cloud UI, `rpk`, or the link:/api/doc/cloud-controlplane/topic/topic-cloud-api-overview[Redpanda Cloud API].
+
+If using the Cloud API to set up Shadowing, you must link:/api/doc/cloud-controlplane/authentication[authenticate] to the API by including an access token in your requests.
 endif::[]
 
 ifndef::env-cloud[]
 You can set up Shadowing with Redpanda Console, `rpk`, or the Admin API. 
 endif::[]
 
-== Create a shadow link
+=== Create a shadow link
 
-Any cluster can create a shadow link to a source cluster. When you create a shadow link with `rpk` or the API, you need to provide a YAML configuration file that defines connection settings, filters, and synchronization options.
+ifndef::env-cloud[]
+Any cluster can create a shadow link to a source cluster. When you create a shadow link with `rpk` or the API, you need to provide a YAML configuration that defines connection settings, filters, and synchronization options.
+endif::[]
 
+ifdef::env-cloud[]
+Any BYOC or Dedicated cluster can create a shadow link to a source cluster. When you create a shadow link with `rpk` or the API, you need to provide a YAML configuration that defines connection settings, filters, and synchronization options.
+endif::[]
+
+[tabs]
+======
+rpk::
++
+--
 [TIP]
 ====
 You can use `rpk` to generate a sample configuration file with common filter patterns:
@@ -228,8 +241,90 @@ rpk shadow create --config-file shadow-config.yaml
 ----
 
 For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-create.adoc[`rpk shadow create`].
+--
 
-== Set filters
+ifdef::env-cloud[]
+Control Plane API::
++
+--
+. In your source cluster, create a secret to store the authentication credential that your shadow cluster will use (`"scram_configuration": "password"` in the example configuration below). Your secret must be scoped to "Redpanda Cluster".
++
+Use one of the following to create a secret:
++
+- xref:reference:rpk/rpk-security/rpk-security-secret-create.adoc[`rpk security secret create`]
+- The xref:manage:api/cloud-dataplane-api.adoc[Data Plane API]
+- In the Redpanda Cloud UI, the *Secrets Store* page of your cluster
+
+. To create a shadow link with the source cluster using the Control Plane API, make a `POST /shadow-links` request from the shadow cluster:
++
+[,bash]
+----
+curl -X POST 'https://api.redpanda.com/v1/shadow-links' \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
+  -d '{
+    "shadow_link": {
+      "resource_group_id": "<resource-group-id>",
+      "shadow_redpanda_id": "<destination-redpanda-cluster-id>",
+      "name": "<shadow-link-name>",
+      "client_options": {
+        "bootstrap_servers": ["<source-broker-1>:<port>", "<source-broker-2>:<port>", "<source-broker-3>:<port>"],
+        "tls_settings": {
+          "enabled": true
+        },
+        "authentication_configuration": {
+          "scram_configuration": {
+            "username": "<sasl-username>",
+            "password": "${secrets.<sasl-password-secret-name>}",
+            "scram_mechanism": "SCRAM_MECHANISM_SCRAM_SHA_256"
+          }
+        }
+      },
+      "topic_metadata_sync_options": {
+        "interval": "30s",
+        "auto_create_shadow_topic_filters": [
+          {
+            "name": "*",
+            "filter_type": "FILTER_TYPE_INCLUDE",
+            "pattern_type": "PATTERN_TYPE_LITERAL"
+          },
+          {
+            "name": "<topic-prefix-to-exclude>",
+            "filter_type": "FILTER_TYPE_EXCLUDE",
+            "pattern_type": "PATTERN_TYPE_PREFIX"
+          }
+        ],
+        "start_at_earliest": {},
+        "paused": false
+      },
+      "consumer_offset_sync_options": {
+        "paused": true
+      },
+      "security_sync_options": {
+        "paused": true
+      }
+    }
+  }'
+----
++
+Replace the placeholders with your own values:
++
+* `<resource-group-id>`: Resource group ID for this shadow link. 
+* `<destination-redpanda-cluster-id>`: ID of the shadow (destination) cluster.
+* `<shadow-link-name>`: Unique name for this shadow link, for example,  `production-dr`.
+* `<source-broker-1>:<port>`, `<source-broker-2>:<port> ...`: Source cluster brokers to connect to, for example, `prod-kafka-1.example.com:9092`, `prod-kafka-2.example.com:9092`.
+* `<sasl-username>`: SASL/SCRAM username, for example, `shadow-replication-user`.
+* `<sasl-password-secret-name>`: The name of the secret containing the SASL/SCRAM password.
+* `<topic-prefix-to-exclude>`: Exclude topics that use this prefix, for example, `temp-`, `test-`, `debug-`.
++
+The response object represents the xref:manage:api/cloud-byoc-controlplane-api.adoc#lro[long-running operation] of creating a shadow link. 
+
+For the full API reference, see link:/api/doc/cloud-controlplane/v1/operation/operation-[Control Plane API reference].
+--
+endif::[]
+======
+
+=== Set filters
 
 Filters determine which resources Shadowing automatically creates when establishing your shadow link.
 
@@ -237,7 +332,7 @@ Topic filters select which topics Shadowing automatically creates as shadow topi
 
 Consumer group and ACL filters control which groups and security policies replicate to maintain application functionality.
 
-=== Filter types and patterns
+==== Filter types and patterns
 
 Each filter uses two key settings:
 
@@ -248,7 +343,7 @@ Each filter uses two key settings:
   - `INCLUDE`: Replicate items that match the pattern
   - `EXCLUDE`: Skip items that match the pattern
 
-=== Filter processing rules
+==== Filter processing rules
 
 Redpanda processes filters in the order you define them with EXCLUDE filters taking precedence. Design your filter lists carefully:
 
@@ -256,7 +351,7 @@ Redpanda processes filters in the order you define them with EXCLUDE filters tak
 2. **Order matters for INCLUDE filters**: Among INCLUDE filters, the first match determines the result.
 3. **Default behavior**: Items that don't match any filter are excluded from replication.
 
-=== Common filtering patterns
+==== Common filtering patterns
 
 Replicate all topics except test topics:
 [,yaml]
@@ -297,7 +392,7 @@ consumer_offset_sync_options:
     name: prod-consumer-              # Include production consumers
 ----
 
-=== Schema Registry synchronization
+==== Schema Registry synchronization
 
 Shadowing can replicate Schema Registry data by shadowing the `_schemas` system topic. When enabled, this provides byte-for-byte replication of schema definitions, versions, and compatibility settings.
 
@@ -318,7 +413,7 @@ schema_registry_sync_options:
 **Important:** After the `_schemas` topic becomes a shadow topic, it cannot be stopped without either failing over the topic or deleting it entirely.
 
 
-=== System topic filtering rules
+==== System topic filtering rules
 
 Redpanda system topics have the following specific filtering restrictions:
 
@@ -327,7 +422,7 @@ Redpanda system topics have the following specific filtering restrictions:
 * Wildcard `*` filters will not match topics that start with `_redpanda` or `__redpanda`.
 * To shadow specific system topics, you must provide explicit literal filters for those individual topics.
 
-=== ACL filtering
+==== ACL filtering
 
 ACLs are replicated by the xref:manage:disaster-recovery/shadowing/overview.adoc#shadow-link-tasks[Security Migrator task]. This is recommended to ensure that your shadow cluster has the same permissions as your source cluster. To configure ACL filters:
 
@@ -357,7 +452,7 @@ security_sync_options:
       host: '*'                       # Any host
 ----
 
-=== Consumer group filtering and behavior
+==== Consumer group filtering and behavior
 
 Consumer group filters determine which consumer groups have their offsets replicated to the shadow cluster by the xref:manage:disaster-recovery/shadowing/overview.adoc#shadow-link-tasks[Consumer Group Shadowing task]. 
 
@@ -383,7 +478,7 @@ consumer_offset_sync_options:
 
 **Offset clamping:** When Redpanda replicates consumer group offsets from the source cluster, offsets are automatically "clamped" during the commit process on the shadow cluster. If a committed offset from the source cluster is above the high watermark (HWM) of the corresponding shadow partition, Redpanda clamps the offset to the shadow partition's HWM before committing it to the shadow cluster. This ensures offsets remain valid and prevents consumers from seeking beyond available data on the shadow cluster.
 
-=== Starting offset for new shadow topics
+==== Starting offset for new shadow topics
 
 When the xref:manage:disaster-recovery/shadowing/overview.adoc#shadow-link-tasks[Source Topic Sync task] creates a shadow topic for the first time, you can control where replication begins on the source topic. This setting only applies to empty shadow partitions and is crucial for disaster recovery planning. Changing this configuration only affects new shadow topics, existing shadow topics continue replicating from their current position.
 
@@ -420,19 +515,19 @@ topic_metadata_sync_options:
 The starting offset only affects **new shadow topics**. After a shadow topic exists and has data, changing this setting has no effect on that topic's replication.
 ====
 
-=== Networking
+==== Networking
 
 Configure network connectivity between your source and shadow clusters to enable shadow link replication. The shadow cluster initiates connections to the source cluster using a pull-based architecture.
 
 For additional details about networking, see <<network-and-authentication>>.
 
-==== Connection requirements
+===== Connection requirements
 
 * **Direction**: Shadow cluster connects to source cluster (outbound from shadow, inbound to source)
 * **Protocol**: Kafka protocol over TCP (default port 9092, or your configured listener ports)
 * **Persistence**: Connections remain active for continuous replication
 
-==== Firewall configuration
+===== Firewall configuration
 
 You must configure firewall rules to allow the shadow cluster to reach the source cluster.
 
@@ -446,7 +541,7 @@ You must configure firewall rules to allow the shadow cluster to reach the sourc
 * Allow outbound TCP connections to the source cluster's Kafka listener ports.
 * Ensure DNS resolution works for source cluster hostnames.
 
-==== Bootstrap servers
+===== Bootstrap servers
 
 Specify multiple bootstrap servers in your shadow link configuration for high availability:
 
@@ -461,7 +556,7 @@ client_options:
 
 The shadow cluster uses these addresses to discover all brokers in the source cluster. If one bootstrap server is unavailable, the shadow cluster tries the next one in the list.
 
-==== Network security
+===== Network security
 
 For production deployments, secure the network connection between clusters:
 
@@ -496,7 +591,7 @@ ifndef::env-cloud[]
 endif::[]
 ----
 
-==== Connection tuning
+===== Connection tuning
 
 Adjust connection parameters based on your network characteristics. For example:
 
@@ -520,6 +615,11 @@ client_options:
 
 To modify a shadow link configuration after creation, run:
 
+[tabs]
+======
+rpk::
++
+--
 [,bash]
 ----
 rpk shadow update <shadow-link-name>
@@ -533,7 +633,30 @@ This opens your default editor to modify the shadow link configuration. Only cha
 ====
 Use xref:get-started:config-rpk-profile.adoc[`rpk profile`] to save your cluster connection details and credentials for both source and shadow clusters. This allows you to easily switch between the two configurations.
 ====
+--
 
+ifdef::env-cloud[]
+Control Plane API::
++
+--
+[,bash]
+----
+curl -X PATCH 'https://api.redpanda.com/v1/shadow-links/<shadow-link-id>' \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
+  -d '{
+      "security_sync_options": {
+        "paused": false
+      }
+  }'
+----
+
+This endpoint returns a xref:manage:api/cloud-byoc-controlplane-api.adoc#lro[long-running operation].
+
+For the full API reference, see link:/api/doc/cloud-controlplane/v1/operation/operation-[Control Plane API reference].
+--
+endif::[]
+======
 // end::single-source[]
 
-See also: link:/api/doc/admin/[Admin API v2 reference^]
+See also: link:/api/doc/admin/v2/[Admin API v2 reference^]
