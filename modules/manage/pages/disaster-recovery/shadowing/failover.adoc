@@ -14,7 +14,7 @@ endif::[]
 Failover is the process of modifying shadow topics or an entire shadow cluster from read-only replicas to fully writable resources, and ceasing replication from the source cluster. You can fail over individual topics for selective workload migration or fail over the entire cluster for comprehensive disaster recovery. This critical operation transforms your shadow resources into operational production assets, allowing you to redirect application traffic when the source cluster becomes unavailable.
 
 ifdef::env-cloud[]
-You can failover a shadow link using the Redpanda Cloud UI, `rpk`, or the Data Plane API. 
+You can failover a shadow link using the Redpanda Cloud UI, `rpk`, or the Data Plane API.
 endif::[]
 
 ifndef::env-cloud[]
@@ -41,36 +41,124 @@ NOTE: To avoid a split-brain scenario after failover, ensure that all clients ar
 
 == Failover commands
 
+ifdef::env-cloud[]
+=== Get Data Plane API URL
+
+If using the Data Plane API, run the following to get the Data Plane API URL of the shadow cluster:
+
+[,bash]
+----
+export DATAPLANE_API_URL=`curl https://api.cloud.redpanda.com/v1/clusters/<shadow-cluster-id> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" | jq .cluster.dataplane_api`
+----
+endif::[]
+
 You can perform failover at different levels of granularity to match your disaster recovery needs:
 
 === Individual topic failover
 
 To fail over a specific shadow topic while leaving other topics in the shadow link still replicating, run:
 
+[tabs]
+======
+rpk::
++
+--
 [,bash]
 ----
 rpk shadow failover <shadow-link-name> --topic <topic-name>
 ----
 
 Use this approach when you need to selectively failover specific workloads or when testing failover procedures. For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-failover.adoc[`rpk shadow failover`].
+--
+
+ifdef::env-cloud[]
+Data Plane API::
++
+--
+Send a `POST /v1/shadowlink/\{shadow_link_name}/failover` request to the Data Plane API. Specify the name of the shadow topic in the request body:
+
+[,bash]
+----
+curl -X POST "$DATAPLANE_API_URL/v1/shadowlink/<shadow-link-name>/failover" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
+  -d '{
+    "name": "<shadow-link-name>",
+    "shadowTopicName": "<shadow-topic-name>"
+  }'
+----
+--
+endif::[]
+======
 
 === Complete shadow link failover (cluster failover)
 
 To fail over all shadow topics associated with the shadow link simultaneously, run:
 
+[tabs]
+======
+rpk::
++
+--
 [,bash]
 ----
 rpk shadow failover <shadow-link-name> --all
 ----
+--
+
+ifdef::env-cloud[]
+Data Plane API::
++
+--
+Send a `POST /v1/shadowlink/\{shadow_link_name}/failover` request to the Data Plane API. If you do not specify a shadow topic in the request body, this command requests a failover of all shadow topics associated with the shadow link:
+[,bash]
+----
+curl -X POST "$DATAPLANE_API_URL/v1/shadowlink/<shadow-link-name>/failover" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
+  -d '{
+    "name": "<shadow-link-name>"
+  }'
+----
+--
+endif::[]
+======
 
 Use this approach during a complete regional disaster when you need to activate the entire shadow cluster as your new production environment.
 
 === Force delete shadow link (emergency failover)
 
+[tabs]
+======
+rpk::
++
+--
 [,bash]
 ----
 rpk shadow delete <shadow-link-name> --force
 ----
+--
+
+ifdef::env-cloud[]
+Control Plane API::
++
+--
+Use the Control Plane API to force delete a shadow link:
+
+[,bash]
+----
+curl -X DELETE 'https://api.redpanda.com/v1/shadow-links/<shadow-link-id>' \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
+  -d '{
+    "force": true
+  }'
+----
+--
+endif::[]
+======
 
 [WARNING]
 ====
