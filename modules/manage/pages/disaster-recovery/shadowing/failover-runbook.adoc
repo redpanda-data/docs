@@ -114,6 +114,14 @@ curl 'https://api.redpanda.com/v1/shadow-links' \
 curl https://api.redpanda.com/v1/shadow-links/<shadow-link-id> \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+
+# Get Data Plane API URL of shadow cluster
+include::manage:partial$shadow-cluster-get-dataplane-api-url.adoc[]
+
+# Check the status of your disaster recovery link
+curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
 ----
 --
 ======
@@ -127,7 +135,7 @@ Verify that the following conditions exist before proceeding with failover:
 
 ==== Understanding replication lag
 
-Use xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`] to check lag, which shows the message count difference between source and shadow partitions:
+Use xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`] or the link:/api/doc/cloud-dataplane/v1/operation/operation-[Data Plane API] to check lag, which shows the message count difference between source and shadow partitions:
 
 * **Acceptable lag examples**: 0-1000 messages for low-throughput topics, 0-10000 messages for high-throughput topics
 * **Concerning lag examples**: Growing lag over 50,000 messages, or lag that continuously increases without recovering
@@ -138,11 +146,23 @@ Use xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`] to
 
 Record the current lag and status before proceeding:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-current-lag[]
 [,bash]
 ----
 # Capture current status for post-mortem analysis
 rpk shadow status <shadow-link-name> > failover-status-$(date +%Y%m%d-%H%M%S).log
 ----
+// end::rpk-tab-current-lag[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover-runbook.adoc[tag=rpk-tab-current-lag]
 
 // TODO: Verify this output format by running actual rpk shadow status command
 Example output showing healthy replication before failover:
@@ -166,6 +186,21 @@ Name: <topic-name>, State: ACTIVE
  0          1234     1468     1456     12
  1          2345     2579     2568     11
 ----
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+# Capture current status for post-mortem analysis
+curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" > failover-status-$(date +%Y%m%d-%H%M%S).log
+----
+--
+======
+endif::[]
 
 The partition information shows the following:
 
@@ -210,18 +245,10 @@ Cloud API::
 --
 [,bash]
 ----
-# Get Data Plane API URL of shadow cluster
-export DATAPLANE_API_URL=`curl https://api.cloud.redpanda.com/v1/clusters/<shadow-cluster-id> \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" | jq .cluster.dataplane_api`
-
 # Fail over all topics in the shadow link
 curl -X POST "$DATAPLANE_API_URL/v1/shadowlink/<shadow-link-name>/failover" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
-  -d '{
-    "name": "<shadow-link-name>"
-  }'
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
 ----
 --
 ======
@@ -255,12 +282,18 @@ Cloud API::
 [,bash]
 ----
 # Fail over individual topics
-curl -X POST "$DATAPLANE_API_URL/v1/shadowlink/<shadow-link-name>/failover" \
+curl -X POST "$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/failover" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
   -d '{
-    "name": "<shadow-link-name>",
     "shadowTopicName": "<topic-name-1>"
+  }'
+
+curl -X POST "$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/failover" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
+  -d '{
+    "shadowTopicName": "<topic-name-2>"
   }'
 ----
 --
@@ -272,6 +305,8 @@ endif::[]
 
 Track the failover process:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-track-failover[]
 [,bash]
 ----
 # Monitor status until all topics show FAILED_OVER
@@ -301,6 +336,36 @@ Name: <topic-name>, State: FAILED_OVER
 Name: <topic-name>, State: FAILED_OVER
 Name: <topic-name>, State: FAILING_OVER
 ----
+// end::rpk-tab-track-failover[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover-runbook.adoc[tag=rpk-tab-track-failover]
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+# Monitor status until all topics show FAILED_OVER
+watch -n 5 'curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" | jq .'
+
+# Check detailed topic status and lag during emergency
+curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/topic" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+--
+======
+endif::[]
 
 **Wait for**: All critical topics to reach `FAILED_OVER` state before proceeding.
 
@@ -401,12 +466,15 @@ include::manage:disaster-recovery/shadowing/failover-runbook.adoc[tag=rpk-tab-fo
 Cloud API::
 +
 --
+[,bash]
+----
 curl -X DELETE https://api.redpanda.com/v1/shadow-links/<shadow-link-id> \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
   -d '{
     "force": true
   }'
+----
 --
 ======
 endif::[]
