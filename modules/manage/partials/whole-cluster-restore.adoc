@@ -53,6 +53,7 @@ By default, Redpanda uploads cluster metadata to object storage periodically. Yo
 * xref:reference:cluster-properties.adoc#enable_cluster_metadata_upload_loop[`enable_cluster_metadata_upload_loop`]: Enable metadata uploads. This property is enabled by default and is required for Whole Cluster Restore.
 * xref:reference:properties/object-storage-properties.adoc#cloud_storage_cluster_metadata_upload_interval_ms[`cloud_storage_cluster_metadata_upload_interval_ms`]: Set the time interval to wait between metadata uploads.
 * xref:reference:cluster-properties.adoc#controller_snapshot_max_age_sec[`controller_snapshot_max_age_sec`]: Maximum amount of time that can pass before Redpanda attempts to take a controller snapshot after a new controller command appears. This property affects how current the uploaded metadata can be.
+* xref:reference:properties/object-storage-properties.adoc#cloud_storage_cluster_name[`cloud_storage_cluster_name`]: *Advanced: This is an internal-only configuration and should be enabled only after consulting with Redpanda support.* Specify a custom name for cluster's metadata in object storage. For use when multiple clusters share the same storage bucket (for example, for Whole Cluster Restore).
 
 NOTE: You can monitor the xref:reference:public-metrics-reference.adoc#redpanda_cluster_latest_cluster_metadata_manifest_age[redpanda_cluster_latest_cluster_metadata_manifest_age] metric to track the age of the most recent metadata upload.
 
@@ -225,3 +226,141 @@ NODE  CONFIG-VERSION  NEEDS-RESTART  INVALID  UNKNOWN
 endif::[]
 
 When the cluster restore is successfully completed, you can redirect your application workload to the new cluster. Make sure to update your application code to use the new addresses of your brokers.
+
+== (Advanced) Restore data when multiple clusters share data 
+
+[CAUTION]
+====
+This is an advanced use case and should be performed only after consulting with Redpanda support.
+====
+
+Typically, there is a one-to-one mapping between a Redpanda cluster and its object storage bucket. However, you can also run multiple clusters that share the same bucket. This allows you to move tenants between clusters without moving data, as the data remains in the same bucket. For example, you can mount topics to multiple clusters in the same bucket.
+
+Running multiple clusters that share the same storage bucket presents unique challenges during Whole Cluster Restore operations. To manage these challenges, you must first understand how Redpanda uses <<the-role-of-cluster-uuids-in-whole-cluster-restore,UUIDs>> (universal unique identifiers) to identify clusters during Whole Cluster Restore.
+
+=== The role of cluster UUIDs in Whole Cluster Restore
+
+Every time a Redpanda cluster (single node or more) starts, it is automatically assigned a random UUID. From that moment forward, all entities created by the cluster are identifiable using that cluster UUID. Such entities include:
+
+- Topic data
+- Topic metadata
+- Whole Cluster Restore manifests
+- Controller log snapshots for Whole Cluster Restore
+- Consumer offsets for Whole Cluster Restore
+
+However, not all entities _managed_ by the cluster are identifiable using this cluster UUID. In fact, Redpanda can recover a different cluster in lieu of the existing cluster, or mount topics from different clusters. For a cluster that has been running for some time, your object storage may look like this:
+
+[source,bash]
+----
+/
++- cluster_metadata/
+   +- <uuid-a>/manifests/
+   |  +- 0/cluster_manifest.json
+   |  +- 1/cluster_manifest.json
+   |  +- 2/cluster_manifest.json
+   + <uuid-b>/manifests/
+   |  +- 3/cluster_manifest.json
+   |  +- 4/cluster_manifest.json
+   + <uuid-c>/manifests/ # Previously active but not restored.
+   |                     # Still, the manifest number starts at
+   |                     # highest found in the bucket plus one.
+   |  +- 5/cluster_manifest.json
+   |  +- 6/cluster_manifest.json
+   + <uuid-d>/manifests/ # active cluster (not restored)
+      +- 7/cluster_manifest.json
+      +- 8/cluster_manifest.json
+----
+
+Redpanda's algorithm lists all objects (cluster manifests) from object storage and during a Whole Cluster Restore, picks the object with the _highest ID available_, not the current UUID. In this case, if you attempt to restore you would recover `/cluster_metadata/<uuid-c>/manifests/6/cluster_manifest.json`, even though the active cluster is `<uuid-d>`.
+
+However, this algorithm does not work if you have multiple clusters sharing the same object storage bucket. For example, your object storage might look like:
+
+[source,bash]
+----
+/
++- cluster_metadata/
+   + <uuid-a>/manifests/
+   | +- 0/cluster_manifest.json
+   | +- 1/cluster_manifest.json
+   | +- 2/cluster_manifest.json
+   + <uuid-b>/manifests/
+     +- 0/cluster_manifest.json
+     +- 1/cluster_manifest.json (lost cluster)
+----
+
+Here, if you've lost the cluster `uuid-b` and wish to recover it, the recovery process will select the metadata for `uuid-a`, which will lead to a split-brain/data corruption scenario. For troubleshooting details, see <<resolve-repeated-recovery-failures,Resolve repeated recovery failures>>
+
+=== Configure cluster names for multiple source clusters
+
+To disambiguate cluster metadata from multiple clusters, use the xref:reference:properties/object-storage-properties.adoc#cloud_storage_cluster_name[`cloud_storage_cluster_name`] property (off by default), which allows you to assign a unique name to each cluster sharing the same object storage bucket. This name must be unique within the bucket, 1-64 characters, and use only letters, numbers, underscores, and hyphens. Do not change this value once set. Once set, your object storage bucket may look like this:
+
+[source,bash]
+----
+/
++- cluster_metadata/
+|  + <uuid-a>/manifests/
+|  | +- 0/cluster_manifest.json
+|  | +- 1/cluster_manifest.json
+|  | +- 2/cluster_manifest.json
+|  + <uuid-b>/manifests/
+|    +- 0/cluster_manifest.json
+|    +- 1/cluster_manifest.json # lost cluster
++- cluster_name/
+   +- rp-foo/uuid/<uuid-a>
+   +- rp-qux/uuid/<uuid-b>
+----
+
+When a new cluster is created, and you have specified its `cloud_storage_cluster_name` (here, `rp-qux`), your object storage bucket may look like this:
+
+[source,bash]
+----
++- cluster_metadata/
+|  + <uuid-a>/manifests/
+|  | +- 0/cluster_manifest.json
+|  | +- 1/cluster_manifest.json
+|  | +- 2/cluster_manifest.json
+|  + <uuid-b>/manifests/
+|  | +- 0/cluster_manifest.json
+|  | +- 1/cluster_manifest.json # lost cluster
+|  + <uuid-c>/manifests/
+|    +- 3/cluster_manifest.json # new cluster
+|     # ^- next highest sequence number globally
++- cluster_name/
+   +- rp-foo/uuid/<uuid-a>
+   +- rp-qux/uuid/
+      +- <uuid-b>
+      +- <uuid-c> # reference to new cluster
+----
+
+During a Whole Cluster Restore, Redpanda will look for the cluster name specified in `cloud_storage_cluster_name` and only consider manifests associated with that name. In this example, if you start a cluster with `cloud_storage_cluster_name` set to `rp-qux`, Redpanda will only consider manifests under `<uuid-b>` and `<uuid-c>`, ignoring `<uuid-a>` entirely.
+
+Redpanda uses this name to organize the cluster metadata within the shared object storage bucket. This ensures that each cluster's data remains distinct and prevents conflicts during recovery operations.
+
+=== Resolve repeated recovery failures
+
+If you are experiencing repeated failures when a cluster is lost and recreated, the automated recovery algorithm may have selected the manifest with the highest sequence number, which might be the most recent one with no data, instead of the original one that contains the data. Your object storage bucket might look like this:
+
+[source,bash]
+----
+/
++- cluster_metadata/
+   + <uuid-a>/manifests/
+   | +- 0/cluster_manifest.json
+   | +- 1/cluster_manifest.json #lost cluster
+   + <uuid-b>/manifests/
+     +- 3/cluster_manifest.json # lost again (not recovered)
+   + <uuid-d>/manifests/
+      +- 7/cluster_manifest.json # new attempt to recover uuid-b
+                                 # it does not have the data
+----
+
+In such cases, you can explicitly run a POST request using the Admin API:
+
+[source,bash]
+----
+curl -XPOST \
+     --data '{"cluster_uuid_override":  "<uuid-a>"}'
+     http://localhost:9644/v1/cloud_storage/automated_recovery
+----
+
+For details, see the Admin API.
