@@ -102,7 +102,7 @@ endif::[]
 
 == Set up Shadowing
 
-To set up Shadowing, you need to create a shadow link and configure filters to select which topics, consumer groups, and ACLs to replicate. 
+To set up Shadowing, you need to create a shadow link and configure filters to select which topics, consumer groups, ACLs, and Schema Registry data to replicate. 
 
 ifdef::env-cloud[]
 If using the Cloud API to set up Shadowing, you must link:/api/doc/cloud-controlplane/authentication[authenticate] to the API by including an access token in your requests.
@@ -111,11 +111,11 @@ endif::[]
 === Create a shadow link
 
 ifndef::env-cloud[]
-Any cluster can create a shadow link to a source cluster. When you create a shadow link with `rpk` or the API, you need to provide a YAML configuration that defines connection settings, filters, and synchronization options.
+Any cluster can create a shadow link to a source cluster. 
 endif::[]
 
 ifdef::env-cloud[]
-Any BYOC or Dedicated cluster can create a shadow link to a source cluster. When you create a shadow link with `rpk` or the API, you need to provide a YAML configuration that defines connection settings, filters, and synchronization options.
+Any BYOC or Dedicated cluster can create a shadow link to a source cluster. 
 endif::[]
 
 [TIP]
@@ -137,7 +137,13 @@ rpk shadow config generate --for-cloud -o shadow-config.yaml
 endif::[]
 ----
 
+ifndef::env-cloud[]
 This creates a complete YAML configuration file that you can customize for your environment. The template includes all available fields with comments explaining their purpose. For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-config-generate.adoc[`rpk shadow config generate`].
+endif::[]
+
+ifdef::env-cloud[]
+This creates a complete YAML configuration file that you can customize for your environment. The template includes all available fields with comments explaining their purpose. For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-config-generate.adoc[`rpk shadow config generate --for-cloud`].
+endif::[]
 ====
 
 .Explore the configuration file
@@ -146,19 +152,47 @@ This creates a complete YAML configuration file that you can customize for your 
 [,yaml]
 ----
 # Sample ShadowLinkConfig YAML with all fields
-name: <shadow-link-name>              # Unique name for this shadow link, example: "production-dr"
+ 
+name: <shadow-link-name>            # Unique name for this shadow link, example: "production-dr"
+
 ifdef::env-cloud[]
 cloud_options:
-  source_redpanda_id: <source-cluster-id>   # Source cluster ID in Redpanda Cloud
-  shadow_redpanda_id: <shadow-cluster-id>   # Shadow cluster ID in Redpanda Cloud
+# Use either source_redpanda_id or bootstrap_servers: only one is required.
+  source_redpanda_id: <source-cluster-id>    # Optional: 20 character lowercase ID of the cluster 
+                                             # Example: m7xtv2qq5njbhwruk88f
+  shadow_redpanda_id: <shadow-cluster-id>    # 20 character lowercase ID of the cluster
+                                             # Example: m7xtv2qq5njbhwruk88f
 endif::[]
 client_options:
-  bootstrap_servers:                  # Source cluster brokers to connect to
-  - <source-broker-1>:<port>          # Example: "prod-kafka-1.example.com:9092"
-  - <source-broker-2>:<port>          # Example: "prod-kafka-2.example.com:9092"
-  - <source-broker-3>:<port>          # Example: "prod-kafka-3.example.com:9092"
-  source_cluster_id: <cluster-id>     # Optional: Expected source cluster ID for validation, example: "prod-cluster-123"
-  
+  bootstrap_servers:                         # Source cluster brokers to connect to
+  - <source-broker-1>:<port>                 # Example: "prod-kafka-1.example.com:9092"
+  - <source-broker-2>:<port>                 # Example: "prod-kafka-2.example.com:9092"
+  - <source-broker-3>:<port>                 # Example: "prod-kafka-3.example.com:9092"
+  source_cluster_id: <cluster-id>            # Optional: UUID assigned by Redpanda 
+                                             # Example: a882bc98-7aca-40f6-a657-36a0b4daf1fd
+ifndef::env-cloud[]
+# To get source_cluster_id, run `rpk cluster config get cluster_id`.
+endif::[]
+ifdef::env-cloud[]
+# This UUID is not available in Redpanda Cloud. 
+endif::[]  
+
+ifdef::env-cloud[]
+  # TLS settings using PEM strings
+  tls_settings:
+    enabled: true
+    tls_pem_settings:
+      ca: |-
+        -----BEGIN CERTIFICATE-----
+        ...
+        -----END CERTIFICATE-----
+      key: ${secrets.KEY_FROM_SHADOW_CLUSTER_SECRET_STORE}
+      cert: |-
+        -----BEGIN CERTIFICATE-----
+        ...
+        -----END CERTIFICATE-----
+endif::[]
+ifndef::env-cloud[]
   # TLS settings using file paths
   tls_settings:
     enabled: true                     # Enable TLS
@@ -167,10 +201,11 @@ client_options:
       key_path: <client-key-path>     # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
       cert_path: <client-cert-path>   # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
     do_not_set_sni_hostname: false   # Optional: Skip SNI hostname when using TLS (default: false)
-  
-  # Create SASL credentials in the source cluster.
-  # Then, with this configuration, ensure the shadow cluster uses the credentials 
-  # to authenticate to the source cluster.
+endif::[]
+
+# Create SASL credentials in the source cluster.
+# Then, with this configuration, ensure the shadow cluster uses the credentials 
+# to authenticate to the source cluster.
   authentication_configuration:
     # SASL/SCRAM authentication
     scram_configuration:
@@ -269,18 +304,53 @@ endif::[]
 
 // Use tabs and display the tagged content above inside the rpk tab
 ifdef::env-cloud[]
-. In the shadow cluster, create a secret to store the authentication credential that the cluster will use (`"scram_configuration": "password"` in the example configuration in the next step). Your secret must be scoped to "Redpanda Cluster".
+Because the shadow cluster pulls from the source cluster, the shadow cluster requires credentials to connect to the source cluster. And because you cannot store plaintext passwords in Redpanda Cloud, you must create a secret to hold the password for the user on the source cluster. If using mTLS, you must also create a secret to hold the key of the client certificate for the client to authenticate. Reference that secret in `client_options.tls_settings.key_file` in the configuration file.
+
+. In the shadow cluster, create the secret:
 +
-Use one of the following to create a secret:
+[tabs]
+======
+Cloud UI::
 +
-- In the Redpanda Cloud UI, the *Secrets Store* page of your cluster
-- xref:reference:rpk/rpk-security/rpk-security-secret-create.adoc[`rpk security secret create`]
-- The xref:manage:api/cloud-dataplane-api.adoc[Data Plane API]
+--
+In the shadow cluster, go to the *Secrets Store* page and create a secret for the source cluster user, scoped to Redpanda Cluster.
+
+If necessary, first create the user with all ACLs enabled in the source cluster.
+--
+
+rpk::
++
+--
+In the shadow cluster, create a secret to store the authentication credential that the cluster will use (`"scram_configuration": "password"` in the example configuration in the next step). Your secret must be scoped to "Redpanda Cluster".
+
+Use xref:reference:rpk/rpk-security/rpk-security-secret-create.adoc[`rpk security secret create`] to create the secret from the command line.
+--
+
+Data Plane API::
++
+--
+In the shadow cluster, create a secret to store the authentication credential that the cluster will use (`"scram_configuration": "password"` in the example configuration in the next step). Your secret must be scoped to "Redpanda Cluster".
+
+Use the xref:manage:api/cloud-dataplane-api.adoc[Data Plane API] to programmatically create the secret.
+--
+======
 
 . In the shadow cluster, create a shadow link to the source cluster.
 +
 [tabs]
 ======
+Cloud UI::
++
+-- 
+. At the organization level of the Cloud UI, navigate to *Shadow Link*.
+. Click *Create shadow link*. 
+. Enter a unique name for the shadow link. The name must start and end with lowercase alphanumeric characters, hyphens allowed.
+. Select the source cluster from which data will be replicated. You can select an existing Redpanda Cloud cluster, or you can enter a bootstrap server URL to connect to any Kafka-compatible cluster. For an existing Redpanda Cloud cluster, you select the specific cluster on the next page. 
+. Enter the authorization and authentication details from the source cluster, including the user and the name of the secret containing the password created in the previous step.
+. Optionally, expand *Advanced options* to configure client connection properties. 
+. Click *Save* to apply changes. 
+--
+
 rpk::
 +
 --
@@ -599,6 +669,7 @@ The shadow cluster uses these addresses to discover all brokers in the source cl
 
 For production deployments, secure the network connection between clusters:
 
+ifndef::env-cloud[]
 .TLS encryption:
 [,yaml]
 ----
@@ -611,6 +682,28 @@ client_options:
       cert_path: <client-cert-path>   # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
     do_not_set_sni_hostname: false   # Optional: Skip SNI hostname when using TLS (default: false)
 ----
+endif::[]
+
+ifdef::env-cloud[]
+.TLS encryption:
+[,yaml]
+----
+client_options:
+  tls_settings:
+    enabled: true                     # Enable TLS
+    tls_pem_settings:
+      ca: |-                          # CA certificate in PEM format
+        -----BEGIN CERTIFICATE-----
+        ...
+        -----END CERTIFICATE-----
+      key: ${secrets.KEY_FROM_SHADOW_CLUSTER_SECRET_STORE}  # Client private key (can use secrets reference)
+      cert: |-                        # Optional: Client certificate in PEM format for mutual TLS
+        -----BEGIN CERTIFICATE-----
+        ...
+        -----END CERTIFICATE-----
+    do_not_set_sni_hostname: false   # Optional: Skip SNI hostname when using TLS (default: false)
+----
+endif::[]
 
 .Authentication:
 [,yaml]
@@ -634,7 +727,7 @@ ifndef::env-cloud[]
     # SASL/PLAIN authentication
     plain_configuration:
       username: <sasl-username>       # SASL/PLAIN username, example: "shadow-replication-user"
-      password: <sasl-password>       # SASL/PLAIN password, example: "secure-password-123"
+      password: <sasl-password>       # SASL/PLAIN password, example: ${secrets.SASL_SECRET}
 endif::[]
 ----
 
@@ -678,6 +771,15 @@ endif::[]
 ifdef::env-cloud[]
 [tabs]
 ======
+Cloud UI::
++
+--
+. At the organization level of the Cloud UI, navigate to *Shadow Link*.
+. Select the shadow link you want to modify, and click *Edit*.
+. Edit the shadow link settings or the shadowing behavior by specifying which content from the source cluster to shadow (topics, ACLs, consumer groups, Schema Registry). You can also enable additional topic properties to be shadowed or disable optional topic properties from being included in the shadowing.
+. Click *Save* to apply changes. 
+--
+
 rpk::
 +
 --
@@ -706,5 +808,5 @@ For the full API reference, see link:/api/doc/cloud-controlplane/v1/operation/op
 ======
 endif::[]
 // end::single-source[]
-
+ 
 See also: link:/api/doc/admin/v2/[Admin API v2 reference^]
