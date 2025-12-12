@@ -576,3 +576,249 @@ If you're using `rpk`, ensure to specify the `-X user`, `-X pass`, and `-X sasl.
 
 For all available flags, see the xref:reference:rpk/rpk-x-options.adoc[`rpk` options reference].
 //end::sasl[]
+
+//tag::shadow-linking[]
+=== pattern_type is unspecified
+
+When creating a shadow link with `rpk shadow create`, you may see:
+
+[.no-copy]
+----
+Invalid cluster link configuration: pattern_type is unspecified
+----
+
+Ensure pattern_type values are uppercase: `LITERAL`, `PREFIX`.
+
+=== Could not read trust file
+
+When creating a shadow link with TLS enabled, you may see:
+
+[.no-copy]
+----
+Cluster link unreachable, preflight check failed - Could not read trust file /path/to/ca.crt
+----
+
+The `ca_path` in your shadow link configuration is incorrect or the file does not exist in the pod.
+
+For Helm deployments, the default CA certificate path is `/etc/tls/certs/default/ca.crt`. If you copied the source cluster's CA certificate to a custom location, ensure the path in your configuration matches where you copied the file.
+
+=== broker_not_available with TLS enabled
+
+When creating a shadow link with TLS enabled, you may see:
+
+[.no-copy]
+----
+Cluster link unreachable, preflight check failed - { node: -1 }, { error_code: broker_not_available [8] }
+----
+
+The shadow cluster cannot verify the source cluster's TLS certificate. This is the most common issue when using TLS with self-signed certificates (the default for Kubernetes deployments with `tls.certs.default.caEnabled=true`).
+
+Ensure the `ca_path` in your shadow link configuration points to the source cluster's CA certificate, not the shadow cluster's own CA.
+
+ifdef::env-kubernetes[]
+To extract and provide the source cluster's CA certificate:
+
+[,bash]
+----
+# Extract source cluster's CA
+kubectl exec --namespace <source-namespace> <source-pod-name> --container redpanda -- \
+  cat /etc/tls/certs/default/ca.crt > source-ca.crt
+
+# Copy to shadow cluster
+kubectl cp source-ca.crt <shadow-namespace>/<shadow-pod-name>:/tmp/source-ca.crt
+
+# Reference in shadow link config: ca_path: "/tmp/source-ca.crt"
+----
+endif::[]
+
+=== Wrong SSL version number
+
+When creating a shadow link, you may see in the source cluster logs:
+
+[.no-copy]
+----
+Disconnected (applying protocol, Wrong SSL Version number: ensure client is configured to use TLS)
+----
+
+The source cluster requires TLS but your shadow link configuration is missing TLS settings or has `tls_settings.enabled: false`.
+
+Add TLS configuration with `enabled: true` and provide the correct `ca_path` pointing to the source cluster's CA certificate.
+
+=== broker_not_available without TLS
+
+When creating a shadow link without TLS, you may see:
+
+[.no-copy]
+----
+Cluster link unreachable, preflight check failed - { node: -1 }, { error_code: broker_not_available [8] }
+----
+
+Verify that `bootstrap_servers` addresses are reachable from the shadow cluster and that ports are correct.
+
+ifdef::env-kubernetes[]
+Test connectivity from the shadow pod:
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  curl -v telnet://<source-address>:<port>
+----
+endif::[]
+
+=== Connection timeout
+
+When creating a shadow link, the command may hang or timeout without completing.
+
+Check network connectivity between shadow and source clusters. Verify firewall rules and network policies allow traffic between the namespaces.
+//end::shadow-linking[]
+
+//tag::shadow-link-monitoring[]
+=== Topics in FAULTED state
+
+When monitoring shadow links, you may see topics showing `FAULTED` state in status output.
+
+ifdef::env-kubernetes[]
+Check shadow cluster logs for specific error messages:
+
+[,bash]
+----
+kubectl logs --namespace <shadow-namespace> <shadow-pod-name> --container redpanda | grep -i "shadow\|error"
+----
+endif::[]
+
+Common causes include:
+
+* Source topic deleted: topic no longer exists on source cluster
+* Permission denied: shadow link service account lacks required permissions
+* Network interruption: temporary connectivity issues
+
+If the source topic still exists and should be replicated, delete and recreate the shadow link to reset the faulted state.
+
+=== High replication lag
+
+When monitoring shadow links, you may see LAG values continuously increasing in `rpk shadow status`.
+
+Check the following:
+
+* Check source cluster load: high produce rate may exceed replication capacity
+* Check shadow cluster resources: CPU, memory, or disk constraints
+* Check network bandwidth: verify sufficient bandwidth between clusters
+
+To resolve:
+
+* Scale shadow cluster resources if constrained
+* Verify network connectivity and bandwidth
+* Review topic configuration for optimization opportunities
+
+=== Task shows LINK_UNAVAILABLE
+
+When monitoring shadow links, you may see tasks showing `LINK_UNAVAILABLE` state with "No brokers available" message.
+
+Common causes include:
+
+* Source cluster requires SASL authentication but shadow link not configured for it
+* Source cluster unreachable from shadow cluster
+* Network policy blocking traffic between clusters
+
+To resolve:
+
+* Verify SASL configuration if source cluster requires authentication
+* Test network connectivity: `kubectl exec` into shadow pod and try connecting to source cluster
+* Check Kubernetes NetworkPolicies and firewall rules
+//end::shadow-link-monitoring[]
+
+//tag::shadow-link-failover[]
+=== Topics stuck in FAILING_OVER state
+
+When using Helm, topics may remain in `FAILING_OVER` state for extended periods.
+
+ifdef::env-kubernetes[]
+Check shadow cluster logs for specific error messages:
+
+[,bash]
+----
+kubectl logs --namespace <shadow-namespace> <shadow-pod-name> --container redpanda --tail=100
+----
+endif::[]
+
+Ensure sufficient cluster resources (CPU, memory, disk space) are available on the shadow cluster. Verify network connectivity between shadow cluster nodes and confirm that all shadow topic partitions have elected leaders.
+
+ifdef::env-kubernetes[]
+If topics remain stuck after addressing these cluster health issues and you need immediate failover, you can force delete the shadow link:
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow delete <shadow-link-name> --force
+----
+
+WARNING: Force deleting a shadow link immediately fails over all topics in the link. This action is irreversible and should only be used when topics are stuck and you need immediate access to all replicated data.
+endif::[]
+
+ifdef::env-kubernetes[]
+=== ShadowLink resource stuck
+
+When using the Operator, the `ShadowLink` resource may not delete or show errors.
+
+
+Check the Redpanda Operator logs:
+
+[,bash]
+----
+kubectl logs --namespace <operator-namespace> -l app.kubernetes.io/name=operator --tail=100
+----
+
+Check for finalizers on the resource:
+
+[,bash]
+----
+kubectl get shadowlink --namespace <shadow-namespace> <shadowlink-name> -o yaml | grep finalizers -A 5
+----
+
+If necessary, remove the finalizer to force deletion:
+
+[,bash]
+----
+kubectl patch shadowlink --namespace <shadow-namespace> <shadowlink-name> \
+  -p '{"metadata":{"finalizers":[]}}' --type=merge
+----
+endif::[]
+
+=== Application connection failures after failover
+
+Applications may not be able to connect to the shadow cluster after failover.
+
+ifdef::env-kubernetes[]
+Verify shadow cluster Kubernetes Service endpoints:
+
+[,bash]
+----
+kubectl get service --namespace <shadow-namespace>
+----
+
+Check NetworkPolicy if using network policies:
+
+[,bash]
+----
+kubectl get networkpolicy --namespace <shadow-namespace>
+----
+endif::[]
+
+Confirm authentication credentials are valid for the shadow cluster and test network connectivity from application hosts.
+
+=== Consumer group offset issues after failover
+
+After failover, consumers may start from the beginning or wrong positions.
+
+ifdef::env-kubernetes[]
+Verify consumer group offsets were replicated (check your shadow link filters):
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk group describe <consumer-group-name>
+----
+endif::[]
+
+If necessary, manually reset offsets to appropriate positions. See link:https://support.redpanda.com/hc/en-us/articles/23499121317399-How-to-manage-consumer-group-offsets-in-Redpanda[How to manage consumer group offsets in Redpanda^] for detailed reset procedures.
+//end::shadow-link-failover[]
