@@ -137,7 +137,13 @@ rpk shadow config generate --for-cloud -o shadow-config.yaml
 endif::[]
 ----
 
+ifndef::env-cloud[]
 This creates a complete YAML configuration file that you can customize for your environment. The template includes all available fields with comments explaining their purpose. For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-config-generate.adoc[`rpk shadow config generate`].
+endif::[]
+
+ifdef::env-cloud[]
+This creates a complete YAML configuration file that you can customize for your environment. The template includes all available fields with comments explaining their purpose. For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-config-generate.adoc[`rpk shadow config generate --for-cloud`].
+endif::[]
 ====
 
 .Explore the configuration file
@@ -146,19 +152,47 @@ This creates a complete YAML configuration file that you can customize for your 
 [,yaml]
 ----
 # Sample ShadowLinkConfig YAML with all fields
-name: <shadow-link-name>              # Unique name for this shadow link, example: "production-dr"
+ 
+name: <shadow-link-name>            # Unique name for this shadow link, example: "production-dr"
+
 ifdef::env-cloud[]
 cloud_options:
-  source_redpanda_id: <source-cluster-id>   # Source cluster ID in Redpanda Cloud
-  shadow_redpanda_id: <shadow-cluster-id>   # Shadow cluster ID in Redpanda Cloud
+# Use either source_redpanda_id or bootstrap_servers: only one is required.
+  source_redpanda_id: <source-cluster-id>    # Optional: 20 character lowercase ID of the cluster 
+                                             # Example: m7xtv2qq5njbhwruk88f
+  shadow_redpanda_id: <shadow-cluster-id>    # 20 character lowercase ID of the cluster
+                                             # Example: m7xtv2qq5njbhwruk88f
 endif::[]
 client_options:
-  bootstrap_servers:                  # Source cluster brokers to connect to
-  - <source-broker-1>:<port>          # Example: "prod-kafka-1.example.com:9092"
-  - <source-broker-2>:<port>          # Example: "prod-kafka-2.example.com:9092"
-  - <source-broker-3>:<port>          # Example: "prod-kafka-3.example.com:9092"
-  source_cluster_id: <cluster-id>     # Optional: Expected source cluster ID for validation, example: "prod-cluster-123"
-  
+  bootstrap_servers:                         # Source cluster brokers to connect to
+  - <source-broker-1>:<port>                 # Example: "prod-kafka-1.example.com:9092"
+  - <source-broker-2>:<port>                 # Example: "prod-kafka-2.example.com:9092"
+  - <source-broker-3>:<port>                 # Example: "prod-kafka-3.example.com:9092"
+  source_cluster_id: <cluster-id>            # Optional: UUID assigned by Redpanda 
+                                             # Example: a882bc98-7aca-40f6-a657-36a0b4daf1fd
+ifndef::env-cloud[]
+# To get source_cluster_id, run `rpk cluster config get cluster_id`.
+endif::[]
+ifdef::env-cloud[]
+# This UUID is not available in Redpanda Cloud. 
+endif::[]  
+
+ifdef::env-cloud[]
+  # TLS settings using PEM strings
+  tls_settings:
+    enabled: true
+    tls_pem_settings:
+      ca: |-
+        -----BEGIN CERTIFICATE-----
+        ...
+        -----END CERTIFICATE-----
+      key: ${secrets.KEY_FROM_SHADOW_CLUSTER_SECRET_STORE} # dataplane secret in the shadow cluster
+      cert: |-
+        -----BEGIN CERTIFICATE-----
+        ...
+        -----END CERTIFICATE-----
+endif::[]
+ifndef::env-cloud[]
   # TLS settings using file paths
   tls_settings:
     enabled: true                     # Enable TLS
@@ -167,10 +201,11 @@ client_options:
       key_path: <client-key-path>     # Optional: Path to client private key, example: "/etc/ssl/private/client.key"
       cert_path: <client-cert-path>   # Optional: Path to client certificate, example: "/etc/ssl/certs/client.crt"
     do_not_set_sni_hostname: false   # Optional: Skip SNI hostname when using TLS (default: false)
-  
-  # Create SASL credentials in the source cluster.
-  # Then, with this configuration, ensure the shadow cluster uses the credentials 
-  # to authenticate to the source cluster.
+endif::[]
+
+# Create SASL credentials in the source cluster.
+# Then, with this configuration, ensure the shadow cluster uses the credentials 
+# to authenticate to the source cluster.
   authentication_configuration:
     # SASL/SCRAM authentication
     scram_configuration:
@@ -269,7 +304,7 @@ endif::[]
 
 // Use tabs and display the tagged content above inside the rpk tab
 ifdef::env-cloud[]
-Because the shadow cluster pulls from the source cluster, the shadow cluster requires credentials to connect to the source cluster. And because you cannot store plaintext passwords in Redpanda Cloud, you must create a secret to hold the password for the user on the source cluster.
+Because the shadow cluster pulls from the source cluster, the shadow cluster requires credentials to connect to the source cluster. And because you cannot store plaintext passwords in Redpanda Cloud, you must create a secret to hold the password for the user on the source cluster. If using mTLS, you must also create a secret to hold the key of the client certificate for the client to authenticate. Reference that secret in `client_options.tls_settings.key_file` in the configuration file.
 
 . In the shadow cluster, create the secret:
 +
@@ -278,7 +313,7 @@ Because the shadow cluster pulls from the source cluster, the shadow cluster req
 Cloud UI::
 +
 --
-In the shadow cluster, go to the *Secrets Store* page and create a secret for the source cluster user, scoped to Redpanda Cluster.
+In the shadow cluster, go to the [*Secrets Store*] page and create a secret for the source cluster user, scoped to Redpanda Cluster.
 
 If necessary, first create the user with all ACLs enabled in the source cluster.
 --
