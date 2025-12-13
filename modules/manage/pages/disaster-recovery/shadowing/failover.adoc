@@ -14,7 +14,7 @@ endif::[]
 Failover is the process of modifying shadow topics or an entire shadow cluster from read-only replicas to fully writable resources, and ceasing replication from the source cluster. You can fail over individual topics for selective workload migration or fail over the entire cluster for comprehensive disaster recovery. This critical operation transforms your shadow resources into operational production assets, allowing you to redirect application traffic when the source cluster becomes unavailable.
 
 ifdef::env-cloud[]
-You can failover a shadow link using the Redpanda Cloud UI, `rpk`, or the Data Plane API. 
+You can failover a shadow link using the Redpanda Cloud UI, `rpk`, or the Data Plane API.
 endif::[]
 
 ifndef::env-cloud[]
@@ -33,36 +33,165 @@ include::manage:partial$shadowing/failover-behavior.adoc[]
 
 == Failover commands
 
+ifdef::env-cloud[]
+=== Get Data Plane API URL
+
+If using the Data Plane API, run the following to get the Data Plane API URL of the shadow cluster:
+
+[,bash]
+----
+include::manage:partial$shadow-cluster-get-dataplane-api-url.adoc[]
+----
+endif::[]
+
 You can perform failover at different levels of granularity to match your disaster recovery needs:
 
 === Individual topic failover
 
 To fail over a specific shadow topic while leaving other topics in the shadow link still replicating, run:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-failover-individual[]
 [,bash]
 ----
 rpk shadow failover <shadow-link-name> --topic <topic-name>
 ----
 
-Use this approach when you need to selectively failover specific workloads or when testing failover procedures. For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-failover.adoc[`rpk shadow failover`].
+For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-failover.adoc[`rpk shadow failover`].
+// end::rpk-tab-failover-individual[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+. On the *Shadow Link* page, select your shadow link. 
+. For any of the topics you want to failover, click the corresponding *Failover* button.
+. Click to confirm the failover action. The failover process promotes the selected topics to writable status.
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover.adoc[tag=rpk-tab-failover-individual]
+--
+
+Data Plane API::
++
+--
+Send a `POST /shadowlink/\{shadow_link_name}/failover` request to the Data Plane API. Specify the name of the shadow topic in the request body:
+
+[,bash]
+----
+curl -X POST "$DATAPLANE_API_URL/v1/shadowlink/<shadow-link-name>/failover" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
+  -d '{
+    "shadowTopicName": "<shadow-topic-name>"
+  }'
+----
+--
+======
+endif::[]
+
+Use this approach when you need to selectively failover specific workloads or when testing failover procedures.
 
 === Complete shadow link failover (cluster failover)
 
 To fail over all shadow topics associated with the shadow link simultaneously, run:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-failover-all[]
 [,bash]
 ----
 rpk shadow failover <shadow-link-name> --all
 ----
+// end::rpk-tab-failover-all[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+. On the *Shadow Link* page, select your shadow link. 
+. Click *Failover All Topics*.
+. Click to confirm the failover action. The failover process promotes all topics to writable status.
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover.adoc[tag=rpk-tab-failover-all]
+--
+
+Data Plane API::
++
+--
+Send a `POST /shadowlink/\{shadow_link_name}/failover` request to the Data Plane API. If you do not specify a shadow topic in the request body, this command requests a failover of all shadow topics associated with the shadow link:
+[,bash]
+----
+curl -X POST "$DATAPLANE_API_URL/v1/shadowlink/<shadow-link-name>/failover" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+--
+======
+endif::[]
 
 Use this approach during a complete regional disaster when you need to activate the entire shadow cluster as your new production environment.
 
 === Force delete shadow link (emergency failover)
 
+ifndef::env-cloud[]
+// tag::rpk-tab-failover-force[]
 [,bash]
 ----
+ifndef::env-cloud[]
 rpk shadow delete <shadow-link-name> --force
+endif::[]
+
+ifdef::env-cloud[]
+rpk shadow delete <shadow-link-name>
+endif::[]
 ----
+// end::rpk-tab-failover-force[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+All failover actions in the Cloud UI include force delete functionality by default. When you failover a shadow link, all topics are immediately promoted to writable status.
+--
+
+rpk::
++
+--
+`rpk shadow delete` force deletes the shadow link by default in Redpanda Cloud:
+
+include::manage:disaster-recovery/shadowing/failover.adoc[tag=rpk-tab-failover-force]
+--
+
+Control Plane API::
++
+--
+Use the Control Plane API to force delete a shadow link:
+
+[,bash]
+----
+curl -X DELETE 'https://api.redpanda.com/v1/shadow-links/<shadow-link-id>' \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+--
+======
+endif::[]
 
 [WARNING]
 ====
@@ -75,12 +204,44 @@ include::manage:partial$shadowing/failover-states.adoc[]
 
 To monitor failover progress using the status command, run:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-monitor-progress[]
 [,bash]
 ----
 rpk shadow status <shadow-link-name>
 ----
 
 The output shows individual topic states and any issues encountered during the failover process. For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`].
+// end::rpk-tab-monitor-progress[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+Track the progress of failover operations from the *Shadow Link* page in the Cloud UI.
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover.adoc[tag=rpk-tab-monitor-progress]
+--
+
+Data Plane API::
++
+--
+[,bash]
+----
+curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+--
+======
+endif::[]
 
 Task states during monitoring:
 
