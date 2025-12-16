@@ -1,0 +1,130 @@
+= Monitor Kubernetes Shadow Links
+:description: Monitor shadow link health in Kubernetes using ShadowLink resources, status commands, metrics, and best practices.
+:page-categories: Management, Monitoring, Disaster Recovery
+:env-kubernetes: true
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+Monitor your xref:manage:kubernetes/shadowing/k-shadow-linking.adoc[shadow links] to ensure proper replication performance and understand your disaster recovery readiness. For Kubernetes deployments, you can monitor shadow links using the Redpanda Operator's `ShadowLink` resource status or by using `rpk` commands directly.
+
+include::manage:partial$shadowing/emergency-shadowing-callout.adoc[]
+
+== Status commands
+
+[tabs]
+======
+Operator::
++
+--
+To list existing shadow links:
+
+[,bash]
+----
+kubectl get shadowlink --namespace <shadow-namespace>
+----
+
+To view detailed shadow link status and configuration:
+
+[,bash]
+----
+kubectl describe shadowlink --namespace <shadow-namespace> <shadowlink-name>
+----
+
+The `kubectl describe` output shows:
+
+* **Shadow link state**: Overall operational state in the `Status` section
+* **Individual topic states**: Current state of each replicated topic under `Shadow Topics`
+* **Task status**: Health of replication tasks under `Tasks`
+* **Sync status**: Whether the resource is properly synced (`Synced: True` in conditions)
+* **Configuration**: Complete shadow link configuration including connection settings and filters
+
+For more detailed monitoring or troubleshooting, you can also use `rpk` commands as shown in the Helm tab.
+--
+
+Helm::
++
+--
+To list existing shadow links:
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow list
+----
+
+To view shadow link configuration details:
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow describe <shadow-link-name>
+----
+
+For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-list.adoc[`rpk shadow list`] and xref:reference:rpk/rpk-shadow/rpk-shadow-describe.adoc[`rpk shadow describe`]. This command shows the complete configuration of the shadow link, including connection settings, filters, and synchronization options.
+
+To check your shadow link status and ensure proper operation:
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow status <shadow-link-name>
+----
+
+For troubleshooting specific issues, you can use command options to show individual status sections. See xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`] for available status options.
+--
+======
+
+The status output includes the following:
+
+* **Shadow link state**: Overall operational state (`ACTIVE`, `PAUSED`).
+* **Individual topic states**: Current state of each replicated topic (`ACTIVE`, `FAULTED`, `FAILING_OVER`, `FAILED_OVER`, `PAUSED`).
+* **Task status**: Health of replication tasks across brokers (`ACTIVE`, `FAULTED`, `NOT_RUNNING`, `LINK_UNAVAILABLE`). For details about shadow link tasks, see xref:manage:disaster-recovery/shadowing/overview.adoc#shadow-link-tasks[Shadow link tasks].
+* **Lag information**: Replication lag per partition showing source vs shadow high watermarks (HWM).
+
+include::manage:partial$shadowing/shadow-link-metrics.adoc[]
+
+== Monitoring best practices
+
+=== Health check procedures
+
+Establish regular monitoring workflows to ensure shadow link health:
+
+[tabs]
+======
+Operator::
++
+--
+[,bash]
+----
+# Check all shadow links are synced and healthy
+kubectl get shadowlink --namespace <shadow-namespace>
+
+# View detailed status for a specific shadow link
+kubectl describe shadowlink --namespace <shadow-namespace> <shadowlink-name>
+
+# Check for any shadow links with issues (not synced)
+kubectl get shadowlink --namespace <shadow-namespace> -o json | \
+  jq '.items[] | select(.status.conditions[] | select(.type=="Synced" and .status!="True")) | .metadata.name'
+----
+--
+
+Helm::
++
+--
+[,bash]
+----
+# Check all shadow links are active
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow list | grep -v "ACTIVE" || echo "All shadow links healthy"
+
+# Monitor lag for critical topics
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow status <shadow-link-name> | grep -E "LAG|Lag"
+----
+--
+======
+
+include::manage:partial$shadowing/shadow-link-alerts.adoc[]
