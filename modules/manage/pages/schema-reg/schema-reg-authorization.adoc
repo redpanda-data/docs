@@ -196,6 +196,105 @@ Not all Kafka operations are supported when using Redpanda Schema Registry ACLs.
 
 For additional guidance on these operations, see the link:/api/doc/schema-registry/operation/operation-get_security_acls[Redpanda Schema Registry API].
 
+=== Understanding Schema Registry operations
+
+The following operations are used to control access to Schema Registry resources:
+
+* **`read`**: Allows reading schemas and their content. Required for consuming messages that use Schema Registry, fetching specific schema versions, and reading schema content by ID.
+* **`write`**: Allows registering new schemas and schema versions. Required for producing messages with new schemas and updating existing subjects with new schema versions.
+* **`delete`**: Allows deleting schema versions and subjects. Required for cleanup operations and removing deprecated schemas.
+* **`describe`**: Allows listing and describing Schema Registry resources. Required for discovering available subjects, listing schema versions, and viewing metadata.
+* **`describe_configs`**: Allows reading configuration settings. Required for viewing compatibility settings, reading modes (IMPORT/READWRITE), and checking global or per-subject configurations.
+* **`alter_configs`**: Allows modifying configuration settings. Required for changing compatibility levels, setting IMPORT mode for migrations, and updating global or per-subject configurations.
+
+=== Common use cases
+
+The following examples show which operations are required for common Schema Registry tasks:
+
+==== Schema Registry migration
+
+When migrating schemas between clusters, the destination user needs:
+
+[,bash]
+----
+# For reading schemas from source and writing to target
+rpk security acl create \
+  --allow-principal migrator-user \
+  --operation read,write,describe,alter_configs,describe_configs \
+  --registry-global
+----
+
+This grants:
+
+* `read` - Read schemas by ID from source
+* `write` - Register schemas in target with preserved IDs
+* `describe` - List all subjects in source
+* `describe_configs` - Read compatibility settings and mode
+* `alter_configs` - Set IMPORT mode on target Schema Registry
+
+[NOTE]
+====
+The target Schema Registry must be in IMPORT mode to preserve schema IDs during migration. Only superusers or principals with `alter_configs` permission on the `registry` resource can change the global mode. See xref:manage:schema-reg/schema-reg-api.adoc#set-global-mode[Set global mode].
+====
+
+==== Read-only access for consumers
+
+Applications that only consume messages with schemas need:
+
+[,bash]
+----
+# For consuming with schema validation
+rpk security acl create \
+  --allow-principal consumer-app \
+  --operation read \
+  --registry-subject "orders-*"
+----
+
+This allows:
+
+* Reading schema content by ID (embedded in messages)
+* Viewing specific schema versions
+* Does NOT allow listing all subjects or modifying schemas
+
+==== Producer access
+
+Applications that produce messages with schemas need:
+
+[,bash]
+----
+# For producing with new schemas
+rpk security acl create \
+  --allow-principal producer-app \
+  --operation read,write,describe \
+  --registry-subject "orders-*"
+----
+
+This allows:
+
+* Checking if schemas already exist (`describe`)
+* Reading existing schema versions (`read`)
+* Registering new schema versions (`write`)
+
+==== Schema administrator access
+
+Schema administrators who manage compatibility and cleanup need:
+
+[,bash]
+----
+# For full schema management
+rpk security acl create \
+  --allow-principal schema-admin \
+  --operation all \
+  --registry-global
+----
+
+This grants all operations including:
+
+* Managing compatibility settings
+* Deleting deprecated schemas
+* Viewing and modifying configurations
+* Listing all subjects and schemas
+
 == Enable Schema Registry Authorization
 
 === Prerequisites
