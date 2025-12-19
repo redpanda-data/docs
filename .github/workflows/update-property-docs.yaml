@@ -10,6 +10,8 @@ on:
         type: string
   repository_dispatch:
     types: [trigger-property-docs-generation]
+  push:
+    paths: ['docs-data/property-overrides.json']
 
 jobs:
   generate-property-docs:
@@ -36,7 +38,7 @@ jobs:
       - name: Checkout the repository
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
           token: ${{ env.ACTIONS_BOT_TOKEN }}
 
       - name: Set up Node.js
@@ -54,32 +56,62 @@ jobs:
             echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
           elif [ -n "${{ github.event.client_payload.tag }}" ]; then
             echo "tag=${{ github.event.client_payload.tag }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            # For push events, use the current latest-redpanda-tag from antora.yml
+            CURRENT=$(grep 'latest-redpanda-tag:' antora.yml | awk '{print $2}' | tr -d "\"'")
+            echo "tag=$CURRENT" >> $GITHUB_OUTPUT
+            echo "🔄 Using current latest-redpanda-tag for override changes: $CURRENT"
           else
             echo "❌ No tag provided via input or dispatch payload" >&2
             exit 1
           fi
 
-      - name: Check if tag is newer than antora.yml latest
+      - name: Check if docs need regeneration
         id: version_check
+        env:
+          GH_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.tag }}"
           CURRENT=$(grep 'latest-redpanda-tag:' antora.yml | awk '{print $2}' | tr -d "\"'")
 
           echo "📄 Current latest-redpanda-tag in antora.yml: $CURRENT"
-          echo "🔖 Incoming tag: $TAG"
+          echo "🔖 Using tag: $TAG"
 
-          # Strip leading 'v' for numeric comparison
-          CUR_NUM=$(echo "$CURRENT" | sed 's/^v//')
-          NEW_NUM=$(echo "$TAG" | sed 's/^v//')
-
-          # Compare semver using sort -V
-          if [ "$(printf "%s\n%s" "$CUR_NUM" "$NEW_NUM" | sort -V | tail -n1)" = "$NEW_NUM" ] && [ "$CUR_NUM" != "$NEW_NUM" ]; then
-            echo "$TAG is newer than $CURRENT"
-            echo "is_newer=true" >> $GITHUB_OUTPUT
+          # For push events (override file changes), check if generated docs are up to date
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "🔄 Override file changed — checking if generated docs need update"
+            
+            # Check if generated property docs exist and are newer than the override file
+            OVERRIDE_FILE="docs-data/property-overrides.json"
+            GENERATED_FILE="modules/reference/pages/properties/broker-properties.adoc"
+            
+            if [ -f "$GENERATED_FILE" ]; then
+              # Compare file modification times
+              if [ "$OVERRIDE_FILE" -nt "$GENERATED_FILE" ]; then
+                echo "🔄 Override file is newer than generated docs — regeneration needed"
+                echo "is_newer=true" >> $GITHUB_OUTPUT
+              else
+                echo "✅ Generated docs are up to date with override file — skipping"
+                echo "is_newer=false" >> $GITHUB_OUTPUT
+              fi
+            else
+              echo "🔄 Generated docs don't exist — regeneration needed"
+              echo "is_newer=true" >> $GITHUB_OUTPUT
+            fi
           else
-            echo "$TAG is not newer than $CURRENT — skipping doc generation"
-            echo "is_newer=false" >> $GITHUB_OUTPUT
+            # Strip leading 'v' for numeric comparison
+            CUR_NUM=$(echo "$CURRENT" | sed 's/^v//')
+            NEW_NUM=$(echo "$TAG" | sed 's/^v//')
+
+            # Compare semver using sort -V
+            if [ "$(printf "%s\n%s" "$CUR_NUM" "$NEW_NUM" | sort -V | tail -n1)" = "$NEW_NUM" ] && [ "$CUR_NUM" != "$NEW_NUM" ]; then
+              echo "$TAG is newer than $CURRENT"
+              echo "is_newer=true" >> $GITHUB_OUTPUT
+            else
+              echo "$TAG is not newer than $CURRENT — skipping doc generation"
+              echo "is_newer=false" >> $GITHUB_OUTPUT
+            fi
           fi
 
       - name: Generate property docs
@@ -95,13 +127,30 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
 
+      - name: Commit generated docs to current branch
+        if: steps.version_check.outputs.is_newer == 'true' && github.event_name == 'push'
+        run: |
+          git config --local user.email "vbotbuildovich@users.noreply.github.com"
+          git config --local user.name "vbotbuildovich"
+          
+          # Add generated files
+          git add modules/reference/pages/properties/ modules/reference/partials/properties/
+          
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "auto-docs: Regenerate property docs after override changes"
+            git push origin HEAD
+          fi
+
       - name: Create pull request
-        if: steps.version_check.outputs.is_newer == 'true'
+        if: steps.version_check.outputs.is_newer == 'true' && github.event_name != 'push'
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ env.ACTIONS_BOT_TOKEN }}
           commit-message: "auto-docs: Update property docs for ${{ steps.tag.outputs.tag }}"
-          branch: update-property-docs-${{ steps.tag.outputs.tag }}
+          branch: "update-property-docs-${{ steps.tag.outputs.tag }}"
           title: "auto-docs: Update property docs for tag ${{ steps.tag.outputs.tag }}"
           body: |
             This PR auto-generates updated Redpanda property documentation for **${{ steps.tag.outputs.tag }}**.
