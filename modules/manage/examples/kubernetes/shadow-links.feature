@@ -29,7 +29,6 @@ Feature: ShadowLink CRDs
     When I apply Kubernetes manifest:
     """
     ---
-# tag::basic-shadowlink-example[]
     apiVersion: cluster.redpanda.com/v1alpha2
     kind: ShadowLink
     metadata:
@@ -47,7 +46,6 @@ Feature: ShadowLink CRDs
           - name: topic1
             filterType: include
             patternType: literal
-# end::basic-shadowlink-example[]
     """
     And shadow link "link" is successfully synced
     Then I should find topic "topic1" in cluster "sasl"
