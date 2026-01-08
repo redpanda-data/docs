@@ -5,7 +5,7 @@
 
 This checklist validates Redpanda deployments in Kubernetes against production readiness standards. Use this guide to ensure your cluster meets all critical requirements and follows recommended best practices for production deployments.
 
-NOTE: For non-Kubernetes deployments (Linux/VM-based), see the xref:deploy:redpanda/manual/production/production-readiness.adoc[Production Readiness Checklist for Linux].
+NOTE: For Linux deployments, see the xref:deploy:redpanda/manual/production/production-readiness.adoc[Production Readiness Checklist for Linux].
 
 === Authentication note
 
@@ -25,18 +25,39 @@ Common SASL mechanisms are `SCRAM-SHA-256` or `SCRAM-SHA-512`. Update these valu
 
 == Critical Production Requirements
 
-These checks are essential for a stable, reliable production deployment. All critical requirements must pass before going live.
+The Critical Production Requirements checklist helps you to confirm that:
+
+- All required defaults and configuration items are specified.
+- You have the optimal hardware setup.
+- Security is enabled.
+- You are set up to run in production.
 
 === 1. Cluster health status
 
-Verify the cluster reports as healthy with no broker issues.
+Check that all brokers are connected and running. Run xref:reference:rpk/rpk-cluster/rpk-cluster-health.adoc[`rpk cluster health`] to check the health of the cluster. No nodes should be down, and there should be zero leaderless or under-replicated partitions.
 
+[.side-by-side]
+--
+.Input
 [,bash]
 ----
 kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster health -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
 ----
 
-All brokers must report `HEALTHY` status with zero leaderless partitions and zero under-replicated partitions.
+.Output
+[,bash,role=no-copy]
+----
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:                          true
+Unhealthy reasons:                []
+Controller ID:                    0
+All nodes:                        [0 1 2]
+Nodes down:                       []
+Leaderless partitions (0):        []
+Under-replicated partitions (0):  []
+----
+--
 
 === 2. Minimum broker count (≥3)
 
@@ -118,20 +139,23 @@ NODE-ID  NUM-CORES  MEMBERSHIP-STATUS  IS-ALIVE  BROKER-VERSION
 
 All brokers must show `active` status. If any broker shows `draining` or `decommissioned`, investigate immediately.
 
-See xref:manage:cluster-maintenance/decommission-brokers.adoc[Decommission Brokers] for more information.
+See also: xref:manage:cluster-maintenance/decommission-brokers.adoc[Decommission Brokers]
 
 === 4. No brokers in maintenance mode
 
-Ensure no brokers are currently in maintenance mode during normal operations.
+Check that no brokers are in maintenance mode during normal operations.
 
 Maintenance mode is used when modifying brokers that will remain as members of the cluster, such as during rolling upgrades or hardware maintenance. While necessary during planned maintenance windows, brokers should not remain in maintenance mode during normal operations.
 
+[.side-by-side]
+--
+.Input
 [,bash]
 ----
 kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster maintenance status -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
 ----
 
-Expected output showing no brokers in maintenance mode:
+.Output
 [,bash,role=no-copy]
 ----
 NODE-ID  ENABLED  FINISHED  ERRORS  PARTITIONS  ELIGIBLE  TRANSFERRING  FAILED
@@ -139,19 +163,23 @@ NODE-ID  ENABLED  FINISHED  ERRORS  PARTITIONS  ELIGIBLE  TRANSFERRING  FAILED
 1        false    -         -       -           -         -             -
 2        false    -         -       -           -         -             -
 ----
+--
 
 All brokers should show `ENABLED: false`. If any broker shows `ENABLED: true` outside of a planned maintenance window, investigate immediately.
 
-See xref:manage:node-management.adoc#place-a-broker-in-maintenance-mode[Maintenance Mode] for more information.
+See also: xref:manage:node-management.adoc#place-a-broker-in-maintenance-mode[Maintenance Mode]
 
 === 5. Consistent Redpanda version
 
-Ensure all brokers run the same Redpanda version.
+Check that Redpanda is running the https://github.com/redpanda-data/redpanda/releases[latest point release^] for the major version you're on and that all brokers run the same version.
 
+.Input
 [,bash]
 ----
 kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk redpanda admin brokers list -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
 ----
+
+// TODO: Add expected output example
 
 Version mismatches can cause compatibility issues and must be resolved.
 
@@ -250,22 +278,26 @@ kubectl get redpanda redpanda -n <namespace> -o yaml | grep -A 1 "tag:"
 
 === 7. Default topic replication factor (≥3)
 
-Verify the default replication factor is set appropriately for production.
+Check that the default replication factor is set appropriately for production.
 
+[.side-by-side]
+--
+.Input
 [,bash]
 ----
 kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get default_topic_replications -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
 ----
 
-Expected output:
+.Output
 [,bash,role=no-copy]
 ----
 3
 ----
+--
 
 Setting `default_topic_replications` to 3 or greater ensures new topics are created with adequate fault tolerance.
 
-See xref:develop:config-topics.adoc#choose-the-replication-factor[Choose the Replication Factor] for guidance on selecting appropriate replication factors.
+See also: xref:develop:config-topics.adoc#choose-the-replication-factor[Choose the Replication Factor]
 
 === 8. Existing topics replication factor (≥3)
 
@@ -288,7 +320,7 @@ user-events       16          3
 
 All production topics should have `REPLICAS` of 3 or greater. Topics with single-digit replication are at risk of data loss if a broker fails.
 
-See xref:manage:cluster-maintenance/topic-property-configuration.adoc#change-topic-replication-factor[Change Topic Replication Factor] if remediation is needed.
+See also: xref:manage:cluster-maintenance/topic-property-configuration.adoc#change-topic-replication-factor[Change Topic Replication Factor]
 
 === 9. Persistent storage configuration
 
@@ -394,7 +426,10 @@ Multi-tenant disks can experience:
 * IOPS throttling that impacts Redpanda's performance
 * Difficulty troubleshooting performance issues due to external factors
 
-See xref:deploy:redpanda/kubernetes/k-requirements.adoc#storage[Storage requirements] for detailed specifications and xref:deploy:redpanda/kubernetes/k-requirements.adoc#cloud-instance-types[Cloud Instance Types] for recommended instance types across AWS, Azure, and Google Cloud.
+See also:
+
+* xref:deploy:redpanda/kubernetes/k-requirements.adoc#storage[Storage requirements]
+* xref:deploy:redpanda/kubernetes/k-requirements.adoc#cloud-instance-types[Cloud Instance Types]
 
 **Volume sizing**:: Plan storage capacity for data growth and retention requirements.
 +
@@ -433,7 +468,7 @@ All Redpanda pods must have:
 
 Setting requests equal to limits ensures the Pod receives the `Guaranteed` QoS class, which prevents CPU throttling and reduces the risk of Pod eviction.
 
-See xref:manage:kubernetes/k-manage-resources.adoc[Manage Pod Resources] for detailed configuration guidance.
+See also: xref:manage:kubernetes/k-manage-resources.adoc[Manage Pod Resources]
 
 === 13. CPU to memory ratio (1:2 minimum)
 
@@ -622,7 +657,7 @@ total 16
 -rw------- 1 redpanda redpanda 1704 Dec 15 10:00 tls.key
 ----
 
-See xref:manage:security/encryption.adoc[TLS Encryption] for detailed configuration instructions.
+See also: xref:manage:security/encryption.adoc[TLS Encryption]
 
 === 19. Authentication configuration
 
@@ -668,7 +703,10 @@ User:app-consumer  *     TOPIC          orders.*          READ       ALLOW
 User:app-consumer  *     GROUP          consumer-group-1  READ       ALLOW
 ----
 
-See xref:manage:security/authentication.adoc[Authentication] and xref:manage:security/authorization/index.adoc[Authorization] for configuration details.
+See also:
+
+* xref:manage:security/authentication.adoc[Authentication]
+* xref:manage:security/authorization/index.adoc[Authorization]
 
 === 20. Network security
 
@@ -720,7 +758,7 @@ redpanda           ClusterIP      None            <none>        9093/TCP,9644/TC
 redpanda-external  LoadBalancer   10.100.200.50   <pending>     9093:30001/TCP
 ----
 
-See xref:manage:security/listener-configuration.adoc[Listener Configuration] for securing network endpoints.
+See also: xref:manage:security/listener-configuration.adoc[Listener Configuration]
 
 === 21. Pod Disruption Budget configured
 
@@ -740,7 +778,7 @@ redpanda   N/A             1                 1                     10d
 
 Production deployments must have a PodDisruptionBudget with `maxUnavailable: 1` to prevent simultaneous broker disruptions during voluntary operations like node drains, upgrades, or autoscaler actions.
 
-See xref:manage:kubernetes/k-pod-disruption-budgets.adoc[Pod Disruption Budgets] for configuration details.
+See also: xref:manage:kubernetes/k-pod-disruption-budgets.adoc[Pod Disruption Budgets]
 
 === 22. Rack awareness and topology spread
 
@@ -775,7 +813,7 @@ kubectl get nodes --show-labels | grep topology.kubernetes.io/zone
 * Use node labels for availability zone awareness (typically `topology.kubernetes.io/zone`)
 * Prevents single zone failures from affecting multiple brokers
 
-See xref:manage:kubernetes/k-rack-awareness.adoc[Rack Awareness in Kubernetes] for configuration details.
+See also: xref:manage:kubernetes/k-rack-awareness.adoc[Rack Awareness]
 
 === 23. Redpanda license verification
 
@@ -798,7 +836,7 @@ Expires:           Dec 31 2025
 
 Production deployments using Enterprise features (Tiered Storage, Schema Registry, Continuous Data Balancing, etc.) must have a valid Enterprise license with sufficient expiration date.
 
-See xref:get-started:licensing/index.adoc[Redpanda Licensing] for more information.
+See also: xref:get-started:licensing/index.adoc[Redpanda Licensing]
 
 === 24. Operator CRDs validation (Operator deployments only)
 
@@ -831,7 +869,7 @@ If any CRDs are missing or incompatible with your Operator version, the Operator
 
 == Recommended Production Enhancements
 
-These checks improve operational robustness and performance but are not critical for basic functionality.
+The Recommended Production Enhancements checklist confirms that you have adhered to day-2 operations best practices and can diagnose and recover from issues or failures.
 
 === 25. Deployment method detection
 
@@ -937,7 +975,7 @@ Expected output showing pod anti-affinity rules:
 
 This prevents single node failures from affecting multiple brokers by ensuring each Redpanda pod runs on a different node.
 
-See xref:reference:k-redpanda-helm-spec.adoc#statefulset-podantiaffinity[Pod Anti-Affinity] configuration options.
+See also: xref:reference:k-redpanda-helm-spec.adoc#statefulset-podantiaffinity[Pod Anti-Affinity]
 
 === 28. Node isolation configuration
 
@@ -1066,7 +1104,7 @@ Debug bundle saved to '/tmp/bundle.zip'
 
 Testing bundle generation early ensures this critical troubleshooting tool works when you need it most. Debug bundles are often required by Redpanda support to diagnose production issues efficiently.
 
-See xref:manage:kubernetes/troubleshooting/k-diagnostics-bundle.adoc[Diagnostics Bundles in Kubernetes] for detailed information about bundle contents and collection methods.
+See also: xref:manage:kubernetes/troubleshooting/k-diagnostics-bundle.adoc[Diagnostics Bundles in Kubernetes]
 
 === 33. Tiered Storage configuration
 
@@ -1103,7 +1141,7 @@ kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get clo
 kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get cloud_storage_region -X user=<sasl-username> -X pass=<sasl-password> -X sasl.mechanism=<sasl-mechanism>
 ----
 
-See xref:manage:tiered-storage.adoc[Tiered Storage] for configuration details and best practices.
+See also: xref:manage:tiered-storage.adoc[Tiered Storage]
 
 === 34. Security scanning
 
@@ -1176,7 +1214,7 @@ kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk topic describe <topic-
 * Maintain runbooks for disaster recovery scenarios
 * Verify IAM roles/permissions for object storage access
 
-See xref:manage:whole-cluster-restore.adoc[Whole Cluster Restore] for detailed recovery procedures.
+See also: xref:manage:whole-cluster-restore.adoc[Whole Cluster Restore]
 
 === 36. Audit logging
 
@@ -1229,9 +1267,13 @@ Audit logging may be required for:
 * GDPR data access tracking
 * Internal security policies
 
-See xref:manage:audit-logging.adoc[Audit Logging] for configuration details and event types.
+See also: xref:manage:audit-logging.adoc[Audit Logging]
 
-== Monitoring and Observability
+== Best Practices
+
+The following best practices improve operational robustness but are not critical for basic functionality.
+
+=== Monitoring and observability
 
 **Monitoring setup**:: Deploy comprehensive monitoring for cluster health and performance.
 +
@@ -1269,7 +1311,9 @@ kubectl get servicemonitor -n <namespace>
 * Set up external health monitoring
 * Define SLI/SLO metrics
 
-== Operational Readiness
+See also: xref:manage:monitoring.adoc[Monitor Redpanda]
+
+=== Operational readiness
 
 **Deployment automation**:: Implement Infrastructure as Code for reproducible deployments.
 +
@@ -1277,18 +1321,20 @@ kubectl get servicemonitor -n <namespace>
 * Implement GitOps workflows
 * Automate testing and validation
 
-**Non-production environments**:: Maintain separate environments for testing and validation.
+**Environment configuration**:: Maintain separate environments for testing and validation.
 +
 * Set up dedicated dev/staging/production clusters
 * Test changes in non-production first
 * Mirror production configuration in staging
 
-**Upgrade procedures**:: Document and test cluster upgrade processes.
+**Upgrade policy**:: Document and test cluster upgrade processes.
 +
 * Plan for rolling upgrades with zero downtime
 * Test upgrade procedures in staging environments
 * Implement rollback capabilities
 * Document upgrade policy and procedures
+
+See also: xref:upgrade:k-rolling-upgrade.adoc[Upgrade Redpanda in Kubernetes]
 
 **Incident response**:: Prepare for operational incidents and outages.
 +
@@ -1303,12 +1349,7 @@ kubectl get servicemonitor -n <namespace>
 kubectl get resourcequota -n <namespace>
 ----
 
-== Next Steps
+== Suggested reading
 
-After completing this checklist:
-
-1. **Performance testing**: Conduct load testing to validate performance under expected traffic.
-2. **Disaster recovery testing**: Test backup and recovery procedures.
-3. **Security review**: Conduct security assessment and penetration testing.
-4. **Operational validation**: Verify monitoring, alerting, and incident response procedures.
-5. **Documentation**: Complete operational runbooks and troubleshooting guides.
+- xref:deploy:redpanda/kubernetes/k-production-deployment.adoc[Deploy for Production]
+- xref:manage:kubernetes/k-configure-helm-chart.adoc[Customize the Helm Chart]
