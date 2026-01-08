@@ -196,6 +196,212 @@ Not all Kafka operations are supported when using Redpanda Schema Registry ACLs.
 
 For additional guidance on these operations, see the link:/api/doc/schema-registry/operation/operation-get_security_acls[Redpanda Schema Registry API].
 
+=== Operation definitions
+
+You can use the following operations to control access to Schema Registry resources:
+
+* **`read`**: Allows user to read schemas and their content. Required for consuming messages that use Schema Registry, fetching specific schema versions, and reading schema content by ID.
+* **`write`**: Allows user to register new schemas and schema versions. Required for producing messages with new schemas and updating existing subjects with new schema versions.
+* **`delete`**: Allows user to delete schema versions and subjects. Required for cleanup operations and removing deprecated schemas.
+* **`describe`**: Allows user to list and describe Schema Registry resources. Required for discovering available subjects, listing schema versions, and viewing metadata.
+* **`describe_configs`**: Allows user to read configuration settings. Required for viewing compatibility settings, reading modes (IMPORT/READWRITE), and checking global or per-subject configurations.
+* **`alter_configs`**: Allows user to modify configuration settings. Required for changing compatibility levels, setting IMPORT mode for migrations, and updating global or per-subject configurations.
+
+=== Common use cases
+
+The following examples show which operations are required for common Schema Registry tasks:
+
+==== Schema Registry migration
+
+When migrating schemas between clusters, you must have **different ACLs for source and target clusters**.
+
+**Source cluster (read-only):**
+
+[,bash]
+----
+# Read schemas from source Schema Registry
+rpk security acl create \
+  --allow-principal User:migrator-user \
+  --operation read,describe \
+  --registry-global \
+  --brokers <source-brokers>
+----
+
+This grants:
+
+* `read` - Read schemas by ID from source
+* `describe` - List all subjects in source
+
+[NOTE]
+====
+The `describe_configs` operation is required to read Schema Registry configuration settings, including compatibility modes and IMPORT mode status.
+====
+
+**Target cluster (read-write):**
+
+[,bash]
+----
+# Write schemas to target Schema Registry and manage IMPORT mode
+rpk security acl create \
+  --allow-principal User:migrator-user \
+  --operation write,describe,alter_configs,describe_configs \
+  --registry-global \
+  --brokers <target-brokers>
+----
+
+This grants:
+
+* `write` - Register schemas in target with preserved IDs
+* `describe` - List all subjects in target
+* `alter_configs` - Set IMPORT mode on target Schema Registry
+* `describe_configs` - Read compatibility settings and mode
+
+[IMPORTANT]
+====
+**Schema Registry ACLs are only for Schema Registry operations.** For complete data migration, you must also use Kafka ACLs:
+
+* **Topics:** READ (source), WRITE/CREATE/DESCRIBE/ALTER (target)
+* **Consumer groups:** READ (source), CREATE/READ (target)
+* **Cluster:** DESCRIBE (both), CREATE (target)
+
+See xref:manage:security/authorization/acl.adoc[Configure Access Control Lists] for Kafka ACL configuration.
+====
+
+[NOTE]
+====
+The target Schema Registry must be in IMPORT mode to preserve schema IDs during migration. Only superusers or principals with `alter_configs` permission on the `registry` resource can change the global mode.
+ifndef::env-cloud[]
+See xref:manage:schema-reg/schema-reg-api.adoc#set-global-mode[Set global mode].
+endif::[]
+ifdef::env-cloud[]
+See xref:schema-reg:schema-reg-api.adoc#set-global-mode[Set global mode].
+endif::[]
+====
+
+==== Complete migration setup workflow
+
+For a complete migration setup, follow this workflow:
+
+1. **Bootstrap superusers** - Configure superusers using `.bootstrap.yaml` before enabling authentication
+2. **Create migration user** - Create dedicated migration user with minimal required permissions
+3. **Configure Schema Registry ACLs** - Grant read access on source, read-write access on target
+4. **Configure Kafka ACLs** - Grant topic read/write, consumer group, and cluster permissions
+5. **Enable SASL authentication** - Enable SASL/SCRAM-SHA-256 on both clusters
+6. **Enable ACL authorization** - Enable `kafka_enable_authorization` and `schema_registry_enable_authorization`
+7. **Set target to IMPORT mode** - Enable IMPORT mode on target Schema Registry
+8. **Start migration** - Begin data and schema migration
+9. **Verify ACLs** - Test that permissions work correctly and restrictions are enforced
+10. **Complete migration** - Disable IMPORT mode after migration completes
+
+For a complete working example with Docker Compose, see the https://github.com/redpanda-data/redpanda-labs/tree/main/docker-compose/redpanda-migrator-demo[Redpanda Migrator Demo].
+
+[NOTE]
+====
+**Schema Registry Internal Client Authentication:** When SASL authentication is enabled on your Kafka cluster, the Schema Registry's internal Kafka client must also be configured with SASL credentials. Configure these using node-level properties:
+
+[,bash]
+----
+--set schema_registry_client.scram_username=<username>
+--set schema_registry_client.scram_password=<password>
+--set schema_registry_client.sasl_mechanism=SCRAM-SHA-256
+----
+
+Without these credentials, Schema Registry operations that interact with Kafka (like storing schema data) will fail with "broker_not_available" errors.
+====
+
+==== Read-only access for consumers
+
+Applications that only consume messages with schemas require:
+
+[,bash]
+----
+# For consuming with schema validation
+rpk security acl create \
+  --allow-principal consumer-app \
+  --operation read \
+  --registry-subject "orders-*" \
+  --resource-pattern-type prefixed
+----
+
+This allows:
+
+* Reading schema content by ID (embedded in messages)
+* Viewing specific schema versions
+
+This does _not_ allow listing all subjects or modifying schemas.
+
+==== Producer access
+
+Applications that produce messages with schemas require:
+
+[,bash]
+----
+# For producing with new schemas
+rpk security acl create \
+  --allow-principal producer-app \
+  --operation read,write,describe \
+  --registry-subject "orders-*" \
+  --resource-pattern-type prefixed
+----
+
+This allows:
+
+* Checking if schemas already exist (`describe`)
+* Reading existing schema versions (`read`)
+* Registering new schema versions (`write`)
+
+==== Schema administrator access
+
+Schema administrators who manage compatibility and cleanup require:
+
+[,bash]
+----
+# For full schema management
+rpk security acl create \
+  --allow-principal schema-admin \
+  --operation all \
+  --registry-global
+----
+
+This grants all operations, including:
+
+* Managing compatibility settings
+* Deleting deprecated schemas
+* Viewing and modifying configurations
+* Listing all subjects and schemas
+
+=== Pattern-based ACLs for Schema Registry
+
+When using subject name patterns (like `orders-*`), always specify `--resource-pattern-type prefixed`:
+
+[,bash]
+----
+# Correct - matches all subjects starting with "orders-"
+rpk security acl create \
+  --allow-principal User:app \
+  --operation read \
+  --registry-subject "orders-" \
+  --resource-pattern-type prefixed
+
+# Incorrect - treats "orders-*" as literal subject name
+rpk security acl create \
+  --allow-principal User:app \
+  --operation read \
+  --registry-subject "orders-*"
+----
+
+Pattern types:
+
+* **`prefixed`** - Matches subjects starting with the specified string (for example, `orders-` matches `orders-value`, `orders-key`)
+* **`literal`** - Matches exact subject name only (default if not specified)
+
+[TIP]
+====
+Redpanda recommends using the topic naming strategy where subjects follow the pattern `<topicName>-key` or `<topicName>-value`. With this strategy, you can use a single prefixed ACL to grant access to both key and value subjects for a topic.
+
+Example: `--registry-subject "orders-" --resource-pattern-type prefixed` grants access to both `orders-key` and `orders-value` subjects.
+====
+
 == Enable Schema Registry Authorization
 
 === Prerequisites
@@ -412,6 +618,57 @@ User:jane  *     TOPIC          private        LITERAL                WRITE     
 ----
 
 When using the `--registry-global` option, be aware that `REGISTRY` resource types are global and apply to all of Schema Registry. They do not have a resource name because they are not tied to a specific resource. There are no resource names missing here.
+
+==== Schema Registry "broker_not_available" errors
+
+If Schema Registry operations fail with `broker_not_available` errors after enabling SASL:
+
+[,bash]
+----
+{"error_code":50302,"message":"{ node: -1 }, { error_code: broker_not_available [8] }"}
+----
+
+**Cause:** The Schema Registry's internal Kafka client is not configured with SASL credentials.
+
+**Solution:** Configure the Schema Registry client credentials:
+
+[,bash]
+----
+rpk cluster config set schema_registry_client.scram_username <username>
+rpk cluster config set schema_registry_client.scram_password <password>
+rpk cluster config set schema_registry_client.sasl_mechanism SCRAM-SHA-256
+----
+
+Then restart the Schema Registry service.
+
+==== Pattern-based ACL not working
+
+If a pattern-based ACL (like `orders-*`) is not matching expected subjects:
+
+**Cause:** Missing `--resource-pattern-type prefixed` flag.
+
+**Solution:** Recreate the ACL with the correct pattern type:
+
+[,bash]
+----
+# Delete incorrect ACL
+rpk security acl delete \
+  --allow-principal User:app \
+  --operation read \
+  --registry-subject "orders-*"
+
+# Create correct ACL with pattern type
+rpk security acl create \
+  --allow-principal User:app \
+  --operation read \
+  --registry-subject "orders-" \
+  --resource-pattern-type prefixed
+----
+
+[NOTE]
+==== 
+Pattern matching uses the string without the asterisk when using `prefixed` type.
+==== 
 
 == Suggested reading
 
