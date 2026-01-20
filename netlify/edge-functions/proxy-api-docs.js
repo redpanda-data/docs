@@ -2,7 +2,7 @@ import { DOMParser } from "https://deno.land/x/deno_dom@v0.1.56/deno-dom-wasm.ts
 
 export default async (request, context) => {
   const url = new URL(request.url);
-  const originalOrigin = url.origin;
+  const originalOrigin = "https://docs.redpanda.com";
 
   // Redirects from old API paths to new ones
   const redirects = {
