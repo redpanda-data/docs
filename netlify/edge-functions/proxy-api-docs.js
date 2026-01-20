@@ -3,6 +3,7 @@ import { DOMParser } from "https://deno.land/x/deno_dom@v0.1.56/deno-dom-wasm.ts
 export default async (request, context) => {
   const url = new URL(request.url);
   const originalOrigin = "https://docs.redpanda.com";
+  const currentOrigin = url.origin;
 
   // Redirects from old API paths to new ones
   const redirects = {
@@ -82,10 +83,13 @@ export default async (request, context) => {
     fetchWidget(`${originalOrigin}/assets/widgets/footer.html`, "footer"),
   ]);
 
-  const document = new DOMParser().parseFromString(originalHtml, "text/html");
+  // Rewrite absolute docs.redpanda.com URLs to use current origin to avoid CORS and history API issues
+  const rewrittenHtml = originalHtml.replace(/https:\/\/docs\.redpanda\.com/g, currentOrigin);
+
+  const document = new DOMParser().parseFromString(rewrittenHtml, "text/html");
   if (!document) {
     console.error("❌ Failed to parse Bump.sh HTML.");
-    return new Response(originalHtml, {
+    return new Response(rewrittenHtml, {
       status: 200,
       headers: { "content-type": "text/html; charset=utf-8" },
     });
