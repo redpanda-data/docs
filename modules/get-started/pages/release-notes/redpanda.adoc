@@ -21,6 +21,8 @@ Redpanda v25.3 introduces xref:deploy:redpanda/manual/disaster-recovery/shadowin
 
 The shadow cluster operates in read-only mode while continuously receiving updates from the source cluster. During a disaster, you can failover individual topics or an entire shadow link to make resources fully writable for production traffic. See xref:deploy:redpanda/manual/disaster-recovery/shadowing/failover-runbook.adoc[] for emergency procedures.
 
+Shadowing includes comprehensive metrics for monitoring replication health. See xref:manage:disaster-recovery/shadowing/monitor.adoc[] and xref:reference:public-metrics-reference.adoc#shadow-link-metrics[Shadow Link metrics reference].
+
 == Connected client monitoring
 
 You can view details about Kafka client connections using `rpk` or the Admin API ListKafkaConnections endpoint. This allows you to view detailed information about active client connections on a cluster, and identify and troubleshoot problematic clients. For more information, see the xref:manage:cluster-maintenance/manage-throughput.adoc#view-connected-client-details[connected client details] example in the Manage Throughput guide.
@@ -50,6 +52,20 @@ You can now generate a security report for your Redpanda cluster using the link:
 == Topic identifiers
 
 Redpanda v25.3 implements topic identifiers using 16 byte UUIDs as proposed in https://cwiki.apache.org/confluence/display/KAFKA/KIP-516%3A+Topic+Identifiers[KIP-516^].
+
+== Shadowing metrics
+
+Redpanda v25.3 introduces comprehensive xref:reference:public-metrics-reference.adoc#shadow-link-metrics[Shadowing metrics] for monitoring disaster recovery replication:
+
+* xref:reference:public-metrics-reference.adoc#redpanda_shadow_link_client_errors[`redpanda_shadow_link_client_errors`] - Track Kafka client errors during shadow link operations
+* xref:reference:public-metrics-reference.adoc#redpanda_shadow_link_shadow_lag[`redpanda_shadow_link_shadow_lag`] - Monitor replication lag between source and shadow partitions
+* xref:reference:public-metrics-reference.adoc#redpanda_shadow_link_shadow_topic_state[`redpanda_shadow_link_shadow_topic_state`] - Track shadow topic state distribution across links
+* xref:reference:public-metrics-reference.adoc#redpanda_shadow_link_total_bytes_fetched[`redpanda_shadow_link_total_bytes_fetched`] - Monitor data transfer volume from source cluster
+* xref:reference:public-metrics-reference.adoc#redpanda_shadow_link_total_bytes_written[`redpanda_shadow_link_total_bytes_written`] - Track data written to shadow cluster
+* xref:reference:public-metrics-reference.adoc#redpanda_shadow_link_total_records_fetched[`redpanda_shadow_link_total_records_fetched`] - Monitor total records fetched from source cluster  
+* xref:reference:public-metrics-reference.adoc#redpanda_shadow_link_total_records_written[`redpanda_shadow_link_total_records_written`] - Track total messages written to shadow cluster
+
+For monitoring guidance and alert recommendations, see xref:manage:disaster-recovery/shadowing/monitor.adoc[].
 
 == New commands
 
@@ -103,12 +119,21 @@ Redpanda 25.3 introduces the following configuration properties:
 * xref:reference:properties/cluster-properties.adoc#tls_v1_2_cipher_suites[`tls_v1_2_cipher_suites`]: TLS 1.2 cipher suites for client connections
 * xref:reference:properties/cluster-properties.adoc#tls_v1_3_cipher_suites[`tls_v1_3_cipher_suites`]: TLS 1.3 cipher suites for client connections
 
+**Tiered Storage:**
+
+* xref:reference:properties/cluster-properties.adoc#cloud_topics_epoch_service_epoch_increment_interval[`cloud_topics_epoch_service_epoch_increment_interval`]: Cluster epoch increment interval
+* xref:reference:properties/cluster-properties.adoc#cloud_topics_epoch_service_local_epoch_cache_duration[`cloud_topics_epoch_service_local_epoch_cache_duration`]: Local epoch cache duration
+* xref:reference:properties/cluster-properties.adoc#cloud_topics_short_term_gc_backoff_interval[`cloud_topics_short_term_gc_backoff_interval`]: Short-term garbage collection backoff interval
+* xref:reference:properties/cluster-properties.adoc#cloud_topics_short_term_gc_interval[`cloud_topics_short_term_gc_interval`]: Short-term garbage collection interval
+* xref:reference:properties/cluster-properties.adoc#cloud_topics_short_term_gc_minimum_object_age[`cloud_topics_short_term_gc_minimum_object_age`]: Minimum object age for garbage collection
+
 **Other configuration:**
 
 * xref:reference:properties/cluster-properties.adoc#controller_backend_reconciliation_concurrency[`controller_backend_reconciliation_concurrency`]: Maximum concurrent controller reconciliation operations
+* xref:reference:properties/cluster-properties.adoc#fetch_max_read_concurrency[`fetch_max_read_concurrency`]: Maximum concurrent partition reads per fetch request
 * xref:reference:properties/cluster-properties.adoc#kafka_max_message_size_upper_limit_bytes[`kafka_max_message_size_upper_limit_bytes`]: Maximum allowed `max.message.size` topic property value
 * xref:reference:properties/cluster-properties.adoc#kafka_produce_batch_validation[`kafka_produce_batch_validation`]: Validation level for produced batches
-* xref:reference:properties/cluster-properties.adoc#log_compaction_disable_tx_batch_removal[`log_compaction_disable_tx_batch_removal`]: Disable transactional batch removal during compaction
+* xref:reference:properties/cluster-properties.adoc#log_compaction_tx_batch_removal_enabled[`log_compaction_tx_batch_removal_enabled`]: Enable transactional batch removal during compaction
 * xref:reference:properties/cluster-properties.adoc#sasl_mechanisms_overrides[`sasl_mechanisms_overrides`]: SASL authentication mechanisms per listener
 
 === Changes to default values
@@ -119,11 +144,29 @@ The following configuration properties have new default values in v25.3:
 * xref:reference:properties/cluster-properties.adoc#partition_autobalancing_mode[`partition_autobalancing_mode`]: Changed from `node_add` to `continuous` (Enterprise license required).
 * xref:reference:properties/cluster-properties.adoc#iceberg_throttle_backlog_size_ratio[`iceberg_throttle_backlog_size_ratio`]: Changed from `0.3` to `null`.
 
+[[behavior-changes]]
+=== Behavior changes
+
+The following topic properties now support enhanced tristate behavior:
+
+* xref:reference:properties/topic-properties.adoc#segment-ms[`segment.ms`]
+* xref:reference:properties/topic-properties.adoc#retention-bytes[`retention.bytes`]
+* xref:reference:properties/topic-properties.adoc#retention-ms[`retention.ms`]
+* xref:reference:properties/topic-properties.adoc#retention-local-target-bytes[`retention.local.target.bytes`]
+* xref:reference:properties/topic-properties.adoc#retention-local-target-ms[`retention.local.target.ms`]
+* xref:reference:properties/topic-properties.adoc#initial-retention-local-target-bytes[`initial.retention.local.target.bytes`]
+* xref:reference:properties/topic-properties.adoc#initial-retention-local-target-ms[`initial.retention.local.target.ms`]
+* xref:reference:properties/topic-properties.adoc#delete-retention-ms[`delete.retention.ms`]
+* xref:reference:properties/topic-properties.adoc#min-cleanable-dirty-ratio[`min.cleanable.dirty.ratio`]
+
+Previously, these properties treated zero and negative values the same way. Now they support three distinct states: positive values set specific limits, zero provides immediate eligibility for cleanup/compaction, and negative values disable the feature entirely. Review your topic configurations if you currently use zero values for these properties.
+
 === Deprecations
 
 The following configuration properties have been deprecated in v25.3 and will be removed in a future release:
 
 * `kafka_memory_batch_size_estimate_for_fetch`: No replacement. Remove from configuration.
+* `log_compaction_disable_tx_batch_removal`: Use xref:reference:properties/cluster-properties.adoc#log_compaction_tx_batch_removal_enabled[`log_compaction_tx_batch_removal_enabled`] instead. Note the inverted logic: the new property enables the behavior when set to `true`.
 * `log_message_timestamp_alert_after_ms`: Use xref:reference:properties/cluster-properties.adoc#log_message_timestamp_after_max_ms[`log_message_timestamp_after_max_ms`] instead.
 * `log_message_timestamp_alert_before_ms`: Use xref:reference:properties/cluster-properties.adoc#log_message_timestamp_before_max_ms[`log_message_timestamp_before_max_ms`] instead.
 * `raft_recovery_default_read_size`: No replacement. Remove from configuration.

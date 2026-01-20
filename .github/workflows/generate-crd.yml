@@ -3,8 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'The Operator release tag for which to generate the docs'
+        description: 'The Operator release tag for which to generate the docs (such as operator/v2.3.8-25.3.1)'
         required: true
+        type: string
   repository_dispatch:
     types: [generate-crd-docs]
 jobs:
@@ -12,23 +13,30 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
+      contents: write
+      pull-requests: write
     steps:
-      - name: Determine operator tag
-        id: set_operator_tag
-        shell: bash
+      - name: Determine tag
+        id: tag
         run: |
           if [ -n "${{ github.event.inputs.tag }}" ]; then
-            TAG="${{ github.event.inputs.tag }}"
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          elif [ -n "${{ github.event.client_payload.tag }}" ]; then
+            echo "tag=${{ github.event.client_payload.tag }}" >> $GITHUB_OUTPUT
           else
-            TAG="${{ github.event.release.tag_name }}"
+            echo "No tag provided as input or dispatch payload" >&2
+            exit 1
           fi
-          # Check if the tag has the expected prefix.
+
+      - name: Validate operator tag prefix
+        id: validate
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
           if [[ "$TAG" =~ ^operator/ ]]; then
             echo "OPERATOR_TAG=$TAG" >> $GITHUB_ENV
           else
-            echo "Tag does not have the operator/ prefix. Skipping workflow."
-            exit 0
+            echo "Tag does not have the operator/ prefix: $TAG" >&2
+            exit 1
           fi
 
       # Configure AWS credentials to get the secret for the Redpanda GitHub bot.
@@ -148,8 +156,8 @@ jobs:
       # Convert the generated Markdown Helm documentation to AsciiDoc format using pandoc.
       - name: Convert Markdown to AsciiDoc
         run: |
-          pandoc ./redpanda/charts/redpanda/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
-          pandoc ./redpanda/charts/console/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
+          pandoc ./redpanda/charts/redpanda/chart/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-redpanda-helm-spec.adoc
+          pandoc ./redpanda/charts/console/chart/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-console-helm-spec.adoc
           pandoc ./redpanda/operator/chart/README.md -t asciidoc -o ./redpanda-docs/modules/reference/pages/k-operator-helm-spec.adoc
       - name: Modify third-level headings format
         run: |

@@ -1,0 +1,138 @@
+// tag::cluster-property[]
+The shadow cluster must have the xref:reference:properties/cluster-properties.adoc#enable_shadow_linking[`enable_shadow_linking`] cluster property set to `true`.
+
+ifdef::env-cloud[]
+[NOTE]
+====
+Starting with Redpanda v25.3, this cluster property is enabled by default on new Redpanda Cloud clusters. For existing clusters on versions earlier than v25.3, you must enable this property manually. See xref:manage:cluster-maintenance/config-cluster.adoc[].
+====
+endif::[]
+
+ifdef::env-kubernetes[]
+[tabs]
+======
+Operator::
++
+--
+Set this property in your Redpanda custom resource:
+
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    config:
+      cluster:
+        enable_shadow_linking: true
+----
+--
+
+Helm::
++
+--
+Set this property in your Helm values file:
+
+[,yaml]
+----
+config:
+  cluster:
+    enable_shadow_linking: true
+----
+--
+======
+endif::[]
+
+ifndef::env-kubernetes[]
+ifndef::env-cloud[]
+To enable this property, run:
+[,bash]
+----
+rpk cluster config set enable_shadow_linking true
+----
+
+[NOTE]
+====
+This cluster property must be configured using `rpk` or the Admin API v1 before you can create shadow links through any interface.
+====
+
+
+To learn more about configuring cluster properties, see xref:manage:cluster-maintenance/cluster-property-configuration.adoc[].
+endif::[]
+endif::[]
+// end::cluster-property[]
+
+// tag::replication-permissions[]
+A service account (SASL user) on the source cluster is required for shadow link replication only when SASL authentication is enabled on the source cluster.
+
+When SASL authentication is disabled on the source cluster, no service account credentials are required for shadow link setup.
+
+When SASL authentication is enabled, the service account must have the following xref:manage:security/authorization/acl.adoc[ACL] permissions:
+
+[[acl]]
+* **Topics**: `read` permission on all topics you want to replicate
+* **Topic configurations**: `describe_configs` permission on topics for configuration synchronization
+* **Consumer groups**: `describe` and `read` permission on consumer groups for offset replication
+* **ACLs**: `describe` permission on ACL resources to replicate security policies
+* **Cluster**: `describe` permission on the cluster resource to access ACLs
+
+This service account authenticates from the shadow cluster to the source cluster and performs the data replication.
+
+ifdef::env-kubernetes[]
+[tabs]
+======
+Operator::
++
+--
+When using `clusterRef` to connect to a source cluster managed by the same operator, authentication is handled automatically. The operator creates a `kubernetes-controller` user on both clusters when SASL is enabled.
+
+When using `staticConfiguration` to connect to an external source cluster with SASL enabled, you must provide credentials for a service account that exists on the source cluster. Create the service account using the `User` CRD (see xref:manage:kubernetes/security/authentication/k-user-controller.adoc[]).
+--
+
+Helm::
++
+--
+Create the replication service account on the source cluster using one of these methods:
+
+In your Helm values file:
+
+[,yaml]
+----
+auth:
+  sasl:
+    enabled: true
+    users:
+      - name: replication-user
+        password: <secure-password>
+        mechanism: SCRAM-SHA-512
+----
+
+Or using `rpk` after deployment:
+
+[,bash]
+----
+kubectl exec --namespace <namespace> <pod-name> --container redpanda -- \
+  rpk security user create replication-user \
+  --password <secure-password> \
+  --mechanism SCRAM-SHA-512
+----
+
+Then configure the <<acl, required ACL permissions>>.
+--
+======
+endif::[]
+// end::replication-permissions[]
+
+// tag::network-requirements[]
+You must configure network connectivity between clusters with appropriate firewall rules to allow the shadow cluster to connect to the source cluster for data replication. Shadowing uses a pull-based architecture where the shadow cluster fetches data from the source cluster.
+
+ifdef::env-kubernetes[]
+In Kubernetes, ensure:
+
+* The shadow cluster can reach the source cluster's Kafka API endpoints. This may involve configuring Kubernetes NetworkPolicies, Services, or Ingress resources.
+* If using TLS, the shadow cluster has access to the source cluster's CA certificate.
+* Network policies allow egress from the shadow cluster to the source cluster.
+endif::[]
+// end::network-requirements[]

@@ -14,11 +14,16 @@ include::shared:partial$enterprise-license.adoc[]
 endif::[]
 
 This guide provides step-by-step procedures for emergency failover when your primary Redpanda cluster becomes unavailable. Follow these procedures only during active disasters when immediate failover is required.
+
+ifndef::env-cloud[]
+NOTE: If you're running Redpanda in Kubernetes, see xref:manage:kubernetes/shadowing/k-failover-runbook.adoc[] for Kubernetes-specific emergency procedures.
+endif::[]
+
 // TODO: All command output examples in this guide need verification by running actual commands in test environment
 
 [IMPORTANT]
 ====
-This is an emergency procedure. For planned failover testing or day-to-day shadow link management, see xref:./failover.adoc[]. Ensure you have completed the xref:manage:disaster-recovery/shadowing/overview.adoc#disaster-readiness-checklist[disaster readiness checklist] before an emergency occurs.
+This is an emergency procedure. For planned failover testing or day-to-day shadow link management, see xref:manage:disaster-recovery/shadowing/failover.adoc[]. Ensure you have completed the xref:manage:disaster-recovery/shadowing/overview.adoc#disaster-readiness-checklist[disaster readiness checklist] before an emergency occurs.
 ====
 
 ifdef::env-cloud[]
@@ -54,25 +59,15 @@ rpk cluster info --brokers shadow-cluster-1.example.com:9092,shadow-cluster-2.ex
 
 **Decision point**: If the primary cluster is responsive, consider whether failover is actually needed. Partial outages may not require full disaster recovery.
 
-**Examples that require full failover:**
-
-* Primary cluster is completely unreachable (network partition, regional outage)
-* Multiple broker failures preventing writes to critical topics
-* Data center failure affecting majority of brokers
-* Persistent authentication or authorization failures across the cluster
-
-**Examples that may NOT require failover:**
-
-* Single broker failure with sufficient replicas remaining
-* Temporary network connectivity issues affecting some clients
-* High latency or performance degradation (but cluster still functional)
-* Non-critical topic or partition unavailability
+include::manage:partial$shadowing/failover-decision-examples.adoc[]
 
 [[verify-shadow-status]]
 === Verify shadow cluster status
 
 Check the health of your shadow links:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-verify-status[]
 [,bash]
 ----
 # List all shadow links
@@ -86,6 +81,51 @@ rpk shadow status <shadow-link-name>
 ----
 
 For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-list.adoc[`rpk shadow list`], xref:reference:rpk/rpk-shadow/rpk-shadow-describe.adoc[`rpk shadow describe`], and xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`].
+// end::rpk-tab-verify-status[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+. From the *Shadow Link* page, select the shadow link you want to view. 
+. The *Overview* tab shows the state of the shadow link and its topics.
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover-runbook.adoc[tag=rpk-tab-verify-status]
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+# List all shadow links
+curl "https://api.redpanda.com/v1/shadow-links" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+
+# Check the configuration of your shadow link
+curl "https://api.redpanda.com/v1/shadow-links/<shadow-link-id>" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+
+# Get Data Plane API URL of shadow cluster
+include::manage:partial$shadow-cluster-get-dataplane-api-url.adoc[]
+
+# Check the status of your disaster recovery link
+curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+--
+======
+endif::[]
 
 Verify that the following conditions exist before proceeding with failover:
 
@@ -95,22 +135,38 @@ Verify that the following conditions exist before proceeding with failover:
 
 ==== Understanding replication lag
 
-Use xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`] to check lag, which shows the message count difference between source and shadow partitions:
+Use xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`] or the link:/api/doc/cloud-dataplane/operation/operation-shadowlinkservice_listshadowlinktopics[Data Plane API] to check lag, which shows the message count difference between source and shadow partitions:
 
-* **Acceptable lag examples**: 0-1000 messages for low-throughput topics, 0-10000 messages for high-throughput topics
-* **Concerning lag examples**: Growing lag over 50,000 messages, or lag that continuously increases without recovering
-* **Critical lag examples**: Lag exceeding your data loss tolerance (for example, if you can only afford to lose 1 minute of data, lag should represent less than 1 minute of typical message volume)
+include::manage:partial$shadowing/replication-lag-guidelines.adoc[]
 
 [[document-state]]
 === Document current state
 
 Record the current lag and status before proceeding:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-current-lag[]
 [,bash]
 ----
 # Capture current status for post-mortem analysis
 rpk shadow status <shadow-link-name> > failover-status-$(date +%Y%m%d-%H%M%S).log
 ----
+// end::rpk-tab-current-lag[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+Capture the status from the *Shadow Link* page. 
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover-runbook.adoc[tag=rpk-tab-current-lag]
 
 // TODO: Verify this output format by running actual rpk shadow status command
 Example output showing healthy replication before failover:
@@ -134,17 +190,49 @@ Name: <topic-name>, State: ACTIVE
  0          1234     1468     1456     12
  1          2345     2579     2568     11
 ----
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+# Capture current status for post-mortem analysis
+curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/topic" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" > failover-status-$(date +%Y%m%d-%H%M%S).log
+----
+--
+======
+endif::[]
 
 The partition information shows the following:
 
-* **SRC_LSO**: Source partition last stable offset
-* **SRC_HWM**: Source partition high watermark  
-* **DST_HWM**: Shadow (destination) partition high watermark
-* **Lag**: Message count difference between source and shadow partitions
+|===
+|Field |Description
+
+| 
+ifndef::env-cloud[SRC_LSO]
+ifdef::env-cloud[source_last_stable_offset]  
+| Source partition last stable offset
+
+| 
+ifndef::env-cloud[SRC_HWM]
+ifdef::env-cloud[source_high_watermark] 
+| Source partition high watermark  
+
+| 
+ifndef::env-cloud[DST_HWM]
+ifdef::env-cloud[high_watermark] 
+| Shadow (destination) partition high watermark
+
+| Lag 
+| Message count difference between source and shadow partitions
+|===
 
 [IMPORTANT]
 ====
-Note the replication lag to estimate potential data loss during failover. The `Tasks` section shows the health of shadow link replication tasks. For details about what each task does, see xref:manage:disaster-recovery/shadowing/setup.adoc#shadow-link-tasks[Shadow link tasks].
+Note the replication lag to estimate potential data loss during failover. The `Tasks` section shows the health of shadow link replication tasks. For details about what each task does, see xref:manage:disaster-recovery/shadowing/overview.adoc#shadow-link-tasks[Shadow link tasks].
 ====
 
 [[initiate-failover]]
@@ -152,6 +240,8 @@ Note the replication lag to estimate potential data loss during failover. The `T
 
 A complete cluster failover is appropriate If you observe that the source cluster is no longer reachable:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-initiate-failover-all[]
 [,bash]
 ----
 # Fail over all topics in the shadow link
@@ -159,21 +249,99 @@ rpk shadow failover <shadow-link-name> --all
 ----
 
 For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-failover.adoc[`rpk shadow failover`].
+// end::rpk-tab-initiate-failover-all[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+. On your *Shadow Link* page, click *Failover All Topics*.
+. Click to confirm the failover action. The failover process promotes all topics to writable status.
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover-runbook.adoc[tag=rpk-tab-initiate-failover-all]
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+# Fail over all topics in the shadow link
+curl -X POST "$DATAPLANE_API_URL/v1/shadowlink/<shadow-link-name>/failover" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+--
+======
+endif::[]
 
 For selective topic failover (when only specific services are affected):
 
+ifndef::env-cloud[]
+// tag::rpk-tab-initiate-failover-individual[]
 [,bash]
 ----
 # Fail over individual topics
-rpk shadow failover <shadow-link-name> --topic <topic-name>
-rpk shadow failover <shadow-link-name> --topic <topic-name>
+rpk shadow failover <shadow-link-name> --topic <topic-name-1>
+rpk shadow failover <shadow-link-name> --topic <topic-name-2>
 ----
+// end::rpk-tab-initiate-failover-individual[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+. On your *Shadow Link* page, click the *Failover* button for the topics you want to failover. 
+. Click to confirm the failover action. The failover process promotes the selected topics to writable status.
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover-runbook.adoc[tag=rpk-tab-initiate-failover-individual]
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+# Fail over individual topics
+curl -X POST "$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/failover" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
+  -d '{
+    "shadowTopicName": "<topic-name-1>"
+  }'
+
+curl -X POST "$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/failover" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" \
+  -d '{
+    "shadowTopicName": "<topic-name-2>"
+  }'
+----
+--
+======
+endif::[]
 
 [[monitor-progress]]
 === Monitor failover progress
 
 Track the failover process:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-track-failover[]
 [,bash]
 ----
 # Monitor status until all topics show FAILED_OVER
@@ -203,6 +371,43 @@ Name: <topic-name>, State: FAILED_OVER
 Name: <topic-name>, State: FAILED_OVER
 Name: <topic-name>, State: FAILING_OVER
 ----
+// end::rpk-tab-track-failover[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+. From the *Shadow Link* page, select the shadow link you want to view. 
+. Click the *Tasks* tab to view all tasks and their status. 
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover-runbook.adoc[tag=rpk-tab-track-failover]
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+# Monitor status
+watch -n 5 'curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" | jq .'
+
+# Check detailed topic status and lag during emergency
+curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/topic" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+--
+======
+endif::[]
 
 **Wait for**: All critical topics to reach `FAILED_OVER` state before proceeding.
 
@@ -232,6 +437,8 @@ Test message production and consumption, consumer group functionality, and criti
 
 After all applications are running normally:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-cleanup[]
 [,bash]
 ----
 # Optional: Delete the shadow link (no longer needed)
@@ -239,7 +446,42 @@ rpk shadow delete <shadow-link-name>
 ----
 
 For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-delete.adoc[`rpk shadow delete`].
+// end::rpk-tab-cleanup[]
+endif::[]
 
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+. On your *Shadow Link* page, click *Delete*.
+. Type "delete" to confirm the action.  
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover-runbook.adoc[tag=rpk-tab-cleanup]
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+# Optional: Delete the shadow link (no longer needed)
+curl -X DELETE https://api.redpanda.com/v1/shadow-links/<shadow-link-id> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+
+For the full API reference, see link:/api/doc/cloud-controlplane/operation/operation-shadowlinkservice_deleteshadowlink[Control Plane API reference].
+--
+======
+endif::[]
+
+NOTE: This operation <<force-delete-warning,force deletes>> the shadow link.
 Document the time of failover initiation and completion, applications affected and recovery times, data loss estimates based on replication lag, and issues encountered during failover.
 
 == Troubleshoot common issues
@@ -252,12 +494,54 @@ Document the time of failover initiation and completion, applications affected a
 
 If topics remain stuck after addressing these cluster health issues and you need immediate failover, you can force delete the shadow link to failover all topics:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-force-delete[]
 [,bash]
 ----
 # Force delete the shadow link to failover all topics
+ifndef::env-cloud[]
 rpk shadow delete <shadow-link-name> --force
+endif::[]
+ifdef::env-cloud[]
+rpk shadow delete <shadow-link-name>
+endif::[]
+----
+// end::rpk-tab-force-delete[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+All failover actions in the Cloud UI include force delete functionality by default. When you failover a shadow link, all topics are immediately promoted to writable status.
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/failover-runbook.adoc[tag=rpk-tab-force-delete]
+
+`rpk shadow delete` force deletes the shadow link by default in Redpanda Cloud.
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+curl -X DELETE https://api.redpanda.com/v1/shadow-links/<shadow-link-id> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
 ----
 
+The `DELETE /shadow-links/<shadow-link-id>` endpoint of the Control Plane API force deletes the shadow link by default in Redpanda Cloud.
+--
+======
+endif::[]
+
+[[force-delete-warning]]
 [WARNING]
 ====
 Force deleting a shadow link immediately fails over all topics in the link. This action is irreversible and should only be used when topics are stuck and you need immediate access to all replicated data.
@@ -281,22 +565,6 @@ Force deleting a shadow link immediately fails over all topics in the link. This
 
 **Solution**: Verify consumer group offsets were replicated (check your filters) and use `rpk group describe <group-name>` to check offset positions. If necessary, manually reset offsets to appropriate positions. See link:https://support.redpanda.com/hc/en-us/articles/23499121317399-How-to-manage-consumer-group-offsets-in-Redpanda[How to manage consumer group offsets in Redpanda^] for detailed reset procedures.
 
-== Next steps
-
-After successful failover, focus on recovery planning and process improvement. Begin by assessing the source cluster failure and determining whether to restore the original cluster or permanently promote the shadow cluster as your new primary.
-
-**Immediate recovery planning:**
-
-1. **Assess source cluster**: Determine root cause of the outage
-2. **Plan recovery**: Decide whether to restore source cluster or promote shadow cluster permanently  
-3. **Data synchronization**: Plan how to synchronize any data produced during failover
-4. **Fail forward**: Create a new shadow link with the failed over shadow cluster as source to maintain a DR cluster
-
-**Process improvement:**
-
-1. **Document the incident**: Record timeline, impact, and lessons learned
-2. **Update runbooks**: Improve procedures based on what you learned
-3. **Test regularly**: Schedule regular disaster recovery drills
-4. **Review monitoring**: Ensure monitoring caught the issue appropriately
+include::manage:partial$shadowing/failover-next-steps.adoc[]
 
 // end::single-source[]

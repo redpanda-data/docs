@@ -270,6 +270,32 @@ Redpanda’s default configuration supports exactly-once processing. To preserve
 
 To help avoid common pitfalls and optimize performance, consider the following when configuring transactional workloads in Redpanda:
 
+=== Tune producer ID limits
+
+For production environments with heavy producer usage, configure both xref:reference:properties/cluster-properties.adoc#max_concurrent_producer_ids[`max_concurrent_producer_ids`] and xref:reference:properties/cluster-properties.adoc#transactional_id_expiration_ms[`transactional_id_expiration_ms`] to prevent out-of-memory (OOM) crashes. Setting limits on producer IDs helps manage memory usage in high-throughput environments, particularly when using transactions or idempotent producers. 
+
+If you have`kafka_connections_max` configured, you can determine an appropriate value for `max_concurrent_producer_ids` based on your connection patterns.
+
+* Lower bound: `kafka_connections_max` /  `number_of_shards`, assuming each producer connects to only one shard. 
+* Upper bound: `topic_partitions_per_shard` * `kafka_connections_max`, assuming producers connect to all shards.
+
+If `kafka_connections_max` is not configured, estimate the value for `max_concurrent_producer_ids` based on your application patterns. A conservative approach is to start with 1000-5000 per shard, then monitor and adjust as needed. Applications with many partitions per producer typically require higher values, such as 10000 or more per shard.
+
+Tune `transactional_id_expiration_ms` based on your application's transaction patterns. Calculate this value by taking your longest expected transaction time and adding a safety buffer. For example, if transactions typically run for 30 minutes, consider setting this to 2-4 hours. Short-lived transactions can use values between 1-4 hours, while batch processing applications should match their batch interval plus buffer time. Interactive applications may benefit from shorter values to free up memory faster.
+
+Client applications should minimize producer ID churn. Reuse producer instances when possible, instead of creating new ones for each operation. Avoid using random transactional IDs, as some Flink configurations do, because this creates excessive producer ID churn. Instead, use consistent transactional IDs that can be resumed across application restarts.
+
+ifndef::env-cloud[]
+Monitor the following metrics to determine if the limit is being reached:
+
+* xref:reference:internal-metrics-reference.adoc#vectorized_cluster_producer_state_manager_evicted_producers[`vectorized_cluster_producer_state_manager_evicted_producers`]: Number of evicted producers (should be 0 in steady state)
+* xref:reference:internal-metrics-reference.adoc#vectorized_cluster_producer_state_manager_producer_manager_total_active_producers[`vectorized_cluster_producer_state_manager_producer_manager_total_active_producers`]: Current number of active producers per shard
+
+If `vectorized_cluster_producer_state_manager_evicted_producers` > 0, the shard is exceeding the configured limit. For applications with long-running transactions, ensure xref:reference:properties/cluster-properties.adoc#transactional_id_expiration_ms[`transactional_id_expiration_ms`] accommodates your typical transaction lifetime to avoid premature producer ID expiration.
+endif::[]
+
+=== Configure transaction timeouts and limits
+
 * If a consumer is configured to use the read_committed isolation level, it can only process successfully committed transactions. As a result, an ongoing transaction with a large timeout that becomes stuck could prevent the consumer from processing other committed transactions.
 +
 To avoid this, don't set the transaction timeout client setting (`transaction.timeout.ms` in the Kafka Java client implementation) to a value that is too high. The longer the timeout, the longer consumers may be blocked. 

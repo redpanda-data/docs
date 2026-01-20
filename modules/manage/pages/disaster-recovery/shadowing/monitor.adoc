@@ -11,81 +11,155 @@ include::shared:partial$enterprise-license.adoc[]
 ====
 endif::[]
 
-Monitor your shadow links to ensure proper replication performance and understand your disaster recovery readiness. Use `rpk` commands, metrics, and status information to track shadow link health and troubleshoot issues.
+Monitor your xref:manage:disaster-recovery/shadowing/setup.adoc[shadow links] to ensure proper replication performance and understand your disaster recovery readiness. Use `rpk` commands, metrics, and status information to track shadow link health and troubleshoot issues.
 
-include::shared:partial$emergency-shadowing-callout.adoc[]
+ifndef::env-cloud[]
+NOTE: If you're running Redpanda in Kubernetes, see xref:manage:kubernetes/shadowing/k-monitor-shadowing.adoc[].
+endif::[]
+
+include::manage:partial$shadowing/emergency-shadowing-callout.adoc[]
 
 == Status commands
 
-To list existing shadow links, run:
+To list existing shadow links:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-list-links[]
 [,bash]
 ----
 rpk shadow list
 ----
+// end::rpk-tab-list-links[]
+endif::[]
 
-To view shadow link configuration details, run:
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+At the organization level of the Cloud UI, navigate to *Shadow Link*.
+--
 
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/monitor.adoc[tag=rpk-tab-list-links]
+--
+
+Control Plane API::
++
+--
 [,bash]
 ----
-rpk shadow describe <my-disaster-recovery-link>
+curl 'https://api.redpanda.com/v1/shadow-links' \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+--
+======
+endif::[]
+
+To view shadow link configuration details:
+
+ifndef::env-cloud[]
+// tag::rpk-tab-view-link-details[]
+[,bash]
+----
+rpk shadow describe <shadow-link-name>
 ----
 
 For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-list.adoc[`rpk shadow list`] and xref:reference:rpk/rpk-shadow/rpk-shadow-describe.adoc[`rpk shadow describe`]. This command shows the complete configuration of the shadow link, including connection settings, filters, and synchronization options.
+// end::rpk-tab-view-link-details[]
+endif::[]
 
-To check your shadow link status and ensure proper operation, run:
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+. From the *Shadow Link* page, select the shadow link you want to view. 
+. Click the *Tasks* tab to view all tasks and their status. 
+--
 
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/monitor.adoc[tag=rpk-tab-view-link-details]
+--
+
+Control Plane API::
++
+--
+[,bash]
+----
+curl 'https://api.redpanda.com/v1/shadow-links/<shadow-link-id>' \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+--
+======
+endif::[]
+
+To check your shadow link status and ensure proper operation:
+
+ifndef::env-cloud[]
+// tag::rpk-tab-shadow-status[]
 [,bash]
 ----
 rpk shadow status <shadow-link-name>
 ----
+// end::rpk-tab-shadow-status[]
+endif::[]
+
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
++
+--
+. From the *Shadow Link* page, select the shadow link you want to view. 
+. Click the *Tasks* tab to view all tasks and their status. 
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/monitor.adoc[tag=rpk-tab-shadow-status]
 
 For troubleshooting specific issues, you can use command options to show individual status sections. See xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`] for available status options. The status output includes the following:
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+# Get Data Plane API URL of shadow cluster
+include::manage:partial$shadow-cluster-get-dataplane-api-url.adoc[]
+
+curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+
+# View topic state
+curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/topic" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+--
+======
+
+The status includes the following:
+endif::[]
 
 * **Shadow link state**: Overall operational state (`ACTIVE`, `PAUSED`).
 * **Individual topic states**: Current state of each replicated topic (`ACTIVE`, `FAULTED`, `FAILING_OVER`, `FAILED_OVER`, `PAUSED`).
-* **Task status**: Health of replication tasks across brokers (`ACTIVE`, `FAULTED`, `NOT_RUNNING`, `LINK_UNAVAILABLE`). For details about shadow link tasks, see xref:manage:disaster-recovery/shadowing/setup.adoc#shadow-link-tasks[Shadow link tasks].
+* **Task status**: Health of replication tasks across brokers (`ACTIVE`, `FAULTED`, `NOT_RUNNING`, `LINK_UNAVAILABLE`). For details about shadow link tasks, see xref:manage:disaster-recovery/shadowing/overview.adoc#shadow-link-tasks[Shadow link tasks].
 * **Lag information**: Replication lag per partition showing source vs shadow high watermarks (HWM).
 
-[[shadow-link-metrics]]
-== Metrics
-
-Shadowing provides comprehensive metrics to track replication performance and health with the xref:reference:public-metrics-reference.adoc[`public_metrics`] endpoint.
-
-[cols="1,1,2"]
-|===
-|Metric |Type |Description
-
-|`redpanda_shadow_link_shadow_lag`
-|Gauge
-|The lag of the shadow partition against the source partition, calculated as source partition LSO (Last Stable Offset) minus shadow partition HWM (High Watermark). Monitor by `shadow_link_name`, `topic`, and `partition` to understand replication lag for each partition.
-
-|`redpanda_shadow_link_total_bytes_fetched`
-|Count
-|The total number of bytes fetched by a sharded replicator (bytes received by the client). Labeled by `shadow_link_name` and `shard` to track data transfer volume from the source cluster.
-
-|`redpanda_shadow_link_total_bytes_written`
-|Count
-|The total number of bytes written by a sharded replicator (bytes written to the write_at_offset_stm). Uses `shadow_link_name` and `shard` labels to monitor data written to the shadow cluster.
-
-|`redpanda_shadow_link_client_errors`
-|Count
-|The number of errors seen by the client. Track by `shadow_link_name` and `shard` to identify connection or protocol issues between clusters.
-
-|`redpanda_shadow_link_shadow_topic_state`
-|Gauge
-|Number of shadow topics in the respective states. Labeled by `shadow_link_name` and `state` to monitor topic state distribution across your shadow links.
-
-|`redpanda_shadow_link_total_records_fetched`
-|Count
-|The total number of records fetched by the sharded replicator (records received by the client). Monitor by `shadow_link_name` and `shard` to track message throughput from the source.
-
-|`redpanda_shadow_link_total_records_written`
-|Count
-|The total number of records written by a sharded replicator (records written to the write_at_offset_stm). Uses `shadow_link_name` and `shard` labels to monitor message throughput to the shadow cluster.
-|===
-
-See also: xref:reference:public-metrics-reference.adoc[]
+include::manage:partial$shadowing/shadow-link-metrics.adoc[]
 
 == Monitoring best practices
 
@@ -93,26 +167,55 @@ See also: xref:reference:public-metrics-reference.adoc[]
 
 Establish regular monitoring workflows to ensure shadow link health:
 
+ifndef::env-cloud[]
+// tag::rpk-tab-health-checks[]
 [,bash]
 ----
 # Check all shadow links are active
 rpk shadow list | grep -v "ACTIVE" || echo "All shadow links healthy"
 
-# Monitor lag for critical topics  
+# Monitor lag for critical topics
 rpk shadow status <shadow-link-name> | grep -E "LAG|Lag"
 ----
+// end::rpk-tab-health-checks[]
+endif::[]
 
-=== Alert conditions
-
-Configure monitoring alerts for the following conditions, which indicate problems with Shadowing:
-
-* **High replication lag**: When `redpanda_shadow_link_shadow_lag` exceeds your RPO requirements
-* **Connection errors**: When `redpanda_shadow_link_client_errors` increases rapidly
-* **Topic state changes**: When topics move to `FAULTED` state
-* **Task failures**: When replication tasks enter `FAULTED` or `NOT_RUNNING` states
-* **Throughput drops**: When bytes/records fetched drops significantly
-* **Link unavailability**: When tasks show `LINK_UNAVAILABLE` indicating source cluster connectivity issues
+ifdef::env-cloud[]
+[tabs]
+======
+Cloud UI::
 +
-For more information about shadow link tasks and their states, see xref:manage:disaster-recovery/shadowing/setup.adoc#shadow-link-tasks[Shadow link tasks].
+--
+. From the *Shadow Link* page, select the shadow link you want to view. 
+. Click the *Tasks* tab to view all tasks and their status. 
+--
+
+rpk::
++
+--
+include::manage:disaster-recovery/shadowing/monitor.adoc[tag=rpk-tab-health-checks]
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+# Check all shadow links are active
+curl 'https://api.redpanda.com/v1/shadow-links' \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" | \
+  jq -r 'if all(.state == "SHADOW_LINK_STATE_ACTIVE") then "All shadow links healthy" else .[] | select(.state != "SHADOW_LINK_STATE_ACTIVE") end'
+
+# Monitor lag for critical topics
+curl "https://$DATAPLANE_API_URL/v1/shadowlinks/<shadow-link-name>/topic" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RP_CLOUD_TOKEN}"
+----
+--
+======
+endif::[]
+
+include::manage:partial$shadowing/shadow-link-alerts.adoc[]
 
 // end::single-source[]

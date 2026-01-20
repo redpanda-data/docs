@@ -1,0 +1,866 @@
+= Configure Shadowing in Kubernetes
+:description: Set up disaster recovery with Shadowing using the Redpanda Operator or Helm chart.
+:page-categories: Management, High Availability, Disaster Recovery
+:env-kubernetes: true
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+Shadowing provides disaster recovery for Redpanda clusters through asynchronous, offset-preserving replication. To set up Shadowing, you create a shadow link and configure filters to select which topics, consumer groups, and ACLs to replicate.
+
+Redpanda offers two Kubernetes deployment methods with different shadow link management workflows.
+
+For conceptual information about Shadowing, see xref:manage:disaster-recovery/shadowing/overview.adoc[].
+
+== Prerequisites
+
+=== License and version requirements
+
+* Both clusters must be running Redpanda v25.3 or later.
+* xref:deploy:deployment-option/self-hosted/kubernetes/k-deployment-overview.adoc[Redpanda Operator version 25.3.1 or later] (for Operator deployments).
+* xref:deploy:deployment-option/self-hosted/kubernetes/k-deployment-overview.adoc[Redpanda Helm chart version 25.3.1 or later] (for Helm deployments).
+* You must have xref:get-started:licensing/overview.adoc[Enterprise Edition] licenses on both clusters.
+* If using Redpanda Console, ensure it is running v3.30 or later for managing Shadowing.
+
+=== Cluster configuration
+
+include::manage:partial$shadowing/shadow-link-prerequisites.adoc[tag=cluster-property]
+
+=== Replication service account
+
+include::manage:partial$shadowing/shadow-link-prerequisites.adoc[tag=replication-permissions]
+
+=== Network connectivity
+
+include::manage:partial$shadowing/shadow-link-prerequisites.adoc[tag=network-requirements]
+
+For Kubernetes-specific networking configuration, see xref:manage:kubernetes/networking/index.adoc[].
+
+== Deploy Redpanda clusters
+
+Deploy both your source and shadow Redpanda clusters with Shadowing enabled. See xref:deploy:deployment-option/self-hosted/kubernetes/k-deployment-overview.adoc[Deploy Redpanda in Kubernetes] for full deployment instructions.
+
+== Create a shadow link
+
+In the examples, `<shadow-namespace>` represents the namespace where your shadow Redpanda cluster is deployed, and `<source-namespace>` represents the namespace where your source Redpanda cluster is deployed. The shadow cluster and its associated resources (shadow links, secrets) should be deployed in the same namespace as the shadow cluster.
+
+[tabs]
+======
+Operator::
++
+--
+
+. Create a shadow link using the `ShadowLink` CRD. The CRD supports two connection methods.
++
+- For clusters managed by the same operator, use `clusterRef`:
++
+Create a shadow link that references both clusters by name:
++
+.`shadowlink.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/shadow-links.feature[tags=basic-shadowlink-example]
+----
++
+This example uses example resource names. Replace `redpanda-shadow` and `redpanda-source` with your actual cluster names.
++
+The operator automatically resolves cluster connection details from the referenced `Redpanda` resources.
++
+[NOTE]
+====
+When using `clusterRef`, the operator handles authentication automatically using the cluster's internal credentials. For cross-namespace or external clusters, use `staticConfiguration` instead.
+====
+
+- For external or cross-namespace clusters, use `staticConfiguration`:
++
+Create a shadow link with explicit connection details:
++
+.`shadowlink.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: ShadowLink
+metadata:
+  name: disaster-recovery-link
+spec:
+  shadowCluster:
+    clusterRef:
+      name: redpanda-shadow
+  sourceCluster:
+    staticConfiguration:
+      kafka:
+        brokers:
+          - redpanda-source-0.redpanda-source.source.svc.cluster.local.:9093
+          - redpanda-source-1.redpanda-source.source.svc.cluster.local.:9093
+          - redpanda-source-2.redpanda-source.source.svc.cluster.local.:9093
+        tls:
+          enabled: true
+          caCertSecretRef:
+            name: redpanda-source-default-cert
+            key: ca.crt
+        sasl:
+          mechanism: SCRAM-SHA-512
+          username: replication-user
+          passwordSecretRef:
+            name: source-cluster-credentials
+            key: password
+  topicMetadataSyncOptions:
+    autoCreateShadowTopicFilters:
+      - name: '*'
+        filterType: include
+        patternType: literal
+----
++
+This example uses example values. Replace the resource names, broker addresses, and credentials with your actual configuration.
++
+With `staticConfiguration`, you must explicitly provide:
++
+* Bootstrap broker addresses
+* TLS configuration (if enabled)
+* SASL authentication credentials (only when SASL is enabled on the source cluster)
+* CA certificates for TLS verification (when TLS is enabled)
+
+. Apply the ShadowLink resource in the same namespace as your shadow cluster:
++
+[,bash]
+----
+kubectl apply --namespace <shadow-namespace> -f shadowlink.yaml
+----
+--
+
+Helm::
++
+--
+Create a shadow link using `rpk` commands. This is consistent with how topics, schemas, and users are managed in Helm-based deployments.
+
+. Create a YAML configuration file for your shadow link:
++
+[,yaml]
+----
+# shadow-config.yaml
+name: "disaster-recovery-link"
+client_options:
+  bootstrap_servers:
+    - "redpanda-source-0.redpanda-source.source.svc.cluster.local:9093"
+    - "redpanda-source-1.redpanda-source.source.svc.cluster.local:9093"
+    - "redpanda-source-2.redpanda-source.source.svc.cluster.local:9093"
+  tls_settings:
+    enabled: true
+    tls_file_settings:
+      ca_path: "/etc/tls/certs/default/ca.crt"
+  authentication_configuration:
+    scram_configuration:
+      username: "replication-user"
+      password: "<replication-password>"
+      scram_mechanism: SCRAM-SHA-512
+
+topic_metadata_sync_options:
+  interval: "30s"
+  auto_create_shadow_topic_filters:
+    - pattern_type: "LITERAL"
+      filter_type: "INCLUDE"
+      name: "*"
+----
++
+This example uses example resource names and service addresses. Replace the bootstrap servers, username, and password with your actual source cluster configuration. Replace the `<replication-password>` placeholder with the actual password.
++
+When using TLS with self-signed certificates (the default with `tls.certs.default.caEnabled=true`), the `ca_path` must point to the source cluster's CA certificate. Extract and copy it to the shadow cluster:
++
+[,bash]
+----
+# Extract source cluster's CA
+kubectl exec --namespace <source-namespace> <source-pod-name> --container redpanda -- \
+  cat /etc/tls/certs/default/ca.crt > source-ca.crt
+
+# Copy to shadow cluster
+kubectl cp source-ca.crt <shadow-namespace>/<shadow-pod-name>:/tmp/source-ca.crt
+
+# Reference in config: ca_path: "/tmp/source-ca.crt"
+----
++
+To generate a configuration template with the correct format, use:
++
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow config generate > shadow-config.yaml
+----
++
+Then edit the generated file with your source cluster details before creating the shadow link.
+
+. Copy the configuration into a shadow cluster Pod and create the shadow link:
++
+[,bash]
+----
+# Copy configuration file into pod
+kubectl cp --namespace <shadow-namespace> shadow-config.yaml <shadow-pod-name>:/tmp/shadow-config.yaml
+
+# Create shadow link
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow create -c /tmp/shadow-config.yaml --no-confirm
+----
++
+For minimal configuration without TLS or authentication (testing only):
++
+[,yaml]
+----
+name: "test-link"
+client_options:
+  bootstrap_servers:
+    - "source-pod.source-namespace.svc.cluster.local:9092"
+topic_metadata_sync_options:
+  interval: "30s"
+  auto_create_shadow_topic_filters:
+    - pattern_type: "LITERAL"
+      filter_type: "INCLUDE"
+      name: "*"
+----
+
+Limitations of the Helm approach:
+
+* Changes require manual `kubectl exec` commands.
+* Configuration exists as files copied into Pods.
+* Shadow link not visible to `kubectl get`.
+* No automatic reconciliation or recovery.
+* Cannot be managed by ArgoCD/Flux.
+* Must delete and recreate to modify configuration.
+
+For production deployments requiring declarative configuration and GitOps workflows, consider using the Redpanda Operator.
+--
+======
+
+== Configure topic filters
+
+Topic filters determine which source topics are replicated to the shadow cluster.
+
+[tabs]
+======
+Operator::
++
+--
+Configure filters in the `ShadowLink` resource:
+
+[,yaml]
+----
+spec:
+  topicMetadataSyncOptions:
+    autoCreateShadowTopicFilters:
+      # Include all topics by default
+      - name: '*'
+        filterType: include
+        patternType: literal
+
+      # Exclude temporary or test topics
+      - name: temp-
+        filterType: exclude
+        patternType: prefixed
+
+      - name: test-
+        filterType: exclude
+        patternType: prefixed
+
+      # Include specific critical topics
+      - name: orders
+        filterType: include
+        patternType: literal
+----
+
+Filter evaluation rules:
+
+- Filters are evaluated in order.
+- The first matching filter determines the result.
+- If no filters match, the topic is excluded.
+- The wildcard `*` matches all topics.
+
+Pattern types:
+
+* `literal`: Exact topic name match
+* `prefixed`: Matches topics starting with the specified name
+--
+
+Helm::
++
+--
+Configure filters in your shadow link configuration file:
+
+[,yaml]
+----
+# shadow-config.yaml
+topic_metadata_sync_options:
+  interval: "30s"
+  auto_create_shadow_topic_filters:
+    # Include all topics by default
+    - pattern_type: "LITERAL"
+      filter_type: "INCLUDE"
+      name: "*"
+
+    # Exclude temporary or test topics
+    - pattern_type: "PREFIX"
+      filter_type: "EXCLUDE"
+      name: "temp-"
+
+    - pattern_type: "PREFIX"
+      filter_type: "EXCLUDE"
+      name: "test-"
+
+    # Include specific critical topics
+    - pattern_type: "LITERAL"
+      filter_type: "INCLUDE"
+      name: "orders"
+----
+
+Filter evaluation rules:
+
+- Filters are evaluated in order.
+- The first matching filter determines the result.
+- If no filters match, the topic is excluded.
+- The wildcard `*` matches all topics.
+
+Pattern types:
+
+* `LITERAL`: Exact topic name match
+* `PREFIX`: Matches topics starting with the specified name
+--
+======
+
+Configure starting offset to control where new shadow topics begin replication:
+
+[tabs]
+======
+Operator::
++
+--
+[,yaml]
+----
+spec:
+  topicMetadataSyncOptions:
+    # Start from the earliest available offset (default)
+    startAtEarliest: {}
+
+    # Or start from the latest offset
+    # startAtLatest: {}
+
+    # Or start from a specific timestamp
+    # startAtTimestamp:
+    #   timestamp: "2024-12-01T00:00:00Z"
+----
+--
+
+Helm::
++
+--
+[,yaml]
+----
+# shadow-config.yaml
+topic_metadata_sync_options:
+  # Start from the earliest available offset (default)
+  start_at_earliest: {}
+
+  # Or start from the latest offset
+  # start_at_latest: {}
+
+  # Or start from a specific timestamp
+  # start_at_timestamp:
+  #   timestamp: "2024-12-01T00:00:00Z"
+----
+--
+======
+
+== Configure consumer offset synchronization
+
+Enable consumer offset replication so consumers can resume from the same position after failover:
+
+[tabs]
+======
+Operator::
++
+--
+[,yaml]
+----
+spec:
+  consumerOffsetSyncOptions:
+    enabled: true
+    interval: 30s
+    groupFilters:
+      - name: '*'
+        filterType: include
+        patternType: literal
+      - name: debug-consumer
+        filterType: exclude
+        patternType: literal
+----
+--
+
+Helm::
++
+--
+[,yaml]
+----
+# shadow-config.yaml
+consumer_offset_sync_options:
+  enabled: true
+  interval: "30s"
+  group_filters:
+    - pattern_type: "LITERAL"
+      filter_type: "INCLUDE"
+      name: "*"
+    - pattern_type: "LITERAL"
+      filter_type: "EXCLUDE"
+      name: "debug-consumer"
+----
+--
+======
+
+== Configure ACL synchronization
+
+Replicate access control lists to maintain security policies on the shadow cluster:
+
+[tabs]
+======
+Operator::
++
+--
+[,yaml]
+----
+spec:
+  aclSyncOptions:
+    enabled: true
+    interval: 60s
+    aclFilters:
+      - resourceType: TOPIC
+        resourcePatternType: LITERAL
+        operation: ALL
+        permissionType: ALLOW
+----
+--
+
+Helm::
++
+--
+[,yaml]
+----
+# shadow-config.yaml
+security_sync_options:
+  enabled: true
+  interval: "60s"
+  acl_filters:
+    - resource_filter:
+        resource_type: "TOPIC"
+        pattern_type: "LITERAL"
+      access_filter:
+        operation: "ALL"
+        permission_type: "ALLOW"
+----
+--
+======
+
+== Verify shadow link
+
+[tabs]
+======
+Operator::
++
+--
+Check the status of your shadow link:
+
+[,bash]
+----
+kubectl get shadowlink --namespace <shadow-namespace> <shadowlink-name> -o yaml
+----
+
+The status section shows replication details:
+
+[,yaml]
+----
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      lastTransitionTime: "2024-12-10T10:00:00Z"
+      reason: ReconciliationSucceeded
+      message: Shadow link is active and replicating
+  observedGeneration: 1
+----
+
+Verify replication:
+
+[,bash]
+----
+# List topics on shadow cluster
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk topic list
+
+# Check shadow link status
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow status <shadowlink-name>
+----
+--
+
+Helm::
++
+--
+List shadow links:
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow list
+----
+
+Check shadow link status:
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow status <shadowlink-name>
+
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow describe <shadowlink-name>
+----
+
+List replicated topics:
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk topic list
+----
+--
+======
+
+=== Test replication
+
+Produce data to the source cluster and verify it appears on the shadow cluster:
+
+[tabs]
+======
+Operator::
++
+--
+[,bash]
+----
+# Produce to source cluster
+kubectl exec --namespace <source-namespace> <source-pod-name> --container redpanda -- \
+  rpk topic produce <topic-name> --key <key>
+
+# Consume from shadow cluster
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk topic consume <topic-name>
+----
+--
+
+Helm::
++
+--
+[,bash]
+----
+# Produce to source cluster
+kubectl exec --namespace <source-namespace> <source-pod-name> --container redpanda -- \
+  rpk topic produce <topic-name> --key <key>
+
+# Consume from shadow cluster
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk topic consume <topic-name>
+----
+--
+======
+
+[NOTE]
+====
+Shadow topics are read-only. Attempting to produce or delete topics on the shadow cluster will fail while the shadow link is active.
+====
+
+== Update a shadow link
+
+[tabs]
+======
+Operator::
++
+--
+Update the `ShadowLink` resource:
+
+[,bash]
+----
+kubectl edit shadowlink --namespace <shadow-namespace> <shadowlink-name>
+----
+
+Or apply an updated manifest:
+
+[,bash]
+----
+kubectl apply --namespace <shadow-namespace> -f shadowlink-updated.yaml
+----
+
+The operator automatically reconciles the changes. Common updates include:
+
+* Adding or removing topic filters
+* Adjusting synchronization intervals
+* Enabling or disabling consumer offset/ACL sync
+* Updating authentication credentials
+--
+
+Helm::
++
+--
+To update a shadow link configuration:
+
+[,bash]
+----
+# Delete existing shadow link
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow delete <shadowlink-name>
+
+# Copy updated configuration
+kubectl cp --namespace <shadow-namespace> shadow-config-updated.yaml <shadow-pod-name>:/tmp/shadow-config.yaml
+
+# Recreate shadow link
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow create -c /tmp/shadow-config.yaml
+----
+
+[WARNING]
+====
+Deleting and recreating a shadow link causes a brief interruption in replication. Plan updates during maintenance windows.
+====
+--
+======
+
+== Delete a shadow link
+
+[tabs]
+======
+Operator::
++
+--
+Delete the `ShadowLink` resource:
+
+[,bash]
+----
+kubectl delete shadowlink --namespace <shadow-namespace> <shadowlink-name>
+----
+
+--
+
+Helm::
++
+--
+Delete the shadow link using `rpk`:
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow delete <shadowlink-name>
+----
+
+--
+======
+
+[IMPORTANT]
+====
+After deleting a shadow link:
+
+* Shadow topics remain on the cluster as regular topics.
+* The topics are no longer read-only and can be written to.
+* Replication from the source cluster stops immediately.
+* Consumer offset and ACL synchronization stops.
+
+This is the first step in a disaster recovery failover scenario.
+====
+
+== Failover procedure
+
+In a disaster scenario, follow these steps to failover to the shadow cluster:
+
+[tabs]
+======
+Operator::
++
+--
+. **Delete the shadow link**:
++
+[,bash]
+----
+kubectl delete shadowlink --namespace <shadow-namespace> <shadowlink-name>
+----
+
+. **Verify topics are writable**:
++
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk topic produce <topic-name> --key test
+----
+
+. **Update client configurations** to point to the shadow cluster endpoints
+
+. **Verify consumer groups** can resume from their last committed offsets:
++
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk group describe <consumer-group-name>
+----
+--
+
+Helm::
++
+--
+. **Delete the shadow link**:
++
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow delete <shadowlink-name>
+----
+
+. **Verify topics are writable**:
++
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk topic produce <topic-name> --key test
+----
+
+. **Update client configurations** to point to the shadow cluster endpoints
+
+. **Verify consumer groups** can resume from their last committed offsets:
++
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk group describe <consumer-group-name>
+----
+--
+======
+
+For detailed failover procedures and best practices, see xref:manage:disaster-recovery/shadowing/failover.adoc[]. For emergency failover procedures, see xref:manage:kubernetes/shadowing/k-failover-runbook.adoc[].
+
+== Troubleshoot
+
+=== Shadowing not working
+
+[tabs]
+======
+Operator::
++
+--
+Check the operator logs:
+
+[,bash]
+----
+kubectl logs --namespace <operator-namespace> -l app.kubernetes.io/name=operator --tail=100
+----
+
+Verify the operator has shadow link support enabled:
+
+[,bash]
+----
+kubectl get deployment --namespace <operator-namespace> <operator-deployment-name> -o yaml | grep enable-shadowlinks
+----
+
+Check the `ShadowLink` resource status:
+
+[,bash]
+----
+kubectl describe shadowlink --namespace <shadow-namespace> <shadowlink-name>
+----
+--
+
+Helm::
++
+--
+Verify shadow linking is enabled on both clusters:
+
+[,bash]
+----
+kubectl exec --namespace <source-namespace> <source-pod-name> --container redpanda -- \
+  rpk cluster config get enable_shadow_linking
+
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk cluster config get enable_shadow_linking
+----
+
+Check shadow link status for errors:
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow describe <shadowlink-name>
+----
+--
+======
+
+=== Connection errors
+
+Verify network connectivity:
+
+[,bash]
+----
+# Test from shadow cluster pod
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk cluster info -X brokers=<source-broker>:9093 \
+  -X tls.enabled=true \
+  -X sasl.mechanism=SCRAM-SHA-512 \
+  -X user=<username> \
+  -X pass=<password>
+----
+
+Check that secrets exist and contain correct values:
+
+[,bash]
+----
+kubectl get secret --namespace <shadow-namespace> <secret-name>
+kubectl get secret --namespace <shadow-namespace> <secret-name> -o jsonpath='{.data.password}' | base64 -d
+----
+
+=== Replication lag
+
+Monitor replication lag:
+
+[,bash]
+----
+kubectl exec --namespace <shadow-namespace> <shadow-pod-name> --container redpanda -- \
+  rpk shadow status <shadowlink-name> --detailed
+----
+
+High replication lag can be caused by:
+
+* Network bandwidth limitations between clusters
+* High write throughput on the source cluster
+* Resource constraints on the shadow cluster
+
+Consider adjusting:
+
+* Shadow cluster resources (CPU, memory)
+* Network bandwidth between regions
+* Replication batch sizes and intervals
+
+=== Authentication failures
+
+Verify SASL credentials:
+
+[,bash]
+----
+# Check if user exists on source cluster
+kubectl exec -it -n source redpanda-source-0 -c redpanda -- \
+  rpk acl user list
+----
+
+Ensure the replication user has required ACL permissions:
+
+[,bash]
+----
+kubectl exec -it -n source redpanda-source-0 -c redpanda -- \
+  rpk acl list --principal User:replication-user
+----
+
+== Related topics
+
+* xref:manage:disaster-recovery/shadowing/overview.adoc[Shadow Linking Overview]
+* xref:manage:disaster-recovery/shadowing/setup.adoc[Configure Shadow Linking with rpk]
+* xref:manage:disaster-recovery/shadowing/monitor.adoc[Monitor Shadow Links]
+* xref:manage:disaster-recovery/shadowing/failover.adoc[Shadow Link Failover]
+* xref:reference:k-operator-helm-spec.adoc[Redpanda Operator Helm Configuration]
+* xref:manage:kubernetes/security/authentication/k-user-controller.adoc[Manage Users with Kubernetes]
