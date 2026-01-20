@@ -2,7 +2,7 @@ import { DOMParser } from "https://deno.land/x/deno_dom@v0.1.56/deno-dom-wasm.ts
 
 export default async (request, context) => {
   const url = new URL(request.url);
-  const originalOrigin = url.origin;
+  const productionOrigin = "https://docs.redpanda.com";
 
   // Redirects from old API paths to new ones
   const redirects = {
@@ -77,9 +77,9 @@ export default async (request, context) => {
     footerWidget,
   ] = await Promise.all([
     bumpRes.text(),
-    fetchWidget(`${originalOrigin}/assets/widgets/head-bump.html`, "head-bump"),
-    fetchWidget(`${originalOrigin}/assets/widgets/header.html`, "header"),
-    fetchWidget(`${originalOrigin}/assets/widgets/footer.html`, "footer"),
+    fetchWidget(`${productionOrigin}/assets/widgets/head-bump.html`, "head-bump"),
+    fetchWidget(`${productionOrigin}/assets/widgets/header.html`, "header"),
+    fetchWidget(`${productionOrigin}/assets/widgets/footer.html`, "footer"),
   ]);
 
   const document = new DOMParser().parseFromString(originalHtml, "text/html");
