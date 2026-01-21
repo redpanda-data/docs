@@ -401,7 +401,18 @@ onRecordWritten((event, writer) => {
 
 === Write to specific output topics
 
-You can configure your transform function to write records to specific output topics. This is useful for filtering or routing messages based on certain criteria. The following example shows a filter that outputs only valid JSON from the input topic into the output topic. Invalid JSON is written to a different output topic.
+You can configure your transform function to write records to specific output topics based on message content, enabling powerful routing and fan-out patterns. This capability is useful for:
+
+* Filtering messages by criteria and routing to different topics
+* Fan-out patterns that distribute data from one input topic to multiple output topics
+* Event routing based on message type or schema
+* Data distribution for downstream consumers
+
+WASM transforms provide a simpler alternative to external connectors like Kafka Connect for in-broker data routing, with lower latency and no additional infrastructure to manage.
+
+==== Basic JSON validation example
+
+The following example shows a filter that outputs only valid JSON from the input topic into the output topic. Invalid JSON is written to a different output topic.
 
 [tabs]
 ======
@@ -455,6 +466,300 @@ JavaScript::
 --
 The JavaScript SDK does not support writing records to a specific output topic.
 
+--
+======
+
+[[multi-topic-fanout]]
+==== Multi-topic fan-out with Schema Registry
+
+You can use Wasm transforms to fan out data from one input topic to multiple output topics, with each output topic having its own registered schema. This pattern is useful for:
+
+* Processing batched updates where each sub-element routes to a different destination
+* Distributing data to multiple Iceberg-enabled topics based on routing fields
+* Schema-based partitioning where different message types go to different topics
+
+See also: <<connect-to-schema-registry, Connect to the Schema Registry>>
+
+Consider a data pipeline that processes batched updates. The following example demonstrates a common data pipeline pattern:
+
+. *Input*: Batched updates in a single message (array of objects)
+. *Extraction*: Each sub-element contains a routing field (for example, `"table": "orders"`)
+. *Routing*: Route to output topic based on the routing field value
+. *Validation*: Each output topic has its own schema registered in Schema Registry
+
+Each message contains an array of table updates, where each update object has a `table` field indicating its destination:
+
+[,json]
+----
+{
+  "updates": [
+    {"table": "orders", "data": {"order_id": "123", "amount": 99.99}},
+    {"table": "inventory", "data": {"product_id": "P456", "quantity": 50}},
+    {"table": "customers", "data": {"customer_id": "C789", "name": "Jane"}}
+  ]
+}
+----
+
+Configure the transform with multiple output topics:
+
+[,yaml]
+----
+name: event-router
+input_topic: events
+output_topics:
+  - orders
+  - inventory
+  - customers
+----
+
+The transform extracts each update and routes it to the appropriate topic based on the `table` field. Each output topic has its own registered schema in Schema Registry for validation.
+
+[tabs]
+======
+Go::
++
+--
+[,go]
+----
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+    sr "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr"
+)
+
+// Input message structure with array of updates
+type BatchMessage struct {
+    Updates []TableUpdate `json:"updates"`
+}
+
+// Individual table update with routing field
+type TableUpdate struct {
+    Table string          `json:"table"` // Routing field - determines output topic
+    Data  json.RawMessage `json:"data"`  // The actual data to write
+}
+
+// Schema definitions for each output topic (JSON Schema format)
+// Define `required` fields to enforce data quality
+const (
+    orderSchema = `{
+        "type": "object",
+        "properties": {
+            "order_id": {"type": "string"},
+            "customer_id": {"type": "string"},
+            "amount": {"type": "number"}
+        },
+        "required": ["order_id", "customer_id", "amount"]
+    }`
+
+    inventorySchema = `{
+        "type": "object",
+        "properties": {
+            "product_id": {"type": "string"},
+            "quantity": {"type": "number"}
+        },
+        "required": ["product_id", "quantity"]
+    }`
+
+    customerSchema = `{
+        "type": "object",
+        "properties": {
+            "customer_id": {"type": "string"},
+            "name": {"type": "string"},
+            "email": {"type": "string"}
+        },
+        "required": ["customer_id", "name"]
+    }`
+)
+
+var (
+    srClient sr.Client
+    schemaIDs map[string]int  // Map of topic name to schema ID
+)
+
+func main() {
+    srClient = sr.NewClient()
+
+    // Register schemas for each output topic using {topic-name}-value naming convention
+    schemaIDs = make(map[string]int)
+    schemaIDs["orders"] = ensureSchema("orders-value", orderSchema)
+    schemaIDs["inventory"] = ensureSchema("inventory-value", inventorySchema)
+    schemaIDs["customers"] = ensureSchema("customers-value", customerSchema)
+
+    log.Printf("Registered schemas: %v", schemaIDs)
+    transform.OnRecordWritten(routeUpdates)
+}
+
+func ensureSchema(subject string, schemaJSON string) int {
+    subjectSchema, err := srClient.CreateSchema(subject, sr.Schema{
+        Schema: schemaJSON,
+        Type:   sr.TypeJson,
+    })
+    if err != nil {
+        log.Fatalf("Failed to register schema for %s: %v", subject, err)
+    }
+    log.Printf("Schema registered: %s (ID: %d)", subject, subjectSchema.ID)
+    return subjectSchema.ID
+}
+
+func routeUpdates(event transform.WriteEvent, writer transform.RecordWriter) error {
+    var batch BatchMessage
+    if err := json.Unmarshal(event.Record().Value, &batch); err != nil {
+        log.Printf("Failed to parse batch message: %v", err)
+        return nil // Skip invalid records
+    }
+
+    // Process each update in the batch
+    for i, update := range batch.Updates {
+        schemaID, exists := schemaIDs[update.Table]
+        if !exists {
+            log.Printf("Unknown table in update %d: %s", i, update.Table)
+            continue
+        }
+
+        if err := writeUpdate(update, schemaID, writer, event); err != nil {
+            log.Printf("Failed to write update %d to %s: %v", i, update.Table, err)
+        }
+    }
+
+    return nil
+}
+
+func writeUpdate(update TableUpdate, schemaID int, writer transform.RecordWriter, event transform.WriteEvent) error {
+    record := transform.Record{
+        Key:   event.Record().Key,
+        Value: update.Data,
+        Headers: []transform.RecordHeader{
+            {
+                Key:   "schema_id",
+                Value: []byte(fmt.Sprintf("%d", schemaID)),
+            },
+            {
+                Key:   "source_topic",
+                Value: []byte(event.Record().Topic),
+            },
+        },
+    }
+
+    return writer.Write(record, transform.ToTopic(update.Table))
+}
+----
+--
+
+Rust::
++
+--
+[,rust]
+----
+use redpanda_transform_sdk::*;
+use redpanda_transform_sdk_sr as sr;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use log::info;
+use anyhow::Result;
+
+#[derive(Deserialize)]
+struct BatchMessage {
+    updates: Vec<TableUpdate>,
+}
+
+#[derive(Deserialize)]
+struct TableUpdate {
+    table: String,
+    data: serde_json::Value,
+}
+
+const ORDER_SCHEMA: &str = r#"{
+    "type": "object",
+    "properties": {
+        "order_id": {"type": "string"},
+        "customer_id": {"type": "string"},
+        "amount": {"type": "number"}
+    },
+    "required": ["order_id", "customer_id", "amount"]
+}"#;
+
+const INVENTORY_SCHEMA: &str = r#"{
+    "type": "object",
+    "properties": {
+        "product_id": {"type": "string"},
+        "quantity": {"type": "number"}
+    },
+    "required": ["product_id", "quantity"]
+}"#;
+
+const CUSTOMER_SCHEMA: &str = r#"{
+    "type": "object",
+    "properties": {
+        "customer_id": {"type": "string"},
+        "name": {"type": "string"},
+        "email": {"type": "string"}
+    },
+    "required": ["customer_id", "name"]
+}"#;
+
+static mut SCHEMA_IDS: Option<HashMap<String, i32>> = None;
+
+fn main() {
+    env_logger::init();
+    let sr_client = sr::Client::new();
+
+    let mut schema_ids = HashMap::new();
+    schema_ids.insert("orders".to_string(), ensure_schema(&sr_client, "orders-value", ORDER_SCHEMA));
+    schema_ids.insert("inventory".to_string(), ensure_schema(&sr_client, "inventory-value", INVENTORY_SCHEMA));
+    schema_ids.insert("customers".to_string(), ensure_schema(&sr_client, "customers-value", CUSTOMER_SCHEMA));
+
+    unsafe {
+        SCHEMA_IDS = Some(schema_ids);
+    }
+
+    on_record_written(route_updates);
+}
+
+fn ensure_schema(client: &sr::Client, subject: &str, schema_json: &str) -> i32 {
+    let schema = sr::Schema {
+        schema: schema_json.to_string(),
+        schema_type: sr::SchemaType::Json,
+        references: vec![],
+    };
+
+    match client.create_schema(subject, &schema) {
+        Ok(subject_schema) => {
+            info!("Schema registered: {} (ID: {})", subject, subject_schema.id);
+            subject_schema.id
+        }
+        Err(e) => panic!("Failed to register schema for {}: {}", subject, e),
+    }
+}
+
+fn route_updates(event: WriteEvent, writer: &mut RecordWriter) -> Result<()> {
+    let batch: BatchMessage = serde_json::from_slice(event.record.value().unwrap_or_default())?;
+    let schema_ids = unsafe { SCHEMA_IDS.as_ref().unwrap() };
+
+    for (i, update) in batch.updates.iter().enumerate() {
+        if let Some(&schema_id) = schema_ids.get(&update.table) {
+            let data_bytes = serde_json::to_vec(&update.data)?;
+            let mut record = Record::new(data_bytes);
+            record = record.key(event.record.key().unwrap_or_default().to_vec());
+
+            writer.write_with_options(record, WriteOptions::to_topic(&update.table))?;
+        } else {
+            log::warn!("Unknown table in update {}: {}", i, update.table);
+        }
+    }
+
+    Ok(())
+}
+----
+--
+
+JavaScript::
++
+--
+The JavaScript SDK does not support writing records to specific output topics. For multi-topic fan-out, use the Go or Rust SDK.
 --
 ======
 
