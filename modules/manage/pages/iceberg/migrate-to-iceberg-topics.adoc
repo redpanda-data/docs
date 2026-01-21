@@ -1,0 +1,333 @@
+= Migrate to Iceberg Topics
+:description: Migrate from Kafka Connect Iceberg Sink to Redpanda Iceberg topics.
+:page-topic-type: how-to
+:page-categories: Iceberg, Migration, Integration
+:learning-objective-1: Evaluate the benefits of migrating from Kafka Connect to Iceberg Topics
+:learning-objective-2: Merge historical data from Kafka Connect tables into Iceberg Topics tables
+:learning-objective-3: Validate the migration and cutover from Kafka Connect
+
+// tag::single-source[]
+
+Migrate existing Iceberg pipelines from Kafka Connect to Redpanda Iceberg topics to simplify your architecture and reduce operational overhead.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
+
+== Why migrate to Iceberg Topics
+
+Redpanda's built-in Iceberg enabled-topics offer a simpler alternative to Kafka Connect Iceberg Sink for writing streaming data to Iceberg tables.
+
+[cols="1,1,1"]
+|===
+| Aspect | Kafka Connect Iceberg Sink | Iceberg Topics
+
+| Infrastructure
+| Requires external Kafka Connect cluster
+| Built into Redpanda brokers
+
+| Dependencies
+| Separate service to manage
+| No external dependencies
+
+| Latency
+| Low-medium (external service)
+| Very low (in-broker)
+
+| Operational complexity
+| High (multiple systems)
+| Low (single system)
+
+| Setup time
+| Medium (deploy connector)
+| Fast (enable topic property)
+
+| Schema handling
+| Schema Registry or embedded schemas
+| Built-in Schema Registry integration
+
+| Maintenance overhead
+| Kafka Connect + connectors
+| None (managed by Redpanda)
+|===
+
+Key benefits of migrating to Iceberg Topics:
+
+* *Simpler architecture*: One system instead of two
+* *Lower latency*: In-broker processing
+* *Reduced operational overhead*: No separate connector infrastructure
+* *Built-in reliability*: Managed by Redpanda
+* *Cost savings*: Fewer resources to manage
+
+== Prerequisites
+
+* Existing Kafka Connect Iceberg Sink setup
+* xref:manage:iceberg/about-iceberg-topics.adoc[Iceberg Topics] enabled on your Redpanda cluster
+* Access to both source (Kafka Connect) and target (Iceberg Topics) tables in your query engine
+* Query engine access (Snowflake, Databricks, ClickHouse, or Spark) for data merging
+
+== Migration strategy overview
+
+The migration follows a phased approach to ensure data consistency and minimize risk:
+
+. *Preparation*: Enable Iceberg on target topics and verify new data flows
+. *Parallel operation*: Run both systems concurrently during transition
+. *Data merging*: Choose a strategy to combine historical and new data
+. *Validation*: Verify data completeness and accuracy
+. *Cutover*: Disable Kafka Connect Iceberg Sink
+
+IMPORTANT: Iceberg Topics cannot append to existing Iceberg tables that are not created by Redpanda. You must create new Iceberg tables and merge historical data separately.
+
+We recommend running both systems in parallel until you complete the data merge and validate the results.
+
+== Enable Iceberg Topics
+
+Enable the Iceberg integration for your Redpanda topics.
+
+. Set the `iceberg_enabled` configuration option on your cluster to `true`:
++
+ifdef::env-cloud[]
+[tabs]
+=====
+rpk::
++
+--
+[,bash]
+----
+rpk cloud login
+rpk profile create --from-cloud <cluster-id>
+rpk cluster config set iceberg_enabled true
+----
+--
+
+Cloud API::
++
+--
+[,bash]
+----
+# Store your cluster ID in a variable
+export RP_CLUSTER_ID=<cluster-id>
+
+# Retrieve a Redpanda Cloud access token
+export RP_CLOUD_TOKEN=$(curl -X POST "https://auth.prd.cloud.redpanda.com/oauth/token" \
+    -H "content-type: application/x-www-form-urlencoded" \
+    -d "grant_type=client_credentials" \
+    -d "client_id=<client-id>" \
+    -d "client_secret=<client-secret>")
+
+# Update cluster configuration to enable Iceberg topics
+curl -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" -X PATCH \
+  "https://api.cloud.redpanda.com/v1/clusters/${RP_CLUSTER_ID}" \
+  -H 'accept: application/json' \
+  -H 'content-type: application/json' \
+  -d '{"cluster_configuration":{"custom_properties": {"iceberg_enabled":true}}}'
+----
+--
+=====
+endif::[]
+
+ifndef::env-cloud[]
+[,bash]
+----
+rpk cluster config set iceberg_enabled true
+----
+
+You must restart your cluster if you change this configuration for a running cluster.
+endif::[]
+
+. Configure the `redpanda.iceberg.mode` property for each topic:
++
+[,bash]
+----
+rpk topic alter-config <topic-name> --set redpanda.iceberg.mode=<mode>
+----
++
+Choose a mode based on your schema requirements. See xref:manage:iceberg/about-iceberg-topics.adoc[] for details on available modes.
+
+. If using `value_schema_id_prefix` or `value_schema_latest` modes, register a schema for the topic:
++
+[,bash]
+----
+rpk registry schema create <subject-name> --schema <path-to-schema> --type <format>
+----
+
+. Verify that new records are being written to the Iceberg table:
++
+* Check that data appears in your query engine
+* Validate that the schema translation is correct
+* Confirm record counts are increasing
+
+== Run systems in parallel
+
+Keep your Kafka Connect Iceberg Sink running while Iceberg Topics is enabled. This provides a safety net during the transition period:
+
+* New data flows to both the old Kafka Connect tables and new Iceberg Topics tables
+* You can validate data consistency between both systems
+* You have a fallback option if issues arise
+
+== Merge historical data
+
+Choose a strategy to combine your historical Kafka Connect data with new Iceberg Topics data.
+
+=== Option 1: INSERT INTO pattern (recommended)
+
+Use this approach to create a unified table with all data.
+
+*When to use*:
+
+* You want a single, unified table for queries
+* You can afford the one-time data copy cost
+* You need optimal query performance
+
+*Pattern*:
+
+This SQL pattern uses partition and offset metadata to identify and copy only records not yet in the target table:
+
+[,sql]
+----
+-- Step 1: Find the latest offset per partition in the target (Iceberg Topics) table
+WITH latest_offsets AS (
+    SELECT
+        partition,
+        MAX(offset) AS max_offset
+    FROM target_iceberg_topics_table
+    GROUP BY partition
+)
+-- Step 2: Insert records from source (Kafka Connect) table that don't exist in target
+INSERT INTO target_iceberg_topics_table
+SELECT s.*
+FROM source_kafka_connect_table AS s
+LEFT JOIN latest_offsets AS t
+    ON s.partition = t.partition
+WHERE t.max_offset IS NULL      -- Partition not seen before in target
+   OR s.offset > t.max_offset;  -- Record is newer than target's latest offset
+----
+
+*How it works*:
+
+* The `latest_offsets` CTE finds the highest offset in the target table for each partition
+* The `LEFT JOIN` ensures you include partitions never seen before in the target (`t.max_offset IS NULL`)
+* The `WHERE` clause filters to only records with offsets greater than the target's latest
+* This avoids duplicates by using Kafka partition and offset as the deduplication key
+
+*Performance considerations*:
+
+* One-time cost to copy data
+* May take significant time for large datasets
+* Consider running during low-query periods
+* Can run incrementally if needed
+
+=== Option 2: View-based query federation
+
+Use this approach to query both tables without copying data.
+
+*When to use*:
+
+* You cannot afford data copy time or cost
+* You need immediate access to a unified view
+* Query performance is acceptable with federated queries
+* You may consolidate data later
+
+*Pattern*:
+
+Create a view that queries both tables and deduplicates on the fly:
+
+[,sql]
+----
+CREATE VIEW unified_iceberg_view AS
+WITH latest_offsets AS (
+    SELECT
+        partition,
+        MAX(offset) AS max_offset
+    FROM target_iceberg_topics_table
+    GROUP BY partition
+),
+historical_data AS (
+    SELECT s.*
+    FROM source_kafka_connect_table AS s
+    LEFT JOIN latest_offsets AS t
+        ON s.partition = t.partition
+    WHERE t.max_offset IS NULL
+       OR s.offset <= t.max_offset  -- Only historical records not in target
+),
+new_data AS (
+    SELECT *
+    FROM target_iceberg_topics_table
+)
+SELECT * FROM historical_data
+UNION ALL
+SELECT * FROM new_data;
+----
+
+*Trade-offs*:
+
+* ✅ No data duplication
+* ✅ No upfront copy cost
+* ✅ Immediate access to complete dataset
+* ❌ Slower query performance (queries both tables)
+* ❌ More complex query execution
+* ❌ Ongoing cost for every query
+
+Most Iceberg-compatible query engines support views, including Snowflake, Databricks, ClickHouse, and Spark.
+
+== Migrate multi-table fan-out
+
+If your Kafka Connect setup used the `iceberg.tables.route-field` property to fan out records to multiple Iceberg tables based on a field value, you have two options:
+
+*Option A: Use separate Iceberg Topics*
+
+* Create one Iceberg-enabled topic per destination table
+* Use WASM transforms to route records to appropriate topics
+* Each topic creates its own Iceberg table
+
+This approach provides clean separation and built-in Iceberg integration per topic. For implementation details, see xref:develop:data-transforms/build.adoc#multi-topic-fanout[Multi-topic fan-out with Schema Registry].
+
+*Option B: External processing*
+
+* Use a stream processor (Flink, Spark) to split records
+* Write to separate Iceberg-enabled topics
+
+This approach is more complex but offers more flexibility for complex routing logic.
+
+== Validate the migration
+
+After completing the data merge, verify the migration before cutting over:
+
+*Data completeness*:
+
+* [ ] Record counts match between source and target
+* [ ] All partitions are represented in the target
+* [ ] Date ranges cover the full historical period
+* [ ] No gaps in offset sequences
+
+*Data accuracy*:
+
+* [ ] Sample queries return expected results
+* [ ] Schema translation is correct (all fields present)
+* [ ] Data types match expectations
+* [ ] Null handling is correct
+
+*Operational*:
+
+* [ ] New records are flowing to Iceberg Topics
+* [ ] Query performance is acceptable
+* [ ] Monitoring and alerts are configured
+
+== Cut over from Kafka Connect
+
+After validating the migration:
+
+. Stop the Kafka Connect Iceberg Sink connector
+. Monitor Iceberg Topics to ensure data continues flowing
+. After a validation period, optionally delete old Kafka Connect tables
+. Decommission Kafka Connect infrastructure
+
+== Next steps
+
+* xref:manage:iceberg/query-iceberg-topics.adoc[]
+* xref:manage:iceberg/about-iceberg-topics.adoc[]
+
+// end::single-source[]
