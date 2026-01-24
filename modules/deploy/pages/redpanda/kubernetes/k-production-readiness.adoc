@@ -14,11 +14,11 @@ NOTE: For Linux deployments, see the xref:deploy:redpanda/manual/production/prod
 
 == Critical requirements
 
-The Critical requirements checklist helps ensure that:
+The Critical requirements checklist helps you confirm that:
 
-- All required defaults and configuration items are specified.
+- You have specified all required defaults and configuration items.
 - You have the optimal hardware setup.
-- Security is enabled.
+- You have enabled security.
 - You are set up to run in production.
 
 === Redpanda license
@@ -398,7 +398,7 @@ kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get def
 
 Setting `default_topic_replications` to `3` or greater ensures new topics are created with adequate fault tolerance.
 
-See also: xref:develop:config-topics.adoc#choose-the-replication-factor[Choose the Replication Factor]
+See also: xref:manage:kubernetes/k-manage-topics.adoc#choose-the-replication-factor[Choose the Replication Factor]
 
 === Existing topics replication factor
 
@@ -522,11 +522,9 @@ Ensure storage classes provide adequate IOPS and throughput for your workload.
 * Use NVMe-based storage classes for production deployments
 * Specify a minimum 16,000 IOPS (Input/Output Operations Per Second)
 * Consider provisioned IOPS where available to meet or exceed the minimum
-* Enabling xref:develop:config-topics.adoc#configure-write-caching[write caching] can help Redpanda perform better in environments with disks that don't meet the recommended IOPS
+* Enable xref:develop:config-topics.adoc#configure-write-caching[write caching] to help Redpanda perform better in environments with disks that don't meet the recommended IOPS
 * NFS (Network File System) is not supported
 * Test storage performance under load
-
-**Multi-tenant disk warning:**
 
 WARNING: Avoid cloud instance types that use multi-tenant or shared disks, as these can lead to unpredictable performance due to noisy neighbor effects. Examples of instances with shared/multi-tenant storage include AWS is4gen.xlarge and similar instance types across cloud providers. Instead, use instances with dedicated local NVMe storage or provisioned IOPS volumes that guarantee consistent performance.
 
@@ -542,15 +540,9 @@ See also:
 * xref:deploy:redpanda/kubernetes/k-requirements.adoc#storage[Storage requirements]
 * xref:deploy:redpanda/kubernetes/k-requirements.adoc#cloud-instance-types[Cloud Instance Types]
 
-**Volume sizing**:: Plan storage capacity for data growth and retention requirements.
-+
-* Account for replication overhead
-* Include space for compaction operations
-* Monitor disk usage trends
-
 === CPU and memory resource limits
 
-Verify pods have resource requests and limits configured.
+Verify Pods have resource requests and limits configured.
 
 [.side-by-side]
 --
@@ -576,10 +568,10 @@ kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[?(@.nam
 ----
 --
 
-All Redpanda pods must have:
+All Redpanda Pods must have:
 
-* CPU requests and limits configured and **identical** (`requests.cpu == limits.cpu`)
-* Memory requests and limits configured and **identical** (`requests.memory == limits.memory`)
+* **Identical** CPU requests and limits (`requests.cpu == limits.cpu`)
+* **Identical** memory requests and limits (`requests.memory == limits.memory`)
 
 Setting requests equal to limits ensures the Pod receives the `Guaranteed` QoS class, which prevents CPU throttling and reduces the risk of Pod eviction.
 
@@ -644,13 +636,13 @@ kubectl get redpanda redpanda -n <namespace> -o jsonpath='{.spec.clusterSpec.res
 --
 ======
 
-In the examples above, 4 CPU cores with 8 GiB memory provides a 1:2 ratio (2 GiB per core).
+In the preceding examples, 4 CPU cores with 8 GiB memory provides a 1:2 ratio (2 GiB per core).
 
 === No fractional CPU requests
 
 Ensure CPU requests use whole numbers for consistent performance.
 
-Fractional CPUs can lead to performance variability in production. Use whole integer values (4, 8, 16 - not 3.5, 7.5).
+Fractional CPUs can lead to performance variability in production. Use whole integer values (`4`, `8`, or `16` are acceptable, while `3.5` or `7.5` are not).
 
 Verify CPU configuration:
 
@@ -665,14 +657,6 @@ kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[?(@.nam
 ----
 4
 ----
-
-Avoid fractional values like `3500m` (3.5 cores) or `7500m` (7.5 cores).
-
-**Resource capacity planning**:: Ensure nodes have adequate resources for the configured limits.
-+
-* Verify cluster has sufficient total resources
-* Account for other workloads on shared nodes
-* Plan for resource growth and burst capacity
 
 === Authorization enabled
 
@@ -814,7 +798,7 @@ monitoring
 * Set up SASL authentication for client connections
 * Configure TLS certificates for encryption (see TLS configuration above)
 * Implement proper user management with principle of least privilege
-* Configure ACLs (Access Control Lists) for resource authorization
+* Configure xref:manage:security/authorization/acl.adoc[ACLs (Access Control Lists)] for resource authorization
 
 Verify ACLs are configured:
 
@@ -871,7 +855,7 @@ kubectl describe networkpolicy -n <namespace>
 
 * Configure NetworkPolicies to restrict pod-to-pod communication
 * Use TLS for all client connections (see TLS configuration)
-* Secure admin API endpoints with authentication and authorization
+* Secure admin API endpoints with xref:manage:kubernetes/security/authentication/k-authentication.adoc[authentication] and xref:manage:security/authorization/index.adoc[authorization]
 * Limit ingress traffic to only necessary ports and sources
 * Use Kubernetes Services to control external access
 
@@ -915,46 +899,21 @@ redpanda   N/A             1                 1                     10d
 
 Production deployments must have a PodDisruptionBudget with `maxUnavailable: 1` to prevent simultaneous broker disruptions during voluntary operations like node drains, upgrades, or autoscaler actions.
 
-See also: xref:manage:kubernetes/k-pod-disruption-budgets.adoc[Pod Disruption Budgets]
+See also: https://kubernetes.io/docs/tasks/run-application/configure-pdb/[Kubernetes Pod Disruption Budgets^]
 
 === Rack awareness and topology spread
 
-Configure topology spread constraints to distribute brokers across availability zones.
+Configure topology spread constraints to distribute brokers across availability zones. For configuration instructions, see xref:deploy:redpanda/kubernetes/k-high-availability.adoc#multi-az-deployment[Multi-AZ deployment].
 
-Verify pod distribution across zones:
+Production deployments require each Redpanda broker to run in a different availability zone to ensure that a single zone failure does not cause loss of quorum. For a three-broker cluster, brokers must be distributed across three separate zones.
 
-.Input
-[,bash]
-----
-kubectl get pod -n <namespace> -o wide
-----
+To verify zone distribution, check your cluster configuration:
 
-.Output
-[,bash,role=no-copy]
-----
-NAME         READY   STATUS    NODE                          ZONE
-redpanda-0   2/2     Running   node-us-west-2a-1.internal    us-west-2a
-redpanda-1   2/2     Running   node-us-west-2b-1.internal    us-west-2b
-redpanda-2   2/2     Running   node-us-west-2c-1.internal    us-west-2c
-----
-
-Check node availability zone labels:
-
-.Input
-[,bash]
-----
-kubectl get nodes --show-labels | grep topology.kubernetes.io/zone
-----
-
-**Configuration requirements:**
-
-* Configure `topologySpreadConstraints` to spread pods across zones
-* Use node labels for availability zone awareness (typically `topology.kubernetes.io/zone`)
-* Prevents single zone failures from affecting multiple brokers
+* Verify `topologySpreadConstraints` are configured in your Helm values or Redpanda CR
+* Confirm nodes have zone labels (typically `topology.kubernetes.io/zone`)
+* Check that brokers are scheduled on nodes in different zones
 
 See also: xref:manage:kubernetes/k-rack-awareness.adoc[Rack Awareness]
-
-
 
 === Operator CRDs (Operator deployments only)
 
@@ -992,11 +951,11 @@ Check that you have configured tuners for optimal performance. Tuners can signif
 
 == Recommended requirements
 
-The Recommended requirements checklist ensures that you can monitor and support your environment on a sustained basis, and is appropriate for instances when you need to:
+The Recommended requirements checklist confirms that you can monitor and support your environment on a sustained basis. It includes the following checks:
 
-- Ensure adherence to day-2 operations best practices
-- Diagnose and recover from backup issues or failures
-- Configure monitoring, backup, and security scanning
+- You have adhered to day-2 operations best practices.
+- You can diagnose and recover from backup issues or failures.
+- You have configured monitoring, backup, and security scanning.
 
 === Deployment method
 
@@ -1043,11 +1002,11 @@ The presence of a Redpanda custom resource indicates an Operator-managed deploym
 --
 ======
 
-Knowing your deployment method helps determine which configuration approach to use (Helm values vs. Redpanda CR), how to perform upgrades and rollbacks, where to find deployment logs and troubleshooting information, and which documentation sections apply to your environment.
+Knowing your deployment method helps determine which configuration approach to use (Helm values vs. Redpanda CR), how to perform upgrades and rollbacks, where to find deployment logs and troubleshooting information, and which documentation sections apply to your environment. See xref:deploy:redpanda/kubernetes/k-production-workflow.adoc[Production Deployment Workflow] for the complete deployment process.
 
 === XFS filesystem
 
-Verify data directories use XFS filesystem for optimal performance.
+Verify that data directories use XFS filesystem for optimal performance.
 
 [.side-by-side]
 --
@@ -1067,15 +1026,9 @@ Filesystem     Type  Size  Used Avail Use% Mounted on
 
 XFS provides better performance characteristics for Redpanda workloads compared to ext4. While ext4 is supported, XFS is strongly recommended for production deployments.
 
-**Storage performance tuning**:: Optimize storage configuration for production workloads.
-+
-* Configure appropriate `vm.swappiness` settings
-* Tune filesystem mount options
-* Consider storage class performance characteristics
-
 === Pod anti-affinity
 
-Configure pod anti-affinity to spread brokers across nodes.
+Configure Pod anti-affinity to spread brokers across nodes.
 
 [.side-by-side]
 --
@@ -1105,9 +1058,9 @@ kubectl get statefulset redpanda -n <namespace> -o jsonpath='{.spec.template.spe
 ----
 --
 
-This prevents single node failures from affecting multiple brokers by ensuring each Redpanda pod runs on a different node.
+This prevents single node failures from affecting multiple brokers by ensuring each Redpanda Pod runs on a different node.
 
-See also: xref:reference:k-redpanda-helm-spec.adoc#statefulset-podantiaffinity[Pod Anti-Affinity]
+See also: xref:deploy:redpanda/kubernetes/k-production-deployment.adoc#affinity-rules[Pod Anti-Affinity]
 
 === Node isolation
 
@@ -1119,7 +1072,7 @@ Configure taints/tolerations or nodeSelector for workload isolation.
 kubectl get statefulset redpanda -n <namespace> -o jsonpath='{.spec.template.spec.nodeSelector}' | jq
 ----
 
-Example output showing node isolation:
+.Output
 [,bash,role=no-copy]
 ----
 {
@@ -1129,21 +1082,17 @@ Example output showing node isolation:
 
 Isolating Redpanda workloads on dedicated nodes improves performance predictability by preventing resource contention with other applications.
 
-**CPU pinning and NUMA awareness**:: Configure CPU affinity for optimal performance on multi-core systems.
-
-**Memory allocation strategy**:: Optimize memory settings for your workload patterns.
-
 === Partition balancing
 
 Configure automatic partition balancing across brokers and CPU cores.
 
 **Continuous Data Balancing**
 
-xref:manage:cluster-maintenance/continuous-data-balancing.adoc[Continuous Data Balancing] is a major benefit of Redpanda for managing production deployments. It automatically rebalances partition replicas across brokers based on disk usage and node changes, eliminating manual intervention and preventing performance degradation.
+xref:manage:cluster-maintenance/continuous-data-balancing.adoc[Continuous Data Balancing] can help you manage production deployments by automatically rebalancing partition replicas across brokers based on disk usage and node changes. It also eliminates manual intervention and prevents performance degradation.
 
-**This feature should be enabled for all licensed production clusters.**
+IMPORTANT: You should enable Continuous Data Balancing for all licensed production clusters.
 
-Check continuous data balancing:
+Verify that Continuous Data Balancing is configured:
 
 .Input
 [,bash]
@@ -1157,7 +1106,7 @@ kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get par
 continuous
 ----
 
-Setting this to `continuous` enables automatic partition rebalancing based on:
+The `continuous` setting enables automatic partition rebalancing based on:
 
 * Node additions or removals
 * High disk usage conditions
@@ -1166,6 +1115,8 @@ Setting this to `continuous` enables automatic partition rebalancing based on:
 Without Continuous Data Balancing, partition distribution becomes skewed over time, leading to hotspots and manual rebalancing operations.
 
 **Core Balancing**
+
+xref:manage:cluster-maintenance/cluster-balancing.adoc#intra-broker-partition-balancing[Intra-broker partition balancing] distributes partition replicas across CPU cores within individual brokers.
 
 Check core balancing for CPU core partition distribution:
 
@@ -1181,11 +1132,11 @@ kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get cor
 true
 ----
 
-When enabled, Redpanda continuously rebalances partitions between CPU cores on a broker for optimal resource utilization, especially beneficial after broker restarts or configuration changes.
+When enabled, Redpanda continuously rebalances partitions between CPU cores on a broker for optimal resource utilization, which is especially beneficial after broker restarts or configuration changes.
 
 === System requirements
 
-Run system checks to validate optimal configuration.
+Run system checks to validate that you are running an optimal configuration.
 
 [.side-by-side]
 --
@@ -1210,7 +1161,7 @@ Review any failed checks and remediate before proceeding to production. See xref
 
 === Debug bundle
 
-Verify that you can successfully generate and collect a debug bundle from your cluster. This proactive check ensures that when an actual issue occurs and you need to contact Redpanda support, you won't face permission issues or silent collection failures that could delay troubleshooting.
+Verify that you can successfully generate and collect a debug bundle from your cluster. This proactive check ensures that if an issue occurs and you need to contact Redpanda support, you won't face permission issues or silent collection failures that could delay troubleshooting.
 
 Generate a debug bundle:
 
@@ -1234,13 +1185,13 @@ Debug bundle saved to '/tmp/bundle.zip'
 
 Debug bundles collect critical diagnostic information including cluster configuration and metadata, Redpanda logs from all brokers, system resource usage and performance metrics, and Kubernetes resource definitions.
 
-When testing bundle generation, watch for permission errors preventing log collection, insufficient disk space for bundle creation, network policies blocking bundle transfer, or RBAC restrictions on accessing pod logs or exec. Testing bundle generation early ensures this critical troubleshooting tool works when you need it most. Debug bundles are often required by Redpanda support to diagnose production issues efficiently.
+When testing bundle generation, watch for permission errors preventing log collection, insufficient disk space for bundle creation, network policies blocking bundle transfer, or RBAC restrictions on accessing Pod logs or exec. Testing bundle generation early ensures this critical troubleshooting tool works when you need it most. Debug bundles are often required by Redpanda support to diagnose production issues efficiently.
 
 See also: xref:manage:kubernetes/troubleshooting/k-diagnostics-bundle.adoc[Diagnostics Bundles in Kubernetes]
 
 === Tiered Storage
 
-Configure Tiered Storage for extended data retention using object storage. Tiered Storage automatically offloads older data to cloud storage (S3, GCS, Azure Blob), enabling extended retention without expanding local disk capacity.
+Configure xref:manage:kubernetes/tiered-storage/k-tiered-storage.adoc[Tiered Storage] for extended data retention using object storage. Tiered Storage automatically offloads older data to cloud storage (S3, GCS, Azure Blob), enabling extended retention without expanding local disk capacity.
 
 Verify Tiered Storage configuration:
 
@@ -1258,12 +1209,12 @@ true
 
 **Benefits of Tiered Storage:**
 
-* Reduces local storage costs by offloading cold data to cheaper object storage
-* Enables longer data retention periods without provisioning additional disk
+* Reduced local storage costs from offloading cold data to cheaper object storage
+* Longer data retention periods without provisioning additional disk
 * Required for advanced features like Remote Read Replicas and Iceberg integration
-* Provides disaster recovery capabilities through cloud-backed data
+* Disaster recovery capabilities through cloud-backed data
 
-**Verification steps:**
+To verify your Tiered Storage configuration:
 
 .Input
 [,bash]
@@ -1279,7 +1230,7 @@ See also: xref:manage:kubernetes/tiered-storage/k-tiered-storage.adoc[Tiered Sto
 
 === Security scanning
 
-Regularly scan container images and configurations for vulnerabilities to maintain security posture.
+Regularly scan container images and configurations for vulnerabilities to maintain security.
 
 **Container image scanning:**
 
@@ -1298,13 +1249,13 @@ kubectl get statefulset redpanda -n <namespace> -o jsonpath='{.spec.template.spe
 docker.redpanda.com/redpandadata/redpanda:v24.2.4
 ----
 
-**Security scanning practices:**
+**Security scanning best practices:**
 
 * Scan images using tools like Trivy, Snyk, or cloud-native scanners before deployment
 * Set up automated scanning in CI/CD pipelines
 * Monitor for CVE announcements and security advisories
-* Keep Redpanda and related components up to date with security patches
-* Review Kubernetes RBAC policies and ServiceAccount permissions
+* Keep Redpanda and related components up-to-date with security patches (see xref:upgrade:k-rolling-upgrade.adoc[Rolling Upgrades])
+* Review Kubernetes RBAC policies and ServiceAccount permissions (see xref:manage:kubernetes/security/authorization/k-role-controller.adoc[Role Controller])
 
 **Configuration scanning:**
 
@@ -1316,7 +1267,7 @@ kubectl get redpanda,statefulset,deployment -n <namespace> -o yaml > cluster-con
 # Use kubesec, kube-bench, or similar tools to scan cluster-config.yaml
 ----
 
-Establish a regular cadence for security scanning (e.g., weekly or with each deployment).
+Establish a regular cadence for security scanning (for example, weekly or with each deployment).
 
 === Backup and recovery
 
@@ -1358,7 +1309,7 @@ See also: xref:manage:kubernetes/tiered-storage/k-whole-cluster-restore.adoc[Who
 
 Enable and configure audit logging for compliance and security monitoring requirements.
 
-Verify audit logging configuration:
+Verify your audit log configuration:
 
 .Input
 [,bash]
@@ -1372,9 +1323,7 @@ kubectl exec -n <namespace> <pod-name> -c redpanda -- rpk cluster config get aud
 true
 ----
 
-**Audit log verification:**
-
-Check where audit logs are being written:
+Check to ensure you know where audit logs are being written:
 
 .Input
 [,bash]
@@ -1407,7 +1356,9 @@ kubectl get servicemonitor -n <namespace>
 
 === System log retention
 
-Check that system logs are being captured and stored for an appropriate period of time (minimally, seven days). Configure log forwarding using tools like Fluentd or your cloud provider's logging solution to send logs to a central location.
+Check that Redpanda logs are being captured and stored for an appropriate period of time (minimally, seven days). Configure log forwarding using tools like Fluentd or your cloud provider's logging solution to send logs to a central location for troubleshooting and compliance purposes.
+
+See also: xref:manage:kubernetes/troubleshooting/k-diagnostics-bundle.adoc[Diagnostics Bundles in Kubernetes]
 
 === Environment configuration
 
@@ -1419,7 +1370,7 @@ Check that you have an upgrade policy defined and implemented. Redpanda supports
 
 == Advanced requirements
 
-The Advanced requirements checklist ensure full enterprise readiness. This indicates that your system is operating at the highest level of availability and can prevent or recover from the most serious incidents. The Advanced requirements checklist confirms the following:
+The Advanced requirements checklist ensures full enterprise readiness, indicates that your system is operating at the highest level of availability, and can prevent or recover from the most serious incidents. The Advanced requirements checklist confirms the following:
 
 - You are proactively monitoring mission-critical workloads.
 - You have business continuity solutions in place.
@@ -1438,7 +1389,7 @@ Review your deployment automation. Ensure that cluster configuration is managed 
 
 === Monitor security settings
 
-Regularly review your cluster's security settings using the link:/api/doc/admin/operation/operation-get_security_report[`/v1/security/report`] Admin API endpoint. Investigate and address any issues identified in the alerts section.
+Regularly review your cluster's security settings using the `/v1/security/report` link:/api/doc/admin/[Admin API] endpoint. Investigate and address any issues identified in the alerts section.
 
 include::manage:partial$security-report.adoc[]
 
