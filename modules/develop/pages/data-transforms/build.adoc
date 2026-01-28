@@ -472,23 +472,9 @@ The JavaScript SDK does not support writing records to a specific output topic.
 [[multi-topic-fanout]]
 ==== Multi-topic fan-out with Schema Registry
 
-You can use Wasm transforms to fan out data from one input topic to multiple output topics, with each output topic having its own registered schema. This pattern is useful for:
+This example routes batched updates from a single input topic to multiple output topics based on a routing field in each message. Messages are encoded with the xref:manage:schema-reg/schema-reg-overview.adoc#wire-format[Schema Registry wire format] for validation against the output topic schema. Consider using this pattern with Iceberg-enabled topics to fan out data directly into lakehouse tables.
 
-* Processing batched updates where each sub-element routes to a different destination
-* Distributing data to multiple Iceberg-enabled topics based on routing fields
-* Schema-based partitioning where different message types go to different topics
-
-See also: <<connect-to-schema-registry, Connect to the Schema Registry>>
-
-Consider a data pipeline that processes batched updates. The following example demonstrates a common data pipeline pattern:
-
-. *Input*: Batched updates in a single message (array of objects)
-. *Extraction*: Each sub-element contains a routing field (for example, `"table": "orders"`)
-. *Routing*: Route to output topic based on the routing field value
-. *Validation*: Each output topic has its own schema registered in Schema Registry
-
-Each message contains an array of table updates, where each update object has a `table` field indicating its destination:
-
+.Input message example
 [,json]
 ----
 {
@@ -500,7 +486,7 @@ Each message contains an array of table updates, where each update object has a 
 }
 ----
 
-Configure the transform with multiple output topics:
+xref:develop:data-transforms/configure.adoc[Configure the transform] with multiple output topics:
 
 [,yaml]
 ----
@@ -514,21 +500,37 @@ output_topics:
 
 The transform extracts each update and routes it to the appropriate topic based on the `table` field. Each output topic has its own registered schema in Schema Registry for validation.
 
+NOTE: xref:manage:schema-reg/schema-reg-api.adoc[Register schemas in Schema Registry] before deploying the transform. The schema IDs in the code examples must match the IDs returned by Schema Registry during registration. Use the `{topic-name}-value` naming convention for schema subjects (for example, `orders-value`, `inventory-value`).
+
 [tabs]
 ======
 Go::
 +
 --
+.`go.mod`
+[%collapsible]
+====
+[,go]
+----
+module fanout-example
+
+go 1.20
+
+require github.com/redpanda-data/redpanda/src/transform-sdk/go/transform v1.1.0 // v1.1.0+ required
+----
+====
+
+`transform.go`:
+
 [,go]
 ----
 package main
 
 import (
+    "encoding/binary"
     "encoding/json"
-    "fmt"
     "log"
     "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
-    sr "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr"
 )
 
 // Input message structure with array of updates
@@ -542,67 +544,17 @@ type TableUpdate struct {
     Data  json.RawMessage `json:"data"`  // The actual data to write
 }
 
-// Schema definitions for each output topic (JSON Schema format)
-// Define `required` fields to enforce data quality
-const (
-    orderSchema = `{
-        "type": "object",
-        "properties": {
-            "order_id": {"type": "string"},
-            "customer_id": {"type": "string"},
-            "amount": {"type": "number"}
-        },
-        "required": ["order_id", "customer_id", "amount"]
-    }`
-
-    inventorySchema = `{
-        "type": "object",
-        "properties": {
-            "product_id": {"type": "string"},
-            "quantity": {"type": "number"}
-        },
-        "required": ["product_id", "quantity"]
-    }`
-
-    customerSchema = `{
-        "type": "object",
-        "properties": {
-            "customer_id": {"type": "string"},
-            "name": {"type": "string"},
-            "email": {"type": "string"}
-        },
-        "required": ["customer_id", "name"]
-    }`
-)
-
-var (
-    srClient sr.Client
-    schemaIDs map[string]int  // Map of topic name to schema ID
-)
-
-func main() {
-    srClient = sr.NewClient()
-
-    // Register schemas for each output topic using {topic-name}-value naming convention
-    schemaIDs = make(map[string]int)
-    schemaIDs["orders"] = ensureSchema("orders-value", orderSchema)
-    schemaIDs["inventory"] = ensureSchema("inventory-value", inventorySchema)
-    schemaIDs["customers"] = ensureSchema("customers-value", customerSchema)
-
-    log.Printf("Registered schemas: %v", schemaIDs)
-    transform.OnRecordWritten(routeUpdates)
+// Schema IDs for each output topic obtained from Schema Registry
+// Register schemas before deploying the transform using the {topic-name}-value naming convention
+var schemaIDs = map[string]int{
+    "orders":    1,
+    "inventory": 2,
+    "customers": 3,
 }
 
-func ensureSchema(subject string, schemaJSON string) int {
-    subjectSchema, err := srClient.CreateSchema(subject, sr.Schema{
-        Schema: schemaJSON,
-        Type:   sr.TypeJson,
-    })
-    if err != nil {
-        log.Fatalf("Failed to register schema for %s: %v", subject, err)
-    }
-    log.Printf("Schema registered: %s (ID: %d)", subject, subjectSchema.ID)
-    return subjectSchema.ID
+func main() {
+    log.Printf("Starting fanout transform with schema IDs: %v", schemaIDs)
+    transform.OnRecordWritten(routeUpdates)
 }
 
 func routeUpdates(event transform.WriteEvent, writer transform.RecordWriter) error {
@@ -629,19 +581,15 @@ func routeUpdates(event transform.WriteEvent, writer transform.RecordWriter) err
 }
 
 func writeUpdate(update TableUpdate, schemaID int, writer transform.RecordWriter, event transform.WriteEvent) error {
+    // Create Schema Registry wire format: [magic_byte, schema_id (4 bytes BE), data...]
+    value := make([]byte, 5)
+    value[0] = 0 // magic byte
+    binary.BigEndian.PutUint32(value[1:5], uint32(schemaID))
+    value = append(value, update.Data...)
+
     record := transform.Record{
         Key:   event.Record().Key,
-        Value: update.Data,
-        Headers: []transform.RecordHeader{
-            {
-                Key:   "schema_id",
-                Value: []byte(fmt.Sprintf("%d", schemaID)),
-            },
-            {
-                Key:   "source_topic",
-                Value: []byte(event.Record().Topic),
-            },
-        },
+        Value: value,
     }
 
     return writer.Write(record, transform.ToTopic(update.Table))
@@ -652,14 +600,36 @@ func writeUpdate(update TableUpdate, schemaID int, writer transform.RecordWriter
 Rust::
 +
 --
+.`Cargo.toml`
+[%collapsible]
+====
+[,toml]
+----
+[package]
+name = "fanout-rust-example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+redpanda-transform-sdk = "1.1.0"  # v1.1.0+ required for WriteOptions API
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+----
+====
+
+`src/main.rs`:
+
 [,rust]
 ----
 use redpanda_transform_sdk::*;
-use redpanda_transform_sdk_sr as sr;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
-use log::info;
-use anyhow::Result;
+use std::error::Error;
 
 #[derive(Deserialize)]
 struct BatchMessage {
@@ -672,45 +642,15 @@ struct TableUpdate {
     data: serde_json::Value,
 }
 
-const ORDER_SCHEMA: &str = r#"{
-    "type": "object",
-    "properties": {
-        "order_id": {"type": "string"},
-        "customer_id": {"type": "string"},
-        "amount": {"type": "number"}
-    },
-    "required": ["order_id", "customer_id", "amount"]
-}"#;
-
-const INVENTORY_SCHEMA: &str = r#"{
-    "type": "object",
-    "properties": {
-        "product_id": {"type": "string"},
-        "quantity": {"type": "number"}
-    },
-    "required": ["product_id", "quantity"]
-}"#;
-
-const CUSTOMER_SCHEMA: &str = r#"{
-    "type": "object",
-    "properties": {
-        "customer_id": {"type": "string"},
-        "name": {"type": "string"},
-        "email": {"type": "string"}
-    },
-    "required": ["customer_id", "name"]
-}"#;
-
+// Schema IDs for each output topic obtained from Schema Registry
+// Register schemas before deploying the transform using the {topic-name}-value naming convention
 static mut SCHEMA_IDS: Option<HashMap<String, i32>> = None;
 
 fn main() {
-    env_logger::init();
-    let sr_client = sr::Client::new();
-
     let mut schema_ids = HashMap::new();
-    schema_ids.insert("orders".to_string(), ensure_schema(&sr_client, "orders-value", ORDER_SCHEMA));
-    schema_ids.insert("inventory".to_string(), ensure_schema(&sr_client, "inventory-value", INVENTORY_SCHEMA));
-    schema_ids.insert("customers".to_string(), ensure_schema(&sr_client, "customers-value", CUSTOMER_SCHEMA));
+    schema_ids.insert("orders".to_string(), 1);
+    schema_ids.insert("inventory".to_string(), 2);
+    schema_ids.insert("customers".to_string(), 3);
 
     unsafe {
         SCHEMA_IDS = Some(schema_ids);
@@ -719,35 +659,34 @@ fn main() {
     on_record_written(route_updates);
 }
 
-fn ensure_schema(client: &sr::Client, subject: &str, schema_json: &str) -> i32 {
-    let schema = sr::Schema {
-        schema: schema_json.to_string(),
-        schema_type: sr::SchemaType::Json,
-        references: vec![],
-    };
+fn write_update(
+    update: &TableUpdate,
+    schema_id: i32,
+    writer: &mut RecordWriter,
+    event: &WriteEvent,
+) -> Result<(), Box<dyn Error>> {
+    // Create Schema Registry wire format: [magic_byte, schema_id (4 bytes BE), data...]
+    let mut value = vec![0u8; 5];
+    value[0] = 0; // magic byte
+    value[1..5].copy_from_slice(&schema_id.to_be_bytes());
 
-    match client.create_schema(subject, &schema) {
-        Ok(subject_schema) => {
-            info!("Schema registered: {} (ID: {})", subject, subject_schema.id);
-            subject_schema.id
-        }
-        Err(e) => panic!("Failed to register schema for {}: {}", subject, e),
-    }
+    let data_bytes = serde_json::to_vec(&update.data)?;
+    value.extend_from_slice(&data_bytes);
+
+    let key = event.record.key().map(|k| k.to_vec());
+    let record = BorrowedRecord::new(key.as_deref(), Some(&value));
+
+    writer.write_with_options(record, WriteOptions::to_topic(&update.table))?;
+    Ok(())
 }
 
-fn route_updates(event: WriteEvent, writer: &mut RecordWriter) -> Result<()> {
+fn route_updates(event: WriteEvent, writer: &mut RecordWriter) -> Result<(), Box<dyn Error>> {
     let batch: BatchMessage = serde_json::from_slice(event.record.value().unwrap_or_default())?;
     let schema_ids = unsafe { SCHEMA_IDS.as_ref().unwrap() };
 
-    for (i, update) in batch.updates.iter().enumerate() {
+    for update in batch.updates.iter() {
         if let Some(&schema_id) = schema_ids.get(&update.table) {
-            let data_bytes = serde_json::to_vec(&update.data)?;
-            let mut record = Record::new(data_bytes);
-            record = record.key(event.record.key().unwrap_or_default().to_vec());
-
-            writer.write_with_options(record, WriteOptions::to_topic(&update.table))?;
-        } else {
-            log::warn!("Unknown table in update {}: {}", i, update.table);
+            write_update(update, schema_id, writer, &event)?;
         }
     }
 
