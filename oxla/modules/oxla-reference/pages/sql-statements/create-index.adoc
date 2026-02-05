@@ -1,0 +1,115 @@
+= CREATE INDEX
+
+
+## Overview
+
+Oxla allows creating a single index on an empty table (before any row is added to the table). This index is used to sort data on storage, ordering it using indexed columns. This greatly speeds up the scanning table, reducing the scan just to the relevant portion of data.
+
+## Syntax
+
+While creating an index one should define the index name, the table for which the index is created, list of columns for which the index was created.
+
+[source,sql]
+----
+CREATE INDEX index_name ON table_name(column_name_1, ...);
+----
+
+
+## Using index
+
+The index is used when a query uses a range of values from a given index. To do that user must compare the index column with the literal.
+
+## Performance impact
+
+### Single column index
+
+Let's consider the given table:
+
+[source,sql]
+----
+CREATE TABLE lineorder (
+    customer_id              INTEGER NOT NULL,
+    part_key_id              INTEGER NOT NULL,
+    quantity                 INTEGER NOT NULL,
+    unit_price               FLOAT NOT NULL,
+    commit_date              DATE NOT NULL
+);
+----
+
+
+Let's say we want to calculate the value of orders for 5th November 2019:
+
+[source,sql]
+----
+SELECT SUM(unit_price * quantity) AS revenue FROM lineorder WHERE commit_date = '2019-11-05';
+----
+
+
+This query will scan all data for columns unit\_price, quantity, and commit\_date for table lineorder. To speed this query up we can use the index:
+
+[source,sql]
+----
+CREATE INDEX lineorder_index ON lineorder(commit_date);
+----
+
+
+If the table was created with this index then the query mentioned above will scan just over rows for which `commit_date` is equal to 2019-11-05.
+
+Unfortunately, expressions like the one shown below will not take advantage of the index.
+
+[source,sql]
+----
+SELECT SUM(unit_price * quantity) AS revenue
+FROM lineorder
+WHERE EXTRACT(YEAR FROM commit_date) = 2019;
+----
+
+
+### Multi-column index
+
+The index might contain multiple columns. Let's consider a different index for the table line order mentioned above:
+
+[source,sql]
+----
+CREATE INDEX lineorder_index ON lineorder(part_key_id, commit_date);
+----
+
+
+Thanks to this index, extracting orders related to a given part or orders for a given part and given time range will be very fast. Example of queries taking advantage of index:
+
+[source,sql]
+----
+SELECT SUM(unit_price * quantity) AS revenue
+FROM lineorder
+WHERE part_key_id = 5;
+
+SELECT SUM(unit_price * quantity) AS revenue
+FROM lineorder
+WHERE part_key_id = 5 OR part_key_id = 7;
+
+SELECT SUM(unit_price * quantity) AS revenue
+FROM lineorder
+WHERE part_key_id >= 5 AND part_key_id <= 7;
+
+SELECT SUM(unit_price * quantity) AS revenue
+FROM lineorder
+WHERE
+    part_key_id = 5 AND
+    commit_date BETWEEN '2019-11-01' AND '2019-11-15';
+
+SELECT SUM(unit_price * quantity) AS revenue
+FROM lineorder
+WHERE
+    part_key_id >= 5 AND part_key_id <= 7 AND
+    commit_date BETWEEN '2019-11-01' AND '2019-11-15';
+----
+
+
+A query that will not take advantage of the index:
+
+[source,sql]
+----
+SELECT SUM(unit_price * quantity) AS revenue
+FROM lineorder
+WHERE commit_date BETWEEN '2019-11-01' AND '2019-11-15';
+----

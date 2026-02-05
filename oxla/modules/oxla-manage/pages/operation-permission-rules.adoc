@@ -1,0 +1,136 @@
+= Permission Rules for Operations
+
+
+## Overview
+
+In Oxla, superusers can perform almost any operation, while object owners have broad privileges over their own objects. 
+This document explains the logic behind operation permissions and the factors considered when determining whether a specific 
+operation is allowed.
+
+## Classification of operations
+
+All operations that an Oxla client can perform fall into one of the following categories:
+
+* **Unavailable regardless of permissions**: operations that are never allowed
+* **Superusers-only**: operations restricted to superusers
+* **Owner-only**: operations allowed only for the object's owner
+* **Privilege-based:**: operations allowed for users with a specific privilege (P1) on an object (O1)
+* **Conditional**: operations are allowed only when all conditions are met. Each condition must belong to either category 3 or category 4
+* **Available to all users**: operations that anyone can perform
+
+## Implicitly Allowed Operations
+
+For operations in categories 3 and 4, two key rules apply:
+
+1. **Superuser Inheritance**: if an operation is allowed for the owner of object O1, it is also allowed for all superusers, 
+regardless of ownership
+
+2. **Owner Inheritance**: if an operation requires privilege P1 on object O1, the owner of O1 can perform it, 
+even without having privilage (P1). Referring to rule 1, all superusers can also perform such operations
+
+These rules mean that privileges granted to a superuser are irrelevant while they retain superuser status. 
+If a user loses superuser status, their explicit privileges become relevant again, 
+including any changes made while they were a superuser.
+
+[NOTE]
+====
+Role attributes, privileges, and ownership are managed independently. 
+Modifying one does not affect the others. This separation, combined with the implicit rules, 
+makes the privilege system straightforward and adaptable
+====
+
+
+## Operation Categories: Examples
+
+For clarity, reviewing examples of operations from each category can be highly beneficial.
+
+### Unavailable Regardless of Permissions
+
+Some operations are always forbidden because they would violate built-in constraints. 
+For example, deleting the default `public` schema or dropping a role that still owns objects is not allowed:
+
+[source,sql]
+----
+DROP ROLE john;
+----
+
+Even superusers cannot drop a role if it owns objects:
+
+[source]
+----
+ERROR:  role "john" cannot be dropped because some objects depend on it:
+... here is the list of dependent objects ...
+----
+
+
+[NOTE]
+====
+You can drop a role only after removing all its dependencies.
+====
+
+
+### Superuser-Only Operations
+
+Certain operations require superuser privileges. For example, creating a new role:
+
+[source,sql]
+----
+CREATE ROLE username PASSWORD 'your_secure_password';
+----
+
+Only superusers can execute this command.
+
+### Owner-Only Operations
+
+Some operations are restricted to object owners, even if other users have all possible privileges on the object. 
+For example, only the owner of schema `s1` can drop it:
+
+[source,sql]
+----
+DROP SCHEMA s1;
+----
+
+This operation is not permitted for non-owners, regardless of their privileges.
+
+### Privilege-Based Operations
+
+Many operations require specific privileges. For example, creating a table in schema `s1` requires the CREATE privilege on that schema:
+
+[source,sql]
+----
+CREATE TABLE s1.t1(a integer);
+----
+
+
+### Conditional Operations
+
+Some operations require multiple privileges or ownerships such as privileges of category 3 or 4. 
+If the user is a superuser, all such conditions are considered met. 
+If not, each condition must be checked individually, and all must be satisfied (either explicitly or implicitly).
+
+For example, to execute:
+
+[source,sql]
+----
+SELECT * FROM s1.t1;
+----
+
+
+The user must have:
+1. `USAGE` privilege on schema `s1`
+2. `SELECT` privilege on table `s1.t1`
+
+If a user owns the schema `s1` but not the table `s1.t1` and lacks `SELECT` privilege on `s1.t1`, the operation is forbidden. 
+Similarly, the operation will be forbidden if owning the table `s1.t1` without `USAGE` privilege on schema `s1`.
+
+### Operations Available to All Users
+
+Some operations are always available, assuming the user is connected to Oxla database. For example:
+
+[source,sql]
+----
+SELECT sqrt(15);
+----
+
+
+This query succeeds for any connected user, even if their `CONNECT` privilege was revoked after connecting.
