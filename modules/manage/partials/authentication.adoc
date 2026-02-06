@@ -453,35 +453,128 @@ To edit a superuser, use the following command to apply the new value:
 rpk cluster config edit
 ----
 
+[[enable-sasl-authentication]]
 === Enable SASL authentication
 
-To enable authentication in your Redpanda cluster, you have the following options, depending on your requirements for SASL authentication and authorization.
+Redpanda provides the following options for enabling SASL authentication:
+
+* *`enable_sasl`* - The original approach, which is maintained for backwards compatibility. It applies SASL globally to all Kafka listeners with a single command.
+* *per-listener configuration* - A more flexible approach that allows you to configure different authentication methods on different listeners.
+
+Use the following criteria to help you select the best option:
+
+[cols="1,1,2",options="header"]
+|===
+|Use Case |Use Authentication Method |Explanation
+
+|When creating new clusters
+|Use per-listener configuration
+|Provides you the flexibility to configure authentication per listener, which is useful for mixed environments where some listeners are internal (no authentication required) and others are external (authentication required).
+
+|When you have existing clusters already using `enable_sasl`
+|Use `enable_sasl`
+|You can continue using `enable_sasl` if it meets your needs. You only need to migrate to per-listener configuration if you need per-listener authentication control.
+
+|When you require uniform authentication
+|Use `enable_sasl`
+|If you know all your Kafka listeners will use SASL authentication, this option is simpler and doesn't require a restart.
+|===
+
+[IMPORTANT]
+====
+*Do not mix configuration methods*.
+
+Using both `enable_sasl` and `kafka_enable_authorization` + `authentication_method` together can lead to configuration inconsistencies and initialization failures. Choose one approach and use it consistently.
+====
 
 NOTE: You must <<create-superusers, create at least one superuser>> before enabling authentication. Enabling authentication without a superuser can result in being locked out of the cluster.
 
-- Enable SASL authentication for all Kafka listeners:
-+
-Use this method if you haven't already enabled authentication and you want to apply SASL authentication to all Kafka listeners. This approach does not require you to restart the cluster.
-+
-NOTE: This command implicitly enables authorization. If you want to disable authorization, you can use the `kafka_enable_authorization` cluster configuration property.
-+
+==== Use `enable_sasl` for global authentication (backwards compatible)
+
+Using the `enable_sasl` option applies SASL authentication to all Kafka API listeners with a single command.
+
+Use this option when:
+
+* All Kafka listeners will use SASL authentication
+* You prefer simpler configuration
+* You want to avoid a cluster restart
+
+Trade-offs when using `enable_sasl`:
+
+* ✅ Simple: One command enables authentication on all listeners
+* ✅ No restart required
+* ✅ No `redpanda.yaml` changes required
+* ❌ Cannot configure different authentication methods per listener
+* ❌ All listeners must use the same authentication method
+
+To use this option, run:
+
 [source,bash]
 ----
 rpk cluster config set enable_sasl true
 ----
 
-- Explicitly enable authorization and define authentication method per listener:
-+
-Choose this method if you require specific control over the authentication method for each Kafka listener, or if you need to enable authorization explicitly. This option requires a cluster restart.
-+
-1. Enable authorization:
+This command:
+
+* Enables SASL authentication on ALL Kafka API listeners
+* Implicitly enables authorization (`kafka_enable_authorization` is set to `true`)
+
+[WARNING]
+====
+When using this method, do NOT additionally set `kafka_enable_authorization: true` or add `authentication_method: sasl` to `redpanda.yaml`. The `enable_sasl` setting handles both automatically.
+====
+
+==== Use per-listener authentication (recommended for new clusters)
+
+This option allows you to configure authentication per listener, giving you flexibility to have different authentication methods on different listeners.
+
+Use this option when:
+
+* You need different authentication methods on different listeners (for example, SASL for external, none for internal)
+* You're setting up a new cluster
+* You want explicit control over which listeners have authentication enabled
+
+Trade-offs when using per-listener configuration:
+
+* ✅ Flexible: Configure authentication per listener
+* ✅ Explicit: Clear configuration in `redpanda.yaml` for each listener
+* ✅ Can mix authentication methods (some listeners with authentication, some without)
+* ❌ Requires configuration in `redpanda.yaml` for each listener
+* ❌ Requires cluster restart to apply changes
+
+To configure per-listener authentication:
+
+1. Enable authorization explicitly:
 +
 [source,bash]
 ----
 rpk cluster config set kafka_enable_authorization true
 ----
 
-2. Define the authentication method for each listener. See <<Authentication for the Kafka API>> and <<Authentication for the HTTP APIs>>.
+2. Configure authentication method for each listener in `redpanda.yaml`:
++
+[source,yaml]
+----
+redpanda:
+  kafka_api:
+    - address: 0.0.0.0
+      port: 9092
+      name: internal
+      authentication_method: none  # No authentication for internal traffic
+    - address: 0.0.0.0
+      port: 9093
+      name: external
+      authentication_method: sasl  # SASL for external traffic
+----
++
+See <<Authentication for the Kafka API>> for more details.
+
+3. Restart the cluster to apply the configuration changes.
+
+[WARNING]
+====
+When using this method, do NOT set `enable_sasl: true`. The per-listener configuration and explicit `kafka_enable_authorization` handle authentication and authorization separately.
+====
 
 For detailed information about these and other cluster configurations, see xref:manage:cluster-maintenance/cluster-property-configuration.adoc[].
 endif::[]
@@ -509,15 +602,15 @@ NOTE: Redpanda provides an option to configure different SASL authentication mec
 
 ==== Enable SASL
 
-To enable SASL authentication for the Kafka API, set the xref:reference:properties/broker-properties.adoc#kafka_api_auth_method[`authentication_method`] broker property of the Kafka listeners to `sasl`.
-
 ifdef::env-kubernetes[The Redpanda Helm chart sets the xref:reference:properties/broker-properties.adoc#kafka_api_auth_method[`authentication_method`] broker property to `sasl` for all Kafka listeners by default when you <<enable-authentication, enable authentication>>.]
 
-ifndef::env-kubernetes[If you <<enable-sasl-authentication, enabled authentication with `enable_sasl=true`>>, Redpanda implicitly sets xref:reference:properties/broker-properties.adoc#kafka_api_auth_method[`authentication_method`] to `sasl` for the Kafka listeners.]
-
-ifndef::env-kubernetes[If you <<enable-sasl-authentication, enabled authentication with `kafka_enable_authorization=true`>>, you must enable SASL for the Kafka listeners.]
-
 ifndef::env-kubernetes[]
+How you enable SASL depends on which <<enable-sasl-authentication, authentication method>> you chose:
+
+*If you used `enable_sasl`*: SASL is already enabled on all Kafka listeners automatically. Skip this section.
+
+*If you used per-listener configuration*: Set the xref:reference:properties/broker-properties.adoc#kafka_api_auth_method[`authentication_method`] broker property to `sasl` for the Kafka listeners that require authentication.
+
 In `redpanda.yaml`, enter:
 
 [,yaml,lines=6]
@@ -1900,6 +1993,102 @@ redpanda:
       authentication_method: none
 ----
 endif::[]
+
+== Troubleshooting authentication
+
+=== Schema Registry 403 Forbidden errors
+
+If clients receive error code 50302 or 403 when registering or fetching schemas, the internal `schema_registry_internal` role may be incomplete.
+
+*Symptoms:*
+
+Clients see:
+
+[source,json]
+----
+{
+  "error_code": 50302,
+  "message": "broker_not_available"
+}
+----
+
+Redpanda logs show:
+
+[source,log]
+----
+WARN Failed to create ACLs for type {ephemeral user} name {__schema_registry}
+ERROR Schema registry failed to initialize: broker_not_available
+----
+
+*Cause:*
+
+When `schema_registry_enable_authorization` is enabled during cluster instability (controller election, restart, heavy load), ACL creation for the internal role may fail partway through, leaving an incomplete role that persists across restarts.
+
+*Diagnosis:*
+
+Check if the internal role is complete:
+
+[source,bash]
+----
+rpk security role describe schema_registry_internal
+----
+
+*Expected output (complete role - 8 ACLs):*
+
+[source,text]
+----
+PRINCIPAL                              RESOURCE-TYPE  RESOURCE-NAME        OPERATION         PERMISSION
+RedpandaRole:schema_registry_internal  CLUSTER        kafka-cluster        DESCRIBE          ALLOW
+RedpandaRole:schema_registry_internal  CLUSTER        kafka-cluster        IDEMPOTENT_WRITE  ALLOW
+RedpandaRole:schema_registry_internal  TOPIC          _schemas             READ              ALLOW
+RedpandaRole:schema_registry_internal  TOPIC          _schemas             WRITE             ALLOW
+RedpandaRole:schema_registry_internal  TOPIC          _schemas             CREATE            ALLOW
+RedpandaRole:schema_registry_internal  TOPIC          _schemas             DESCRIBE          ALLOW
+RedpandaRole:schema_registry_internal  GROUP          __schema_id_counter  READ              ALLOW
+RedpandaRole:schema_registry_internal  GROUP          schema-registry      READ              ALLOW
+----
+
+If you see fewer than 8 ACLs, the role is incomplete. Also check that the `__schema_registry` user is listed under PRINCIPALS.
+
+*Resolution:*
+
+Add missing permissions:
+
+[source,bash]
+----
+# Add CLUSTER permission
+rpk security acl create \
+  --allow-role RedpandaRole:schema_registry_internal \
+  --operation idempotent-write \
+  --cluster
+
+# Add TOPIC permissions
+rpk security acl create \
+  --allow-role RedpandaRole:schema_registry_internal \
+  --operation read,write,describe,create \
+  --topic _schemas
+
+# Add GROUP permissions
+rpk security acl create \
+  --allow-role RedpandaRole:schema_registry_internal \
+  --operation read \
+  --group __schema_id_counter,schema-registry
+
+# Assign the ephemeral user to the role
+rpk security role assign schema_registry_internal \
+  --principal User:__schema_registry
+
+# Restart to reinitialize
+systemctl restart redpanda
+----
+
+Verify the fix by checking the role again and testing schema registration.
+
+*Prevention:*
+
+* Only enable `schema_registry_enable_authorization` when the cluster is stable
+* Avoid enabling during cluster restarts or controller failovers
+* Verify role completeness after enabling Schema Registry authorization
 
 == Generate security report
 
