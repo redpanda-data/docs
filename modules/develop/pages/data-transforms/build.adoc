@@ -643,6 +643,7 @@ use redpanda_transform_sdk::*;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::error::Error;
+use std::sync::OnceLock;
 
 #[derive(Deserialize)]
 struct BatchMessage {
@@ -657,7 +658,7 @@ struct TableUpdate {
 
 // Schema IDs for each output topic obtained from Schema Registry.
 // Register schemas before deploying the transform using the {topic-name}-value naming convention
-static mut SCHEMA_IDS: Option<HashMap<String, i32>> = None;
+static SCHEMA_IDS: OnceLock<HashMap<String, i32>> = OnceLock::new();
 
 fn main() {
     let mut schema_ids = HashMap::new();
@@ -665,9 +666,7 @@ fn main() {
     schema_ids.insert("inventory".to_string(), 2);
     schema_ids.insert("customers".to_string(), 3);
 
-    unsafe {
-        SCHEMA_IDS = Some(schema_ids);
-    }
+    let _ = SCHEMA_IDS.set(schema_ids);
 
     on_record_written(route_updates);
 }
@@ -695,7 +694,7 @@ fn write_update(
 
 fn route_updates(event: WriteEvent, writer: &mut RecordWriter) -> Result<(), Box<dyn Error>> {
     let batch: BatchMessage = serde_json::from_slice(event.record.value().unwrap_or_default())?;
-    let schema_ids = unsafe { SCHEMA_IDS.as_ref().unwrap() };
+    let schema_ids = SCHEMA_IDS.get().unwrap();
 
     for update in batch.updates.iter() {
         if let Some(&schema_id) = schema_ids.get(&update.table) {
