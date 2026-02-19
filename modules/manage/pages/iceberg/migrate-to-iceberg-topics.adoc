@@ -1,14 +1,14 @@
 = Migrate to Iceberg Topics
-:description: Migrate from Kafka Connect Iceberg Sink to Redpanda Iceberg topics.
+:description: Migrate existing Iceberg integrations to Redpanda Iceberg topics.
 :page-topic-type: how-to
 :page-categories: Iceberg, Migration, Integration
-:learning-objective-1: Compare Kafka Connect Iceberg Sink with Iceberg Topics architectures
+:learning-objective-1: Compare external Iceberg integrations with Iceberg Topics architectures
 :learning-objective-2: Implement data merge strategies using SQL patterns
 :learning-objective-3: Execute validation checks and perform cutover procedures
 
 // tag::single-source[]
 
-Migrate existing Iceberg pipelines from Kafka Connect to Redpanda Iceberg topics to simplify your architecture and reduce operational overhead.
+Migrate existing Iceberg pipelines to Redpanda Iceberg topics to simplify your architecture and reduce operational overhead.
 
 After reading this page, you will be able to:
 
@@ -18,7 +18,13 @@ After reading this page, you will be able to:
 
 == Why migrate to Iceberg Topics
 
-Redpanda's built-in Iceberg enabled-topics offer a simpler alternative to Kafka Connect Iceberg Sink for writing streaming data to Iceberg tables.
+Redpanda's built-in Iceberg-enabled topics offer a simpler alternative to external Iceberg integrations for writing streaming data to Iceberg tables.
+
+NOTE: This guide focuses on migrating from Kafka Connect Iceberg Sink, the most common external integration. The migration patterns and SQL examples can be adapted for other Iceberg sources such as Apache Flink or Spark.
+
+=== Kafka Connect Iceberg Sink comparison
+
+The following table compares Kafka Connect Iceberg Sink with Redpanda Iceberg Topics:
 
 [cols="1,1,1"]
 |===
@@ -43,17 +49,17 @@ Redpanda's built-in Iceberg enabled-topics offer a simpler alternative to Kafka 
 
 == Prerequisites
 
-To migrate from an existing Kafka Connect Iceberg Sink setup to Iceberg Topics, you must have:
+To migrate from an existing Iceberg integration to Iceberg Topics, you must have:
 
 ifndef::env-cloud[]
 * xref:manage:tiered-storage.adoc[Tiered Storage] enabled.
 endif::[]
 * xref:manage:iceberg/about-iceberg-topics.adoc[Iceberg Topics] enabled on your Redpanda cluster.
-* Access to both source (Kafka Connect) and target (Iceberg Topics) tables in your query engine.
+* Access to both source and target (Iceberg Topics) tables in your query engine.
 * Query engine access (Snowflake, Databricks, ClickHouse, or Spark) for data merging.
 * Understanding of your current schema format (Avro, Protobuf, or JSON Schema).
-* Knowledge of your Kafka Connect configuration, especially if using `iceberg.tables.route-field` for multi-table routing.
-* If migrating multi-table fan-out patterns, xref:develop:data-transforms/deploy.adoc[data transforms] enabled on your cluster.
+* For Kafka Connect migrations, knowledge of your Kafka Connect configuration, especially if using `iceberg.tables.route-field` for multi-table routing.
+* For migrating multi-table fan-out patterns, xref:develop:data-transforms/deploy.adoc[data transforms] enabled on your cluster.
 
 == Migration steps
 
@@ -63,7 +69,7 @@ Redpanda recommends following a phased approach to ensure data consistency and m
 . Run both systems concurrently during transition.
 . Choose a strategy to combine historical and new data.
 . Verify data completeness and accuracy.
-. Disable Kafka Connect Iceberg Sink.
+. Disable the external Iceberg integration.
 
 IMPORTANT: Iceberg Topics cannot append to existing Iceberg tables that are not created by Redpanda. You must create new Iceberg tables and merge historical data separately.
 
@@ -130,7 +136,7 @@ endif::[]
 rpk topic alter-config <topic-name> --set redpanda.iceberg.mode=<mode>
 ----
 +
-Choose the mode based on your Kafka Connect converter configuration:
+Choose the mode based on your message format and schema configuration. For Kafka Connect migrations, use this mapping:
 +
 [cols="2,3"]
 |===
@@ -197,9 +203,9 @@ SELECT COUNT(*) FROM <catalog>."<topic-name>~dlq";
 
 === Run systems in parallel
 
-Keep your Kafka Connect Iceberg Sink running while Iceberg Topics is enabled. This provides a safety net during the transition period:
+Keep your existing Iceberg integration running while Iceberg Topics is enabled. This provides a safety net during the transition period:
 
-* New data flows to both the old Kafka Connect tables and new Iceberg Topics tables.
+* New data flows to both the source tables and new Iceberg Topics tables.
 * You can validate data consistency between both systems.
 * You have a fallback option if issues arise.
 
@@ -207,8 +213,8 @@ Run a query to compare record counts between systems:
 
 [,sql]
 ----
--- Kafka Connect table
-SELECT COUNT(*) AS kafka_connect_count FROM <catalog>.<kafka_connect_table>;
+-- Source table
+SELECT COUNT(*) AS source_count FROM <catalog>.<source_table>;
 
 -- Iceberg Topics table
 SELECT COUNT(*) AS iceberg_topics_count FROM <catalog>.<iceberg_topics_table>;
@@ -230,7 +236,7 @@ TIP: Run both systems for at least 24-48 hours to ensure stability before procee
 
 === Merge historical data
 
-Choose a strategy to combine your historical Kafka Connect data with new Iceberg Topics data.
+Choose a strategy to combine your historical data with new Iceberg Topics data.
 
 ==== Option 1: INSERT INTO pattern (recommended)
 
@@ -252,10 +258,10 @@ WITH latest_offsets AS (
     FROM target_iceberg_topics_table
     GROUP BY partition
 )
--- Step 2: Insert records from source (Kafka Connect) table that don't exist in target
+-- Step 2: Insert records from source table that don't exist in target
 INSERT INTO target_iceberg_topics_table
 SELECT s.*
-FROM source_kafka_connect_table AS s
+FROM source_table AS s
 LEFT JOIN latest_offsets AS t
     ON s.partition = t.partition
 WHERE t.max_offset IS NULL      -- Partition not seen before in target
@@ -292,7 +298,7 @@ WITH latest_offsets AS (
 ),
 historical_data AS (
     SELECT s.*
-    FROM source_kafka_connect_table AS s
+    FROM source_table AS s
     LEFT JOIN latest_offsets AS t
         ON s.partition = t.partition
     WHERE t.max_offset IS NULL
@@ -311,9 +317,9 @@ Most Iceberg-compatible query engines support views, including Snowflake, Databr
 
 === Migrate multi-table fan-out
 
-If your Kafka Connect setup used the `iceberg.tables.route-field` property to fan out records to multiple Iceberg tables based on a field value, for example `iceberg.tables.route-field=table_name`, you need to implement equivalent routing logic.
+If your existing integration routes records to multiple Iceberg tables based on a field value (for example, Kafka Connect's `iceberg.tables.route-field` property), you need to implement equivalent routing logic.
 
-With Iceberg Topics, the equivalent pattern is:
+With Iceberg Topics, the pattern is:
 
 . Create separate Iceberg-enabled topics (one per destination table).
 . Use xref:develop:data-transforms/how-transforms-work.adoc[data transforms] to route records based on the routing field.
@@ -389,7 +395,7 @@ Use an external stream processor for complex routing logic:
 . Use a stream processor (Flink, Spark) to split records.
 . Write to separate Iceberg-enabled topics.
 
-This approach is more complex but offers more flexibility for advanced routing requirements not supported by Data Transforms.
+This approach is more complex but offers more flexibility for advanced routing requirements not supported by data transforms.
 
 === Validate the migration
 
@@ -401,7 +407,7 @@ After completing the data merge, verify the migration before cutting over:
 ----
 -- Compare record counts
 SELECT 'Source' AS table_name, COUNT(*) AS record_count
-FROM <catalog>.<kafka_connect_table>
+FROM <catalog>.<source_table>
 UNION ALL
 SELECT 'Target', COUNT(*)
 FROM <catalog>.<iceberg_topics_table>;
@@ -412,7 +418,7 @@ FROM <catalog>.<iceberg_topics_table>;
 [,sql]
 ----
 -- Check for missing partitions
-SELECT DISTINCT partition FROM <catalog>.<kafka_connect_table>
+SELECT DISTINCT partition FROM <catalog>.<source_table>
 EXCEPT
 SELECT DISTINCT partition FROM <catalog>.<iceberg_topics_table>;
 -- Should return no rows
@@ -455,8 +461,7 @@ WHERE offset - prev_offset > 1;
 
 Iceberg Topics write records that fail validation to a dead-letter queue (DLQ) table. Records may appear in the DLQ due to:
 
-* Schema validation failures. For example, using the wrong schema subject name or not using the wire format when required.
-* Schema Registry issues. For example, Redpanda cannot find the embedded schema ID in Schema Registry.
+* Schema Registry issues. For example, using the wrong schema subject name, or Redpanda cannot find the embedded schema ID in Schema Registry.
 * Incompatible schema changes. For example, changing field types or removing required fields.
 * Data type translation failures.
 
@@ -509,38 +514,38 @@ Before cutting over, ensure you have a rollback strategy. See the <<Pre-cutover 
 If you discover issues while both systems are running:
 
 . Keep producing to both systems.
-. Point consumers back to Kafka Connect tables.
+. Point consumers back to source tables.
 . Investigate Iceberg Topics issues using troubleshooting section.
 . Fix issues and re-validate.
 . Attempt cutover again when ready.
 
-==== Rollback after Kafka Connect disabled
+==== Rollback after external integration disabled
 
-WARNING: Rollback after stopping Kafka Connect may result in data loss or gaps.
+WARNING: Rollback after stopping your external Iceberg integration may result in data loss or gaps.
 
-If you must rollback after disabling Kafka Connect:
+If you must rollback after disabling the external integration:
 
-. Restart Kafka Connect Iceberg Sink connector immediately.
+. Restart your external Iceberg integration immediately.
 . Identify data written only to Iceberg Topics during the gap.
 . Export that data from Iceberg Topics tables:
 +
 [,sql]
 ----
 SELECT * FROM iceberg_topics_table
-WHERE timestamp > '<kafka_connect_stop_time>';
+WHERE timestamp > '<integration_stop_time>';
 ----
 
-. Write exported data to Kafka Connect input topics or directly to Kafka Connect tables.
+. Write exported data back to the source system (for example, Kafka Connect input topics or directly to source tables).
 . Verify data completeness across both systems.
-. Resume operations on Kafka Connect.
+. Resume operations on the external integration.
 
 Redpanda recommends maintaining the ability to rollback for at least seven days after cutover to allow for issue discovery.
 
-=== Cut over from Kafka Connect
+=== Cut over to Iceberg Topics
 
 ==== Pre-cutover checklist
 
-Before disabling Kafka Connect, ensure you have completed all validation steps:
+Before disabling your external Iceberg integration, ensure you have completed all validation steps:
 
 * [ ] All historical data is successfully merged (see <<Merge historical data>>).
 * [ ] Parallel operation is complete and stable for at least 24-48 hours.
@@ -555,8 +560,10 @@ Before disabling Kafka Connect, ensure you have completed all validation steps:
 
 . Set an appropriate maintenance window, ideally during low-traffic periods.
 
-. Stop the Kafka Connect Iceberg Sink connector.
+. Stop your external Iceberg integration.
 ifdef::env-cloud[]
++
+*For Kafka Connect:*
 +
 [,bash]
 ----
@@ -568,30 +575,30 @@ curl -X DELETE http://<dataplane-api-url>/kafka-connect/clusters/iceberg-sink-co
 ----
 endif::[]
 
-. Monitor Iceberg Topics to ensure data continues flowing. Use the queries from <<Monitor during parallel operation>>.
+. Monitor Iceberg Topics to ensure data continues flowing.
 
-. Verify that no new records are being written to Kafka Connect tables:
+. Verify that no new records are being written to source tables:
 +
 [,sql]
 ----
-SELECT MAX(timestamp) FROM <catalog>.<kafka_connect_table>;
--- Should not change after connector is stopped
+SELECT MAX(timestamp) FROM <catalog>.<source_table>;
+-- Should not change after integration is stopped
 ----
 
 . Run validation queries from <<Validate the migration>> after 1-2 hours of operation.
 
 . Wait for a short period, such as 24-48 hours, to monitor and validate stability.
 
-. If migrating to a unified table of historical plus new data, optionally delete old Kafka Connect tables after an extended validation period (for example, at least seven days):
+. If migrating to a unified table of historical plus new data, optionally delete old source tables after an extended validation period (for example, at least seven days):
 +
 NOTE: Ensure you have backups before deleting historical data. Some organizations keep old tables for compliance or audit purposes.
 +
 [,sql]
 ----
-DROP TABLE <catalog>.<kafka_connect_table>;
+DROP TABLE <catalog>.<source_table>;
 ----
 
-. Decommission Kafka Connect infrastructure after an extended safety period (30+ days, for example).
+. Decommission external Iceberg infrastructure after an extended safety period (30+ days, for example).
 
 If any issues arise during cutover, refer to <<Plan for rollback>>.
 
