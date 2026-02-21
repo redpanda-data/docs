@@ -1,0 +1,463 @@
+// tag::single-source[]
+
+Group-based access control (GBAC) extends OIDC authentication to support group-based permissions in Redpanda. Instead of assigning roles or ACLs to individual users, you assign them to OIDC groups. Users inherit permissions from all groups reported by their identity provider (IdP) in the OIDC token claims.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
+== How GBAC works
+
+When a user authenticates with OIDC, Redpanda reads a configurable claim from the JWT access token (for example, `$.groups`) and extracts the list of groups the user belongs to. Redpanda then matches those group names against `Group:<name>` principals in its ACLs and role assignments.
+
+Group membership is managed entirely by your IdP. Redpanda never stores or manages group membership directly. It reads group information from the OIDC token at authentication time.
+
+GBAC works across all Redpanda APIs:
+
+* Kafka API
+* Admin API
+* Schema Registry
+* HTTP Proxy
+
+=== Authorization patterns
+
+GBAC supports two usage patterns:
+
+Group assigned to a role:: Assign a group as a member of a role-based access control (RBAC) role. All users in the group inherit the role's ACLs.
+
+Group as an ACL principal:: Create an ACL with a `Group:<name>` principal. Users in that group receive that permission directly.
+
+Both patterns can be used together. When a user belongs to multiple groups, they inherit the combined permissions of all groups.
+
+== Prerequisites
+
+* xref:manage:security/authentication.adoc#oidc[OIDC authentication] must be configured and enabled on your cluster.
+ifndef::env-cloud[]
+* An xref:get-started:licensing/index.adoc[enterprise license] is required. To upgrade, contact https://redpanda.com/try-redpanda?section=enterprise-trial[Redpanda sales^].
+endif::[]
+* Superuser access to configure cluster properties and manage ACLs.
+
+== Configure GBAC
+
+GBAC is controlled by two cluster properties:
+
+`oidc_group_claim_path`:: A https://goessner.net/articles/JsonPath/[JSON path^] expression that tells Redpanda where to find group information in the OIDC token. Default: `$.groups`.
+
+`nested_group_behavior`:: Controls how Redpanda handles group names that use path-style notation (for example, `/departments/eng/platform`). Accepted values: `none` (use the full path as-is) or `suffix` (extract only the last segment). Default: `none`.
+
+ifndef::env-cloud[]
+[tabs]
+=====
+rpk::
++
+--
+. Run `rpk cluster config edit` to open the cluster configuration in your default text editor.
+
+. Set the properties for your token structure. For example:
++
+[,yaml]
+----
+oidc_group_claim_path: "$.groups"
+nested_group_behavior: "none"
+----
+
+. Save the file and quit the editor. Redpanda validates the values and applies them immediately.
+
+TIP: You can also set properties directly without opening the editor:
++
+[,bash]
+----
+rpk cluster config set oidc_group_claim_path '$.groups'
+rpk cluster config set nested_group_behavior 'none'
+----
++
+For more options, see xref:manage:cluster-maintenance/cluster-property-configuration.adoc[Configure Cluster Properties].
+--
+{ui}::
++
+--
+. From the left navigation menu, select *Cluster settings*.
+. Search for `oidc_group_claim_path` and set the JSON path expression for your token structure.
+. Search for `nested_group_behavior` and set to `none` or `suffix` as required.
+. Click *Save*.
+--
+Admin API::
++
+--
+Send a `PUT` request to the `/v1/cluster_config` endpoint:
+
+[,bash]
+----
+curl -u <user>:<password> \
+  --request PUT 'http://localhost:9644/v1/cluster_config' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "oidc_group_claim_path": "$.groups",
+    "nested_group_behavior": "none"
+  }'
+----
+
+To verify the current values, send a `GET` request:
+
+[,bash]
+----
+curl -u <user>:<password> \
+  'http://localhost:9644/v1/cluster_config?keys=oidc_group_claim_path,nested_group_behavior'
+----
+
+For more information about the cluster configuration API, see xref:manage:cluster-maintenance/cluster-property-configuration.adoc[Configure Cluster Properties].
+--
+=====
+endif::[]
+
+ifdef::env-cloud[]
+Contact Redpanda support to configure `oidc_group_claim_path` and `nested_group_behavior` on Cloud clusters.
+endif::[]
+
+=== Configuration scenarios
+
+These examples show how to configure GBAC for common OIDC token structures.
+
+==== Flat group values (default configuration)
+
+This is the most common configuration. Groups are stored as a flat array under the `groups` claim.
+
+[,yaml]
+----
+redpanda:
+  enable_sasl: true
+  enable_oidc: true
+  oidc_discovery_url: "https://your-idp.example.com/.well-known/openid-configuration"
+  oidc_token_audience: "redpanda-cluster"
+  oidc_group_claim_path: "$.groups"
+  nested_group_behavior: "none"
+----
+
+Token example:
+[,json]
+----
+{"groups": ["engineering", "analytics"]}
+----
+
+Result: Redpanda resolves principals `Group:engineering` and `Group:analytics`.
+
+==== Nested JSON path
+
+Use a nested path when groups are embedded inside another claim, such as Keycloak's `realm_access.roles`.
+
+[,yaml]
+----
+redpanda:
+  oidc_group_claim_path: "$.realm_access.roles"
+  nested_group_behavior: "none"
+----
+
+Token example:
+[,json]
+----
+{"realm_access": {"roles": ["eng", "fin"]}}
+----
+
+Result: Redpanda resolves principals `Group:eng` and `Group:fin`.
+
+==== Path-style group names with suffix extraction
+
+Use `suffix` extraction when your IdP returns hierarchical group paths and you want to use only the last segment as the group name.
+
+[,yaml]
+----
+redpanda:
+  oidc_group_claim_path: "$.groups"
+  nested_group_behavior: "suffix"
+----
+
+Token example:
+[,json]
+----
+{"groups": ["/departments/eng/platform", "/departments/eng/infra"]}
+----
+
+Result: Redpanda resolves principals `Group:platform` and `Group:infra`.
+
+==== CSV-formatted group claim
+
+Some IdPs return groups as a comma-separated string instead of an array. Redpanda automatically splits CSV values.
+
+Use the same cluster property settings as the default configuration above.
+
+Token example:
+[,json]
+----
+{"groups": "engineering,analytics,finance"}
+----
+
+Result: Redpanda resolves principals `Group:engineering`, `Group:analytics`, and `Group:finance`.
+
+For full property details, see the cluster configuration reference for
+xref:reference:properties/cluster-properties.adoc#oidc_group_claim_path[`oidc_group_claim_path`] and
+xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior`].
+
+== Assign groups to roles
+
+Assigning a group to an RBAC role is the recommended pattern for managing permissions at scale. All users in the group inherit the role's ACLs automatically.
+
+[tabs]
+====
+rpk::
++
+--
+To assign a group to a role:
+
+[,bash]
+----
+rpk security role assign <role-name> --group <group-name>
+----
+
+For example, to assign the `engineering` group to the `DataEngineers` role:
+
+[,bash]
+----
+rpk security role assign DataEngineers --group engineering
+----
+
+To remove a group from a role:
+
+[,bash]
+----
+rpk security role unassign <role-name> --group <group-name>
+----
+
+For example:
+
+[,bash]
+----
+rpk security role unassign DataEngineers --group engineering
+----
+--
+{ui}::
++
+--
+include::manage:partial$gbac-assign-group-role.adoc[]
+--
+ifndef::env-cloud[]
+Admin API::
++
+--
+These operations use the link:/api/doc/admin/v2/[Admin API v2] `SecurityService`. Send all requests as `POST` with a JSON body.
+
+To assign a group to a role, call `AddRoleMembers`:
+
+[,bash]
+----
+curl -u <user>:<password> \
+  --request POST 'http://localhost:9644/redpanda.core.admin.v2.SecurityService/AddRoleMembers' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "roleName": "DataEngineers",
+    "members": [{"group": {"name": "engineering"}}]
+  }'
+----
+
+To remove a group from a role, call `RemoveRoleMembers`:
+
+[,bash]
+----
+curl -u <user>:<password> \
+  --request POST 'http://localhost:9644/redpanda.core.admin.v2.SecurityService/RemoveRoleMembers' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "roleName": "DataEngineers",
+    "members": [{"group": {"name": "engineering"}}]
+  }'
+----
+--
+endif::[]
+====
+
+== Create group-based ACLs
+
+You can grant permissions directly to a group by creating an ACL with a `Group:<name>` principal. This works the same as creating an ACL for a user, but uses the `Group:` prefix instead of `User:`.
+
+[tabs]
+====
+rpk::
++
+--
+To grant cluster-level access to the `engineering` group:
+
+[,bash]
+----
+rpk security acl create --allow-principal Group:engineering --operation describe --cluster
+----
+
+To grant topic-level access:
+
+[,bash]
+----
+rpk security acl create \
+  --allow-principal Group:engineering \
+  --operation read,describe \
+  --topic 'analytics-' \
+  --resource-pattern-type prefixed
+----
+
+If your groups use path-style names (with `nested_group_behavior: none`), use the full path as the principal name:
+
+[,bash]
+----
+rpk security acl create --allow-principal 'Group:/departments/eng/platform' --operation read --topic platform-data
+----
+--
+{ui}::
++
+--
+include::manage:partial$gbac-create-group-acl.adoc[]
+--
+ifndef::env-cloud[]
+Admin API::
++
+--
+To create an ACL for a group, use the ACL creation endpoint with `Group:` as the principal prefix:
+
+[,bash]
+----
+curl -X POST http://localhost:9644/v1/security/acls \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "resourceType": "TOPIC",
+    "resourceName": "analytics-",
+    "resourcePatternType": "PREFIXED",
+    "principal": "Group:engineering",
+    "host": "*",
+    "operation": "READ",
+    "permissionType": "ALLOW"
+  }'
+----
+--
+endif::[]
+====
+
+== View groups and roles
+
+=== List groups assigned to a role
+
+[tabs]
+====
+rpk::
++
+--
+To see which groups are assigned to a role, use `--print-groups`:
+
+[,bash]
+----
+rpk security role describe <role-name> --print-groups
+----
+
+For example:
+
+[,bash]
+----
+rpk security role describe DataEngineers --print-groups
+----
+
+To list all roles assigned to a specific group:
+
+[,bash]
+----
+rpk security role list --group <group-name>
+----
+
+For example:
+
+[,bash]
+----
+rpk security role list --group engineering
+----
+--
+ifndef::env-cloud[]
+Admin API::
++
+--
+These operations use the link:/api/doc/admin/v2/[Admin API v2] `SecurityService`. Send all requests as `POST` with a JSON body.
+
+To retrieve a role's details including all members (users and groups), call `GetRole`:
+
+[,bash]
+----
+curl -u <user>:<password> \
+  --request POST 'http://localhost:9644/redpanda.core.admin.v2.SecurityService/GetRole' \
+  --header 'Content-Type: application/json' \
+  --data '{"name": "DataEngineers"}'
+----
+
+The response includes a `members` array with both `user` and `group` entries.
+
+To list all roles, call `ListRoles`:
+
+[,bash]
+----
+curl -u <user>:<password> \
+  --request POST 'http://localhost:9644/redpanda.core.admin.v2.SecurityService/ListRoles' \
+  --header 'Content-Type: application/json' \
+  --data '{}'
+----
+
+To verify how Redpanda resolves groups from an OIDC token, call `ResolveOidcIdentity`. Pass the token in the `Authorization` header. The response includes the resolved `principal`, token expiry, and a `groups` field listing all groups extracted from the token:
+
+[,bash]
+----
+curl \
+  --request POST 'http://localhost:9644/redpanda.core.admin.v2.SecurityService/ResolveOidcIdentity' \
+  --header 'Content-Type: application/json' \
+  --header 'Authorization: Bearer <jwt-access-token>' \
+  --data '{}'
+----
+--
+endif::[]
+====
+
+== Supported identity providers
+
+GBAC works with any OIDC-compliant identity provider. These providers are commonly used with Redpanda:
+
+* https://auth0.com/docs/manage-users/groups[Auth0^]: Configure group claims in Auth0 Actions or Rules.
+* https://developer.okta.com/docs/concepts/groups/[Okta^]: Assign groups to applications and include them in token claims.
+* https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-fed-group-claims[Microsoft Entra ID (Azure AD)^]: Configure group claims in the application manifest.
+
+For IdP-specific configuration steps, refer to your provider's documentation.
+
+== Limitations
+
+Azure AD group limit::
+Users with more than 200 group memberships in Azure AD receive a URL reference in their token instead of a list of group names. Redpanda does not follow that URL and cannot resolve groups in this case. Mitigation: filter token claims to include only the groups relevant to Redpanda.
+
+Nested groups::
+Redpanda does not recursively resolve nested group hierarchies. If group A contains group B, only the direct memberships reported in the token are used. Use `nested_group_behavior: suffix` to extract the last path segment from hierarchical group names when needed.
+
+No wildcard ACLs for groups::
+ACL matching for `Group:` principals uses literal string comparison only. Wildcard patterns are not supported.
+
+Deny ACL precedence::
+When a user belongs to multiple groups with conflicting ACLs, deny rules take precedence over allow rules. This is consistent with standard Redpanda ACL conflict resolution.
+
+Group membership timing::
+Group membership reflects the claims in the OIDC token at authentication time. Changes made in the IdP (adding or removing group memberships) take effect at the user's next authentication, when a new token is issued.
+
+== Suggested reading
+
+ifndef::env-cloud[]
+* xref:manage:security/authorization/rbac.adoc[Role-Based Access Control (RBAC)]
+* xref:manage:security/authorization/acl.adoc[Access Control Lists (ACLs)]
+* xref:manage:security/authentication.adoc#oidc[OIDC Authentication]
+endif::[]
+
+ifdef::env-cloud[]
+* xref:security:authorization/rbac/rbac_dp.adoc[Role-Based Access Control (RBAC)]
+* xref:security:authorization/rbac/acl.adoc[Access Control Lists (ACLs)]
+endif::[]
+
+* xref:reference:rpk/rpk-security/rpk-security.adoc[`rpk security`]
+
+// end::single-source[]
