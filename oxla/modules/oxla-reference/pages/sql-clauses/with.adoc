@@ -1,0 +1,99 @@
+= WITH
+
+
+## Overview
+
+The `WITH` clause provides a way to define auxiliary statements (referred by their alias names), that can be used within a more complex query sets. They are also known as Common Table Expressions (CTEs).
+
+## Syntax
+
+The `WITH` clause precedes the primary statement it is attached to and contains a list of auxiliary statements with corresponding aliases.
+
+[source,sql]
+----
+WITH [with_statement_alias AS (with_statement_body)]+ primary_statement;
+----
+
+
+* **`primary_statement`**: has to be one of the following: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
+* **`with_statement_body`**: has to be a `SELECT` statement (it can refer to aliases defined earlier in the query)
+
+## Semantic
+
+Currently, Oxla only supports not materialised CTEs (e.g. each auxiliary query alias is replaced with its corresponding body at the early stages of the query processing). The following query:
+
+[source,sql]
+----
+WITH a AS (SELECT 77), b AS (SELECT * FROM a) SELECT * FROM b
+----
+
+
+is effectively turned into:
+
+[source,sql]
+----
+SELECT * FROM (SELECT * FROM (SELECT 77) AS a) AS b
+----
+
+
+Used auxiliary query gets the same alias (`AS b` part) as in the `WITH` clause. It can be changed by explicitly setting a new alias upon usage.
+
+[source,sql]
+----
+WITH b AS (SELECT 1 AS c1) SELECT b.c1, b1.c1 FROM b CROSS JOIN b AS b1;
+----
+
+
+## Usage
+
+Not materialised `WITH` clauses are useful when you want to refactor some complex query to make it more readable. You can extract subqueries or even reuse them in several places, having only one definition. Thanks to code insertion, each use of a query will be optimized separately, specifically for the usage of its results by the parent query. For example:
+
+[source,sql]
+----
+WITH math_grades AS (SELECT g_date, semester_id, grade FROM grades WHERE subject="Math")
+SELECT * FROM
+(SELECT AVG(grade) FROM math_grades WHERE semester_id=2137) AS avg_semester_grades,
+(SELECT AVG(grade) FROM math_grades WHERE g_date >= (CURRENT_TIMESTAMP() - INTERVAL '1 y')) AS avg_year_grades
+----
+
+Both subqueries use the same auxiliary `math_grades` query, but each of them filters it using different keys. This way, both scans will only read a part of the table. If materialized CTE was used (which we don't support yet), the query engine would need to scan the whole table first and then filter the result twice, for each subquery.
+
+## Alias Context
+
+You can't create more than one CTE with the same alias within a single `WITH` clause. However, if you create nested `SELECT` statements, each of them can have their own `WITH` clauses, creating their own contexts for defined aliases.
+
+[NOTE]
+====
+The same alias can be defined in more than one context
+====
+
+
+[source,sql]
+----
+WITH a AS ( # <-- creates context 1
+    SELECT 1
+)
+SELECT * FROM (
+    WITH a AS (SELECT 2) # <-- creates context 2
+    SELECT * FROM a # <-- uses context 2
+) CROSS JOIN a; # <-- uses context 1
+----
+
+
+By executing the query above, you will receive `2, 1` as an output.
+
+When referencing an alias we use the context, which was defined at the nested query level. If it does not define the referenced alias, we move up one level and repeat searching for an alias definition.
+
+[source,pgsql]
+----
+WITH a AS (
+    SELECT 1
+)
+SELECT * FROM (
+    WITH b as (SELECT 2)
+    SELECT * FROM b
+) CROSS JOIN b; # <-- error
+----
+
+
+That query returns `ERROR: relation "b" does not exist`, as `b` is not defined in this context or any of the above.

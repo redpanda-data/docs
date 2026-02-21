@@ -1,0 +1,147 @@
+= AVG()
+
+
+## Overview
+
+The `AVG()` window function calculates the average (arithmetic mean) of a set of numeric values within a window. This function allows you to compute averages over a set of rows that are related to the current row, such as rows within a partition of ordered set.
+
+## Syntax
+
+The syntax for this function is as follows:
+
+[source,sql]
+----
+AVG(expression) OVER (
+  [PARTITION BY partition_expression]
+  ORDER BY sort_expression
+  [ROWS | RANGE frame_specification]
+)
+----
+
+
+## Parameters
+
+* `expression`: column or expression that the function operates on (must be of numeric type)
+* `ROWS or RANGE`: (optional) frame specification to control which rows are included in the calculation relative to the current row
+
+## Example
+
+For the needs of this section, we will use a simplified version of the `film` table from the Pagila database, containing only the `title`, `length` and `rating` columns. The complete schema for the `film` table can be found on the
+<a href="https://www.postgresql.org/ftp/projects/pgFoundry/dbsamples/pagila/pagila/" target="_blank">Pagila</a> database website.
+
+[source,sql]
+----
+DROP TABLE IF EXISTS film;
+CREATE TABLE film (
+  title text NOT NULL,
+  length int,
+  rating int
+);
+INSERT INTO film(title, length, rating) VALUES
+  ('ATTRACTION NEWTON', 83, 5),
+  ('CHRISTMAS MOONSHINE', 150, 7),
+  ('DANGEROUS UPTOWN', 121, 4),
+  ('KILL BROTHERHOOD', 54, 3),
+  ('HALLOWEEN NUTS', 47, 5),
+  ('HOURS RAGE', 122, 7),
+  ('PIANIST OUTFIELD', 136, 7),
+  ('PICKUP DRIVING', 77, 3),
+  ('INDEPENDENCE HOTEL', 157, 7),
+  ('PRIVATE DROP', 106, 4),
+  ('SAINTS BRIDE', 125, 3),
+  ('FOREVER CANDIDATE', 131, 7),
+  ('MILLION ACE', 142, 5),
+  ('SLEEPY JAPANESE', 137, 4),
+  ('WRATH MILE', 176, 7),
+  ('YOUTH KICK', 179, 7),
+  ('CLOCKWORK PARADISE', 143, 5);
+----
+
+### Rolling Average by Rating
+
+The query below uses the `AVG()` function to calculate the rolling average of `length` as rows are ordered by `rating`:
+
+[source,sql]
+----
+SELECT
+    rating,
+    length,
+    AVG(length) OVER (ORDER BY rating) AS RollingAverageLength
+FROM film
+WHERE length IS NOT NULL
+ORDER BY rating;
+----
+
+
+By executing the query above, we will get the following output:
+
+[source,sql]
+----
+rating | length | rollingaveragelength 
+--------+--------+----------------------
+      3 |     77 |    85.33333333333333
+      3 |    125 |    85.33333333333333
+      3 |     54 |    85.33333333333333
+      4 |    121 |   103.33333333333333
+      4 |    106 |   103.33333333333333
+      4 |    137 |   103.33333333333333
+      5 |     83 |                103.5
+      5 |    142 |                103.5
+      5 |     47 |                103.5
+      5 |    143 |                103.5
+      7 |    157 |   122.70588235294117
+      7 |    179 |   122.70588235294117
+      7 |    176 |   122.70588235294117
+      7 |    131 |   122.70588235294117
+      7 |    136 |   122.70588235294117
+      7 |    122 |   122.70588235294117
+      7 |    150 |   122.70588235294117
+(17 rows)
+----
+
+### Time Series: Rolling Average Length over Last 3 Ratings
+
+In this example, we will demonstrate a time series-style rolling average using a window frame of the current row 
+and the two preceding rows, ordered by rating. This simulates a moving average over a sliding window of 3 rows:
+
+[source,sql]
+----
+SELECT
+    rating,
+    length,
+    AVG(length) OVER (
+      ORDER BY rating
+      ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+    ) AS rolling_avg_length_3
+FROM film
+WHERE length IS NOT NULL
+ORDER BY rating;
+----
+
+
+The query above calculates the average length over the current rating and the two previous ratings (based on ordering by rating)
+smoothing the fluctuations by averaging over a fixed-size window: 
+
+[source,sql]
+----
+rating | length | rolling_avg_length_3 
+--------+--------+----------------------
+      3 |     77 |                 65.5
+      3 |    125 |    85.33333333333333
+      3 |     54 |                   54
+      4 |    121 |   107.66666666666667
+      4 |    106 |   117.33333333333333
+      4 |    137 |   121.33333333333333
+      5 |     83 |                   91
+      5 |    142 |    90.66666666666667
+      5 |     47 |                  109
+      5 |    143 |   128.66666666666666
+      7 |    157 |   127.33333333333333
+      7 |    179 |   159.33333333333334
+      7 |    176 |   170.66666666666666
+      7 |    131 |                  162
+      7 |    136 |   147.66666666666666
+      7 |    122 |   129.66666666666666
+      7 |    150 |                  136
+(17 rows)
+----
