@@ -1,0 +1,105 @@
+= Ownership
+
+
+## Overview
+
+In Oxla, ownership defines the relationship where objects such as databases, tables and 
+schemas belong to a specific role. Keep the following principles in mind regarding ownership:
+
+* Indexes do not have explicit owners; the owner of the table also owns its indexes
+* Ownership is required to `DROP` an object
+* For grants validation, the owner implicitly has all privileges on the resource: 
+    * For table: `SELECT`, `INSERT`, `UPDATE`, `DELETE` 
+    * For schema: `USAGE`, `CREATE` 
+
+This section explains how to check and change ownership and clarifies the differences between ownership and role privileges.
+
+## Checking Ownership
+
+To check ownerships in Oxla, a superuser can execute the following query:
+
+[source,sql]
+----
+SELECT * FROM oxla_internal.oxla_object_owner;
+----
+
+
+Example output:
+
+[source,text]
+----
+id | database | schema |   object_name   | object_type
+----+----------+--------+-----------------+-------------
+  5 | oxla     | public | data_types_demo | TABLE
+----
+
+
+Here's the breakdown of the above output:
+
+* `id`: role ID
+* `database`: database name
+* `schema`: schema name (empty if `object_type` is DATABASE)
+* `object_name`: object name (empty if `object_type` is SCHEMA or DATABASE)
+* `object_type`: type of the object
+
+## Changing Ownership
+
+To change ownership, use the following syntax:
+
+[source,sql]
+----
+ALTER [ TABLE | SCHEMA | DATABASE ] OBJECT_NAME OWNER TO ROLE_NAME;
+----
+
+
+where:
+
+* `OBJECT_NAME`: name of the object, whose ownership they want to change
+* `ROLE_NAME`: name of the role that will become the new owner of the specified object, or keyword CURRENT_ROLE/CURRENT_USER
+
+## Ownership vs Role Privileges
+
+Unlike PostgreSQL, Oxla treats ownership and grants as independent. While owners implicitly have all privileges on their resources, 
+these privileges:
+
+* Are not visible in `oxla_internal.oxla_role_ns_grants` or `oxla_internal.oxla_role_table_grants`
+* Cannot be revoked
+
+`GRANT` or `REVOKE` operations can still be performed on object owner - they will result in creating or removing entries 
+in `oxla_internal.oxla_role_..._grants` tables, which are independent of data stored in `oxla_internal.oxla_object_owner`. 
+These grants do not matter anything as long as the user is the owner of a given resource, 
+but they will take effect when the owner is changed.
+
+## Examples
+
+Here are a few examples that demonstrate the behaviours described above, assuming there is a `table1` and `user1` role with `USAGE` grant in public schema:
+
+* After the following operations `user1` will no longer be the owner of `table1`, but will have `SELECT` grant on that table.
+
+  [source,sql]
+----
+ALTER TABLE table1 OWNER TO user1;
+  GRANT SELECT ON table1 TO user1;
+  ALTER TABLE table1 OWNER TO oxla;
+----
+
+
+* After the following operations `user1` will still be able to `SELECT` from `table1` because of ownership, however `REVOKE` does not change anything.
+
+  [source,sql]
+----
+ALTER TABLE table1 OWNER TO user1;
+  REVOKE SELECT ON table1 FROM user1;
+----
+
+
+* After the following operations `user1` will not have access to `table1`, however the owner has been changed and grant has been revoked.
+
+  [source,sql]
+----
+ALTER TABLE table1 OWNER TO user1;
+  GRANT SELECT ON table1 TO user1;
+  REVOKE SELECT ON table1 FROM user1;
+  ALTER TABLE table1 OWNER TO oxla;
+----
+

@@ -1,0 +1,179 @@
+= OVER / WINDOW
+
+
+## Overview
+
+All window functions utilise a set of clauses specific for them, some of which are mandatory while others are optional.
+
+## OVER Clause
+
+When it comes to required ones, there is the `OVER` clause, which defines a window or user-specified set of rows within a query result set. It is a mandatory element of window functions, defining the window specification and differentiating them from other SQL functions.
+
+### Syntax
+
+The syntax for this clause looks as follows:
+
+[source,sql]
+----
+OVER (PARTITION BY rows1 ORDER BY rows2)
+----
+
+
+where, the `PARTITION BY` clause is a list of `expressions` interpreted in much the same fashion as the elements of a `GROUP BY` clause, with major exception that they are always simple expressions and never the name or number of an output column. Another difference is that these expressions can contain aggregate function calls, which are not allowed in a regular `GROUP BY` clause (they are allowed here because windowing occurs after grouping and aggregation)
+
+`[ PARTITION BY expression [, ...] ]` (optional window partition)
+
+The `ORDER BY` clause used in the `OVER` clause above is a list of `expressions` interpreted in much the same fashion as the elements of a statement-level `ORDER BY` clause, except that the expressions are always taken as simple expressions and never the name or number of an output column.
+
+`[ ORDER BY expression [ ASC | DESC | USING operator ] [ NULLS { FIRST | LAST } ] [, ...] ]` (optional window ordering)
+
+## WINDOW Clause
+
+In terms of window functions' optional clauses, there is the `WINDOW` clause that defines one or more named window specification, as a `window_name` and `window_definition` pair. 
+
+### Syntax
+
+The syntax for this clause looks as follows:
+
+[source,sql]
+----
+WINDOW window_name AS (window_definition) [, ...]
+----
+
+
+where `window_name` is a name that can be referenced from the `OVER` clauses or subsequent `window definition`. There are a few important things to keep in mind here:
+
+* The `window_definition` may use an `existing_window_name` to refer to a previous `window_definition` in the `WINDOW` clause, but the previous `window_definition` must not specify a `frame` clause
+* The `window_definition` copies the `PARTITION BY` clause and `ORDER BY` clause from previous `window_definition`, but it cannot specify its own `PARTION BY` clause, and can specify an `ORDER BY` clause if the previous `window_definition` does not have one.
+
+`[ existing_window_name ] [ PARTITION BY clause ] [ ORDER BY clause ] [ frame clause ]` (all arguments are optional)
+
+[NOTE]
+====
+The `window_definition` without arguments defines a window with all rows without partition and ordering
+====
+
+
+The `frame` clause referenced above defines the window frame for window functions that depend on the frame (not all do).
+The window frame is a set of related rows for each row of the query (called the current row).
+
+* `{ RANGE | ROWS | GROUPS } frame_start [ frame_exclusion ]`
+* `{ RANGE | ROWS | GROUPS } BETWEEN frame_start AND frame_end [ frame_exclusion ]`
+
+[NOTE]
+====
+The `frame` clause of the window specification is limited to the `ROWS` clause without `frame exclusion` one
+====
+
+
+There are a couple of things, to keep in mind here:
+
+* `frame_start` and `frame_end` can be one of: `UNBOUNDED PRECEDING`, `offset PRECEDING`, `CURRENT ROW`, `offset FOLLOWING`, `UNBOUNDED FOLLOWING`.
+* If `frame_end` is omitted it defaults to `CURRENT ROW`. Restrictions here are as follows:
+  *  `frame_start` cannot be `UNBOUNDED FOLLOWING`
+  * `frame_end` cannot be `UNBOUNDED PRECEDING`
+  * `frame_end` choice cannot appear earlier in the above list of `frame_start` and `frame_end` options than the `frame_start` choice does
+
+In `ROWS` mode, `CURRENT ROW` means that the frame starts or ends with the current row, the offset is an integer indicating that the frame starts or ends that many rows before or after the current row.
+
+[NOTE]
+====
+Beware that the `ROWS` mode can produce unpredictable results if the `ORDER BY` ordering does not order the rows uniquely
+====
+
+
+## Examples
+
+For the needs of this section, we will create the `winsales` table that stores details about some sales transactions:
+
+[source,sql]
+----
+CREATE TABLE winsales(
+    salesid int,
+    dateid date,
+    sellerid int,
+    buyerid text,
+    qty int,
+    qty_shipped int);
+INSERT INTO winsales VALUES
+    (30001, '8/2/2003', 3, 'b', 10, 10),
+    (10001, '12/24/2003', 1, 'c', 10, 10),
+    (10005, '12/24/2003', 1, 'a', 30, null),
+    (40001, '1/9/2004', 4, 'a', 40, null),
+    (10006, '1/18/2004', 1, 'c', 10, null),
+    (20001, '2/12/2004', 2, 'b', 20, 20),
+    (40005, '2/12/2004', 4, 'a', 10, 10),
+    (20002, '2/16/2004', 2, 'c', 20, 20),
+    (30003, '4/18/2004', 3, 'b', 15, null),
+    (30004, '4/18/2004', 3, 'b', 20, null),
+    (30007, '9/7/2004', 3, 'c', 30, null);
+----
+
+
+### OVER Clause in Window Functions with Window Definition, PARTITION BY and ORDER BY clauses
+
+In this example, we will focus on executing a window function with the `OVER` clause, window definition and `PARTITION BY` and `ORDER BY` clauses:
+
+[source,sql]
+----
+SELECT *,
+  SUM(qty) OVER (PARTITION BY sellerid) AS seller_qty
+FROM winsales
+ORDER BY sellerid, salesid;
+----
+
+
+Here's the output for the above code:
+
+[source,sql]
+----
+salesid |   dateid   | sellerid | buyerid | qty | qty_shipped | seller_qty 
+---------+------------+----------+---------+-----+-------------+------------
+   10001 | 2003-12-24 |        1 | c       |  10 |          10 |         50
+   10005 | 2003-12-24 |        1 | a       |  30 |             |         50
+   10006 | 2004-01-18 |        1 | c       |  10 |             |         50
+   20001 | 2004-02-12 |        2 | b       |  20 |          20 |         40
+   20002 | 2004-02-16 |        2 | c       |  20 |          20 |         40
+   30001 | 2003-08-02 |        3 | b       |  10 |          10 |         75
+   30003 | 2004-04-18 |        3 | b       |  15 |             |         75
+   30004 | 2004-04-18 |        3 | b       |  20 |             |         75
+   30007 | 2004-09-07 |        3 | c       |  30 |             |         75
+   40001 | 2004-01-09 |        4 | a       |  40 |             |         50
+   40005 | 2004-02-12 |        4 | a       |  10 |          10 |         50
+(11 rows)
+----
+
+
+### OVER Clause in Window Functions with Window Name, PARTITION BY and ORDER BY clauses
+
+In this example, we will focus on executing a window function with the `OVER` clause, window name and `PARITION BY` and `ORDER BY` clauses:
+
+
+[source,sql]
+----
+SELECT *,
+  SUM(qty) OVER seller AS seller_qty
+FROM winsales WINDOW seller AS (PARTITION BY sellerid)
+ORDER BY sellerid, salesid;
+----
+
+
+When executing the code above, we will get the following output:
+
+[source,sql]
+----
+salesid |   dateid   | sellerid | buyerid | qty | qty_shipped | seller_qty 
+---------+------------+----------+---------+-----+-------------+------------
+   10001 | 2003-12-24 |        1 | c       |  10 |          10 |         50
+   10005 | 2003-12-24 |        1 | a       |  30 |             |         50
+   10006 | 2004-01-18 |        1 | c       |  10 |             |         50
+   20001 | 2004-02-12 |        2 | b       |  20 |          20 |         40
+   20002 | 2004-02-16 |        2 | c       |  20 |          20 |         40
+   30001 | 2003-08-02 |        3 | b       |  10 |          10 |         75
+   30003 | 2004-04-18 |        3 | b       |  15 |             |         75
+   30004 | 2004-04-18 |        3 | b       |  20 |             |         75
+   30007 | 2004-09-07 |        3 | c       |  30 |             |         75
+   40001 | 2004-01-09 |        4 | a       |  40 |             |         50
+   40005 | 2004-02-12 |        4 | a       |  10 |          10 |         50
+(11 rows)
+----
