@@ -511,9 +511,9 @@ output_topics:
   - customers
 ----
 
-The transform extracts each update and routes it to the appropriate topic based on the `table` field. In this example, it is assumed that you have created each output topic and xref:manage:schema-reg/schema-reg-api.adoc[registered the corresponding schemas] in Schema Registry.
+The transform extracts each update and routes it to the appropriate topic based on the `table` field. Schemas are registered dynamically in the `main()` function using the Schema Registry client, which returns the schema IDs needed for encoding messages in the wire format.
 
-NOTE: Replace the hardcoded schema IDs (1, 2, 3) in the code examples with the IDs returned by Schema Registry during registration. Use the `{topic-name}-value` naming convention for schema subjects (for example, `orders-value`, `inventory-value`).
+NOTE: This example assumes you have created the output topics and have the schema definitions ready. The transform registers the schemas dynamically on startup using the `{topic-name}-value` naming convention for schema subjects (for example, `orders-value`, `inventory-value`).
 
 [tabs]
 ======
@@ -529,7 +529,10 @@ module fanout-example
 
 go 1.20
 
-require github.com/redpanda-data/redpanda/src/transform-sdk/go/transform v1.1.0 // v1.1.0+ required
+require (
+    github.com/redpanda-data/redpanda/src/transform-sdk/go/transform v1.1.0 // v1.1.0+ required
+    github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr v1.1.0
+)
 ----
 ====
 
@@ -544,6 +547,7 @@ import (
     "encoding/json"
     "log"
     "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform"
+    "github.com/redpanda-data/redpanda/src/transform-sdk/go/transform/sr"
 )
 
 // Input message structure with array of updates
@@ -557,15 +561,37 @@ type TableUpdate struct {
     Data  json.RawMessage `json:"data"`  // The actual data to write
 }
 
-// Schema IDs for each output topic obtained from Schema Registry.
-// Register schemas before deploying the transform using the {topic-name}-value naming convention
-var schemaIDs = map[string]int{
-    "orders":    1,
-    "inventory": 2,
-    "customers": 3,
-}
+// Schema IDs for each output topic, registered dynamically at startup
+var schemaIDs = make(map[string]int)
 
 func main() {
+    // Create Schema Registry client
+    client := sr.NewClient()
+
+    // Define schemas for each output topic
+    schemas := map[string]string{
+        "orders":    `{"type":"record","name":"Order","fields":[{"name":"order_id","type":"string"},{"name":"amount","type":"double"}]}`,
+        "inventory": `{"type":"record","name":"Inventory","fields":[{"name":"product_id","type":"string"},{"name":"quantity","type":"int"}]}`,
+        "customers": `{"type":"record","name":"Customer","fields":[{"name":"customer_id","type":"string"},{"name":"name","type":"string"}]}`,
+    }
+
+    // Register schemas and store their IDs
+    for topic, schemaStr := range schemas {
+        subject := topic + "-value"
+        schema := sr.Schema{
+            Schema: schemaStr,
+            Type:   sr.TypeAvro,
+        }
+
+        result, err := client.CreateSchema(subject, schema)
+        if err != nil {
+            log.Fatalf("Failed to register schema for %s: %v", topic, err)
+        }
+
+        schemaIDs[topic] = result.ID
+        log.Printf("Registered schema for %s with ID %d", topic, result.ID)
+    }
+
     log.Printf("Starting fanout transform with schema IDs: %v", schemaIDs)
     transform.OnRecordWritten(routeUpdates)
 }
@@ -625,8 +651,11 @@ edition = "2021"
 
 [dependencies]
 redpanda-transform-sdk = "1.1.0"  # v1.1.0+ required for WriteOptions API
+redpanda-transform-sdk-sr = "1.1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
 
 [profile.release]
 opt-level = "z"
@@ -640,10 +669,12 @@ strip = true
 [,rust]
 ----
 use redpanda_transform_sdk::*;
+use redpanda_transform_sdk_sr::{SchemaRegistryClient, Schema, SchemaFormat};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::OnceLock;
+use log::{info, error};
 
 #[derive(Deserialize)]
 struct BatchMessage {
@@ -656,17 +687,48 @@ struct TableUpdate {
     data: serde_json::Value,
 }
 
-// Schema IDs for each output topic obtained from Schema Registry.
-// Register schemas before deploying the transform using the {topic-name}-value naming convention
+// Schema IDs for each output topic, registered dynamically at startup
 static SCHEMA_IDS: OnceLock<HashMap<String, i32>> = OnceLock::new();
 
 fn main() {
+    // Initialize logging
+    env_logger::init();
+
+    // Create Schema Registry client
+    let client = SchemaRegistryClient::new();
+
+    // Define schemas for each output topic
+    let schemas = [
+        ("orders", r#"{"type":"record","name":"Order","fields":[{"name":"order_id","type":"string"},{"name":"amount","type":"double"}]}"#),
+        ("inventory", r#"{"type":"record","name":"Inventory","fields":[{"name":"product_id","type":"string"},{"name":"quantity","type":"int"}]}"#),
+        ("customers", r#"{"type":"record","name":"Customer","fields":[{"name":"customer_id","type":"string"},{"name":"name","type":"string"}]}"#),
+    ];
+
     let mut schema_ids = HashMap::new();
-    schema_ids.insert("orders".to_string(), 1);
-    schema_ids.insert("inventory".to_string(), 2);
-    schema_ids.insert("customers".to_string(), 3);
+
+    // Register schemas and store their IDs
+    for (topic, schema_str) in schemas {
+        let subject = format!("{}-value", topic);
+        let schema = Schema {
+            schema: schema_str.to_string(),
+            format: SchemaFormat::Avro,
+            references: vec![],
+        };
+
+        match client.create_schema(&subject, schema) {
+            Ok(result) => {
+                schema_ids.insert(topic.to_string(), result.id);
+                info!("Registered schema for {} with ID {}", topic, result.id);
+            }
+            Err(e) => {
+                error!("Failed to register schema for {}: {}", topic, e);
+                panic!("Schema registration failed");
+            }
+        }
+    }
 
     let _ = SCHEMA_IDS.set(schema_ids);
+    info!("Starting fanout transform with schema IDs");
 
     on_record_written(route_updates);
 }
