@@ -1,6 +1,6 @@
 // tag::single-source[]
 
-Group-based access control (GBAC) extends OIDC authentication to support group-based permissions in Redpanda. Instead of assigning roles or ACLs to individual users, you assign them to OIDC groups. Users inherit permissions from all groups reported by their identity provider (IdP) in the OIDC token claims.
+Group-based access control (GBAC) builds on xref:manage:security/authorization/rbac.adoc[role-based access control (RBAC)] to simplify permission management at scale. Instead of assigning roles or ACLs to individual users, you assign them to OIDC groups managed by your identity provider (IdP). Users inherit permissions from all groups reported in their OIDC token claims, so onboarding and offboarding require no changes in Redpanda.
 
 After reading this page, you will be able to:
 
@@ -34,170 +34,11 @@ Both patterns can be used together. When a user belongs to multiple groups, they
 == Prerequisites
 
 * xref:manage:security/authentication.adoc#oidc[OIDC authentication] must be configured and enabled on your cluster.
-ifndef::env-cloud[]
-* An xref:get-started:licensing/index.adoc[enterprise license] is required. To upgrade, contact https://redpanda.com/try-redpanda?section=enterprise-trial[Redpanda sales^].
-endif::[]
 * Superuser access to configure cluster properties and manage ACLs.
 
-== Configure GBAC
-
-GBAC is controlled by two cluster properties:
-
-`oidc_group_claim_path`:: A https://goessner.net/articles/JsonPath/[JSON path^] expression that tells Redpanda where to find group information in the OIDC token. Default: `$.groups`.
-
-`nested_group_behavior`:: Controls how Redpanda handles group names that use path-style notation (for example, `/departments/eng/platform`). Accepted values: `none` (use the full path as-is) or `suffix` (extract only the last segment). Default: `none`.
-
 ifndef::env-cloud[]
-[tabs]
-=====
-rpk::
-+
---
-. Run `rpk cluster config edit` to open the cluster configuration in your default text editor.
-
-. Set the properties for your token structure. For example:
-+
-[,yaml]
-----
-oidc_group_claim_path: "$.groups"
-nested_group_behavior: "none"
-----
-
-. Save the file and quit the editor. Redpanda validates the values and applies them immediately.
-
-TIP: You can also set properties directly without opening the editor:
-+
-[,bash]
-----
-rpk cluster config set oidc_group_claim_path '$.groups'
-rpk cluster config set nested_group_behavior 'none'
-----
-+
-For more options, see xref:manage:cluster-maintenance/cluster-property-configuration.adoc[Configure Cluster Properties].
---
-{ui}::
-+
---
-. From the left navigation menu, select *Cluster settings*.
-. Search for `oidc_group_claim_path` and set the JSON path expression for your token structure.
-. Search for `nested_group_behavior` and set to `none` or `suffix` as required.
-. Click *Save*.
---
-Admin API::
-+
---
-Send a `PUT` request to the `/v1/cluster_config` endpoint:
-
-[,bash]
-----
-curl -u <user>:<password> \
-  --request PUT 'http://localhost:9644/v1/cluster_config' \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "oidc_group_claim_path": "$.groups",
-    "nested_group_behavior": "none"
-  }'
-----
-
-To verify the current values, send a `GET` request:
-
-[,bash]
-----
-curl -u <user>:<password> \
-  'http://localhost:9644/v1/cluster_config?keys=oidc_group_claim_path,nested_group_behavior'
-----
-
-For more information about the cluster configuration API, see xref:manage:cluster-maintenance/cluster-property-configuration.adoc[Configure Cluster Properties].
---
-=====
+* You must have xref:get-started:licensing/overview.adoc[Enterprise Edition] license on your cluster.
 endif::[]
-
-ifdef::env-cloud[]
-Contact Redpanda support to configure `oidc_group_claim_path` and `nested_group_behavior` on Cloud clusters.
-endif::[]
-
-=== Configuration scenarios
-
-These examples show how to configure GBAC for common OIDC token structures.
-
-==== Flat group values (default configuration)
-
-This is the most common configuration. Groups are stored as a flat array under the `groups` claim.
-
-[,yaml]
-----
-redpanda:
-  enable_sasl: true
-  enable_oidc: true
-  oidc_discovery_url: "https://your-idp.example.com/.well-known/openid-configuration"
-  oidc_token_audience: "redpanda-cluster"
-  oidc_group_claim_path: "$.groups"
-  nested_group_behavior: "none"
-----
-
-Token example:
-[,json]
-----
-{"groups": ["engineering", "analytics"]}
-----
-
-Result: Redpanda resolves principals `Group:engineering` and `Group:analytics`.
-
-==== Nested JSON path
-
-Use a nested path when groups are embedded inside another claim, such as Keycloak's `realm_access.roles`.
-
-[,yaml]
-----
-redpanda:
-  oidc_group_claim_path: "$.realm_access.roles"
-  nested_group_behavior: "none"
-----
-
-Token example:
-[,json]
-----
-{"realm_access": {"roles": ["eng", "fin"]}}
-----
-
-Result: Redpanda resolves principals `Group:eng` and `Group:fin`.
-
-==== Path-style group names with suffix extraction
-
-Use `suffix` extraction when your IdP returns hierarchical group paths and you want to use only the last segment as the group name.
-
-[,yaml]
-----
-redpanda:
-  oidc_group_claim_path: "$.groups"
-  nested_group_behavior: "suffix"
-----
-
-Token example:
-[,json]
-----
-{"groups": ["/departments/eng/platform", "/departments/eng/infra"]}
-----
-
-Result: Redpanda resolves principals `Group:platform` and `Group:infra`.
-
-==== CSV-formatted group claim
-
-Some IdPs return groups as a comma-separated string instead of an array. Redpanda automatically splits CSV values.
-
-Use the same cluster property settings as the default configuration above.
-
-Token example:
-[,json]
-----
-{"groups": "engineering,analytics,finance"}
-----
-
-Result: Redpanda resolves principals `Group:engineering`, `Group:analytics`, and `Group:finance`.
-
-For full property details, see the cluster configuration reference for
-xref:reference:properties/cluster-properties.adoc#oidc_group_claim_path[`oidc_group_claim_path`] and
-xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior`].
 
 == Assign groups to roles
 
@@ -315,28 +156,6 @@ rpk security acl create --allow-principal 'Group:/departments/eng/platform' --op
 --
 include::manage:partial$gbac-create-group-acl.adoc[]
 --
-ifndef::env-cloud[]
-Admin API::
-+
---
-To create an ACL for a group, use the ACL creation endpoint with `Group:` as the principal prefix:
-
-[,bash]
-----
-curl -X POST http://localhost:9644/v1/security/acls \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "resourceType": "TOPIC",
-    "resourceName": "analytics-",
-    "resourcePatternType": "PREFIXED",
-    "principal": "Group:engineering",
-    "host": "*",
-    "operation": "READ",
-    "permissionType": "ALLOW"
-  }'
-----
---
-endif::[]
 ====
 
 == View groups and roles
@@ -444,6 +263,60 @@ When a user belongs to multiple groups with conflicting ACLs, deny rules take pr
 
 Group membership timing::
 Group membership reflects the claims in the OIDC token at authentication time. Changes made in the IdP (adding or removing group memberships) take effect at the user's next authentication, when a new token is issued.
+
+== Customize token claim extraction
+
+Different identity providers store group information in different locations within the JWT token. Two cluster properties control how Redpanda extracts group names:
+
+xref:reference:properties/cluster-properties.adoc#oidc_group_claim_path[`oidc_group_claim_path`]:: A https://goessner.net/articles/JsonPath/[JSON path^] expression that tells Redpanda where to find group information in the OIDC token. For example, Auth0 and Okta typically use a top-level `groups` claim (`$.groups`), while Keycloak nests roles inside `realm_access` (`$.realm_access.roles`). Default: `$.groups`.
+
+xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior`]:: Controls how Redpanda handles group names that use path-style notation (for example, `/departments/eng/platform`). Set to `none` to use the full path as-is, or `suffix` to extract only the last segment. Default: `none`.
+
+ifndef::env-cloud[]
+To update these properties, use xref:manage:cluster-maintenance/cluster-property-configuration.adoc[any configuration method] (`rpk cluster config set`, the Admin API, or Redpanda Console). Changes take effect immediately without a restart.
+endif::[]
+
+ifdef::env-cloud[]
+Contact Redpanda support to configure these properties on Cloud clusters.
+endif::[]
+
+=== Token structure examples
+
+==== Flat group values (default)
+
+[,json]
+----
+{"groups": ["engineering", "analytics"]}
+----
+
+With `oidc_group_claim_path: "$.groups"`, Redpanda resolves principals `Group:engineering` and `Group:analytics`.
+
+==== Nested claim
+
+[,json]
+----
+{"realm_access": {"roles": ["eng", "fin"]}}
+----
+
+With `oidc_group_claim_path: "$.realm_access.roles"`, Redpanda resolves principals `Group:eng` and `Group:fin`.
+
+==== Path-style group names with suffix extraction
+
+[,json]
+----
+{"groups": ["/departments/eng/platform", "/departments/eng/infra"]}
+----
+
+With `nested_group_behavior: "suffix"`, Redpanda resolves principals `Group:platform` and `Group:infra`.
+
+==== CSV-formatted group claim
+
+[,json]
+----
+{"groups": "engineering,analytics,finance"}
+----
+
+Redpanda automatically splits comma-separated values and resolves principals `Group:engineering`, `Group:analytics`, and `Group:finance`.
 
 == Suggested reading
 
