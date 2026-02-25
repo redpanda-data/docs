@@ -7,6 +7,8 @@
 :learning-objective-3: Execute validation checks and perform cutover procedures
 
 // tag::single-source[]
+ifdef::env-cloud[:rpcn-doc: redpanda-connect:home:index.adoc]
+ifndef::env-cloud[:rpcn-doc: develop:connect/about.adoc]
 
 Migrate existing Iceberg pipelines to Redpanda Iceberg topics to simplify your architecture and reduce operational overhead.
 
@@ -51,11 +53,11 @@ ifndef::env-cloud[]
 * xref:manage:tiered-storage.adoc[Tiered Storage] enabled.
 endif::[]
 * xref:manage:iceberg/about-iceberg-topics.adoc[Iceberg Topics] enabled on your Redpanda cluster.
-* Access to both source and target (Iceberg Topics) tables in your query engine.
-* Query engine access (Snowflake, Databricks, ClickHouse, or Spark) for data merging.
 * Understanding of your current schema format (Avro, Protobuf, or JSON Schema).
 * For Kafka Connect migrations, knowledge of your Kafka Connect configuration, especially if using `iceberg.tables.route-field` for multi-table routing.
-* For migrating multi-table fan-out patterns, xref:develop:data-transforms/how-transforms-work.adoc[data transforms] enabled on your cluster.
+** If migrating multi-table fan-out patterns, xref:develop:data-transforms/how-transforms-work.adoc[data transforms] enabled on your cluster.
+* Access to both source and target (Iceberg Topics) tables in your query engine.
+* Query engine access (Snowflake, Databricks, ClickHouse, or Spark) for data merging.
 
 == Migration steps
 
@@ -71,7 +73,7 @@ IMPORTANT: Iceberg Topics cannot append to existing Iceberg tables that are not 
 
 === Enable Iceberg Topics
 
-Enable the Iceberg integration for your Redpanda topics.
+For simple migrations (one topic mapping to one Iceberg table), enable the Iceberg integration for your Redpanda topics.
 
 . Set the `iceberg_enabled` configuration property on your cluster to `true`:
 ifdef::env-cloud[]
@@ -125,7 +127,7 @@ rpk cluster config set iceberg_enabled true
 If you change this configuration for a running cluster, restart the cluster.
 endif::[]
 
-. Configure the `redpanda.iceberg.mode` property for each topic:
+. Configure the `redpanda.iceberg.mode` property for the topic:
 +
 [,bash]
 ----
@@ -169,6 +171,62 @@ Note the schema ID returned, in case you need it for troubleshooting.
 * Check that data appears in your query engine.
 * Validate that the schema translation is correct.
 * Confirm record counts are increasing.
+
+==== Multi-table fan-out pattern
+
+If your existing integration routes records to multiple Iceberg tables based on a field value (for example, Kafka Connect's `iceberg.tables.route-field` property), you need to implement equivalent routing logic. You create separate Iceberg-enabled topics for each target table, and Redpanda automatically creates corresponding Iceberg tables. Use either of the following approaches to route records to the correct topic:
+
+===== Option 1: Data transforms with separate topics (recommended)
+
+Use a data transform to read the routing field from each message and write records to separate Iceberg-enabled topics. This approach keeps routing logic within Redpanda and avoids external dependencies. When using Iceberg modes that require schema validation, the transform can register schemas dynamically and encode messages with the appropriate format.
+
+. Enable data transforms on your cluster:
++
+[,bash]
+----
+rpk cluster config set data_transforms_enabled true
+----
+
+. Create output topics and enable Iceberg with Schema Registry validation:
++
+[,bash]
+----
+rpk topic create <output-topic-1> <output-topic-2> <output-topic-3>
+rpk topic alter-config <output-topic-1> --set redpanda.iceberg.mode=value_schema_id_prefix
+rpk topic alter-config <output-topic-2> --set redpanda.iceberg.mode=value_schema_id_prefix
+rpk topic alter-config <output-topic-3> --set redpanda.iceberg.mode=value_schema_id_prefix
+----
+
+. Implement a transform function that:
+.. Reads the routing field from each input message.
+.. If using Schema Registry validation, registers schemas dynamically and encodes messages with the appropriate format.
+.. Writes to a specific output topic based on the routing field.
+
+. Deploy the transform, specifying multiple output topics:
++
+[,bash]
+----
+rpk transform deploy \
+  --file transform.wasm \
+  --name <transform-name> \
+  --input-topic <input-topic> \
+  --output-topic <output-topic-1> \
+  --output-topic <output-topic-2> \
+  --output-topic <output-topic-3>
+----
+
+. Validate the fanout by checking that each output topic receives the correct records.
+
+For a complete implementation example with dynamic schema registration, see xref:develop:data-transforms/build.adoc#multi-topic-fanout[Multi-topic fan-out with Schema Registry]. The example demonstrates Schema Registry wire format encoding for use with `value_schema_id_prefix` mode.
+
+===== Option 2: External stream processor
+
+Use an external stream processor for complex routing logic:
+
+. Use a stream processor (xref:{manage-topic-doc}[Redpanda Connect] or Flink) to split records.
+. Write to separate Iceberg-enabled topics.
+
+This approach is more complex but offers more flexibility for advanced routing requirements not supported by data transforms.
 
 === Validate Schema Registry integration
 
@@ -315,62 +373,6 @@ SELECT * FROM new_data;
 
 Most Iceberg-compatible query engines support views, including Snowflake, Databricks, ClickHouse, and Spark.
 
-=== Migrate multi-table fan-out
-
-If your existing integration routes records to multiple Iceberg tables based on a field value (for example, Kafka Connect's `iceberg.tables.route-field` property), you need to implement equivalent routing logic. You create separate Iceberg-enabled topics for each target table, and Redpanda automatically creates corresponding Iceberg tables. Use either of the following approaches to route records to the correct topic:
-
-==== Option 1: Data transforms with separate topics (recommended)
-
-Use a data transform to read the routing field from each message and write records to separate Iceberg-enabled topics. This approach keeps routing logic within Redpanda and avoids external dependencies. When using Iceberg modes that require schema validation, the transform can register schemas dynamically and encode messages with the appropriate format.
-
-. Enable data transforms on your cluster:
-+
-[,bash]
-----
-rpk cluster config set data_transforms_enabled true
-----
-
-. Create output topics and enable Iceberg with Schema Registry validation:
-+
-[,bash]
-----
-rpk topic create orders inventory customers
-rpk topic alter-config orders --set redpanda.iceberg.mode=value_schema_id_prefix
-rpk topic alter-config inventory --set redpanda.iceberg.mode=value_schema_id_prefix
-rpk topic alter-config customers --set redpanda.iceberg.mode=value_schema_id_prefix
-----
-
-. Implement a transform function that:
-.. Reads the routing field from each input message.
-.. If using Schema Registry validation, registers schemas dynamically and encodes messages with the appropriate format.
-.. Writes to a specific output topic based on the routing field.
-
-. Deploy the transform, specifying multiple output topics:
-+
-[,bash]
-----
-rpk transform deploy \
-  --file transform.wasm \
-  --name event-router \
-  --input-topic events \
-  --output-topic orders \
-  --output-topic inventory \
-  --output-topic customers
-----
-
-. Validate the fanout by checking that each output topic receives the correct records.
-
-For a complete implementation example with dynamic schema registration, see xref:develop:data-transforms/build.adoc#multi-topic-fanout[Multi-topic fan-out with Schema Registry]. The example demonstrates Schema Registry wire format encoding for use with `value_schema_id_prefix` mode.
-
-==== Option 2: External stream processor
-
-Use an external stream processor for complex routing logic:
-
-. Use a stream processor (Flink, Spark) to split records.
-. Write to separate Iceberg-enabled topics.
-
-This approach is more complex but offers more flexibility for advanced routing requirements not supported by data transforms.
-
 === Validate the migration
 
 After completing the data merge, verify the migration before cutting over:
@@ -451,11 +453,11 @@ If the count is greater than zero, inspect the failed records. See xref:manage:i
 
 ==== Multi-table fan-out transform issues
 
-The transform may not be processing messages due to:
+If the transform does not process messages, check if:
 
-* Specified output topics don't exist or aren't enabled with Iceberg.
-* Incorrect routing logic or routing field missing from input messages.
-* When using Schema Registry validation: schema registration failed during initialization, preventing the transform from starting. 
+* The specified output topics don't exist or aren't enabled with Iceberg.
+* The routing logic in the transform is incorrect, or the routing field is missing from input messages.
+* (When using Schema Registry validation) The schema registration failed during initialization, preventing the transform from starting. 
 
 To check the transform status:
 
