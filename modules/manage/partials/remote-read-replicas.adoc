@@ -36,9 +36,9 @@ You need the following:
 * An origin cluster with xref:{tiered-storage-link}#set-up-tiered-storage[Tiered Storage] set up. Multi-region buckets or containers are not supported.
 * A topic on the origin cluster, which you can use as a Remote Read Replica topic on the remote cluster.
 * A separate remote cluster. 
-** AWS: The remote cluster must be in the same region as the origin cluster's storage bucket/container.
+** AWS: The remote cluster can be in the same or a different region as the origin cluster's S3 bucket. For cross-region RRR topics, see <<create-cross-region-rrr-topic>>.
 ** GCP: The remote cluster can be in the same or a different region as the bucket/container.
-** Azure: Remote read replicas are not supported. 
+** Azure: Remote read replicas are not supported.
 
 include::shared:partial$enterprise-license.adoc[]
 
@@ -56,7 +56,7 @@ You must configure access to the same object storage as the origin cluster.
 ifndef::env-kubernetes[]
 To set up a Remote Read Replica topic on a separate remote cluster:
 
-. Create a remote cluster for the Remote Read Replica topic. For AWS, the remote cluster must be in the same region as the origin cluster's storage bucket/container. For GCP, the remote cluster can be in the same or a different region as the bucket/container.
+. Create a remote cluster for the Remote Read Replica topic. For GCP, the remote cluster can be in the same or a different region as the bucket/container. For AWS, the remote cluster can be in the same or a different region, but cross-region RRR topics require additional configuration. See <<create-cross-region-rrr-topic>>.
 . Run `rpk cluster config edit`, and then specify properties specific to your object storage provider (your cluster will require a restart after any changes to these properties):
 +
 
@@ -436,6 +436,50 @@ rpk topic create <topic_name> -c redpanda.remote.readreplica=<bucket_name>
 * During upgrades, upgrade the Remote Read Replica cluster before upgrading the origin cluster.
 * Do not use `redpanda.remote.read` or `redpanda.remote.write` with `redpanda.remote.readreplica`. Redpanda ignores the values for remote read and remote write properties on read replica topics.
 ====
+
+[[create-cross-region-rrr-topic]]
+=== Create a cross-region Remote Read Replica topic on AWS
+
+Use this configuration only when the remote cluster is in a *different AWS region* than the origin cluster's S3 bucket. For same-region AWS or GCP deployments, use the standard <<Create a Remote Read Replica topic,topic creation command>>.
+
+==== Prerequisites
+
+The xref:reference:properties/object-storage-properties.adoc[`cloud_storage_url_style`] cluster property must be set explicitly to `virtual_host` or `path` on the remote cluster. The default value does not support cross-region Remote Read Replicas.
+
+==== Create the topic
+
+To create a cross-region Remote Read Replica topic, append `region` and `endpoint` query-string parameters to the bucket name:
+
+[,bash]
+----
+rpk topic create <topic_name> \
+  -c redpanda.remote.readreplica=<bucket_name>?region=<origin_bucket_region>&endpoint=s3.<origin_bucket_region>.amazonaws.com
+----
+
+Replace the following placeholders:
+
+- `<topic_name>`: The name of the original topic on the origin cluster.
+- `<bucket_name>`: The S3 bucket configured on the origin cluster (`cloud_storage_bucket`).
+- `<origin_bucket_region>`: The AWS region of the origin cluster's S3 bucket (not the remote cluster's region). For example, `us-east-1`.
+
+For example, if the origin cluster stores data in a bucket called `my-bucket` in `us-east-1`:
+
+[,bash]
+----
+rpk topic create my-topic \
+  -c redpanda.remote.readreplica=my-bucket?region=us-east-1&endpoint=s3.us-east-1.amazonaws.com
+----
+
+NOTE: The `endpoint` value must not include the bucket name. Redpanda automatically prepends the bucket name when using `virtual_host` URL style.
+
+==== Limits
+
+Each unique combination of region and endpoint creates a dynamic object storage upstream on the remote cluster. A cluster supports a maximum of 10 dynamic upstreams.
+
+How upstreams are counted depends on `cloud_storage_url_style`:
+
+- `virtual_host`: Each unique combination of bucket, region, and endpoint counts as one upstream. You can create up to 10 distinct cross-region RRR topics per cluster.
+- `path`: Each unique combination of region and endpoint counts as one upstream (the bucket name is not part of the key). You can create cross-region RRR topics for an unlimited number of buckets, as long as those buckets are spread across no more than 10 distinct region/endpoint combinations.
 
 == Reduce lag in data availability
 
