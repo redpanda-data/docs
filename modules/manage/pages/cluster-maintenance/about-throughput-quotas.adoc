@@ -1,0 +1,203 @@
+= About Throughput Quotas
+:description: Understand how Redpanda's user-based and client-based throughput quotas work, including entity hierarchy, precedence rules, and quota tracking behavior.
+:page-topic-type: concepts
+:page-aliases:
+:learning-objective-1: Understand the difference between user-based and client-based quotas
+:learning-objective-2: Determine which quota type to use for your use case
+:learning-objective-3: Understand quota precedence and tracking behavior
+
+// tag::single-source[]
+ifdef::env-cloud[]
+:authentication-doc: security:cloud-authentication.adoc
+endif::[]
+ifndef::env-cloud[]
+:authentication-doc: manage:security/authentication.adoc
+endif::[]
+
+Redpanda provides throughput quotas to limit the rate of produce and consume requests from clients. Understanding how quotas work helps you design effective multi-tenant isolation and prevent resource exhaustion.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
+To configure and manage throughput quotas, see xref:manage:cluster-maintenance/manage-throughput.adoc[].
+
+== Throughput control overview
+
+Redpanda provides two types of throughput limits: broker-wide limits (configured using cluster properties) and client quotas (configured using Kafka API). 
+
+This page covers client quotas, which enable per-user and per-client rate limiting with fine-grained control through entity hierarchy and precedence rules. For information about broker-wide limits, see xref:manage:cluster-maintenance/manage-throughput.adoc#broker-wide-throughput-limits[Broker-wide throughput limits].
+
+== Supported quota types
+
+Redpanda supports three Kafka API-based quota types:
+
+|===
+| Quota type | Description
+
+| `producer_byte_rate`
+| Limit throughput of produce requests (bytes per second)
+
+| `consumer_byte_rate`
+| Limit throughput of fetch requests (bytes per second)
+
+| `controller_mutation_rate`
+| Limit rate of topic mutation requests (partitions created or deleted per second)
+|===
+
+All quota types can be applied to user-based entities, client-based entities, or combinations of both.
+
+== Quota entities
+
+Redpanda supports two primary entity types for client quotas:
+
+* Client-based quotas (`client_id` or `client_id` prefix): Limit throughput based on the `client_id` field that clients self-declare. Multiple clients using the same `client_id` share the quota. This quota does not require authentication.
+* User-based quotas: Limit throughput based on authenticated user principal (from SASL, mTLS, or OIDC).
+
+You can also combine both types for fine-grained control, such as limiting a specific user when using a specific client application.
+
+=== Client-based quotas
+
+Client-based quotas apply to clients identified by their `client_id` field, which is set by the client application. The `client_id` field is typically a configurable property when you create a client with Kafka libraries. Multiple clients using the same `client_id` share the same quota tracking.
+
+Client-based quotas rely on clients honestly reporting their identity. Because `client_id` is self-declared, any client can claim any identity. This makes client-based quotas unsuitable for security isolation between tenants.
+
+Use client-based quotas when:
+
+* Authentication is not enabled.
+* Grouping by application or service name is sufficient.
+* You operate a single-tenant environment where all clients are trusted.
+* You need simple rate limiting without user-level isolation.
+
+=== User-based quotas
+
+IMPORTANT: User-based quotas require xref:manage:security/authentication.adoc[authentication] to be enabled on your cluster.
+
+User-based quotas apply to authenticated user principals (from SASL, mTLS, or OIDC authentication). Each user has a separate quota, providing true multi-tenant isolation.
+
+User-based quotas rely on Redpanda's authentication system to verify user identity. The user principal is extracted from SASL credentials, mTLS certificates, or OIDC tokens and cannot be forged by clients. This provides true security isolation between tenants.
+
+Use user-based quotas when:
+
+* You operate a multi-tenant environment, such as SaaS platforms or enterprises with departments.
+* You require security isolation between users or tenants, including for compliance requirements.
+* You need per-user billing or metering.
+
+=== Combined user and client quotas
+
+You can combine user and client identities for fine-grained control over specific (user, client) combinations.
+
+Use combined quotas when:
+
+* You need fine-grained control, for example: "user `alice` using specific application".
+* Different rate limits apply to different apps used by the same user, for example: "`alice`'s payment-processor gets 10 MB/s, but `alice`'s analytics-consumer gets 50 MB/s". (See <<Quota tracking and isolation>> for examples.)
+
+== Quota entity hierarchy
+
+When a request arrives, Redpanda resolves which quota to apply by matching the request's authenticated user principal and `client_id` against configured quotas. Redpanda applies the most specific match, using the following precedence order (highest priority first):
+
+. Exact user + exact client: `/config/users/<user>/clients/<client-id>`
+. Exact user + client prefix: `/config/users/<user>/client-id-prefix/<prefix>`
+. Exact user + default client: `/config/users/<user>/clients/<default>`
+. Exact user only: `/config/users/<user>` (applies to all clients for that user)
+. Default user + exact client: `/config/users/<default>/clients/<client-id>`
+. Default user + client prefix: `/config/users/<default>/client-id-prefix/<prefix>`
+. Default user + default client: `/config/users/<default>/clients/<default>`
+. Default user only: `/config/users/<default>` (applies to all users and clients)
+. Exact client only: `/config/clients/<client-id>` (applies to all users)
+. Client prefix only: `/config/client-id-prefix/<prefix>` (applies to all users)
+. Default client only: `/config/clients/<default>` (applies to all users and clients)
+. No quota configured: Unlimited throughput (no throttling)
+
+IMPORTANT: The `<default>` entity matches any user or client that doesn't have a more specific quota configured. This is different from an empty/unauthenticated user (`user=""`), which is treated as a specific entity.
+
+=== Example: Precedence resolution
+
+Given these configured quotas:
+
+[,bash]
+----
+rpk cluster quotas alter --add consumer_byte_rate=5000000 --name user=alice,client-id=app-1
+rpk cluster quotas alter --add consumer_byte_rate=10000000 --name user=alice
+rpk cluster quotas alter --add consumer_byte_rate=20000000 --name client-id=app-1
+----
+
+|===
+| User + Client ID | Precedence match | Resulting quota
+
+| `user="alice"`, `client_id="app-1"`
+| Level 1: Exact user + exact client
+| 5 MB/s
+
+| `user="alice"`, `client_id="app-2"`
+| Level 4: Exact user only
+| 10 MB/s
+
+| `user="bob"`, `client_id="app-1"`
+| Level 9: Exact client only
+| 20 MB/s
+
+| `user="bob"`, `client_id="app-2"`
+| Level 12: No quota configured
+| Unlimited
+|===
+
+=== Unauthenticated connections
+
+Unauthenticated connections have an empty user principal (`user=""`), which is treated as a specific entity, not as `user=<default>`.
+
+Unauthenticated connections:
+
+* Fall back to client-only quotas (precedence levels 9-11).
+* Have unlimited throughput only if no client-only quota matches.
+
+== Quota tracking and isolation
+
+Each unique (user principal + `client_id`) combination is tracked independently for quota enforcement, even if multiple combinations have the same quota limit configured. This means:
+
+* Different users using the same `client_id` each get their own quota tracking.
+* The same user with different `client_id` values also gets separate quota tracking with each client.
+* Quota usage is not shared between different (user, client) pairs.
+
+=== Example: Separate quota tracking per user
+
+The following command sets a default 10 MB/s quota for all users:
+
+[,bash]
+----
+rpk cluster quotas alter --add producer_byte_rate=10000000 --name user=default
+----
+
+* If user `alice` authenticates and uses `client_id="app1"`, Redpanda enforces a 10 MB/s quota.
+* If user `bob` authenticates and uses `client_id="app1"`, Redpanda also enforces a 10 MB/s quota, but this is tracked separately from user `alice`.
+
+The combined throughput is 20 MB/s, and each user has their own independent 10 MB/s limit.
+
+[[throttling-enforcement]]
+== Throughput throttling enforcement
+
+Redpanda enforces throughput limits by applying backpressure to clients. When a connection exceeds its throughput limit, Redpanda throttles the connection to bring the rate back within the allowed level:
+
+. Redpanda adds a `throttle_time_ms` field to responses, indicating how long the client should wait.
+. If the client doesn't honor the throttle time, Redpanda inserts delays on the connection's next read operation.
+
+ifndef::env-cloud[]
+The throttling delay may not exceed the limit set by the `max_kafka_throttle_delay_ms` tunable property.
+endif::[]
+
+ifdef::env-cloud[]
+In Redpanda Cloud, the throttling delay is set to 30 seconds.
+endif::[]
+
+NOTE: As of v24.2, Redpanda enforces all throughput limits per broker, including client throughput.
+
+== Default behavior
+
+Quotas are opt-in restrictions and not enforced by default. When no quotas are configured, clients have unlimited throughput. 
+
+== Next steps
+
+* xref:manage:cluster-maintenance/manage-throughput.adoc[Configure throughput quotas]
+* xref:{authentication-doc}[Enable authentication for user-based quotas]
