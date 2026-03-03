@@ -1,6 +1,6 @@
 // tag::single-source[]
 
-Group-based access control (GBAC) builds on xref:manage:security/authorization/rbac.adoc[role-based access control (RBAC)] to simplify permission management at scale. Instead of assigning roles or ACLs to individual users, you assign them to OIDC groups managed by your identity provider (IdP). Users inherit permissions from all groups reported in their OIDC token claims, so onboarding and offboarding require no changes in Redpanda.
+Group-based access control (GBAC) extends xref:manage:security/authentication.adoc#oidc[OIDC authentication] to let you manage permissions at the group level instead of per user. You can grant permissions to groups in two ways: create xref:manage:security/authorization/acl.adoc[ACLs] with `Group:<name>` principals, or assign groups as members of xref:manage:security/authorization/rbac.adoc[RBAC] roles. Both approaches can be used independently or together. Because group membership is managed by your identity provider (IdP), onboarding and offboarding require no changes in Redpanda.
 
 After reading this page, you will be able to:
 
@@ -30,6 +30,8 @@ Group assigned to a role:: Assign a group as a member of a role-based access con
 Group as an ACL principal:: Create an ACL with a `Group:<name>` principal. Users in that group receive that permission directly.
 
 Both patterns can be used together. When a user belongs to multiple groups, they inherit the combined permissions of all groups.
+
+Redpanda evaluates all authorization sources (user ACLs, role ACLs, group ACLs, and group-to-role ACLs) in a single unified flow. Deny rules are checked first across all sources. If any source produces a deny, the request is rejected regardless of allows from other sources. If no deny is found, Redpanda checks for an allow across all sources. If no allow is found, the request is denied by default.
 
 == Prerequisites
 
@@ -144,7 +146,7 @@ rpk security acl create \
   --resource-pattern-type prefixed
 ----
 
-If your groups use path-style names (with `nested_group_behavior: none`), use the full path as the principal name:
+If your groups use path-style names (with xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior`] set to `none`), use the full path as the principal name:
 
 [,bash]
 ----
@@ -253,13 +255,13 @@ Azure AD group limit::
 Users with more than 200 group memberships in Azure AD receive a URL reference in their token instead of a list of group names. Redpanda does not follow that URL and cannot resolve groups in this case. Mitigation: filter token claims to include only the groups relevant to Redpanda.
 
 Nested groups::
-Redpanda does not recursively resolve nested group hierarchies. If group A contains group B, only the direct memberships reported in the token are used. Use `nested_group_behavior: suffix` to extract the last path segment from hierarchical group names when needed.
+Redpanda does not recursively resolve nested group hierarchies. If group A contains group B, only the direct memberships reported in the token are used. Use xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior: suffix`] to extract the last path segment from hierarchical group names when needed.
 
 No wildcard ACLs for groups::
 ACL matching for `Group:` principals uses literal string comparison only. Wildcard patterns are not supported.
 
 Deny ACL precedence::
-When a user belongs to multiple groups with conflicting ACLs, deny rules take precedence over allow rules. This is consistent with standard Redpanda ACL conflict resolution.
+Redpanda checks deny rules before allow rules across all authorization sources (user ACLs, role ACLs, group ACLs, and group-to-role ACLs). A deny from any source rejects the request, even if another source would grant allow. This is consistent with standard Redpanda ACL conflict resolution.
 
 Group membership timing::
 Group membership reflects the claims in the OIDC token at authentication time. Changes made in the IdP (adding or removing group memberships) take effect at the user's next authentication, when a new token is issued.
@@ -271,6 +273,8 @@ Different identity providers store group information in different locations with
 xref:reference:properties/cluster-properties.adoc#oidc_group_claim_path[`oidc_group_claim_path`]:: A https://goessner.net/articles/JsonPath/[JSON path^] expression that tells Redpanda where to find group information in the OIDC token. For example, Auth0 and Okta typically use a top-level `groups` claim (`$.groups`), while Keycloak nests roles inside `realm_access` (`$.realm_access.roles`). Default: `$.groups`.
 
 xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior`]:: Controls how Redpanda handles group names that use path-style notation (for example, `/departments/eng/platform`). Set to `none` to use the full path as-is, or `suffix` to extract only the last segment. Default: `none`.
++
+WARNING: With `suffix`, groups that share a leaf name (for example, `/departments/eng/groupA` and `/departments/sales/groupA`) both resolve to `Group:groupA`. ACLs or role assignments for that principal apply to members of both groups. Design your group naming conventions to avoid unintended collisions.
 
 ifndef::env-cloud[]
 To update these properties, use xref:manage:cluster-maintenance/cluster-property-configuration.adoc[any configuration method] (`rpk cluster config set`, the Admin API, or Redpanda Console). Changes take effect immediately without a restart.
