@@ -1,0 +1,207 @@
+= Tune Performance for Iceberg Topics
+:description: Optimize Redpanda Iceberg translation throughput and Parquet file sizes by tuning message size limits, lag configuration, and flush thresholds.
+:page-categories: Iceberg, Management
+:page-topic-type: best-practices
+:personas: ops_admin, streaming_developer
+:learning-objective-1: Evaluate the impact of message size on Iceberg translation throughput and Parquet file sizes
+:learning-objective-2: Choose appropriate flush threshold and lag target values for large-message workloads
+:learning-objective-3: Identify translation performance signals using Iceberg metrics
+
+// tag::single-source[]
+
+ifndef::env-cloud[]
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+endif::[]
+
+Use this guide to optimize Redpanda Iceberg translation performance. It explains how the translation pipeline works, describes message size limits, and provides recommendations for tuning throughput and Parquet file sizes.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
+== Prerequisites
+
+Before tuning Iceberg performance, you need to be familiar with how Iceberg topics work in Redpanda. See xref:manage:iceberg/about-iceberg-topics.adoc[About Iceberg Topics].
+
+== Translation pipeline overview
+
+Redpanda translates Kafka topic data to Iceberg format using a set of background _translators_. Each CPU shard runs one translator, which reads data from its assigned topic partitions, writes it to local scratch space as Parquet files, then uploads those files to object storage and commits the changes to the Iceberg catalog.
+
+Key pipeline characteristics:
+
+ifndef::env-cloud[]
+* *Throughput*: Approximately 5 MiB/s per shard under typical conditions.
+* *Lag target*: Controlled by xref:reference:properties/cluster-properties.adoc#iceberg_target_lag_ms[`iceberg_target_lag_ms`] (default: 1 minute). Redpanda tries to commit all data produced to an Iceberg-enabled topic within this window.
+* *Flush threshold*: Controlled by xref:reference:properties/cluster-properties.adoc#datalake_translator_flush_bytes[`datalake_translator_flush_bytes`] (default: 32 MiB). Each translator uploads its on-disk data when accumulated data reaches this threshold.
+endif::[]
+ifdef::env-cloud[]
+* *Throughput*: Approximately 5 MiB/s per shard under typical conditions.
+* *Lag target*: Controlled by `iceberg_target_lag_ms` (default: 1 minute). Redpanda tries to commit all data produced to an Iceberg-enabled topic within this window.
+* *Flush threshold*: Controlled by `datalake_translator_flush_bytes` (default: 32 MiB). Each translator uploads its on-disk data when accumulated data reaches this threshold.
+endif::[]
+
+The flush threshold and lag target together determine the size of the Parquet files written to object storage. Larger Parquet files generally improve downstream query performance by reducing the number of metadata operations query engines must perform.
+
+== Message size limits
+
+Redpanda has validated 32 MiB as the maximum recommended message size for Iceberg-enabled topics. At this size, a shard produces approximately two messages per Parquet file (assuming one or more Kafka partitions per shard). The 32 MiB figure corresponds to the default value of
+ifndef::env-cloud[]
+xref:reference:properties/cluster-properties.adoc#datalake_translator_flush_bytes[`datalake_translator_flush_bytes`].
+endif::[]
+ifdef::env-cloud[]
+`datalake_translator_flush_bytes`.
+endif::[]
+
+// TODO: Confirm with PM — include or omit the following?
+// From ENG-889 stress testing: 60-80 MiB messages cause OOM conditions in various Redpanda
+// subsystems, even with Iceberg disabled. 100 MiB messages are known to fail (customer case).
+
+////
+[WARNING]
+====
+Messages larger than 32 MiB are not recommended for Iceberg-enabled topics. Messages in the 60-80 MiB range can cause out-of-memory (OOM) conditions in Redpanda subsystems, even with Iceberg disabled. Messages of 100 MiB or larger are known to cause failures.
+
+If your workload requires large messages, see <<large-messages,Tune for large messages>>.
+====
+////
+=== Effect on query performance
+
+Large messages produce large Parquet files with few records per file. Query engines must load entire Parquet files even when accessing only a subset of columns, which can result in high memory usage and slow scans for analytical workloads. If query latency is a concern, consider:
+
+* Reducing individual message sizes if your data model allows it
+* Applying the tuning in <<large-messages>> to optimize file sizes for your workload
+
+== Configuration reference
+
+The following properties are the primary controls for Iceberg translation performance. None require a cluster restart.
+
+ifndef::env-cloud[]
+* xref:reference:properties/cluster-properties.adoc#datalake_translator_flush_bytes[`datalake_translator_flush_bytes`] (default: `33554432` / 32 MiB): Per-translator data threshold before uploading on-disk data to object storage. This is the primary control for Parquet file size.
+* xref:reference:properties/cluster-properties.adoc#iceberg_target_lag_ms[`iceberg_target_lag_ms`] (default: `60000` / 1 minute): Default lag target for all Iceberg-enabled topics. Override per topic with `redpanda.iceberg.target.lag.ms`.
+* xref:reference:properties/cluster-properties.adoc#iceberg_catalog_commit_interval_ms[`iceberg_catalog_commit_interval_ms`] (default: `60000` / 1 minute): Interval between catalog commit transactions across all topics.
+* xref:reference:properties/cluster-properties.adoc#iceberg_target_backlog_size[`iceberg_target_backlog_size`] (default: `104857600` / 100 MiB): Average per-partition backlog size target. Controls when the backlog controller increases translation CPU priority.
+endif::[]
+ifdef::env-cloud[]
+* `datalake_translator_flush_bytes` (default: 32 MiB): Per-translator data threshold before uploading on-disk data to object storage. This is the primary control for Parquet file size.
+* `iceberg_target_lag_ms` (default: 1 minute): Default lag target for all Iceberg-enabled topics. Override per topic with `redpanda.iceberg.target.lag.ms`.
+* `iceberg_catalog_commit_interval_ms` (default: 1 minute): Interval between catalog commit transactions across all topics.
+* `iceberg_target_backlog_size` (default: 100 MiB): Average per-partition backlog size target. Controls when the backlog controller increases translation CPU priority.
+endif::[]
+
+// TODO: Looks like only redpanda.iceberg.target.lag.ms is available 
+// to tune in Cloud. Confirm what to include in this section
+ifndef::env-cloud[]
+== Tune for large messages
+
+If your workload consistently produces large messages, increase both the flush threshold and the lag target together. This lets each translator accumulate more data per upload cycle, producing Parquet files with more records per file.
+
+. Increase `datalake_translator_flush_bytes` to exceed your typical message size. A good starting value is two to four times your average message size:
++
+[,bash]
+----
+rpk cluster config set datalake_translator_flush_bytes <bytes>
+----
++
+For example, for a workload with an average message size of 16 MiB:
++
+[,bash]
+----
+rpk cluster config set datalake_translator_flush_bytes 67108864
+----
+
+. Increase `iceberg_target_lag_ms` to give translators more time to accumulate data. A value of five minutes is a reasonable starting point for large-message workloads:
++
+[,bash]
+----
+rpk cluster config set iceberg_target_lag_ms 300000
+----
++
+You can also set the lag target per topic using the
+xref:reference:properties/topic-properties.adoc#redpanda-iceberg-target-lag-ms[`redpanda.iceberg.target.lag.ms`] topic property.
++
+[NOTE]
+====
+Increasing the lag target means Iceberg tables receive new data less frequently. Choose a lag value that balances file efficiency against how current your downstream data must be.
+====
+
+[TIP]
+====
+`datalake_translator_flush_bytes` and `iceberg_target_lag_ms` work best when tuned together. A high flush threshold combined with a short lag window may not improve file sizes if the lag window expires before enough data has accumulated.
+====
+endif::[]
+
+== Backlog control
+
+When translation falls behind, Redpanda's backlog controller automatically increases the translation scheduling group's CPU priority to help it catch up. If the backlog grows large enough to exceed the throttle threshold, Redpanda applies backpressure to producers to prevent the lag from growing further.
+
+ifndef::env-cloud[]
+The following tunable properties control this behavior. In most cases, the defaults are appropriate. Contact https://support.redpanda.com/hc/en-us/requests/new[Redpanda support^] before adjusting them.
+
+* xref:reference:properties/cluster-properties.adoc#iceberg_target_backlog_size[`iceberg_target_backlog_size`] (default: `104857600` / 100 MiB): Average per-partition backlog size the controller targets. When exceeded, the controller increases translation scheduling priority.
+* xref:reference:properties/cluster-properties.adoc#iceberg_backlog_controller_p_coeff[`iceberg_backlog_controller_p_coeff`] (default: `0.00001`): Proportional coefficient for the backlog controller.
+* xref:reference:properties/cluster-properties.adoc#iceberg_backlog_controller_i_coeff[`iceberg_backlog_controller_i_coeff`] (default: `0.005`): Integral coefficient for accumulated backlog errors.
+endif::[]
+ifdef::env-cloud[]
+The backlog control behavior is governed by `iceberg_target_backlog_size`, `iceberg_backlog_controller_p_coeff`, and `iceberg_backlog_controller_i_coeff`. In most cases, the defaults are appropriate. Contact https://support.redpanda.com/hc/en-us/requests/new[Redpanda support^] before adjusting them.
+endif::[]
+
+== Partition count limits
+
+// Max partition count testing in progress
+
+For general partitioning best practices in the meantime, see xref:manage:iceberg/about-iceberg-topics.adoc#use-custom-partitioning[Use custom partitioning].
+
+== Monitor translation performance
+
+Use the following xref:reference:public-metrics-reference.adoc#iceberg-metrics[Iceberg metrics] to understand whether translation is keeping pace with incoming data:
+
+* *Translation lag*: Compare the rate of `redpanda_iceberg_translation_parquet_rows_added` or `redpanda_iceberg_translation_raw_bytes_processed` against your source write rate. A widening gap indicates translation is falling behind. No single metric measures translation lag directly. These rate comparisons are the primary signal.
+* *CPU utilization*: Translation is CPU-intensive. Monitor xref:reference:public-metrics-reference.adoc#infrastructure-metrics[infrastructure metrics] such as `redpanda_cpu_busy_seconds_total` for sustained high utilization, which may indicate the cluster is undersized for the combined broker and translation workload.
+
+=== Iceberg translation metrics
+
+The following metrics provide detail on translation throughput, file output, and errors:
+
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_translation_raw_bytes_processed[`redpanda_iceberg_translation_raw_bytes_processed`]: Total raw bytes consumed for translation input. Use this to monitor input throughput and compare against the expected 5 MiB/s per shard baseline.
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_translation_parquet_bytes_added[`redpanda_iceberg_translation_parquet_bytes_added`]: Total bytes written to Parquet files. Divide by `redpanda_iceberg_translation_files_created` to estimate the average file size produced by your workload.
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_translation_files_created[`redpanda_iceberg_translation_files_created`]: Number of Parquet files created. A high file creation rate relative to bytes added indicates many small files. Consider increasing `datalake_translator_flush_bytes` and `iceberg_target_lag_ms`.
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_translation_parquet_rows_added[`redpanda_iceberg_translation_parquet_rows_added`]: Total rows written to Parquet files. Useful for understanding record-level throughput.
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_translation_dlq_files_created[`redpanda_iceberg_translation_dlq_files_created`]: Number of dead letter queue (DLQ) Parquet files created. A non-zero and increasing value indicates records are failing to translate.
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_translation_invalid_records[`redpanda_iceberg_translation_invalid_records`]: Number of invalid records encountered during translation, labeled by cause.
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_translation_translations_finished[`redpanda_iceberg_translation_translations_finished`]: Number of completed translator executions. A stalling or zero rate indicates translation has stopped.
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_rest_client_num_commit_table_update_requests_failed[`redpanda_iceberg_rest_client_num_commit_table_update_requests_failed`]: Failed table commit requests to the REST catalog. Applies only when using a REST catalog (`iceberg_catalog_type: rest`). Persistent failures indicate catalog connectivity or permission issues.
+
+ifndef::env-cloud[]
+To check the current values of key translation cluster properties:
+
+[,bash]
+----
+rpk cluster config get datalake_translator_flush_bytes
+rpk cluster config get iceberg_target_lag_ms
+rpk cluster config get iceberg_target_backlog_size
+----
+endif::[]
+
+[TIP]
+====
+If translation consistently lags despite available CPU headroom, the workload may be partition-bound. Each shard translates its assigned partitions independently, so distributing data across more partitions allows more shards to contribute to translation and can improve total throughput.
+====
+
+== Troubleshoot Parquet read performance
+
+This section covers internal pipeline details that are relevant only if your query engine reports unexpectedly poor performance when reading the Parquet files generated by Redpanda.
+
+=== Page size and flush interval
+
+Redpanda's translator uses a 512 KiB internal page size for Parquet files, and pages are flushed from memory at most every 30 seconds. These values are not user-configurable.
+
+When a message contains a field whose data approaches 512 KiB, the resulting Parquet page may be larger than expected. This does not affect data correctness but can increase the memory requirements for query engines reading those files.
+
+If your query engine is reporting unexpectedly large Parquet pages or high per-query memory usage, review your message schemas for fields approaching 512 KiB in size. Splitting large fields or reducing field sizes can help. Contact https://support.redpanda.com/hc/en-us/requests/new[Redpanda support^] for additional guidance.
+
+// end::single-source[]
