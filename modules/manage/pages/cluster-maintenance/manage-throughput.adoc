@@ -2,6 +2,7 @@
 :description: Configure broker-wide and client-specific throughput quotas to prevent resource exhaustion and enable multi-tenant isolation.
 :page-categories: Management, Networking
 :page-topic-type: how-to
+:personas: platform_admin, developer
 :learning-objective-1: Configure user-based throughput quotas with authentication
 :learning-objective-2: Set client-based quotas for backward compatibility
 :learning-objective-3: Monitor quota usage and throttling behavior
@@ -18,7 +19,7 @@ ifndef::env-cloud[]
 :authentication-doc: manage:security/authentication.adoc
 endif::[]
 
-Redpanda supports throughput throttling on both ingress and egress independently, and allows configuration at the broker and client levels. This helps prevent clients from causing unbounded network and disk usage on brokers.
+Redpanda throttles throughput on ingress and egress independently, and you can configure limits at the broker and client levels. This prevents clients from causing unbounded network and disk usage on brokers.
 
 After reading this page, you will be able to:
 
@@ -51,7 +52,7 @@ For conceptual information about quota types, entity hierarchy, precedence rules
 
 == View connected client details
 
-You may find it helpful to check the xref:{monitor-doc}[current produce and consume throughput] of a client before you configure throughput quotas.
+Before configuring throughput quotas, check the xref:{monitor-doc}[current produce and consume throughput] of a client.
 
 ifndef::env-cloud[]
 Use the xref:reference:rpk/rpk-cluster/rpk-cluster-connections-list.adoc[`rpk cluster connections list`] command or the {connected-clients-api-doc-ref}[ListKafkaConnections] Admin API endpoint to view detailed information about active Kafka client connections.
@@ -660,7 +661,7 @@ Alternatively, you can view or configure throughput quotas for a group of client
 rpk cluster quotas alter --add consumer_byte_rate=200000 --name client-id-prefix=consumer-
 ----
 
-NOTE: A `client-id-prefix` quota group is not related to Kafka consumer groups. The `client_id` is an application-defined identifier sent with every request—client libraries typically default to their own name (such as kgo, rdkafka, sarama, or perf-producer-client), but applications can set it via the (https://kafka.apache.org/41/configuration/consumer-configs/#consumerconfigs_client.id)[`client.id`] configuration property. This makes prefix-based quotas useful for grouping related applications (for example, inventory-service- to match inventory-service-1, inventory-service-2, etc.).
+NOTE: A `client-id-prefix` quota group is not related to Kafka consumer groups. The `client_id` is an application-defined identifier sent with every request—client libraries typically default to their own name (such as `kgo`, `rdkafka`, `sarama`, or `perf-producer-client`), but applications can set it via the https://kafka.apache.org/documentation/#consumerconfigs_client.id[`client.id`] configuration property. This makes prefix-based quotas useful for grouping related applications (for example, `inventory-service-` to match `inventory-service-1`, `inventory-service-2`, etc.).
 
 ==== Default client throughput limit
 
@@ -688,10 +689,45 @@ rpk cluster quotas describe --format json
 
 [,bash]
 ----
-rpk cluster quotas import --from '{"quotas":[{"entity":[{"name":"foo","type":"client-id"}],"values":[{"key":"consumer_byte_rate","values":"12123123"}]},{"entity":[{"name":"foo-","type":"client-id-prefix"}],"values":[{"key":"producer_byte_rate","values":"12123123"},{"key":"consumer_byte_rate","values":"4444444"}]}]}'
+rpk cluster quotas import --from '{"quotas":[{"entity":[{"name":"analytics-consumer","type":"client-id"}],"values":[{"key":"consumer_byte_rate","values":"10000000"}]},{"entity":[{"name":"analytics-","type":"client-id-prefix"}],"values":[{"key":"producer_byte_rate","values":"10000000"},{"key":"consumer_byte_rate","values":"5000000"}]}]}'
 ----
 
 You can also save the JSON or YAML output to a file and pass the file path in the `--from` flag.
+
+=== View throughput limits in {ui}
+
+You can also use {ui} to view enforced limits. In the side menu, go to **Quotas**.
+
+=== Monitor client throughput
+
+The following metrics provide insights into client throughput quota usage:
+
+* Client quota throughput per rule and quota type:
+** `/public_metrics` - xref:reference:public-metrics-reference.adoc#redpanda_kafka_quotas_client_quota_throughput[`redpanda_kafka_quotas_client_quota_throughput`]
+ifndef::env-cloud[]
+** `/metrics` - xref:reference:internal-metrics-reference.adoc#vectorized_kafka_quotas_client_quota_throughput[`vectorized_kafka_quotas_client_quota_throughput`]
+endif::[]
+* Client quota throttling delay per rule and quota type, in seconds:
+** `/public_metrics` - xref:reference:public-metrics-reference.adoc#redpanda_kafka_quotas_client_quota_throttle_time[`redpanda_kafka_quotas_client_quota_throttle_time`]
+ifndef::env-cloud[]
+** `/metrics` - xref:reference:internal-metrics-reference.adoc#vectorized_kafka_quotas_client_quota_throttle_time[`vectorized_kafka_quotas_client_quota_throttle_time`]
+endif::[]
+
+To identify which clients are actively connected and generating traffic, see <<view-connected-client-details>>.
+
+// TODO: Verify the exact quota_rule label values for user-based quotas in v26.1.
+Quota metrics use the `quota_rule` label to identify which quota was applied to a request. The label distinguishes between different entity types (user, client, or combinations). See the `quota_rule` label values in xref:reference:public-metrics-reference.adoc#redpanda_kafka_quotas_client_quota_throughput[].
+
+The `kafka_quotas` logger provides details at the trace level on client quota throttling:
+
+[,bash]
+----
+TRACE 2024-06-14 15:36:05,240 [shard  2:main] kafka_quotas - quota_manager.cc:361 - request: ctx:{quota_type: produce_quota, client_id: {rpk}}, key:k_client_id{rpk}, value:{limit: {1111}, rule: kafka_client_default}, bytes: 1316, delay:184518451ns, capped_delay:184518451ns
+TRACE 2024-06-14 15:36:05,240 [shard  2:main] kafka_quotas - connection_context.cc:605 - [127.0.0.1:51256] throttle request:{snc:0, client:184}, enforce:{snc:-365123762, client:-365123762}, key:0, request_size:1316
+TRACE 2024-06-14 15:37:44,835 [shard  2:main] kafka_quotas - quota_manager.cc:361 - request: ctx:{quota_type: produce_quota, client_id: {rpk}}, key:k_client_id{rpk}, value:{limit: {1111}, rule: kafka_client_default}, bytes: 119, delay:0ns, capped_delay:0ns
+TRACE 2024-06-14 15:37:59,195 [shard  2:main] kafka_quotas - quota_manager.cc:361 - request: ctx:{quota_type: produce_quota, client_id: {rpk}}, key:k_client_id{rpk}, value:{limit: {1111}, rule: kafka_client_default}, bytes: 1316, delay:184518451ns, capped_delay:184518451ns
+TRACE 2024-06-14 15:37:59,195 [shard  2:main] kafka_quotas - connection_context.cc:605 - [127.0.0.1:58636] throttle request:{snc:0, client:184}, enforce:{snc:-14359, client:-14359}, key:0, request_size:1316
+----
 
 [[migrate]]
 === Migrate cluster configuration quotas to Kafka API-based quotas
@@ -762,39 +798,6 @@ Replace the placeholder values with the new quota values, accounting for the con
 [,bash]
 ----
 rpk cluster config set kafka_client_group_byte_rate_quota=
-----
-
-=== View throughput limits in {ui}
-
-You can also use {ui} to view enforced limits. In the side menu, go to **Quotas**.
-
-=== Monitor client throughput
-
-The following metrics provide insights into client throughput quota usage:
-
-* Client quota throughput per rule and quota type:
-** `/public_metrics` - xref:reference:public-metrics-reference.adoc#redpanda_kafka_quotas_client_quota_throughput[`redpanda_kafka_quotas_client_quota_throughput`]
-ifndef::env-cloud[]
-** `/metrics` - xref:reference:internal-metrics-reference.adoc#vectorized_kafka_quotas_client_quota_throughput[`vectorized_kafka_quotas_client_quota_throughput`]
-endif::[]
-* Client quota throttling delay per rule and quota type, in seconds:
-** `/public_metrics` - xref:reference:public-metrics-reference.adoc#redpanda_kafka_quotas_client_quota_throttle_time[`redpanda_kafka_quotas_client_quota_throttle_time`]
-ifndef::env-cloud[]
-** `/metrics` - xref:reference:internal-metrics-reference.adoc#vectorized_kafka_quotas_client_quota_throttle_time[`vectorized_kafka_quotas_client_quota_throttle_time`]
-endif::[]
-
-// TODO: Verify the exact quota_rule label values for user-based quotas in v26.1.
-Quota metrics use the `quota_rule` label to identify which quota was applied to a request. The label distinguishes between different entity types (user, client, or combinations). See the `quota_rule` label values in xref:reference:public-metrics-reference.adoc#redpanda_kafka_quotas_client_quota_throughput[].
-
-The `kafka_quotas` logger provides details at the trace level on client quota throttling:
-
-[,bash]
-----
-TRACE 2024-06-14 15:36:05,240 [shard  2:main] kafka_quotas - quota_manager.cc:361 - request: ctx:{quota_type: produce_quota, client_id: {rpk}}, key:k_client_id{rpk}, value:{limit: {1111}, rule: kafka_client_default}, bytes: 1316, delay:184518451ns, capped_delay:184518451ns
-TRACE 2024-06-14 15:36:05,240 [shard  2:main] kafka_quotas - connection_context.cc:605 - [127.0.0.1:51256] throttle request:{snc:0, client:184}, enforce:{snc:-365123762, client:-365123762}, key:0, request_size:1316
-TRACE 2024-06-14 15:37:44,835 [shard  2:main] kafka_quotas - quota_manager.cc:361 - request: ctx:{quota_type: produce_quota, client_id: {rpk}}, key:k_client_id{rpk}, value:{limit: {1111}, rule: kafka_client_default}, bytes: 119, delay:0ns, capped_delay:0ns
-TRACE 2024-06-14 15:37:59,195 [shard  2:main] kafka_quotas - quota_manager.cc:361 - request: ctx:{quota_type: produce_quota, client_id: {rpk}}, key:k_client_id{rpk}, value:{limit: {1111}, rule: kafka_client_default}, bytes: 1316, delay:184518451ns, capped_delay:184518451ns
-TRACE 2024-06-14 15:37:59,195 [shard  2:main] kafka_quotas - connection_context.cc:605 - [127.0.0.1:58636] throttle request:{snc:0, client:184}, enforce:{snc:-14359, client:-14359}, key:0, request_size:1316
 ----
 
 == See also

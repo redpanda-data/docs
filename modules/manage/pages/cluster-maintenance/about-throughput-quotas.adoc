@@ -2,9 +2,10 @@
 :description: Understand how Redpanda's user-based and client-based throughput quotas work, including entity hierarchy, precedence rules, and quota tracking behavior.
 :page-topic-type: concepts
 :page-aliases:
-:learning-objective-1: Understand the difference between user-based and client-based quotas
+:personas: platform_admin, developer
+:learning-objective-1: Describe the difference between user-based and client-based quotas
 :learning-objective-2: Determine which quota type to use for your use case
-:learning-objective-3: Understand quota precedence and tracking behavior
+:learning-objective-3: Explain quota precedence rules and how Redpanda tracks quota usage
 
 // tag::single-source[]
 ifdef::env-cloud[]
@@ -14,7 +15,7 @@ ifndef::env-cloud[]
 :authentication-doc: manage:security/authentication.adoc
 endif::[]
 
-Redpanda provides throughput quotas to limit the rate of produce and consume requests from clients. Understanding how quotas work helps you design effective multi-tenant isolation and prevent resource exhaustion.
+Redpanda uses throughput quotas to limit the rate of produce and consume requests from clients. Understanding how quotas work helps you design effective multi-tenant isolation and prevent resource exhaustion.
 
 After reading this page, you will be able to:
 
@@ -113,6 +114,8 @@ When a request arrives, Redpanda resolves which quota to apply by matching the r
 
 IMPORTANT: The `<default>` entity matches any user or client that doesn't have a more specific quota configured. This is different from an empty/unauthenticated user (`user=""`), which is treated as a specific entity.
 
+The precedence level that matches also determines how quota usage is tracked. See <<Quota tracking and isolation>>.
+
 === Example: Precedence resolution
 
 Given these configured quotas:
@@ -125,24 +128,22 @@ rpk cluster quotas alter --add consumer_byte_rate=20000000 --name client-id=app-
 ----
 
 |===
-| User + Client ID | Precedence match | Resulting quota
+| User + Client ID | Precedence match
 
 | `user="alice"`, `client_id="app-1"`
 | Level 1: Exact user + exact client
-| 5 MB/s
 
 | `user="alice"`, `client_id="app-2"`
 | Level 4: Exact user only
-| 10 MB/s
 
 | `user="bob"`, `client_id="app-1"`
 | Level 9: Exact client only
-| 20 MB/s
 
 | `user="bob"`, `client_id="app-2"`
 | Level 12: No quota configured
-| Unlimited
 |===
+
+When no quota matches (level 12), the connection is not throttled.
 
 === Unauthenticated connections
 
@@ -155,25 +156,112 @@ Unauthenticated connections:
 
 == Quota tracking and isolation
 
-Each unique (user principal + `client_id`) combination is tracked independently for quota enforcement, even if multiple combinations have the same quota limit configured. This means:
+Redpanda tracks quota usage using a tracker key that determines which connections share the same quota bucket. The tracker key—and therefore the isolation level—depends on which quota rule matches the request. The Level column below corresponds to the precedence levels in <<Quota entity hierarchy>>.
 
-* Different users using the same `client_id` each get their own quota tracking.
-* The same user with different `client_id` values also gets separate quota tracking with each client.
-* Quota usage is not shared between different (user, client) pairs.
+=== Tracking granularity by quota type
 
-=== Example: Separate quota tracking per user
+[cols="1,3,2,4", options="header"]
+|===
+| Level | Config path | Tracker key | Isolation behavior
 
-The following command sets a default 10 MB/s quota for all users:
+| 1
+| `/config/users/<user>/clients/<client-id>`
+| `(user, client_id)`
+| Each unique (user, client_id) pair tracked independently
+
+| 2
+| `/config/users/<user>/client-id-prefix/<prefix>`
+| `(user, prefix)`
+| Clients matching the prefix share tracking within that user
+
+| 3
+| `/config/users/<user>/clients/<default>`
+| `(user, client_id)`
+| Each unique (user, client_id) pair tracked independently
+
+| 4
+| `/config/users/<user>`
+| `user`
+| All clients for that user share a single tracking bucket
+
+| 5
+| `/config/users/<default>/clients/<client-id>`
+| `(user, client_id)`
+| Each unique (user, client_id) pair tracked independently
+
+| 6
+| `/config/users/<default>/client-id-prefix/<prefix>`
+| `(user, prefix)`
+| Clients matching the prefix share tracking within each user
+
+| 7
+| `/config/users/<default>/clients/<default>`
+| `(user, client_id)`
+| Each unique (user, client_id) pair tracked independently
+
+| 8
+| `/config/users/<default>`
+| `user`
+| All clients for each user share a single tracking bucket (per user)
+
+| 9
+| `/config/clients/<client-id>`
+| `client_id`
+| All users with that client_id share a single tracking bucket
+
+| 10
+| `/config/client-id-prefix/<prefix>`
+| `prefix`
+| All clients matching the prefix share a single bucket (across all users)
+
+| 11
+| `/config/clients/<default>`
+| `client_id`
+| Each unique client_id tracked independently
+
+| 12
+| No quota configured
+| N/A
+| No tracking / unlimited throughput
+|===
+
+=== Key behaviors
+
+* *User-only quotas share across client_ids*: When you configure a quota at the user level (for example, `/config/users/alice`, level 4) without specifying a `client_id` dimension, all connections from that user share a single quota bucket regardless of their `client_id`.
+* *Client-id-only quotas share across users*: When you configure a quota at the `client_id` level (for example, `/config/clients/app-1`, level 9) without specifying a user dimension, all users connecting with that `client_id` share a single quota bucket.
+* *Combined quotas for per-(user, client_id) tracking*: To get independent quota tracking per (user, client_id) combination, configure quotas that include both dimensions, such as `/config/users/<user>/clients/<client-id>` (level 1) or `/config/users/<default>/clients/<default>` (level 7).
+* *Prefix-based quotas group clients*: Client ID prefix quotas (for example, `/config/client-id-prefix/app-`, level 10) cause all clients whose `client_id` starts with that prefix to share a quota bucket.
+
+=== Example: User-only quota
+
+If you configure a 10 MB/s produce quota for user `alice`:
+
+[,bash]
+----
+rpk cluster quotas alter --add producer_byte_rate=10000000 --name user=alice
+----
+
+Then `alice` connecting with `client_id=app-1` and `alice` connecting with `client_id=app-2` share the same 10 MB/s limit. Their combined throughput cannot exceed 10 MB/s.
+
+To give each of `alice`'s clients an independent 10 MB/s limit, configure:
+
+[,bash]
+----
+rpk cluster quotas alter --add producer_byte_rate=10000000 --name user=alice,client-id=default
+----
+
+=== Example: User default quota
+
+If you configure a default 10 MB/s produce quota for all users:
 
 [,bash]
 ----
 rpk cluster quotas alter --add producer_byte_rate=10000000 --name user=default
 ----
 
-* If user `alice` authenticates and uses `client_id="app1"`, Redpanda enforces a 10 MB/s quota.
-* If user `bob` authenticates and uses `client_id="app1"`, Redpanda also enforces a 10 MB/s quota, but this is tracked separately from user `alice`.
+This quota applies to all users who don't have a more specific quota configured. Each user is tracked independently—`alice` gets her own 10 MB/s bucket, `bob` gets his own 10 MB/s bucket, and so on.
 
-The combined throughput is 20 MB/s, and each user has their own independent 10 MB/s limit.
+Within each user, all `client_id` values share that user's bucket. So `alice` connecting with `client_id=app-1` and `alice` connecting with `client_id=app-2` share the same 10 MB/s limit, while `bob`'s connections have a separate 10 MB/s limit.
 
 [[throttling-enforcement]]
 == Throughput throttling enforcement
