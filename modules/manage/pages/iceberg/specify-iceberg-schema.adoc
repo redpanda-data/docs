@@ -275,7 +275,7 @@ Requirements:
 
 - Only JSON Schema Draft-07 is currently supported.
 - You must declare the JSON Schema dialect using the `$schema` keyword, for example `"$schema": "http://json-schema.org/draft-07/schema#"`.
-- You must use a JSON Schema that constrains JSON documents to a strict type in order for Redpanda to translate to Iceberg; that is, each subschema must use the `type` keyword.
+- You must use a JSON Schema that constrains JSON documents to a strict type so Redpanda can translate to Iceberg. In most cases this means each subschema uses the `type` keyword, but a subschema can also use `$ref` if the referenced schema resolves to a strict type.
 
 .Valid JSON Schema example
 [,json]
@@ -310,7 +310,7 @@ Requirements:
 
 | null 
 | 
-| The `null` type is not supported except when it is paired with another type to indicate nullability.
+| The `null` type is only supported as a nullability marker, either in a `type` array (for example, `["string", "null"]`) or in an exclusive `oneOf` nullable pattern.
 
 | number 
 | double
@@ -325,9 +325,11 @@ Requirements:
 | The `format` keyword can be used for custom Iceberg types. See <<format-translation,`format` annotation translation>> for details.
 
 | object 
-| struct
-| The `properties` keyword must be used to define `struct` fields and constrain their types. The `additionalProperties` keyword is accepted only when it is set to `false`.
- 
+| struct or map
+a| * Use `properties` to define `struct` fields and constrain their types. `additionalProperties: false` is supported for closed objects.
+* If `additionalProperties` contains a schema, it translates to an Iceberg `map<string, T>`.
+* You cannot combine `properties` and `additionalProperties`in an object if `additionalProperties` is set to a schema.
+
 |===
 
 [[format-translation]]
@@ -341,13 +343,20 @@ Requirements:
 
 |===
 
+Keyword behavior:
+
+* The `$ref` keyword is supported for internal references resolved from schema resources declared in the same document (using `$id`), including relative and absolute URI forms. References to external resources and references to unknown keywords are not supported. A root-level `$ref` schema is not supported.
+* The `oneOf` keyword is supported only for the nullable serializer pattern where exactly one branch is `{"type":"null"}` and the other branch is a non-null schema (`T|null`).
+* In Iceberg output, Redpanda writes all fields as nullable regardless of serializer nullability annotations.
+
 The following are not supported for JSON Schema:
 
-* Relative and absolute (including external) references using `$ref` and `$dynamicRef` keywords
+* The `$dynamicRef` keyword
 * The `default` keyword 
-* Conditional typing (`if`, `then`, `else`, `dependent` keywords)
-* Boolean JSON Schema combinations (`allOf`, `anyOf`, `oneOf` keywords)
-* Dynamic object members (`patternProperties` and `additionalProperties` (except when it is set to `false`) keywords)
+* Conditional typing (`if`, `then`, `else`, `dependencies` keywords)
+* Boolean JSON Schema combinations (`allOf`, `anyOf`, and non-nullable `oneOf` patterns)
+* Dynamic object members with the `patternProperties` keyword
+* `additionalProperties: true`
 --
 
 ======
