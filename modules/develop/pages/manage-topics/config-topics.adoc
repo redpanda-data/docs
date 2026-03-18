@@ -58,6 +58,49 @@ TIP: If you enable xref:manage:tiered-storage.adoc[Tiered Storage] on a topic, y
 
 endif::[]
 
+ifndef::env-cloud[]
+[[choose-a-storage-mode]]
+=== Choose a storage mode
+
+Starting in Redpanda 26.1, you can set the `redpanda.storage.mode` topic property to control how a topic stores data:
+
+[cols="1,3"]
+|===
+| Value | Behavior
+
+| `unset` (default)
+| Legacy behavior. Tiered Storage is controlled by the `redpanda.remote.read` and `redpanda.remote.write` topic properties and their cluster-level defaults (`cloud_storage_enable_remote_read` and `cloud_storage_enable_remote_write`).
+
+| `local`
+| Data is stored only on broker-local storage. Object storage upload is disabled for the topic, regardless of cluster-level Tiered Storage settings.
+
+| `tiered`
+| Data is stored on local disk and uploaded to object storage. Enables xref:manage:tiered-storage.adoc[Tiered Storage] for the topic regardless of `redpanda.remote.read` and `redpanda.remote.write` values.
+
+| `cloud`
+| Data is stored durably in object storage using the Cloud Topics architecture. Local storage is used only as a write buffer. See xref:develop:manage-topics/cloud-topics.adoc[].
+|===
+
+To set the storage mode at topic creation time:
+
+[,bash]
+----
+rpk topic create <topic-name> -c redpanda.storage.mode=tiered
+----
+
+When `redpanda.storage.mode` is set to `local`, `tiered`, or `cloud`, the `redpanda.remote.read` and `redpanda.remote.write` topic properties have no effect on the topic.
+
+To apply a default storage mode to all new topics in a cluster, set the `default_redpanda_storage_mode` cluster property:
+
+[,bash]
+----
+rpk cluster config set default_redpanda_storage_mode=tiered
+----
+
+If `default_redpanda_storage_mode` is not configured (the default), new topics use `unset` mode and Tiered Storage behavior is inherited from the cluster-level `cloud_storage_enable_remote_write` and `cloud_storage_enable_remote_read` properties.
+
+endif::[]
+
 == Update topic configurations
 
 After you create a topic, you can update the topic property settings for all new data written to it. For example, you can add partitions or change the cleanup policy.
@@ -87,6 +130,46 @@ rpk topic alter-config [TOPICS...] --set replication.factor=3
 ----
 
 NOTE: The replication factor can't exceed the number of Redpanda brokers. If you try to set a replication factor greater than the number of brokers, the request is rejected.
+
+endif::[]
+
+ifndef::env-cloud[]
+[[change-the-storage-mode]]
+=== Change the storage mode
+
+You can change a topic's `redpanda.storage.mode` after creation, with the following restrictions:
+
+[cols="1,1,1,3"]
+|===
+| From | To | Permitted | Notes
+
+| `local`
+| `tiered`
+| Yes
+| Enables Tiered Storage for the topic. Object storage must be configured.
+
+| `tiered`
+| `local`
+| With caution
+| Disables object storage uploads. Redpanda strongly recommends against repeatedly toggling this setting, as it can result in data gaps in Tiered Storage.
+
+| Any
+| `cloud`
+| No
+| Cloud Topics can only be set at topic creation time.
+
+| `cloud`
+| Any
+| No
+| A Cloud Topic cannot be converted to a local or Tiered Storage topic.
+|===
+
+For example, to transition an existing local topic to Tiered Storage:
+
+[,bash]
+----
+rpk topic alter-config <topic-name> --set redpanda.storage.mode=tiered
+----
 
 endif::[]
 
@@ -192,6 +275,7 @@ redpanda.datapolicy           function_name:  script_name:   DEFAULT_CONFIG
 redpanda.remote.delete        true                           DEFAULT_CONFIG
 redpanda.remote.read          false                          DEFAULT_CONFIG
 redpanda.remote.write         false                          DEFAULT_CONFIG
+redpanda.storage.mode         unset                          DEFAULT_CONFIG
 retention.bytes               -1                             DEFAULT_CONFIG
 retention.local.target.bytes  -1                             DEFAULT_CONFIG
 retention.local.target.ms     86400000                       DEFAULT_CONFIG
