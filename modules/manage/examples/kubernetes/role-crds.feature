@@ -43,8 +43,6 @@ Feature: Role CRDs
     And I apply Kubernetes manifest:
     """
 # tag::manage-roles-with-authorization[]
-    # In this example manifest, a role called "read-only-role" is created in a cluster called "sasl".
-    # The role includes authorization rules that allow reading from topics with names starting with "public-".
     ---
     apiVersion: cluster.redpanda.com/v1alpha2
     kind: RedpandaRole
