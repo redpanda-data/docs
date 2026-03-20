@@ -509,6 +509,102 @@ resources:
     cores: 200m
 ----
 
+[[config-watcher]]
+== Configure config-watcher sidecar resources
+
+Each Redpanda Pod includes a config-watcher sidecar container that monitors for SASL user changes and configuration updates. The sidecar polls a Secret for user credential changes and synchronizes them with the running brokers.
+
+The config-watcher sidecar does not set any CPU or memory resource requests or limits by default. For most clusters, this is acceptable because the sidecar is lightweight. In practice, it typically consumes single-digit millicores of CPU and approximately 20-40 Mi of memory.
+
+However, you should configure explicit resource requests and limits for the config-watcher sidecar in the following cases:
+
+- Your namespace enforces a https://kubernetes.io/docs/concepts/policy/limit-range/[LimitRange^] policy that requires all containers to specify resource requests or limits.
+- Your namespace enforces a https://kubernetes.io/docs/concepts/policy/resource-quotas/[ResourceQuota^] that accounts for resource requests across all containers.
+- You want to ensure the <<qos, Guaranteed QoS class>> for your Redpanda Pods. Kubernetes requires every container in a Pod to have matching requests and limits to qualify.
+
+[tabs]
+======
+Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    statefulset:
+      sideCars:
+        configWatcher:
+          resources:
+            requests:
+              cpu: 10m <1>
+              memory: 64Mi <2>
+            limits:
+              cpu: 100m
+              memory: 128Mi
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`config-watcher-resources.yaml`
+[,yaml]
+----
+statefulset:
+  sideCars:
+    configWatcher:
+      resources:
+        requests:
+          cpu: 10m <1>
+          memory: 64Mi <2>
+        limits:
+          cpu: 100m
+          memory: 128Mi
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values config-watcher-resources.yaml --reuse-values
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set statefulset.sideCars.configWatcher.resources.requests.cpu=10m \
+  --set statefulset.sideCars.configWatcher.resources.requests.memory=64Mi \
+  --set statefulset.sideCars.configWatcher.resources.limits.cpu=100m \
+  --set statefulset.sideCars.configWatcher.resources.limits.memory=128Mi
+```
+
+====
+--
+======
+
+<1> A CPU request of `10m` (10 millicores) is sufficient for typical config-watcher workloads. The sidecar spends most of its time idle between polling intervals.
+<2> A memory request of `64Mi` provides headroom for the sidecar process. Actual usage is typically 20-40 Mi.
+
+When the StatefulSet is deployed, verify that the sidecar container has the expected resource configuration:
+
+[source,bash]
+----
+kubectl --namespace <namespace> get pod <pod-name> -o jsonpath='{.spec.containers[?(@.name=="sidecar")].resources}{"\n"}'
+----
+
 include::shared:partial$suggested-reading.adoc[]
 
 - xref:reference:k-redpanda-helm-spec.adoc#resources[Redpanda Helm Specification]
