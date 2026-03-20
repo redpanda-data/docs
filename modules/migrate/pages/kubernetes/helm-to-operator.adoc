@@ -75,20 +75,23 @@ TIP: Before implementing any changes in your production environment, Redpanda Da
 
 == Expected impact: rolling restart of broker pods
 
-When you apply the Redpanda custom resource, the operator triggers a rolling restart of all broker pods. This happens even if your `clusterSpec` values exactly match the existing Helm values. There is no way to avoid this restart during migration.
+When you apply the Redpanda custom resource, the operator triggers a rolling restart of all broker pods. This restart occurs even if your `clusterSpec` values exactly match the existing Helm values. You cannot avoid this restart during migration.
 
 === Why pods restart
 
 The migration triggers the following sequence:
 
-. *Resource adoption*: The operator uses server-side apply to take ownership of the existing Helm-managed StatefulSet. This patches the StatefulSet with new labels (generation, config version, ownership) and sets the Redpanda custom resource as the owner reference.
+. *Resource adoption*: The operator uses server-side apply to take ownership of the existing Helm-managed StatefulSet. It patches the StatefulSet with new labels (generation, config version, and ownership) and sets the Redpanda custom resource as the owner reference.
 . *StatefulSet spec update*: The operator re-renders the StatefulSet from its own templates. Any difference, even metadata or label changes, creates a new `ControllerRevision`.
-. *Pod rolling*: The operator compares each pod's `StatefulSetRevisionLabel` against the latest `ControllerRevision`. Because the existing pods were created under the old Helm-managed revision, every pod is flagged for rolling.
+. *Pod rolling*: The operator compares each pod's `StatefulSetRevisionLabel` against the latest `ControllerRevision`. Because the existing pods were created under the old Helm-managed revision, the operator flags every pod for rolling.
 . *One-at-a-time deletion*: The operator deletes pods one at a time:
++
+--
 * Checks cluster health through the admin API.
-* If healthy, deletes the pod, then requeues after 10 seconds.
+* Deletes the pod if the cluster is healthy, then requeues after 10 seconds.
 * Waits for the cluster to stabilize before rolling the next pod.
-* If the cluster is unhealthy, skips deletion and requeues.
+* Skips deletion and requeues if the cluster is unhealthy.
+--
 
 === Impact by cluster configuration
 
@@ -97,10 +100,10 @@ The migration triggers the following sequence:
 | Scenario | Impact
 
 | 3+ brokers, replication factor (RF) >= 3
-| No data loss and no downtime for consumers or producers configured with `acks=all`. Individual broker restarts cause brief partition leader elections (typically a few seconds each). Redpanda uses Raft consensus, so writes require a majority quorum. With RF=3 and one broker restarting, the remaining two brokers maintain quorum and writes continue.
+| No data loss and no downtime for consumers or producers configured with `acks=all`. Individual broker restarts cause brief partition leader elections, typically a few seconds each. Redpanda uses Raft consensus, so writes require a majority quorum. With RF=3 and one broker restarting, the remaining two brokers maintain quorum and writes continue.
 
 | 3 brokers, RF = 1
-| Partitions hosted on the restarting broker are unavailable for the duration of that broker's restart.
+| Partitions on the restarting broker are unavailable for the duration of that broker's restart.
 
 | Single broker
 | Full outage for the duration of the restart.
@@ -108,13 +111,13 @@ The migration triggers the following sequence:
 
 === Recommended producer settings
 
-To avoid message loss during the rolling restart, configure producers with:
+To avoid message loss during the rolling restart, configure producers with the following settings:
 
-- `acks=all` (or `-1`): Waits for the write to be committed by the Raft quorum (majority of replicas).
-- `retries`: Set to a high value to handle `NOT_LEADER_FOR_PARTITION` errors during leader elections.
+- `acks=all` (or `-1`): Ensures the Raft quorum (majority of replicas) commits the write before acknowledging it.
+- `retries`: Handles `NOT_LEADER_FOR_PARTITION` errors during leader elections. Set this to a high value.
 - `enable.idempotence=true`: Prevents duplicate messages from retries.
 
-NOTE: Redpanda uses Raft-based replication, not Kafka's in-sync replica (ISR) mechanism. With Raft, writes require a majority quorum (2 of 3 for RF=3). There is no `min.insync.replicas` setting to configure. The replication factor alone determines fault tolerance.
+NOTE: Redpanda uses Raft-based replication, not the in-sync replica (ISR) mechanism used by Apache Kafka. With Raft, writes require a majority quorum (2 of 3 for RF=3). There is no `min.insync.replicas` setting to configure. The replication factor alone determines fault tolerance.
 
 == Migrate to the Redpanda Operator and Helm
 
