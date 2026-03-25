@@ -1,0 +1,356 @@
+= Cloud Topics on Kubernetes
+:description: Configure Cloud Topics on Kubernetes to optimize for latency-tolerant, high-throughput workloads using object storage as the primary data tier.
+:page-categories: Management, Data Replication
+:env-kubernetes: true
+
+Cloud Topics are a storage mode in Redpanda optimized for latency-tolerant, high-throughput workloads where cross-AZ networking costs significantly impact expenses. Instead of replicating data across network links, Cloud Topics use durable object storage (such as Amazon S3, Google Cloud Storage, Azure Blob Storage, or MinIO) as the primary mechanism to replicate data and serve it to consumers.
+
+This approach can eliminate over 90% of replication costs across network links in multi-AZ deployments.
+
+NOTE: include::shared:partial$enterprise-license.adoc[]
+
+== How Cloud Topics work
+
+With standard Redpanda topics, data is replicated across brokers using Raft consensus and stored locally on each replica. Cloud Topics change this model: data is acknowledged only after it is uploaded to object storage, making object storage the source of truth for both replication and consumption.
+
+Because data isn't acknowledged until uploaded to object storage, produce latency is higher than with standard topics. Expected end-to-end latencies range from 500 ms to 1 second with public cloud object stores. Lower latencies are achievable in certain environments.
+
+=== Storage modes
+
+Redpanda supports multiple storage modes that you can set at the cluster or topic level using the `redpanda.storage.mode` property:
+
+|===
+| Mode | Behavior
+
+| `unset`
+| Follows legacy behavior.
+
+| `local`
+| Data is stored only on local disk. No remote storage is used.
+
+| `tiered`
+| Data is written locally and offloaded to object storage asynchronously using Tiered Storage.
+
+| `cloud`
+| Data is managed primarily in object storage. Local storage acts as a cache.
+|===
+
+When `redpanda.storage.mode` is set on a topic, it takes precedence over any legacy `redpanda.remote.read` and `redpanda.remote.write` settings, which are generally ignored.
+
+=== Ideal use cases
+
+Cloud Topics are best suited for latency-tolerant workloads, including:
+
+- Observability and logging streams
+- Offline analytics pipelines
+- AI/ML training data ingestion
+- Development and staging environments with flexible latency requirements
+
+=== Limitations
+
+- Once created, a Cloud Topic cannot be converted back to a standard topic using `local` or `tiered` storage mode.
+- Higher produce latency compared to standard topics (500 ms to 1 second with public cloud stores).
+
+== Prerequisites
+
+You must have the following:
+
+- **Kubectl**: Ensure you have the https://kubernetes.io/docs/tasks/tools/#kubectl[`kubectl`^] command-line tool installed and configured to communicate with your cluster.
+- **Redpanda**: A xref:deploy:deployment-option/self-hosted/kubernetes/kubernetes-deploy.adoc[Redpanda Operator and a Redpanda resource deployed] in your Kubernetes cluster running Redpanda v26.1 or later.
+- **Object storage**: A configured object storage backend (Amazon S3, Google Cloud Storage, Azure Blob Storage, or an S3-compatible store such as MinIO).
+- **Enterprise license**: A valid Redpanda Enterprise license applied to the cluster.
+
+include::shared:partial$enterprise-license.adoc[]
+
+To check if you already have a license key applied to your cluster:
+
+[,bash]
+----
+rpk cluster license info
+----
+
+== Configure object storage
+
+Before enabling Cloud Topics, you must configure object storage access for your Redpanda cluster. If you have already configured object storage for Tiered Storage, you can skip this step.
+
+See xref:manage:kubernetes/tiered-storage/k-tiered-storage.adoc#configure-object-storage[Configure object storage] in the Tiered Storage documentation for instructions on configuring Amazon S3, Google Cloud Storage, or Azure Blob Storage.
+
+== Enable Cloud Topics
+
+Enabling Cloud Topics is a two-step process:
+
+. Enable the `cloud_topics_enabled` cluster property.
+. Optionally set the default storage mode for all new topics to `cloud`.
+
+[tabs]
+======
+Helm + Operator::
++
+--
+
+. Add the following to your Redpanda custom resource to enable Cloud Topics and set the default storage mode:
++
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    storage:
+      tiered:
+        mountType: none
+        credentialsSecretRef:
+          accessKey:
+            name: cloud-storage-creds
+            key: access-key
+          secretKey:
+            name: cloud-storage-creds
+            key: secret-key
+        config:
+          cloud_storage_enabled: true
+          cloud_storage_region: <region>
+          cloud_storage_bucket: <bucket-name>
+    config:
+      cluster:
+        cloud_topics_enabled: true
+        default_redpanda_storage_mode: cloud # <1>
+----
+<1> Optional. Set to `cloud` to make all new topics Cloud Topics by default. Omit this to create Cloud Topics individually.
+
+. Apply the configuration:
++
+[,bash]
+----
+kubectl apply -f redpanda-cluster.yaml -n <namespace>
+----
+
+. The Redpanda Operator reconciles the configuration. Wait for the cluster to be ready:
++
+[,bash]
+----
+kubectl rollout status statefulset redpanda -n <namespace> --watch
+----
+
+. Verify that Cloud Topics are enabled:
++
+[,bash]
+----
+kubectl exec -n <namespace> redpanda-0 -c redpanda -- \
+  rpk cluster config get cloud_topics_enabled
+----
++
+Expected output: `true`
+
+--
+Helm::
++
+--
+
+. Add the following to your Helm values file:
++
+.`cloud-topics-values.yaml`
+[,yaml]
+----
+storage:
+  tiered:
+    mountType: none
+    credentialsSecretRef:
+      accessKey:
+        name: cloud-storage-creds
+        key: access-key
+      secretKey:
+        name: cloud-storage-creds
+        key: secret-key
+    config:
+      cloud_storage_enabled: true
+      cloud_storage_region: <region>
+      cloud_storage_bucket: <bucket-name>
+config:
+  cluster:
+    cloud_topics_enabled: true
+    default_redpanda_storage_mode: cloud # <1>
+----
+<1> Optional. Set to `cloud` to make all new topics Cloud Topics by default. Omit this to create Cloud Topics individually.
+
+. Deploy or upgrade the Helm chart:
++
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda \
+  -n <namespace> --create-namespace \
+  -f cloud-topics-values.yaml
+----
+
+. Wait for the cluster to be ready:
++
+[,bash]
+----
+kubectl rollout status statefulset redpanda -n <namespace> --watch
+----
+
+. Verify that Cloud Topics are enabled:
++
+[,bash]
+----
+kubectl exec -n <namespace> redpanda-0 -c redpanda -- \
+  rpk cluster config get cloud_topics_enabled
+----
++
+Expected output: `true`
+--
+======
+
+== Create a Cloud Topic
+
+You can create Cloud Topics either by setting the cluster default storage mode to `cloud`, or by configuring individual topics.
+
+=== Create Cloud Topics by default
+
+If you set `default_redpanda_storage_mode` to `cloud` in the cluster configuration, all new topics inherit the `cloud` storage mode automatically.
+
+Verify the cluster default:
+
+[,bash]
+----
+kubectl exec -n <namespace> redpanda-0 -c redpanda -- \
+  rpk cluster config get default_redpanda_storage_mode
+----
+
+Expected output: `cloud`
+
+Any new topic created without an explicit storage mode inherits this default:
+
+[tabs]
+======
+Operator Topic resource::
++
+--
+.`cloud-topic.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Topic
+metadata:
+  name: my-cloud-topic
+  namespace: <namespace>
+spec:
+  partitions: 3
+  replicationFactor: 3
+  cluster:
+    clusterRef:
+      name: redpanda
+----
+
+[,bash]
+----
+kubectl apply -f cloud-topic.yaml
+----
+--
+rpk::
++
+--
+[,bash]
+----
+kubectl exec -n <namespace> redpanda-0 -c redpanda -- \
+  rpk topic create my-cloud-topic -p 3 -r 3
+----
+--
+======
+
+=== Create individual Cloud Topics
+
+If the cluster default storage mode is not set to `cloud`, you can create individual Cloud Topics by setting the `redpanda.storage.mode` property on the topic.
+
+[tabs]
+======
+Operator Topic resource::
++
+--
+.`cloud-topic.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Topic
+metadata:
+  name: my-cloud-topic
+  namespace: <namespace>
+spec:
+  partitions: 3
+  replicationFactor: 3
+  additionalConfig:
+    redpanda.storage.mode: "cloud"
+  cluster:
+    clusterRef:
+      name: redpanda
+----
+
+[,bash]
+----
+kubectl apply -f cloud-topic.yaml
+----
+--
+rpk::
++
+--
+[,bash]
+----
+kubectl exec -n <namespace> redpanda-0 -c redpanda -- \
+  rpk topic create my-cloud-topic -p 3 -r 3 -c redpanda.storage.mode=cloud
+----
+--
+======
+
+=== Override the cluster default
+
+Topic-level storage mode settings override the cluster default. For example, if the cluster default is `cloud`, you can create a topic with `local` or `tiered` storage:
+
+.`local-topic.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Topic
+metadata:
+  name: my-local-topic
+  namespace: <namespace>
+spec:
+  partitions: 3
+  replicationFactor: 3
+  additionalConfig:
+    redpanda.storage.mode: "local"
+  cluster:
+    clusterRef:
+      name: redpanda
+----
+
+== Verify topic storage mode
+
+To verify the storage mode of a topic, inspect its configuration through the Topic resource status:
+
+[,bash]
+----
+kubectl get topic <topic-name> -n <namespace> -o jsonpath=\
+  '{range .status.topicConfiguration[*]}{.name}={.value} ({.source}){"\n"}{end}' \
+  | grep storage.mode
+----
+
+Expected output for a Cloud Topic:
+
+----
+storage.mode=cloud (DEFAULT_CONFIG)
+----
+
+Or, if explicitly set on the topic:
+
+----
+storage.mode=cloud (DYNAMIC_TOPIC_CONFIG)
+----
+
+The `source` field indicates whether the value was inherited from the cluster default (`DEFAULT_CONFIG`) or explicitly set on the topic (`DYNAMIC_TOPIC_CONFIG`).
+
+== Suggested reading
+
+- xref:manage:kubernetes/tiered-storage/k-tiered-storage.adoc[Use Tiered Storage on Kubernetes]
+- xref:manage:kubernetes/k-manage-topics.adoc[Manage Topics with the Redpanda Operator]
