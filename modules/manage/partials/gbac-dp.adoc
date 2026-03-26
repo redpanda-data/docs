@@ -8,6 +8,16 @@ After reading this page, you will be able to:
 * [ ] {learning-objective-2}
 * [ ] {learning-objective-3}
 
+== Prerequisites
+
+To use GBAC, you need:
+
+ifndef::env-cloud[]
+* An xref:get-started:licensing/overview.adoc[Enterprise Edition] license applied to your cluster.
+endif::[]
+* xref:manage:security/authentication.adoc#oidc[OIDC authentication] configured and enabled on your cluster.
+* Superuser access to configure cluster properties and manage ACLs.
+
 == How GBAC works
 
 When a user authenticates with OIDC, Redpanda reads a configurable claim from the JWT access token (for example, `$.groups`) and extracts the list of groups the user belongs to. Redpanda then matches those group names against `Group:<name>` principals in its ACLs and role assignments.
@@ -57,48 +67,29 @@ flowchart LR
     end
 ....
 
-== Prerequisites
-
-To use GBAC, you need:
-
-ifndef::env-cloud[]
-* An xref:get-started:licensing/overview.adoc[Enterprise Edition] license applied to your cluster.
-endif::[]
-* xref:manage:security/authentication.adoc#oidc[OIDC authentication] configured and enabled on your cluster.
-* Superuser access to configure cluster properties and manage ACLs.
-
 == Supported identity providers
 
 GBAC works with any OIDC-compliant identity provider. These providers are commonly used with Redpanda:
 
-* https://auth0.com/docs/manage-users/groups[Auth0^]: Configure group claims in Auth0 Actions or Rules.
-* https://developer.okta.com/docs/concepts/groups/[Okta^]: Assign groups to applications and include them in token claims.
+* https://auth0.com/docs/secure/tokens/json-web-tokens/create-custom-claims[Auth0^]: Configure group claims in Auth0 Actions or Rules.
+* https://developer.okta.com/docs/concepts/universal-directory/[Okta^]: Assign groups to applications and include them in token claims.
 * https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-fed-group-claims[Microsoft Entra ID (Azure AD)^]: Configure group claims in the application manifest.
 
 For IdP-specific configuration steps, see your provider's documentation.
 
 == Limitations
 
-=== Azure AD group limit
-
-Users with more than 200 group memberships in Azure AD receive a URL reference in their token instead of a list of group names. Redpanda does not follow that URL and cannot resolve groups in this case. 
-
+* Azure AD group limit: Users with more than 200 group memberships in Azure AD receive a URL reference in their token instead of a list of group names. Redpanda does not follow that URL and cannot resolve groups in this case.
++
 Mitigation: Filter token claims to include only the groups relevant to Redpanda.
 
-=== Nested groups
+* Nested groups: Redpanda does not recursively resolve nested group hierarchies. If group A contains group B, only the direct memberships reported in the token are used. Use xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior: suffix`] to extract the last path segment from hierarchical group names when needed.
 
-Redpanda does not recursively resolve nested group hierarchies. If group A contains group B, only the direct memberships reported in the token are used. Use xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior: suffix`] to extract the last path segment from hierarchical group names when needed.
+* No wildcard ACLs for groups: ACL matching for `Group:` principals uses literal string comparison only. Wildcard patterns are not supported.
 
-=== No wildcard ACLs for groups
+* Deny ACL precedence: Redpanda checks deny rules before allow rules across all authorization sources (user ACLs, role ACLs, group ACLs, and group-to-role ACLs). A deny from any source rejects the request, even if another source would grant allow. This is consistent with standard Redpanda ACL conflict resolution.
 
-ACL matching for `Group:` principals uses literal string comparison only. Wildcard patterns are not supported.
-
-=== Deny ACL precedence
-
-Redpanda checks deny rules before allow rules across all authorization sources (user ACLs, role ACLs, group ACLs, and group-to-role ACLs). A deny from any source rejects the request, even if another source would grant allow. This is consistent with standard Redpanda ACL conflict resolution.
-
-=== Group membership timing
-Group membership reflects the claims in the OIDC token at authentication time. Changes you make in the IdP (adding or removing group memberships) take effect at the user's next authentication, when a new token is issued.
+* Group membership timing: Group membership reflects the claims in the OIDC token at authentication time. Changes you make in the IdP (adding or removing group memberships) take effect at the user's next authentication, when a new token is issued.
 
 == Assign groups to roles
 
@@ -249,6 +240,17 @@ For example:
 rpk security role list --group engineering
 ----
 --
+{ui}::
++
+--
+To view groups assigned to a role in {ui}:
+
+. From *Security* on the left navigation menu, select the *Roles* tab.
+
+. Select the role you want to inspect.
+
+. The role's details page lists all principals, including any `Group:<name>` entries.
+--
 ifndef::env-cloud[]
 Admin API::
 +
@@ -348,18 +350,20 @@ When xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`ne
 
 ==== CSV-formatted group claim
 
+Redpanda automatically splits comma-separated values and extracts principals `Group:engineering`, `Group:analytics`, and `Group:finance`.
+
 [,json]
 ----
 {"groups": "engineering,analytics,finance"}
 ----
 
-Redpanda automatically splits comma-separated values and extracts principals `Group:engineering`, `Group:analytics`, and `Group:finance`.
-
 == Troubleshoot GBAC
 
 If group-based permissions are not working as expected:
 
+ifndef::env-cloud[]
 * Use the `ResolveOidcIdentity` Admin API endpoint to verify which groups Redpanda extracts from a token. See <<view-groups-and-roles>>.
+endif::[]
 * Temporarily enable debug logging for the `security` logger to see all claims in the validated JWT:
 +
 [,bash]
@@ -371,7 +375,12 @@ This helps diagnose incorrect claim paths, missing groups, or token content issu
 
 == Audit logging
 
+ifndef::env-cloud[]
 When xref:manage:audit-logging.adoc[audit logging] is enabled, authentication events across Kafka API, HTTP Proxy, Schema Registry, and Admin API include the user's IdP group memberships in the `user.groups` field with type `idp_group`.
+endif::[]
+ifdef::env-cloud[]
+When xref:manage:audit-logging.adoc[audit logging] is enabled, authentication events across Kafka API, HTTP Proxy, and Schema Registry include the user's IdP group memberships in the `user.groups` field with type `idp_group`.
+endif::[]
 
 == Suggested reading
 
