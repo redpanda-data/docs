@@ -109,10 +109,10 @@ Cloud UI::
 . 
 --
 
-Cloud API::
+Control Plane API::
 +
 --
-Make a link:/api/doc/cloud-controlplane/operation/operation-groupservice_creategroup[`POST /v1/groups`] request:
+Make a link:/api/doc/cloud-controlplane/operation/operation-groupservice_creategroup[`POST /v1/groups`] request to the xref:redpanda-cloud:manage:api/cloud-byoc-controlplane-api.adoc[Control Plane API]:
 
 [,bash]
 ----
@@ -174,6 +174,44 @@ rpk security role unassign DataEngineers --group engineering
 --
 include::manage:partial$gbac-assign-group-role.adoc[]
 --
+ifdef::env-cloud[]
+Data Plane API::
++
+--
+First, retrieve your cluster's Data Plane API URL:
+
+[,bash]
+----
+export DATAPLANE_API_URL=$(curl -s https://api.redpanda.com/v1/clusters/<cluster-id> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" | jq -r .cluster.dataplane_api)
+----
+
+Make a link:/api/doc/cloud-dataplane/operation/operation-securityservice_updaterolemembership[`PUT /v1/roles/\{role_name}`] request to assign a group to a role:
+
+[,bash]
+----
+curl -X PUT "${DATAPLANE_API_URL}/v1/roles/DataEngineers" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "add": [{"principal": "Group:engineering"}]
+  }'
+----
+
+To remove a group from a role, use the `remove` field:
+
+[,bash]
+----
+curl -X PUT "${DATAPLANE_API_URL}/v1/roles/DataEngineers" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "remove": [{"principal": "Group:engineering"}]
+  }'
+----
+--
+endif::[]
 ifndef::env-cloud[]
 Admin API::
 +
@@ -242,6 +280,29 @@ rpk security acl create \
 --
 include::manage:partial$gbac-create-group-acl.adoc[]
 --
+ifdef::env-cloud[]
+Data Plane API::
++
+--
+Make a link:/api/doc/cloud-dataplane/operation/operation-aclservice_createacl[`POST /v1/acls`] request with a `Group:` principal. For example, to grant the `engineering` group read access to a topic:
+
+[,bash]
+----
+curl -X POST "${DATAPLANE_API_URL}/v1/acls" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "resource_type": "RESOURCE_TYPE_TOPIC",
+    "resource_name": "analytics-events",
+    "resource_pattern_type": "RESOURCE_PATTERN_TYPE_LITERAL",
+    "principal": "Group:engineering",
+    "host": "*",
+    "operation": "OPERATION_READ",
+    "permission_type": "PERMISSION_TYPE_ALLOW"
+  }'
+----
+--
+endif::[]
 ====
 
 == View groups and roles
@@ -294,6 +355,29 @@ To view groups assigned to a role in {ui}:
 
 . The role details page lists all principals, including any `Group:<name>` entries.
 --
+ifdef::env-cloud[]
+Data Plane API::
++
+--
+To list all members of a role (including groups), make a link:/api/doc/cloud-dataplane/operation/operation-securityservice_listrolemembers[`GET /v1/roles/\{role_name}/members`] request:
+
+[,bash]
+----
+curl -X GET "${DATAPLANE_API_URL}/v1/roles/DataEngineers/members" \
+  -H "Authorization: Bearer <token>"
+----
+
+The response includes a `members` array. Group members appear with the `Group:` prefix in the `principal` field.
+
+To list all roles assigned to a specific group, make a link:/api/doc/cloud-dataplane/operation/operation-securityservice_listroles[`GET /v1/roles`] request with a principal filter:
+
+[,bash]
+----
+curl -X GET "${DATAPLANE_API_URL}/v1/roles?filter.principal=Group:engineering" \
+  -H "Authorization: Bearer <token>"
+----
+--
+endif::[]
 ifndef::env-cloud[]
 Admin API::
 +
