@@ -1,8 +1,14 @@
 // tag::single-source[]
+ifdef::env-cloud[:oidc-doc: security:cloud-authentication.adoc#single-sign-on]
+ifndef::env-cloud[:oidc-doc: manage:security/authentication.adoc#oidc]
+ifdef::env-cloud[:acl-doc: security:authorization/acl.adoc]
+ifndef::env-cloud[:acl-doc: manage:security/authorization/acl.adoc]
+ifdef::env-cloud[:rbac-doc: security:authorization/rbac/rbac_dp.adoc]
+ifndef::env-cloud[:rbac-doc: manage:security/authorization/rbac.adoc]
 
 Group-based access control (GBAC) lets you manage Redpanda permissions at scale using the groups that already exist in your identity provider (IdP). Instead of creating and maintaining per-user permissions in Redpanda, you define access once for a group and your IdP controls who belongs to it. When users join or leave a team, their Redpanda access updates automatically at next login with no changes needed in Redpanda.
 
-GBAC extends xref:manage:security/authentication.adoc#oidc[OIDC authentication] and supports two ways to grant permissions to groups: create xref:manage:security/authorization/acl.adoc[ACLs] with `Group:<name>` principals, or assign groups as members of xref:manage:security/authorization/rbac.adoc[RBAC] roles. Both approaches can be used independently or together.
+GBAC extends xref:{oidc-doc}[OIDC authentication] and supports two ways to grant permissions to groups: create xref:{acl-doc}[ACLs] with `Group:<name>` principals, or assign groups as members of xref:{rbac-doc}[RBAC] roles. Both approaches can be used independently or together.
 
 After reading this page, you will be able to:
 
@@ -17,7 +23,7 @@ To use GBAC, you need:
 ifndef::env-cloud[]
 * An xref:get-started:licensing/overview.adoc[Enterprise Edition] license applied to your cluster.
 endif::[]
-* xref:manage:security/authentication.adoc#oidc[OIDC authentication] configured and enabled on your cluster.
+* xref:{oidc-doc}[OIDC authentication] configured and enabled on your cluster.
 * Superuser access to configure cluster properties and manage ACLs.
 
 == How GBAC works
@@ -26,10 +32,9 @@ When a user authenticates with OIDC, Redpanda reads a configurable claim from th
 
 Group membership is managed entirely by your IdP. Redpanda never stores or manages group membership directly. It reads group information from the OIDC token at authentication time. Changes you make in the IdP (adding or removing group memberships) take effect at the user's next authentication, when a new token is issued.
 
-GBAC works across all Redpanda APIs:
+GBAC works across the following Redpanda APIs:
 
 * Kafka API
-* Admin API
 * Schema Registry
 * HTTP Proxy
 
@@ -91,7 +96,7 @@ Mitigation: Filter token claims to include only the groups relevant to Redpanda.
 
 == Assign groups to roles
 
-To manage permissions at scale, assign a group to an xref:manage:security/authorization/rbac.adoc[RBAC] role. All users in the group inherit the role's ACLs automatically.
+To manage permissions at scale, assign a group to an xref:{rbac-doc}[RBAC] role. All users in the group inherit the role's ACLs automatically.
 
 [tabs]
 ====
@@ -168,7 +173,7 @@ endif::[]
 
 == Create group-based ACLs
 
-You can grant permissions directly to a group by creating an ACL with a `Group:<name>` principal. This works the same as creating an ACL for a user, but uses the `Group:` prefix instead of `User:`.
+You can grant permissions directly to a group by creating an xref:{acl-doc}[ACL] with a `Group:<name>` principal. This works the same as creating an ACL for a user, but uses the `Group:` prefix instead of `User:`.
 
 [tabs]
 ====
@@ -249,7 +254,7 @@ To view groups assigned to a role in {ui}:
 
 . Select the role you want to inspect.
 
-. The role's details page lists all principals, including any `Group:<name>` entries.
+. The role details page lists all principals, including any `Group:<name>` entries.
 --
 ifndef::env-cloud[]
 Admin API::
@@ -352,20 +357,37 @@ When xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`ne
 
 ==== CSV-formatted group claim
 
-Redpanda automatically splits comma-separated values and extracts principals `Group:engineering`, `Group:analytics`, and `Group:finance`.
+Some identity providers return group claims as a single comma-separated string instead of an array.
 
 [,json]
 ----
 {"groups": "engineering,analytics,finance"}
 ----
 
+Redpanda automatically splits comma-separated values and extracts principals `Group:engineering`, `Group:analytics`, and `Group:finance`.
+
 == Troubleshoot GBAC
 
 If group-based permissions are not working as expected:
 
+* Decode the JWT access token from your IdP and verify that the expected group claims are present:
++
+[,bash]
+----
+echo $ACCESS_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .
+----
++
+Look for the claim that matches your xref:reference:properties/cluster-properties.adoc#oidc_group_claim_path[`oidc_group_claim_path`] configuration (default: `$.groups`).
 ifndef::env-cloud[]
 * Use the `ResolveOidcIdentity` Admin API endpoint to verify which groups Redpanda extracts from a token. See <<view-groups-and-roles>>.
 endif::[]
+* Verify that your cluster configuration matches the token structure:
++
+[,bash]
+----
+rpk cluster config get oidc_group_claim_path
+rpk cluster config get nested_group_behavior
+----
 * Temporarily enable debug logging for the `security` logger to see all claims in the validated JWT:
 +
 [,bash]
@@ -377,12 +399,15 @@ This helps diagnose incorrect claim paths, missing groups, or token content issu
 
 == Audit logging
 
+When xref:manage:audit-logging.adoc[audit logging] is enabled, Redpanda includes group information in the following event types:
+
 ifndef::env-cloud[]
-When xref:manage:audit-logging.adoc[audit logging] is enabled, authentication events across Kafka API, HTTP Proxy, Schema Registry, and Admin API include the user's IdP group memberships in the `user.groups` field with type `idp_group`.
+* Authentication events: Events across Kafka API, HTTP Proxy, Schema Registry, and Admin API include the user's IdP group memberships in the `user.groups` field with type `idp_group`.
 endif::[]
 ifdef::env-cloud[]
-When xref:manage:audit-logging.adoc[audit logging] is enabled, authentication events across Kafka API, HTTP Proxy, and Schema Registry include the user's IdP group memberships in the `user.groups` field with type `idp_group`.
+* Authentication events: Events across Kafka API, HTTP Proxy, and Schema Registry include the user's IdP group memberships in the `user.groups` field with type `idp_group`.
 endif::[]
+* Authorization events: When an authorization decision matches a group ACL, the matched group appears in the `actor.user.groups` field with type `idp_group`.
 
 == Next steps
 
