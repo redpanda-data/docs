@@ -864,47 +864,116 @@ When you enable Tiered Storage on a topic already containing data, Redpanda uplo
 
 ==== Enable Tiered Storage for a cluster
 
-To enable Tiered Storage for a cluster, set the `default_redpanda_storage_mode` cluster property to `tiered` (in addition to setting `cloud_storage_enabled` to `true`). This configures all new topics to use Tiered Storage by default.
+To enable Tiered Storage for a cluster (in addition to setting `cloud_storage_enabled` to `true`), set the following cluster-level properties to `true`:
+
+* config_ref:cloud_storage_enable_remote_write,true,properties/object-storage-properties[]
+* config_ref:cloud_storage_enable_remote_read,true,properties/object-storage-properties[]
 
 When you enable Tiered Storage for a cluster, you enable it for all existing topics in the cluster. When cluster-level properties are changed, the changes apply only to new topics, not existing topics. You must restart your cluster after enabling Tiered Storage.
 
+NOTE: The `cloud_storage_enable_remote_write` and `cloud_storage_enable_remote_read` cluster-level properties are essentially creation-time defaults for the `redpanda.remote.write` and `redpanda.remote.read` topic-level properties.
+
 ==== Enable Tiered Storage for specific topics
 
-To enable Tiered Storage for a new or existing topic (in addition to setting `cloud_storage_enabled` to `true`), set the `redpanda.storage.mode` topic property to `tiered`.
+To enable Tiered Storage for a new or existing topic (in addition to setting `cloud_storage_enabled` to `true`), set the following topic-level properties to `true`:
+
+* `redpanda.remote.write`
+* `redpanda.remote.read`
 
 For example, to create a new topic with Tiered Storage:
 
 [,bash]
 ----
-rpk topic create <topic_name> -c redpanda.storage.mode=tiered
+rpk topic create <topic_name> -c redpanda.remote.read=true -c redpanda.remote.write=true
 ----
 
 To enable Tiered Storage on an existing topic, run:
 
 [,bash]
 ----
-rpk topic alter-config <topic_name> --set redpanda.storage.mode=tiered
+rpk topic alter-config <topic_name> --set redpanda.remote.read=true --set redpanda.remote.write=true
 ----
 
-Topic-level properties override cluster-level properties. For example, if `default_redpanda_storage_mode` is set to `tiered`, you can set `redpanda.storage.mode` to `local` on a specific topic to keep it local-only.
+Topic-level properties override cluster-level properties. For example, for new topics, if `cloud_storage_enable_remote_write` is set to `true`, you can set `redpanda.remote.write` to `false` to turn it off for a particular topic.
 
 Tiered Storage topic-level properties:
 
 |===
 | Property | Description
 
-| `redpanda.storage.mode`
-| Controls the storage mode for the topic. Set to `tiered` to enable Tiered Storage. This property takes precedence over legacy `redpanda.remote.read` and `redpanda.remote.write` settings.
+| `redpanda.remote.write`
+| Uploads data from Redpanda to object storage. Overrides the cluster-level `cloud_storage_enable_remote_write` configuration for the topic.
+
+| `redpanda.remote.read`
+| Fetches data from object storage to Redpanda. Overrides the cluster-level `cloud_storage_enable_remote_read` configuration for the topic.
 
 | `redpanda.remote.recovery`
 | Recovers or reproduces a topic from object storage. Use this property during topic creation. It does not apply to existing topics.
 
 | `redpanda.remote.delete`
-| When set to `true`, deleting a topic also deletes its objects in object storage. Tiered Storage must be enabled, and the topic must not be a Remote Read Replica topic.
+| When set to `true`, deleting a topic also deletes its objects in object storage. Both `redpanda.remote.write` and `redpanda.remote.read` must be enabled, and the topic must not be a Remote Read Replica topic.
 
 When set to `false`, deleting a topic does not delete its objects in object storage.
 
 Default is `true` for new topics.
+|===
+
+The following tables list outcomes for combinations of cluster-level and topic-level configurations:
+
+|===
+| Cluster-level configuration with `cloud_storage_enable_remote_write` | Topic-level configuration with `redpanda.remote.write` | Outcome: whether remote write is enabled or disabled on the topic
+
+| `true`
+| Not set
+| Enabled
+
+| `true`
+| `false`
+| Disabled
+
+| `true`
+| `true`
+| Enabled
+
+| `false`
+| Not set
+| Disabled
+
+| `false`
+| `false`
+| Disabled
+
+| `false`
+| `true`
+| Enabled
+|===
+
+|===
+| Cluster-level configuration with `cloud_storage_enable_remote_read` | Topic-level configuration with `redpanda.remote.read` | Outcome: whether remote read is enabled or disabled on the topic
+
+| `true`
+| Not set
+| Enabled
+
+| `true`
+| `false`
+| Disabled
+
+| `true`
+| `true`
+| Enabled
+
+| `false`
+| Not set
+| Disabled
+
+| `false`
+| `false`
+| Disabled
+
+| `false`
+| `true`
+| Enabled
 |===
 
 
@@ -975,23 +1044,25 @@ Third-party tools that query space utilization from the Redpanda cluster might n
 
 Remote write is the process that constantly uploads log segments to object storage. The process is created for each partition and runs on the leader broker of the partition. It only uploads the segments that contain offsets that are smaller than the last stable offset. This is the latest offset that the client can read.
 
-To ensure all data is uploaded, you must enable Tiered Storage before any data is produced to the topic. If you enable Tiered Storage after data has been written to the topic, only the data that currently exists on disk based on local retention settings will be scheduled for uploading. Redpanda strongly recommends that you avoid repeatedly toggling Tiered Storage on and off, because this can result in inconsistent data and data gaps in Tiered Storage for a topic.
+To ensure all data is uploaded, you must enable remote write before any data is produced to the topic. If you enable remote write after data has been written to the topic, only the data that currently exists on disk based on local retention settings will be scheduled for uploading. Redpanda strongly recommends that you avoid repeatedly toggling remote write on and off, because this can result in inconsistent data and data gaps in Tiered Storage for a topic.
 
-To create a topic with Tiered Storage (remote write and read) enabled:
+To enable Tiered Storage, use both remote write and remote read.
 
-[,bash]
-----
-rpk topic create <topic_name> -c redpanda.storage.mode=tiered
-----
-
-To enable Tiered Storage on an existing topic:
+To create a topic with remote write enabled:
 
 [,bash]
 ----
-rpk topic alter-config <topic_name> --set redpanda.storage.mode=tiered
+rpk topic create <topic_name> -c redpanda.remote.write=true
 ----
 
-When Tiered Storage is enabled, log segments are not deleted until they're uploaded to object storage. Because of this, the log segments may exceed the configured retention period until they're uploaded, so the topic might require more disk space. This prevents data loss if segments cannot be uploaded fast enough or if the retention period is very short.
+To enable remote write on an existing topic:
+
+[,bash]
+----
+rpk topic alter-config <topic_name> --set redpanda.remote.write=true
+----
+
+If remote write is enabled, log segments are not deleted until they're uploaded to object storage. Because of this, the log segments may exceed the configured retention period until they're uploaded, so the topic might require more disk space. This prevents data loss if segments cannot be uploaded fast enough or if the retention period is very short.
 
 To see the object storage status for a given topic:
 
@@ -1029,7 +1100,7 @@ NOTE: The broker uploading to object storage is always with the partition leader
 
 Remote write uses a proportional derivative (PD) controller to minimize the backlog size for the write. The backlog consists of data that has not been uploaded to object storage but must be uploaded eventually.
 
-The upload backlog controller prevents Redpanda from running out of disk space. When Tiered Storage is enabled, Redpanda cannot evict log segments that have not been uploaded to object storage. If the remote write process cannot keep up with the amount of data that needs to be uploaded to object storage, the upload backlog controller increases priority for the upload process. The upload backlog controller measures the size of the upload periodically and tunes the priority of the remote write process.
+The upload backlog controller prevents Redpanda from running out of disk space. If `remote.write` is set to `true`, Redpanda cannot evict log segments that have not been uploaded to object storage. If the remote write process cannot keep up with the amount of data that needs to be uploaded to object storage, the upload backlog controller increases priority for the upload process. The upload backlog controller measures the size of the upload periodically and tunes the priority of the remote write process.
 
 === Data archiving
 
@@ -1053,9 +1124,23 @@ To delete archival data, adjust `retention.ms` or `retention.bytes`.
 
 Remote read fetches data from object storage using the Kafka API.
 
-Without Tiered Storage, when data is evicted locally, it is no longer available. If the consumer starts consuming the partition from the beginning, the first offset is the smallest offset available locally. However, when Tiered Storage is enabled (with `redpanda.storage.mode` set to `tiered`), data is always uploaded to object storage before it's deleted. This guarantees that data is always available either locally or remotely.
+Without Tiered Storage, when data is evicted locally, it is no longer available. If the consumer starts consuming the partition from the beginning, the first offset is the smallest offset available locally. However, when Tiered Storage is enabled with the `redpanda.remote.read` and `redpanda.remote.write` properties, data is always uploaded to object storage before it's deleted. This guarantees that data is always available either locally or remotely.
 
 When data is available remotely and Tiered Storage is enabled, clients can consume data, even if the data is no longer stored locally.
+
+To create a topic with remote read enabled:
+
+[,bash]
+----
+rpk topic create <topic_name> -c redpanda.remote.read=true
+----
+
+To enable remote read on an existing topic:
+
+[,bash]
+----
+rpk topic alter-config <topic_name> --set redpanda.remote.read=true
+----
 
 See also: xref:{topic-recovery-link}[Topic Recovery], xref:manage:kubernetes/k-remote-read-replicas.adoc[Remote Read Replicas]
 
@@ -1073,7 +1158,13 @@ Use the `redpanda_cloud_storage_paused_archivers` metric to monitor the status o
 
 [WARNING]
 ====
-Do not disable Tiered Storage to pause and resume segment uploads. Doing so can lead to a gap between local data and data in object storage. In such cases, it is possible that the oldest segment is not aligned with the last uploaded segment. Always use the `cloud_storage_enable_segment_uploads` property instead.
+Do not use `redpanda.remote.read` or `redpanda.remote.write` to pause and resume segment uploads. Doing so can lead to a gap between local data and data in object storage. In such cases, it is possible that the oldest segment is not aligned with the last uploaded segment. Given that these settings are unsafe, if you choose to set either `redpanda.remote.write` or the cluster configuration setting `cloud_storage_enable_remote_write` to `false`, you receive a warning:
+
+[source,bash]
+----
+Warning: disabling Tiered Storage may lead to data loss. If you only want to pause Tiered Storage temporarily, use the `cloud_storage_enable_segment_uploads` option. Abort?
+# The default is Yes.
+----
 ====
 
 
