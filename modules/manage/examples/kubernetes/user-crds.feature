@@ -83,6 +83,12 @@ Feature: User CRDs
             name: some-topic
             patternType: prefixed
           operations: [Read]
+        - type: allow
+          resource:
+            type: subject
+            name: some-topic
+            patternType: prefixed
+          operations: [Read]
 # end::manage-authz-only-manifest[]
     """
     And user "travis" is successfully synced
