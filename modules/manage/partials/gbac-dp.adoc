@@ -3,7 +3,7 @@ ifdef::env-cloud[:oidc-doc: security:cloud-authentication.adoc#single-sign-on]
 ifndef::env-cloud[:oidc-doc: manage:security/authentication.adoc#oidc]
 ifdef::env-cloud[:acl-doc: security:authorization/acl.adoc]
 ifndef::env-cloud[:acl-doc: manage:security/authorization/acl.adoc]
-ifdef::env-cloud[:rbac-doc: security:authorization/rbac/rbac_dp.adoc]
+ifdef::env-cloud[:rbac-doc: security:authorization/rbac/index.adoc]
 ifndef::env-cloud[:rbac-doc: manage:security/authorization/rbac.adoc]
 
 Group-based access control (GBAC) lets you manage Redpanda permissions at scale using the groups that already exist in your identity provider (IdP). Instead of creating and maintaining per-user permissions in Redpanda, you define access once for a group and your IdP controls who belongs to it. When users join or leave a team, their Redpanda access updates automatically at next login with no changes needed in Redpanda.
@@ -24,6 +24,7 @@ ifndef::env-cloud[]
 * An xref:get-started:licensing/overview.adoc[Enterprise Edition] license applied to your cluster.
 endif::[]
 * xref:{oidc-doc}[OIDC authentication] configured and enabled on your cluster.
+* Your IdP configured to include group claims in the OIDC access token (for example, a `groups` claim).
 * Superuser access to configure cluster properties and manage ACLs.
 
 == How GBAC works
@@ -93,6 +94,43 @@ Mitigation: Filter token claims to include only the groups relevant to Redpanda.
 * Nested groups: Redpanda does not recursively resolve nested group hierarchies. If group A contains group B, only the direct memberships reported in the token are used. Use xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior: suffix`] to extract the last path segment from hierarchical group names when needed.
 
 * No wildcard ACLs for groups: ACL matching for `Group:` principals uses literal string comparison only. Wildcard patterns are not supported.
+
+ifdef::env-cloud[]
+== Register groups in Redpanda Cloud
+
+To assign an IdP group to a role or ACL, you must first register the group:
+
+[tabs]
+====
+Cloud UI::
++
+--
+. From *Security* on the left navigation menu, select the *Groups* tab.
+. 
+--
+
+Cloud API::
++
+--
+Make a link:/api/doc/cloud-controlplane/operation/operation-groupservice_creategroup[`POST /v1/groups`] request:
+
+[,bash]
+----
+curl -X POST 'https://api.redpanda.com/v1/groups' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <token>' \
+  -d '{
+    "group": {
+      "name": "<group-name>",
+      "description": "<group-description>"
+    }
+  }'
+----
+
+Replace `<group-name>` with the name that matches the group in your IdP (for example, `engineering`). The name must match exactly for GBAC to map the group correctly.
+--
+====
+endif::[]
 
 == Assign groups to roles
 
@@ -300,6 +338,7 @@ endif::[]
 
 == Customize token claim extraction
 
+ifndef::env-cloud[]
 Different identity providers store group information in different locations within the JWT token. Two cluster properties control how Redpanda extracts group names:
 
 * xref:reference:properties/cluster-properties.adoc#oidc_group_claim_path[`oidc_group_claim_path`]: A https://goessner.net/articles/JsonPath/[JSON path^] expression that tells Redpanda where to find group information in the OIDC token. For example, Auth0 and Okta typically use a top-level `groups` claim (`$.groups`), while Keycloak nests roles inside `realm_access` (`$.realm_access.roles`). Default: `$.groups`.
@@ -307,12 +346,7 @@ Different identity providers store group information in different locations with
 +
 NOTE: When `nested_group_behavior` is set to `suffix`, groups that share a leaf name (for example, `/departments/eng/groupA` and `/departments/sales/groupA`) both resolve to `Group:groupA`. ACLs or role assignments for that principal apply to members of both groups. Design your group naming conventions to avoid unintended collisions.
 
-ifndef::env-cloud[]
 To update these properties, use xref:manage:cluster-maintenance/cluster-property-configuration.adoc[any configuration method] (`rpk cluster config set`, the Admin API, or Redpanda Console). Changes take effect immediately without a restart.
-endif::[]
-
-ifdef::env-cloud[]
-Contact Redpanda support to configure these properties on Cloud clusters.
 endif::[]
 
 === Token structure examples
@@ -346,6 +380,8 @@ With `nested_group_behavior: "none"` (the default), Redpanda maps the full path 
 {"groups": ["/departments/eng/platform", "/departments/eng/infra"]}
 ----
 
+// Not supported in Cloud
+ifndef::env-cloud[]
 ==== Path-style group names with suffix extraction
 
 When xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior`] is set to `suffix`, Redpanda maps the last path segment to principals `Group:platform` and `Group:infra`.
@@ -354,6 +390,7 @@ When xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`ne
 ----
 {"groups": ["/departments/eng/platform", "/departments/eng/infra"]}
 ----
+endif::[]
 
 ==== CSV-formatted group claim
 
@@ -366,6 +403,7 @@ Some identity providers return group claims as a single comma-separated string i
 
 Redpanda automatically splits comma-separated values and extracts principals `Group:engineering`, `Group:analytics`, and `Group:finance`.
 
+ifndef::env-cloud[]
 == Troubleshoot GBAC
 
 If group-based permissions are not working as expected:
@@ -378,9 +416,7 @@ echo $ACCESS_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 ----
 +
 Look for the claim that matches your xref:reference:properties/cluster-properties.adoc#oidc_group_claim_path[`oidc_group_claim_path`] configuration (default: `$.groups`).
-ifndef::env-cloud[]
 * Use the `ResolveOidcIdentity` Admin API endpoint to verify which groups Redpanda extracts from a token. See <<view-groups-and-roles>>.
-endif::[]
 * Verify that your cluster configuration matches the token structure:
 +
 [,bash]
@@ -396,6 +432,7 @@ rpk redpanda admin config log-level set security --level debug
 ----
 +
 This helps diagnose incorrect claim paths, missing groups, or token content issues. The debug level reverts automatically after the expiry period (default: 300 seconds).
+endif::[]
 
 == Audit logging
 
