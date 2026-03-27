@@ -94,3 +94,110 @@ Feature: User CRDs
     And user "travis" is successfully synced
     And I delete the CRD user "travis"
     Then "travis" should be able to authenticate to the "sasl" cluster with password "password" and mechanism "SCRAM-SHA-256"
+
+  @skip:gke @skip:aks @skip:eks
+  Scenario: Grant a user read access to a subject
+    Given there is no user "consumer-app" in cluster "sasl"
+    When I apply Kubernetes manifest:
+    """
+# tag::grant-user-read-access[]
+    ---
+    apiVersion: cluster.redpanda.com/v1alpha2
+    kind: User
+    metadata:
+      name: consumer-app
+    spec:
+      cluster:
+        clusterRef:
+          name: redpanda
+      authorization:
+        acls:
+          - type: allow
+            resource:
+              type: topic
+              name: orders
+              patternType: literal
+            operations: [Read]
+          - type: allow
+            resource:
+              type: subject
+              name: orders-value
+              patternType: literal
+            operations: [Read]
+# end::grant-user-read-access[]
+    """
+    And user "consumer-app" is successfully synced
+    And I delete the CRD user "consumer-app"
+
+  @skip:gke @skip:aks @skip:eks
+  Scenario: Grant a producer write access using prefix patterns
+    Given there is no user "producer-app" in cluster "sasl"
+    When I apply Kubernetes manifest:
+    """
+# tag::grant-producer-write-access[]
+    ---
+    apiVersion: cluster.redpanda.com/v1alpha2
+    kind: User
+    metadata:
+      name: producer-app
+    spec:
+      cluster:
+        clusterRef:
+          name: redpanda
+      authentication:
+        type: scram-sha-512
+        password:
+          valueFrom:
+            secretKeyRef:
+              name: producer-app-secret
+              key: password
+      authorization:
+        acls:
+          - type: allow
+            resource:
+              type: topic
+              name: events-
+              patternType: prefixed
+            operations: [Write, Describe]
+          - type: allow
+            resource:
+              type: subject
+              name: events-
+              patternType: prefixed
+            operations: [Write, Describe]
+# end::grant-producer-write-access[]
+    """
+    And user "producer-app" is successfully synced
+    And I delete the CRD user "producer-app"
+
+  @skip:gke @skip:aks @skip:eks
+  Scenario: Grant global Schema Registry access
+    Given there is no user "schema-admin" in cluster "sasl"
+    When I apply Kubernetes manifest:
+    """
+# tag::grant-global-sr-access[]
+    ---
+    apiVersion: cluster.redpanda.com/v1alpha2
+    kind: User
+    metadata:
+      name: schema-admin
+    spec:
+      cluster:
+        clusterRef:
+          name: redpanda
+      authorization:
+        acls:
+          - type: allow
+            resource:
+              type: registry
+            operations: [Read, Write, Delete, Describe, DescribeConfigs, AlterConfigs]
+          - type: allow
+            resource:
+              type: subject
+              name: ""
+              patternType: prefixed
+            operations: [Read, Write, Delete, Describe, DescribeConfigs, AlterConfigs]
+# end::grant-global-sr-access[]
+    """
+    And user "schema-admin" is successfully synced
+    And I delete the CRD user "schema-admin"
