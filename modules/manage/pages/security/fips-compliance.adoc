@@ -1,8 +1,19 @@
-= Configure Redpanda for FIPS 
-:description: Configure Redpanda to operate in FIPS compliance mode.
+= Configure Redpanda for FIPS
+:description: Configure Redpanda to operate in FIPS-compliant mode.
 :page-aliases: security:fips-compliance.adoc
+:page-topic-type: how-to
+:personas: platform_operator
+:learning-objective-1: Configure a Redpanda broker to run in FIPS-compliant mode
+:learning-objective-2: Set the required OpenSSL properties for FIPS mode
+:learning-objective-3: Deploy Redpanda in FIPS-compliant mode using Docker
 
-Redpanda provides FIPS-compliant cipher enforcement for brokers using OpenSSL 3.0.9, which is https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/4282[validated^] for https://csrc.nist.gov/pubs/fips/140-2/upd2/final[140-2^] and is undergoing validation by NIST for https://csrc.nist.gov/pubs/fips/140-3/final[140-3^]. Both Redpanda and `rpk` leverage validated OpenSSL libraries for all security-related cryptography operations.
+Redpanda provides Federal Information Processing Standards (FIPS)-compliant cipher enforcement for brokers using a https://csrc.nist.gov/pubs/fips/140-3/final[FIPS 140-3^]-validated OpenSSL cryptographic module. Redpanda and `rpk` both use the OpenSSL library for security-related cryptographic operations.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
 
 [NOTE]
 ====
@@ -18,19 +29,27 @@ rpk cluster license info
 
 == Prerequisites
 
-Before configuring brokers to run in FIPS compliance mode (FIPS mode), check to make sure the `redpanda-rpk-fips` and `redpanda-fips` packages are xref:deploy:deployment-option/self-hosted/manual/production/production-deployment.adoc#install-redpanda-for-fips-compliance[installed]. These packages are required by both the `redpanda` and `redpanda-tuner` install packages.
+Before configuring brokers to run in FIPS mode on Linux, install the `redpanda-rpk-fips` and `redpanda-fips` xref:deploy:redpanda/manual/production/production-deployment.adoc#install-redpanda-for-fips-compliance[packages].
+
+For Docker deployments, use the FIPS-specific image instead: `docker.redpanda.com/redpandadata/redpanda:<version>-fips`.
+
+[WARNING]
+====
+Before upgrading to Redpanda 26.1 with FIPS mode enabled, change any SASL/SCRAM user passwords shorter than 14 characters to at least 14 characters. FIPS 140-3 enforces stricter HMAC key size requirements than FIPS 140-2. Because Redpanda stores passwords in encrypted form, it cannot check the length of existing passwords. Clients with passwords shorter than 14 characters will fail to authenticate after the upgrade.
+====
 
 == Limitations
 
-- Redpanda is not fully FIPS-compliant when used with the Redpanda Helm chart and Operator in a Kubernetes deployment.
+- Redpanda FIPS mode requires a FIPS-enabled host when deployed with the Redpanda Helm chart or Operator.
 - Redpanda Console is not FIPS-compliant.
-- PKCS#12 keys for xref:manage:security/encryption.adoc[TLS encryption] are not supported when FIPS mode is enabled in Redpanda. The PKCS12KDF algorithm used in PKCS#12 is not FIPS-compliant. To use Redpanda in FIPS mode with TLS enabled, configure your certificates and keys in PEM format instead.
+- Redpanda does not support PKCS#12 keys for xref:manage:security/encryption.adoc[TLS encryption] when FIPS mode is enabled. The PKCS12KDF algorithm used in PKCS#12 is not FIPS-compliant. To use Redpanda in FIPS mode with TLS enabled, configure your certificates and keys in PEM format instead.
+- When FIPS mode is `enabled` or `permissive`, SASL/SCRAM passwords must be at least 14 characters.
 
 == Configure FIPS mode
 
 When you configure a broker to run in FIPS mode:
 
-* FIPS compliance is enforced _immediately_ upon the startup of Redpanda.
+* Redpanda enforces FIPS compliance _immediately_ on startup.
 
 * Redpanda and its dependencies only use FIPS-validated cryptographic modules for all cryptographic algorithms used in a security context.
 
@@ -42,43 +61,102 @@ Redpanda logs an error and exits immediately if:
 
 * It cannot detect a FIPS-validated library.
 
-To place a broker in FIPS compliance mode, enable xref:reference:properties/broker-properties.adoc#fips_mode[`fips_mode`] in the Redpanda broker configuration file (typically located in `/etc/redpanda/redpanda.yaml`). All fields are within the `redpanda` object:
+To place a broker in FIPS-compliant mode, enable xref:reference:properties/broker-properties.adoc#fips_mode[`fips_mode`] in the Redpanda broker configuration file (typically located in `/etc/redpanda/redpanda.yaml`). All fields are within the `redpanda` object:
 
-```yaml
+[,yaml]
+----
 redpanda:
   # ....
   fips_mode: enabled
-```
+----
 
 Available `fips_mode` values are:
 
-* `disabled`: Redpanda is not running in FIPS compliance mode. 
+* `disabled`: Redpanda is not running in FIPS-compliant mode.
 
 * `enabled`: When Redpanda starts up, it looks for a value of `1` in the file `/proc/sys/crypto/fips_enabled`. If the file doesn't exist or doesn't contain `1`, Redpanda logs an error and exits immediately.
 
-* `permissive`: This setting is a safety value option only, and _should not be used in a production environment_. If specified, Redpanda logs a WARNING, but continues operations even if the underlying operating system is not configured for FIPS. If set, your Redpanda instance is _not_ running in FIPS compliance mode.
+* `permissive`: This setting is a safety value option only. Do not use it in a production environment. If specified, Redpanda logs a WARNING, but continues operations even if the underlying operating system is not configured for FIPS. If set, your Redpanda instance is _not_ running in FIPS-compliant mode.
+
+You must also configure OpenSSL properties for FIPS mode.
 
 === FIPS OpenSSL configuration
 
-You must specify the following SSL configurations for brokers you want to run in FIPS compliance mode: 
+You must specify the following SSL configurations for brokers you want to run in FIPS-compliant mode:
 
-* xref:reference:properties/broker-properties.adoc#openssl_config_file[`openssl_config_file`]: Specifies the path to the OpenSSL configuration file that was created as part of the `redpanda-fips` package installation.  This file is used when OpenSSL is initialized to find the `fipsmodule.cnf` file that was created by the `openssl fipsinstall` command. Typically, this value should be `/opt/redpanda/openssl/openssl.cnf`.
+* xref:reference:properties/broker-properties.adoc#openssl_config_file[`openssl_config_file`]: Specifies the path to the OpenSSL configuration file created during `redpanda-fips` package installation. OpenSSL uses this file during initialization to find the `fipsmodule.cnf` file that `openssl fipsinstall` creates. Typically, this value is `/opt/redpanda/openssl/openssl.cnf`.
 
-* xref:reference:properties/broker-properties.adoc#openssl_module_directory[`openssl_module_directory`]: Specifies the path to the directory that contains the `fips.so` cryptographic provider. Typically, this value should be: `/opt/redpanda/lib/ossl-modules/`.
+* xref:reference:properties/broker-properties.adoc#openssl_module_directory[`openssl_module_directory`]: Specifies the path to the directory that contains the `fips.so` cryptographic provider. Typically, this value is: `/opt/redpanda/lib/ossl-modules/`.
 +
-The following configuration starts Redpanda in FIPS mode: 
+The following configuration starts Redpanda in FIPS mode:
 +
-```yaml
+[,yaml]
+----
 redpanda:
   # ....
   fips_mode: enabled
   openssl_config_file: /opt/redpanda/openssl/openssl.cnf
   openssl_module_directory: /opt/redpanda/lib/ossl-modules/
-```
-  
-== Suggested reading
+----
 
-* xref:deploy:deployment-option/self-hosted/manual/production/production-deployment.adoc#install-redpanda-for-fips-compliance[Install Redpanda for FIPS Compliance]
+== Configure FIPS mode with Docker
+
+The Redpanda FIPS Docker image (`docker.redpanda.com/redpandadata/redpanda:<version>-fips`) is available for `amd64` and `arm64` architectures. The image includes the required OpenSSL files, pre-configured.
+
+Pass the FIPS broker configuration to the container the same way as any other Redpanda Docker deployment: either by mounting a configuration file or by passing settings as flags.
+
+[tabs]
+======
+Mount a configuration file::
++
+--
+. Create a `redpanda.yaml` with the required FIPS settings:
++
+[,yaml]
+----
+redpanda:
+  fips_mode: enabled
+  openssl_config_file: /opt/redpanda/openssl/openssl.cnf
+  openssl_module_directory: /opt/redpanda/lib/ossl-modules/
+----
+
+. Mount the file when starting the container:
++
+[,bash]
+----
+docker run -d \
+  --name=redpanda \
+  -p 9092:9092 \
+  -p 9644:9644 \
+  -v /path/to/redpanda.yaml:/etc/redpanda/redpanda.yaml \
+  docker.redpanda.com/redpandadata/redpanda:<version>-fips \
+  redpanda start --overprovisioned --smp 1
+----
+--
+Pass settings as flags::
++
+--
+Pass the FIPS settings directly to `redpanda start`:
+
+[,bash]
+----
+docker run -d \
+  --name=redpanda \
+  -p 9092:9092 \
+  -p 9644:9644 \
+  docker.redpanda.com/redpandadata/redpanda:<version>-fips \
+  redpanda start --overprovisioned --smp 1 \
+    --set redpanda.fips_mode=enabled \
+    --set redpanda.openssl_config_file=/opt/redpanda/openssl/openssl.cnf \
+    --set redpanda.openssl_module_directory=/opt/redpanda/lib/ossl-modules/
+----
+--
+======
+
+== Next steps
+
+* xref:deploy:redpanda/manual/production/production-deployment.adoc#install-redpanda-for-fips-compliance[Install Redpanda for FIPS Compliance]
+// TODO: Confirm OpenSSL version and FIPS 140-3 certificate number with engineering (ENG-307). Update links below accordingly.
 * https://github.com/openssl/openssl/blob/openssl-3.0.9/README-FIPS.md[OpenSSL FIPS Readme^]
 * https://www.openssl.org/docs/man3.0/man7/fips_module.html[OpenSSL fips_module^]
 * https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp4282.pdf[OpenSSL FIPS Security Policy^]
