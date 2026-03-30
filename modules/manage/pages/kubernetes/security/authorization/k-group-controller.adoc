@@ -1,0 +1,230 @@
+= Manage Groups and ACLs with the Redpanda Operator
+:description: Use the Group resource to declaratively manage ACLs for OIDC groups as part of a Redpanda deployment. Each Group resource maps to an external OIDC group identity and manages the Kafka ACLs for that group principal.
+:page-categories: Management, Security
+:env-kubernetes: true
+
+With the Redpanda Operator, you can declaratively manage Kafka ACLs for OIDC groups using xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-group[Group custom resources] (resources) in Kubernetes. Each Group resource maps to an external OIDC group identity and manages the Kafka ACLs for that group's principal. The group controller, a component of the Redpanda Operator, keeps the corresponding ACLs in sync with the Group resource.
+
+NOTE: Groups are external identities sourced from your OIDC identity provider (IdP) via JWT token claims. Unlike xref:manage:kubernetes/security/authentication/k-user-controller.adoc[User resources], Group resources do not create entities in Redpanda -- they only manage ACLs for the `Group:<name>` principal.
+
+== What are groups and why use them?
+
+Groups let you assign Kafka ACL permissions to OIDC identities without creating individual Redpanda users. When a user authenticates through your OIDC provider, the JWT token includes group claims. Redpanda maps those group claims to ACL principals of the form `Group:<group-name>`, so any user in that OIDC group inherits the group's permissions.
+
+This is useful when:
+
+* *You use an external identity provider*: Your organization manages identities in an IdP such as Okta, Azure AD, or Keycloak, and you want Redpanda permissions to follow those group memberships.
+* *You want centralized access management*: Instead of creating individual Redpanda users and assigning permissions one by one, you grant permissions to groups. When someone joins or leaves a group in your IdP, their Redpanda access updates automatically.
+* *You want to combine with roles*: Groups can be assigned as principals in xref:manage:kubernetes/security/authorization/k-role-controller.adoc[RedpandaRole resources], allowing OIDC groups to inherit role-based permissions.
+
+== Prerequisites
+
+You must have the following:
+
+* *Kubectl*: Ensure you have the https://kubernetes.io/docs/tasks/tools/#kubectl[kubectl^] command-line tool installed and configured to communicate with your cluster.
+* *Redpanda Operator*: Ensure you have at least version 25.3 of the xref:deploy:deployment-option/self-hosted/kubernetes/k-production-deployment.adoc[Redpanda Operator].
+* *Redpanda cluster with OIDC enabled*: Ensure you have a Redpanda cluster deployed with OIDC authentication configured. Group-based access control (GBAC) is an enterprise feature that requires OIDC.
+* *Redpanda v26.1+*: The cluster must be running Redpanda v26.1 or later, which supports the v2 Security API required for group principals.
+
+== Create a Group resource
+
+You can use the Group resource to:
+
+- <<with-acls, Create ACLs for an OIDC group>>
+- <<without-acls, Register a group without ACLs>>
+
+Each Group resource manages the ACLs for a single group principal (`Group:<name>`). Only one Group resource is allowed per group name in the Redpanda cluster.
+
+[[with-acls]]
+=== Create ACLs for an OIDC group
+
+- *Use case*: You want to grant specific Kafka permissions to all users who belong to an OIDC group. This is the most common use case, where your IdP manages group membership and Redpanda enforces the permissions.
+- *What happens when deleted*: All ACLs managed by this Group resource are removed. Users in the OIDC group lose the permissions granted by this resource.
+
+This example shows how to create ACLs for an OIDC group called `engineering`, granting read access to topics and Schema Registry subjects matching `team-`.
+
+.`engineering-group.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/group-crds.feature[tags=manage-group-acls,indent=0]
+----
+
+[[without-acls]]
+=== Register a group without ACLs
+
+- *Use case*: You want to ensure no stale ACLs exist for a group, or you want to create the Group resource first and add ACLs later.
+- *What happens when deleted*: No ACLs are affected because none were defined.
+
+When you create a Group resource without an `authorization` section, the operator ensures that no ACLs exist for the group principal. If any pre-existing ACLs were previously set for this group, they are removed.
+
+.`empty-group.yaml`
+[,yaml,indent=0]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Group
+metadata:
+  name: empty-group
+spec:
+  cluster:
+    clusterRef:
+      name: redpanda
+----
+
+== Configuration
+
+The following sections provide guidance on configuring Group resources and defining ACLs for OIDC groups.
+
+=== Choose a group name
+
+The `metadata.name` field in the Group resource must match the group name in your OIDC provider's JWT token claims. Keep in mind the following:
+
+- *Match your IdP*: The name must exactly match the group claim value from your OIDC provider. For example, if your IdP sends `engineering` as a group claim, the Group resource must be named `engineering`.
+- *Unique*: Each group name must be unique within the Redpanda cluster.
+- *Stable*: Avoid changing group names, as this involves deleting and recreating the Group resource. The cluster source is immutable.
+
+[,yaml]
+----
+metadata:
+  name: engineering
+----
+
+=== Reference the Redpanda cluster
+
+The `spec.cluster` field specifies which Redpanda cluster the ACLs should be applied to. This field is immutable after creation.
+
+[,yaml]
+----
+spec:
+  cluster:
+    clusterRef:
+      name: redpanda
+----
+
+=== Define authorization rules
+
+The `spec.authorization` field allows you to manage ACLs for the group. ACLs define the permissions that all members of the OIDC group have over specific resources in Redpanda, such as topics, consumer groups, and Schema Registry subjects.
+
+[source,yaml]
+----
+spec:
+  authorization:
+    acls:
+      - type: allow
+        resource:
+          type: topic
+          name: team-
+          patternType: prefixed
+        operations: [Read, Describe]
+      - type: allow
+        resource:
+          type: subject
+          name: team-
+          patternType: prefixed
+        operations: [Read, Describe]
+----
+
+- `type`: Defines whether the ACL allows or denies access. Acceptable values: `allow`, `deny`.
+- `resource.type`: Specifies the resource type. Acceptable values: `topic`, `group`, `cluster`, `transactionalId`, `subject`.
+- `patternType`: Specifies how the resource name is interpreted. Acceptable values: `literal`, `prefixed`. Default: `literal`.
++
+TIP: Using `literal` names for resources ensures that only the exact resources you intend are accessible. Use `prefixed` patterns cautiously to avoid accidental permission grants.
+- `operations`: Lists the allowed operations, such as `Read`, `Write`, `Create`, `Describe`, and `Delete`.
+
+When the `authorization` field is omitted or contains an empty `acls` list, the operator removes any existing ACLs for the group principal.
+
+For more details about ACLs, including supported operations and resources in Redpanda, see xref:manage:security/authorization/acl.adoc[].
+
+== Deploy a Group resource
+
+To deploy a Group resource, apply the manifest to the same namespace as your Redpanda cluster:
+
+[,bash]
+----
+kubectl apply -f <manifest-filename>.yaml --namespace <namespace>
+----
+
+- Replace `<manifest-filename>` with the filename of your manifest.
+- Replace `<namespace>` with the namespace in which you deployed Redpanda.
+
+== Verify a group
+
+After deploying a Group resource, verify that the Redpanda Operator reconciled it:
+
+[,bash]
+----
+kubectl get groups --namespace <namespace>
+----
+
+The `SYNCED` column should show `True` when the group's ACLs have been successfully applied.
+
+You can also check the operator logs for details:
+
+[,bash]
+----
+kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
+----
+
+== Update a group
+
+To update a group's ACLs, edit the Group resource configuration and apply the changes. The operator will reconcile the ACLs to match the updated specification, adding new ACLs and removing any that are no longer defined.
+
+[,bash]
+----
+kubectl apply -f <manifest-filename>.yaml --namespace <namespace>
+----
+
+For example, to expand permissions for a group from read-only to read-write:
+
+[source,yaml]
+----
+spec:
+  authorization:
+    acls:
+      - type: allow
+        resource:
+          type: topic
+          name: platform-
+          patternType: prefixed
+        operations: [Read, Write, Describe]
+----
+
+== Delete a group
+
+To delete a group, delete the Group resource:
+
+[,bash]
+----
+kubectl delete -f <manifest-filename>.yaml --namespace <namespace>
+----
+
+When a Group resource is deleted, all ACLs managed by that resource are removed from the Redpanda cluster. The group itself continues to exist in your OIDC provider -- only the Redpanda ACLs are affected.
+
+== Best practices
+
+When working with Group resources, consider the following best practices:
+
+=== Group design
+
+- *Align with your IdP*: Structure your Group resources to mirror the group hierarchy in your OIDC provider. This makes it easier to reason about who has access to what.
+- *Principle of least privilege*: Grant only the minimum permissions necessary for the group's function. Start with read-only access and expand as needed.
+- *Naming conventions*: Use the same group names as your IdP to avoid confusion. Document which IdP groups map to which Redpanda permissions.
+
+=== Permission management
+
+- *Prefer group-based over user-based ACLs*: When your organization uses OIDC, manage permissions through groups rather than individual users for easier administration.
+- *Use specific resource patterns*: Prefer `literal` patterns over `prefixed` patterns unless you specifically need pattern matching.
+- *Combine with roles*: For complex permission models, use Group resources for direct ACLs and xref:manage:kubernetes/security/authorization/k-role-controller.adoc[RedpandaRole resources] to assign groups to roles.
+- *Regular reviews*: Periodically review group permissions to ensure they remain appropriate and necessary.
+
+=== Integration with other resources
+
+- *Groups and roles*: OIDC groups can be assigned as principals in RedpandaRole resources using the `Group:<name>` format. This allows groups to inherit role-level permissions in addition to any direct ACLs.
+- *Groups and users*: Group ACLs and user ACLs are independent. A user who belongs to an OIDC group receives both the group's permissions and any individual ACLs defined through a User resource.
+- *Avoid conflicts*: Be careful not to create conflicting ACLs (allow vs. deny) between Group, Role, and User resources for the same principals and resources.
+
+== Suggested reading
+
+* xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-group[Group resource]
+* xref:manage:kubernetes/security/authentication/k-user-controller.adoc[Manage Users and ACLs]
+* xref:manage:kubernetes/security/authorization/k-role-controller.adoc[Manage Roles and ACLs]
+* xref:manage:security/authorization/acl.adoc[Access Control Lists (ACLs)]
