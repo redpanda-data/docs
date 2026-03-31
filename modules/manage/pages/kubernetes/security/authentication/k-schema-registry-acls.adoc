@@ -1,0 +1,133 @@
+= Manage Schema Registry ACLs with the Redpanda Operator
+:description: Manage Schema Registry ACLs declaratively in Kubernetes using User, RedpandaRole, and Group custom resources with the Redpanda Operator.
+:page-categories: Management, Security
+:page-topic-type: how-to
+:personas: platform_operator
+:env-kubernetes: true
+
+With the Redpanda Operator, you can declaratively manage Schema Registry ACLs alongside standard Kafka ACLs using the existing xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-user[User], xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-role[RedpandaRole], and Group custom resources. This allows you to control which users and roles perform specific operations within Schema Registry.
+
+For Schema Registry Authorization concepts and the available operations, see xref:manage:schema-reg/schema-reg-authorization.adoc[].
+
+== Prerequisites
+
+You must have the following:
+
+* *kubectl*: The https://kubernetes.io/docs/tasks/tools/#kubectl[kubectl^] command-line tool, installed and configured to communicate with your cluster.
+* *Redpanda Operator v25.3 or later*: See xref:deploy:deployment-option/self-hosted/kubernetes/k-production-deployment.adoc[].
+* *Redpanda cluster with SASL enabled*: See xref:manage:kubernetes/security/authentication/k-authentication.adoc#enable[Enable SASL authentication].
+* *Schema Registry Authorization enabled*: See xref:manage:schema-reg/schema-reg-authorization.adoc#enable-schema-registry-authorization[Enable Schema Registry Authorization].
+
+== Schema Registry ACL resource types
+
+The Redpanda Operator supports two Schema Registry ACL resource types in addition to the standard Kafka ACL resource types (`topic`, `group`, `cluster`, `transactionalId`):
+
+* `subject`: Controls ACL access for specific Schema Registry subjects. Specify the subject name in `resource.name`. Supports both `literal` and `prefixed` pattern types.
+* `registry`: Controls access to global Schema Registry operations. The `registry` resource type does not require a `name` because it applies to all global registry operations.
+
+For a full list of supported operations by resource type, see xref:manage:schema-reg/schema-reg-authorization.adoc#supported-operations[Supported operations].
+
+== Define Schema Registry ACLs in a User resource
+
+The xref:manage:kubernetes/security/authentication/k-user-controller.adoc[User resource] supports Schema Registry ACLs alongside standard Kafka ACLs.
+
+.`user-with-sr-acls.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/user-crds.feature[tags=manage-authz-only-manifest,indent=0]
+----
+
+In this example, the User resource creates ACLs for an existing user called `travis` in the cluster called `sasl`. The first ACL rule grants read access to all topics whose names start with `some-topic` using a `prefixed` pattern type. The second ACL rule grants read access to Schema Registry subjects matching the same prefix.
+
+When both Kafka and Schema Registry ACLs are defined in the same User resource, the operator syncs them independently. Kafka ACLs are applied through the Kafka API and Schema Registry ACLs are applied through the Schema Registry API.
+
+== Define Schema Registry ACLs in a RedpandaRole resource
+
+The xref:manage:kubernetes/security/authorization/k-role-controller.adoc[RedpandaRole resource] groups Schema Registry ACLs into reusable permission sets for multiple users.
+
+.`role-with-sr-acls.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/role-crds.feature[tags=manage-roles-with-authorization,indent=0]
+----
+
+In this example, a RedpandaRole called `read-only-role` is created in the cluster called `sasl`. The user `charlie` is assigned as a principal. The authorization rules grant `Read` and `Describe` access to all topics with names starting with `public-` using a `prefixed` pattern type, and the same `Read` and `Describe` access to Schema Registry subjects matching the same prefix.
+
+== Define Schema Registry ACLs in a Group resource
+
+The Group resource supports Schema Registry ACLs for OIDC groups.
+
+.`group-with-sr-acls.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/group-crds.feature[tags=manage-group-acls,indent=0]
+----
+
+In this example, ACLs are created for an OIDC group called `engineering` in the cluster called `sasl`. The authorization rules grant `Read` and `Describe` access to all topics with names starting with `team-` using a `prefixed` pattern type, and the same `Read` and `Describe` access to Schema Registry subjects matching the same prefix.
+
+== Common use cases
+
+The following examples show common patterns for configuring Schema Registry ACLs using the User resource.
+
+=== Grant a user read access to a subject
+
+This example gives a consumer application read access to the `orders` topic and its associated Schema Registry subject `orders-value`. Both ACLs use a `literal` pattern type to match exact resource names.
+
+.`consumer-app.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/user-crds.feature[tags=grant-user-read-access,indent=0]
+----
+
+=== Grant a producer write access using prefix patterns
+
+This example creates a user called `producer-app` with both authentication credentials and authorization rules. The ACLs grant `Write` and `Describe` access to all topics and Schema Registry subjects whose names start with `events-` using a `prefixed` pattern type. This allows the producer to register new schema versions for any subject matching the prefix.
+
+.`producer-app.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/user-crds.feature[tags=grant-producer-write-access,indent=0]
+----
+
+=== Grant global Schema Registry access
+
+This example gives a schema administrator full access to all Schema Registry operations. The first ACL rule uses the `registry` resource type, which applies to global operations such as getting or setting the global compatibility level. The `registry` resource type does not require a `name` field. The second ACL rule uses a `subject` resource type with an empty name and `prefixed` pattern type to match all subjects.
+
+.`schema-admin.yaml`
+[,yaml,indent=0]
+----
+include::manage:example$kubernetes/user-crds.feature[tags=grant-global-sr-access,indent=0]
+----
+
+== Partial sync behavior
+
+When a resource includes both Kafka and Schema Registry ACLs, the operator syncs them independently. If the Kafka ACLs sync successfully but the Schema Registry ACLs fail (for example, if Schema Registry Authorization is not enabled), the resource enters a `PartiallySynced` state. Check the resource status conditions for details:
+
+[,bash]
+----
+kubectl get user <user-name> -o jsonpath='{.status.conditions}' --namespace <namespace>
+----
+
+== Deploy and verify
+
+To deploy a resource with Schema Registry ACLs, apply the manifest to the same namespace as your Redpanda cluster:
+
+[,bash]
+----
+kubectl apply -f <manifest-filename>.yaml --namespace <namespace>
+----
+
+After deploying, verify that the Redpanda Operator reconciled the resource:
+
+[,bash]
+----
+kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
+----
+
+== Next steps
+
+* xref:manage:schema-reg/schema-reg-authorization.adoc[]
+* xref:manage:kubernetes/security/authentication/k-user-controller.adoc[]
+* xref:manage:kubernetes/security/authorization/k-role-controller.adoc[]
+* xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-aclresourcespec[ACLResourceSpec]
+* xref:manage:security/authorization/acl.adoc[]
