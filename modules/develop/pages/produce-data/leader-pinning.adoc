@@ -1,10 +1,22 @@
-= Leader Pinning
-:description: Learn about leader pinning and how to configure a preferred partition leader location based on cloud availability zones or regions.
+= Configure Leader Pinning
+:description: Learn about Leader Pinning and how to configure a preferred partition leader location based on cloud availability zones or regions.
+:page-topic-type: how-to
+:personas: streaming_developer, platform_admin
 // tag::single-source[]
+:learning-objective-1: Configure preferred partition leader placement using rack labels
+:learning-objective-2: Configure ordered rack preference for priority-based leader failover
+:learning-objective-3: Identify conditions where Leader Pinning cannot place leaders in preferred racks
 
-Produce requests that write data to Redpanda topics go through the topic partition leader, which syncs messages across its follower replicas. For a Redpanda cluster deployed across multiple availability zones (AZs), leader pinning ensures that a topic's partition leaders are geographically closer to clients, which helps decrease networking costs and guarantees lower latency.
+Produce requests that write data to Redpanda topics are routed through the topic partition leader, which syncs messages across its follower replicas. For a Redpanda cluster deployed across multiple availability zones (AZs), Leader Pinning ensures that a topic's partition leaders are geographically closer to clients, which helps decrease networking costs and guarantees lower latency.
 
-If consumers are located in the same preferred region or AZ for leader pinning, and you have not set up xref:develop:consume-data/follower-fetching.adoc[follower fetching], leader pinning can also help reduce networking costs on consume requests.
+If consumers are located in the same preferred region or AZ for Leader Pinning, and you have not set up xref:develop:consume-data/follower-fetching.adoc[follower fetching], Leader Pinning can also help reduce networking costs on consume requests. 
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
 
 ifndef::env-cloud[]
 == Prerequisites
@@ -14,64 +26,160 @@ ifndef::env-cloud[]
 include::shared:partial$enterprise-license.adoc[]
 ====
 
-Before you can enable leader pinning, you must xref:manage:rack-awareness.adoc#configure-rack-awareness[configure rack awareness] on the cluster. If the config_ref:enable_rack_awareness,true,properties/cluster-properties[] cluster configuration property is set to `false`, leader pinning is disabled across the cluster.
+Before you can enable Leader Pinning, you must xref:manage:rack-awareness.adoc#configure-rack-awareness[configure rack awareness] on the cluster. If the config_ref:enable_rack_awareness,true,properties/cluster-properties[] cluster configuration property is set to `false`, Leader Pinning is disabled across the cluster.
 
 endif::[]
 
 ifndef::env-cloud[]
-== Configure leader pinning
+== Set leader rack preferences
 
-You can use both a topic configuration property and a cluster configuration property to configure leader pinning.
-
-You can set the topic configuration property for individual topics only, or set the cluster-wide configuration property that will enable leader pinning by default for all topics. You can also use a combination in which a default setting applies across the cluster, and you toggle the setting on or off for specific topics.
+You can configure Leader Pinning at the topic level, the cluster level, or both. Set the topic configuration property to configure individual topics, or set the cluster configuration property to apply a default for all topics. You can also combine both: apply a cluster-wide default, then override specific topics with the topic property.
 
 This configuration is based on the following scenario: you have Redpanda deployed in a multi-AZ or multi-region cluster, and you have configured each broker so that the config_ref:rack,true,properties/broker-properties[] configuration property contains racks corresponding to the AZs:
 
-* Set the topic configuration property xref:reference:properties/topic-properties.adoc#redpandaleaderspreference[`redpanda.leaders.preference`]. The property accepts the following string values:
+* Set the topic configuration property xref:reference:properties/topic-properties.adoc#redpanda-leaders-preference[`redpanda.leaders.preference`]. This property accepts the following string values:
 +
 --
-** `none`: Opt out the topic from leader pinning.
+** `none`: Disable Leader Pinning for the topic.
 ** `racks:<rack1>[,<rack2>,...]`: Specify the preferred location (rack) of all topic partition leaders. The list can contain one or more racks, and you can list the racks in any order. Spaces in the list are ignored, for example: `racks:rack1,rack2` and `racks: rack1,  rack2` are equivalent. You cannot specify empty racks, for example: `racks: rack1,,rack2`. If you specify multiple racks, Redpanda tries to distribute the partition leader locations equally across brokers in these racks.
+** `ordered_racks:<rack1>[,<rack2>,...]`: Supported in Redpanda v26.1 or later. Specify the preferred racks in priority order. Redpanda places leaders in the first listed rack when available, failing over to each subsequent rack when higher-priority racks are unavailable. If all listed racks are unavailable, leaders fall back to any other available brokers. Brokers with no rack assignment are treated as lowest priority.
 +
-To find the rack identifier, run `rpk cluster info`.
---
-+
-This property inherits the default value from the cluster property `default_leaders_preference`.
+Use `ordered_racks` for multi-region deployments with a primary region for leaders and explicit failover to a disaster recovery site.
 
-* Set the cluster configuration property config_ref:default_leaders_preference,true,properties/cluster-properties[], which specifies the default leader pinning configuration for all topics that don’t have `redpanda.leaders.preference` explicitly set. It accepts values in the same format as `redpanda.leaders.preference`. Default: `none` 
+The xref:reference:properties/topic-properties.adoc#redpanda-leaders-preference[`redpanda.leaders.preference`] property inherits the default value from the cluster property `default_leaders_preference`.
+
+To find the rack identifiers of all brokers, run:
+
+[,bash]
+----
+rpk cluster info
+----
+
+.Expected output
+[,bash,role="no-copy"]
+----
+CLUSTER
+=======
+redpanda.be267958-279d-49cd-ae86-98fc7ed2de48
+
+BROKERS
+=======
+ID    HOST            PORT  RACK
+0*    54.70.51.189    9092  us-west-2a
+1     35.93.178.18    9092  us-west-2b
+2     35.91.121.126   9092  us-west-2c
+----
+
+To set the topic property:
+
+[,bash]
+----
+rpk topic alter-config <topic-name> --set redpanda.leaders.preference=ordered_racks:<rack1>,<rack2>
+----
+--
+
+* Set the cluster configuration property config_ref:default_leaders_preference,true,properties/cluster-properties[], which specifies the default Leader Pinning configuration for all topics that don’t have `redpanda.leaders.preference` explicitly set. It accepts values in the same format as `redpanda.leaders.preference`, where the default is `none`.
 +
 This property also affects internal topics, such as `__consumer_offsets` and transaction coordinators. All offset tracking and transaction coordination requests get placed within the preferred regions or AZs for all clients, so you see end-to-end latency and networking cost benefits.
++
+To set the cluster property:
++
+[,bash]
+----
+rpk cluster config set default_leaders_preference ordered_racks:<rack1>,<rack2>
+----
 
-If there is more than one broker in the preferred AZ (or AZs), leader pinning distributes partition leaders uniformly across brokers in the AZ.
+If there is more than one broker in the preferred AZ (or AZs), Leader Pinning distributes partition leaders uniformly across brokers in the AZ.
 
 endif::[]
 
 ifdef::env-cloud[]
-== Configure leader pinning
+== Set leader rack preferences
 
-Configure leader pinning if you have Redpanda deployed in a multi-AZ or multi-region cluster and your ingress is concentrated in a particular AZ or region.
+Configure Leader Pinning if you have Redpanda deployed in a multi-AZ or multi-region cluster and your ingress is concentrated in a particular AZ or region.
 
-Use the topic configuration property `redpanda.leaders.preference` to configure leader pinning for individual topics. The property accepts the following string values:
+Use the topic configuration property `redpanda.leaders.preference` to configure Leader Pinning for individual topics. The property accepts the following string values:
 
-** `none`: Opt out the topic from leader pinning.
+** `none`: Disable Leader Pinning for the topic.
 ** `racks:<rack1>[,<rack2>,...]`: Specify the preferred location (rack) of all topic partition leaders. The list can contain one or more racks, and you can list the racks in any order. Spaces in the list are ignored, for example: `racks:rack1,rack2` and `racks: rack1,  rack2` are equivalent. You cannot specify empty racks, for example: `racks: rack1,,rack2`. If you specify multiple racks, Redpanda tries to distribute the partition leader locations equally across brokers in these racks.
-+
-To find the rack identifier, run `rpk cluster info`.
+** `ordered_racks:<rack1>[,<rack2>,...]`: Supported in Redpanda v26.1 or later. Specify the preferred racks in priority order. Redpanda places leaders in the first listed rack when available, failing over to each subsequent rack when higher-priority racks are unavailable. If all listed racks are unavailable, leaders fall back to any other available brokers. Brokers with no rack assignment are treated as lowest priority.
 
-If there is more than one broker in the preferred AZ (or AZs), leader pinning distributes partition leaders uniformly across brokers in the AZ.
+To find the rack identifiers of all brokers, run:
+
+[,bash]
+----
+rpk cluster info
+----
+
+.Expected output
+[,bash,role="no-copy"]
+----
+CLUSTER
+=======
+redpanda.be267958-279d-49cd-ae86-98fc7ed2de48
+
+BROKERS
+=======
+ID    HOST            PORT  RACK
+0*    54.70.51.189    9092  us-west-2a
+1     35.93.178.18    9092  us-west-2b
+2     35.91.121.126   9092  us-west-2c
+----
+
+To set the topic property:
+
+[,bash]
+----
+rpk topic alter-config <topic-name> --set redpanda.leaders.preference=ordered_racks:<rack1>,<rack2>
+----
+
+If there is more than one broker in the preferred AZ (or AZs), Leader Pinning distributes partition leaders uniformly across brokers in the AZ.
 
 endif::[]
 
-== Leader pinning failover across availability zones
+== Limitations
 
-If there are three AZs: A, B, and C, and A becomes unavailable, the failover behavior is as follows:
+Leader Pinning controls which replica is elected as leader, and does not move replicas to different brokers. If all of a topic's replicas are on brokers in non-preferred racks, no replica exists in the preferred racks to elect as leader, and Redpanda may elect a non-preferred leader indefinitely.
 
-* A topic with "A" as the preferred leader AZ will have its partition leaders uniformly distributed across B and C.
-* A topic with "A,B" as the preferred leader AZs will have its partition leaders in B.
-* A topic with “B” as the preferred leader AZ will have its partition leaders in B as well.
+For example, consider a cluster deployed across four racks (A, B, C, D) with Leader Pinning configured as `ordered_racks:A,B,C,D`. With a replication factor of 3, rack awareness can only place replicas in three of the four racks. If the highest-priority rack (A) does not receive a replica, no replica exists there to elect as leader, and Redpanda may elect a non-preferred leader indefinitely.
+
+ifndef::env-cloud[]
+To prevent this scenario:
+
+* Enable config_ref:enable_rack_awareness,true,properties/cluster-properties[`enable_rack_awareness`] to distribute replicas across racks automatically.
+* Ensure the topic's replication factor at least equals the total number of racks in the cluster, so every rack, including the highest-priority rack, receives a replica.
+
+endif::[]
+ifdef::env-cloud[]
+To prevent this scenario, ensure the topic's replication factor at least equals the total number of racks in the cluster, so every rack, including the highest-priority rack, receives a replica.
+
+endif::[]
+
+== Leader Pinning failover across availability zones
+
+If there are three AZs: A, B, and C, and A becomes unavailable, the failover behavior with `racks` is as follows:
+
+* The topic with `A` as the preferred leader AZ will have its partition leaders uniformly distributed across B and C.
+* The topic with `A,B` as the preferred leader AZs will have its partition leaders in B.
+* The topic with `B` as the preferred leader AZ will have its partition leaders in B as well.
+
+=== Failover with ordered rack preference
+
+With `ordered_racks`, the failover order follows the configured priority list. Leaders move to the next available rack in the list when higher-priority racks become unavailable.
+
+For a topic configured with `ordered_racks:A,B,C`:
+
+* The topic with `A` as the first-priority rack will have its partition leaders in A.
+* If A becomes unavailable, leaders move to B.
+* If A and B become unavailable, leaders move to C.
+* If A, B, and C all become unavailable, leaders fall back to any available brokers.
+
+If a higher-priority rack recovers and the topic's replication factor ensures that rack receives a replica, Redpanda automatically moves leaders back to the highest available preferred rack.
 
 == Suggested reading
 
+// TODO: Add link to Cloud Topics
+// * For latency-tolerant, high-throughput workloads where cross-AZ networking charges are a major cost driver, also consider xref:develop:manage-topics/cloud-topics.adoc[Cloud Topics]
 * xref:develop:consume-data/follower-fetching.adoc[]
 
 // end::single-source[]
