@@ -1,0 +1,118 @@
+= Troubleshoot Iceberg Topics
+:description: Diagnose and resolve errors in Redpanda Iceberg translation, including dead-letter queue (DLQ) inspection and record reprocessing.
+:page-categories: Iceberg, Troubleshooting
+:page-topic-type: troubleshooting
+:personas: ops_admin, streaming_developer
+:learning-objective-1: Diagnose Iceberg translation errors using DLQ tables and metrics
+:learning-objective-2: Reprocess or drop invalid records from the DLQ table
+
+// tag::single-source[]
+
+ifndef::env-cloud[]
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+endif::[]
+
+{description}
+
+Use this page to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+
+== Dead-letter queue
+
+If Redpanda encounters an error while writing a record to the Iceberg table, Redpanda by default writes the record to a separate DLQ Iceberg table named `<topic-name>~dlq`. The following can cause errors to occur when translating records in the `value_schema_id_prefix` and `value_schema_latest` modes to the Iceberg table format:
+
+- Redpanda cannot find the embedded schema ID in the Schema Registry.
+- Redpanda fails to translate one or more schema data types to an Iceberg type.
+- In `value_schema_id_prefix` mode, you do not use the Schema Registry wire format with the magic byte.
+
+The DLQ table itself uses the `key_value` schema, consisting of two columns: the record metadata including the key, and a binary column for the record's value.
+
+NOTE: Topic property misconfiguration, such as xref:manage:iceberg/specify-iceberg-schema.adoc#override-value-schema-latest-default[overriding the default behavior of `value_schema_latest` mode] but not specifying the fully qualified Protobuf message name, does not cause records to be written to the DLQ table. Instead, Redpanda pauses the topic data translation to the Iceberg table until you fix the misconfiguration.
+
+=== Inspect DLQ table
+
+You can inspect the DLQ table for records that failed to write to the Iceberg table, and you can take further action on these records, such as transforming and reprocessing them, or debugging issues that occurred upstream.
+
+The following example produces a record to a topic named `ClickEvent` and does not use the Schema Registry wire format that includes the magic byte and schema ID:
+
+[,bash,role=no-copy]
+----
+echo '"key1" {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"}' | rpk topic produce ClickEvent --format='%k %v\n'
+----
+
+Querying the DLQ table returns the record that was not translated:
+
+[,sql]
+----
+SELECT
+    value
+FROM <catalog-name>."ClickEvent~dlq"; -- Fully qualified table name
+----
+
+[,bash,role=no-copy]
+----
++-------------------------------------------------+
+| value                                           |
++-------------------------------------------------+
+| 7b 22 75 73 65 72 5f 69 64 22 3a 32 33 32 34 2c |
+| 22 65 76 65 6e 74 5f 74 79 70 65 22 3a 22 42 55 |
+| 54 54 4f 4e 5f 43 4c 49 43 4b 22 2c 22 74 73 22 |
+| 3a 22 32 30 32 34 2d 31 31 2d 32 35 54 32 30 3a |
+| 32 33 3a 35 39 2e 33 38 30 5a 22 7d             |
++-------------------------------------------------+
+----
+
+The data is in binary format, and the first byte is not `0x00`, indicating that it was not produced with a schema.
+
+=== Reprocess DLQ records
+
+You can apply a transformation and reprocess the record in your data lakehouse to the original Iceberg table. In this case, you have a JSON value represented as a UTF-8 binary. Depending on your query engine, you might need to decode the binary value first before extracting the JSON fields. Some query engines decode the binary value automatically:
+
+.ClickHouse SQL example to reprocess DLQ record
+[,sql]
+----
+SELECT
+    CAST(jsonExtractString(json, 'user_id') AS Int32) AS user_id,
+    jsonExtractString(json, 'event_type') AS event_type,
+    jsonExtractString(json, 'ts') AS ts
+FROM (
+    SELECT
+        CAST(value AS String) AS json
+    FROM <catalog-name>.`ClickEvent~dlq` -- Ensure that the table name is properly parsed
+);
+----
+
+[,bash,role=no-copy]
+----
++---------+--------------+--------------------------+
+| user_id | event_type   | ts                       |
++---------+--------------+--------------------------+
+|    2324 | BUTTON_CLICK | 2024-11-25T20:23:59.380Z |
++---------+--------------+--------------------------+
+----
+
+You can now insert the transformed record back into the main Iceberg table. Redpanda recommends using an exactly-once processing strategy to avoid duplicates when reprocessing records.
+
+=== Drop invalid records
+
+ifndef::env-cloud[]
+To disable the default behavior and drop an invalid record, set the xref:reference:properties/topic-properties.adoc#redpanda-iceberg-invalid-record-action[`redpanda.iceberg.invalid.record.action`] topic property to `drop`. You can also configure the default cluster-wide behavior for invalid records by setting the `iceberg_invalid_record_action` property.
+endif::[]
+ifdef::env-cloud[]
+To disable the default behavior and drop an invalid record, set the `redpanda.iceberg.invalid.record.action` topic property to `drop`. You can also configure the default cluster-wide behavior for invalid records by setting the `iceberg_invalid_record_action` property.
+endif::[]
+
+== Troubleshooting metrics
+
+The following xref:reference:public-metrics-reference.adoc#iceberg-metrics[Iceberg metrics] help identify translation errors, invalid records, and catalog connectivity issues:
+
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_translation_dlq_files_created[`redpanda_iceberg_translation_dlq_files_created`]: Number of DLQ Parquet files created. A non-zero and increasing value indicates records are failing to translate. See <<inspect-dlq-table>> to examine the failed records.
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_translation_invalid_records[`redpanda_iceberg_translation_invalid_records`]: Number of invalid records encountered during translation, labeled by cause. See <<drop-invalid-records>> to configure how Redpanda handles these records.
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_rest_client_num_commit_table_update_requests_failed[`redpanda_iceberg_rest_client_num_commit_table_update_requests_failed`]: Failed table commit requests to the REST catalog. Applies only when using a REST catalog (`iceberg_catalog_type: rest`). Persistent failures indicate catalog connectivity or permission issues.
+
+// end::single-source[]
