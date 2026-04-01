@@ -104,3 +104,72 @@ Feature: Schema CRDs
     """
     And schema "order-event" is successfully synced
     Then I should be able to check compatibility against "order-event" in cluster "basic"
+
+  @skip:gke @skip:aks @skip:eks
+  Scenario: Manage fully compatible schema (Avro)
+    Given there is no schema "fully-compatible-schema" in cluster "basic"
+    When I apply Kubernetes manifest:
+    """
+# tag::full-compatibility-schema-manifest[]
+    # This manifest creates an Avro schema named "fully-compatible-schema" in the "basic" cluster.
+    # The schema uses Full compatibility, ensuring backward and forward compatibility across versions.
+    ---
+    apiVersion: cluster.redpanda.com/v1alpha2
+    kind: Schema
+    metadata:
+      name: fully-compatible-schema
+      namespace: redpanda
+    spec:
+      cluster:
+        clusterRef:
+          name: basic
+      schemaType: avro
+      compatibilityLevel: Full
+      text: |
+        {
+          "type": "record",
+          "name": "ExampleRecord",
+          "fields": [
+            { "type": "string", "name": "field1" },
+            { "type": "int", "name": "field2" }
+          ]
+        }
+# end::full-compatibility-schema-manifest[]
+    """
+    And schema "fully-compatible-schema" is successfully synced
+    Then I should be able to check compatibility against "fully-compatible-schema" in cluster "basic"
+
+  @skip:gke @skip:aks @skip:eks
+  Scenario: Manage order schema with references (Avro)
+    Given there is no schema "order-schema" in cluster "basic"
+    When I apply Kubernetes manifest:
+    """
+# tag::schema-references-manifest[]
+    # This manifest creates an Avro schema named "order-schema" that references another schema.
+    # Schema references enable modular and reusable schema components for complex data structures.
+    ---
+    apiVersion: cluster.redpanda.com/v1alpha2
+    kind: Schema
+    metadata:
+      name: order-schema
+      namespace: redpanda
+    spec:
+      cluster:
+        clusterRef:
+          name: basic
+      references:
+        - name: product-schema
+          subject: product
+          version: 1
+      text: |
+        {
+          "type": "record",
+          "name": "Order",
+          "fields": [
+            { "name": "product", "type": "Product" }
+          ]
+        }
+# end::schema-references-manifest[]
+    """
+    And schema "order-schema" is successfully synced
+    Then I should be able to check compatibility against "order-schema" in cluster "basic"
