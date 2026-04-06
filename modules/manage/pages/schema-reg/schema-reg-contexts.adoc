@@ -1,0 +1,581 @@
+= Schema Registry Contexts
+:description: Use Schema Registry contexts to create isolated namespaces for schemas, subjects, and configuration—enabling multi-tenant and multi-team deployments without separate Schema Registry instances.
+:page-tags: [Schema Registry, contexts, multi-tenant, Serverless, Confluent compatibility]
+// Learning objectives:
+// - Understand what Schema Registry contexts are and when to use them.
+// - Understand the qualified subject syntax (:<context>:<subject>).
+// - Enable the feature using the cluster configuration property.
+// - Configure contexts, including per-context mode and compatibility settings.
+// - Apply ACLs to control access at the context level.
+// - Identify updated metrics and the new cluster configuration property.
+// - Resolve common issues related to upgrade and subject naming.
+
+// Single-sourcing tags: use ifdef/ifndef blocks for content that differs
+// between self-managed and Redpanda Cloud. Cloud-only content is wrapped
+// in ifdef::env-cloud[] ... endif::[] blocks. Self-managed-only content
+// is wrapped in ifndef::env-cloud[] ... endif::[] blocks.
+
+Schema Registry contexts are namespaces that isolate schemas, subjects, and configuration from one another within a single Schema Registry instance.
+Each context maintains its own schema ID counter, mode, and compatibility settings.
+Use contexts when you need to separate schema workloads by tenant, team, or environment—without deploying multiple Schema Registry instances.
+
+== When to use contexts
+
+Contexts are most useful in the following scenarios:
+
+* *Multi-tenant deployments* (including Serverless): Each tenant can have a dedicated context with its own schema ID space and configuration so that one tenant's schema activity cannot interfere with another's.
+* *Multi-team deployments on a shared cluster*: Teams such as engineering, finance, and operations can register schemas independently under their own contexts without risking naming collisions or configuration drift.
+* *Migrations from Confluent Schema Registry*: Confluent SR uses contexts to namespace schemas. If your existing workflows or tooling rely on contexts, Redpanda's compatible implementation lets you migrate without restructuring your schema layout.
+* *Disaster recovery and schema syncing*: Dedicated namespaces reduce collision risk when syncing schemas across clusters.
+
+== Prerequisites
+
+Before using Schema Registry contexts, ensure that:
+
+* You are running Redpanda *26.1 or later*.
+* The `schema_registry_enable_qualified_subjects` cluster configuration property is set to `true`.
++
+ifndef::env-cloud[]
+[NOTE]
+====
+In 26.1, `schema_registry_enable_qualified_subjects` defaults to `false`. You must explicitly enable it for self-managed clusters or to test in a non-Serverless environment. In 26.2, the property defaults to `true`.
+====
+endif::env-cloud[]
++
+ifdef::env-cloud[]
+[NOTE]
+====
+On Serverless, contexts are enabled by default. On BYOC and Dedicated clusters, `schema_registry_enable_qualified_subjects` defaults to `false` in 26.1 and `true` in 26.2. Enable it to start using contexts before 26.2.
+====
+endif::env-cloud[]
+
+* If you use Schema Registry ACLs, the principal interacting with a context has the appropriate permissions. See <<acl-authorization>>.
+
+== Limitations
+
+* *Console, rpk, and Kubernetes Operator*: Support for contexts in the Redpanda Console UI, `rpk` CLI, and Kubernetes Operator is not available in 26.1. Use the Schema Registry HTTP API directly. Console, rpk, and Operator support will be delivered in a subsequent release.
+* *Cross-context isolation*: Contexts provide organizational isolation (separate ID spaces, subject namespaces, and configuration), not full data isolation. Schemas in one context can reference schemas in another context.
+* *Blocking cross-context references*: There is no mechanism to prevent cross-context schema references.
+* *DR/RPCN syncing into specific contexts*: Syncing schemas from remote clusters directly into a named context is not yet supported.
+* *WASM integration*: Context-aware schema IDs are not yet surfaced in WASM data transforms.
+* *Breaking change on upgrade*: After enabling `schema_registry_enable_qualified_subjects`, any existing subject whose name matches the qualified subject pattern `:<context>:<subject>` (for example, `:.staging:user-value`) is reinterpreted as subject `user-value` in context `.staging` rather than as a literal subject name in the default context. See <<upgrade-considerations>>.
+
+ifndef::env-cloud[]
+[NOTE]
+====
+No enterprise license is required to use contexts. Contexts are fully functional in the open-source Redpanda build.
+====
+endif::env-cloud[]
+
+== How Schema Registry contexts work
+
+Redpanda Schema Registry previously maintained a flat namespace: all schemas shared a single global schema ID counter and a single set of mode and compatibility settings (with optional per-subject overrides). Contexts extend this model by introducing named namespaces. Each context has its own schema ID counter that increments independently of other contexts, plus its own mode and compatibility settings.
+
+Contexts are referenced in the API using a *qualified subject* syntax:
+
+----
+:<context>:<subject>
+----
+
+For example, `:.production:user-events-value` identifies subject `user-events-value` in context `.production`. Context names begin with a dot (`.`). Unqualified subjects (for example, `user-events-value`) are unchanged and continue to belong to the *default context* (represented as `.:` or simply an absence of context prefix), ensuring full backward compatibility.
+
+A *global context* (`\__GLOBAL`) provides the lowest-priority fallback for mode and compatibility settings. The resolution order for configuration lookup is: subject → context → global → built-in defaults. Setting a global context mode to `READONLY`, for example, applies that mode to any subject or context that does not have its own explicit setting.
+
+Schema references within schema definitions follow the same rules: unqualified references resolve within the same context as the root schema; qualified references resolve in the explicitly named context. This enables patterns such as a shared `.shared` context that holds common types referenced by multiple team-specific contexts.
+
+== Enable Schema Registry contexts
+
+ifndef::env-cloud[]
+To enable contexts on a self-managed cluster, set the `schema_registry_enable_qualified_subjects` cluster configuration property to `true`:
+
+[source,bash]
+----
+rpk cluster config set schema_registry_enable_qualified_subjects true
+----
+
+To verify the current setting:
+
+[source,bash]
+----
+rpk cluster config get schema_registry_enable_qualified_subjects
+----
+endif::env-cloud[]
+
+ifdef::env-cloud[]
+[NOTE]
+====
+On Serverless clusters, contexts are managed by Redpanda and enabled automatically per tenant. On BYOC and Dedicated clusters, contact Redpanda support or use the cluster configuration API to enable `schema_registry_enable_qualified_subjects`.
+====
+endif::env-cloud[]
+
+== Configure Schema Registry contexts
+
+=== Qualified subject syntax
+
+Wherever the Schema Registry API accepts a subject—in path parameters, query parameters, or schema reference fields—you can supply a qualified subject instead of a bare subject name:
+
+[cols="1,2", options="header"]
+|===
+| Syntax | Meaning
+
+| `:<context>:<subject>` | Subject `<subject>` in context `<context>`.
+| `:.production:user-events-value` | Subject `user-events-value` in context `.production`.
+| `:.production:` | The context `.production` itself (empty subject name), used for context-level mode/config operations.
+| `user-events-value` | Subject `user-events-value` in the default context (unchanged behavior).
+|===
+
+=== Register a schema in a context
+
+To register a schema in a named context, use the qualified subject form in the `POST /subjects/{subject}/versions` request:
+
+[source,bash]
+----
+curl -s -X POST \
+  http://localhost:8081/subjects/:.production:user-events-value/versions \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  -d '{"schema": "{\"type\":\"record\",\"name\":\"UserEvent\",\"fields\":[{\"name\":\"id\",\"type\":\"string\"},{\"name\":\"action\",\"type\":\"string\"}]}"}'
+----
+
+The schema ID returned is unique within the `.production` context and independent of schema IDs in other contexts.
+
+=== List contexts
+
+To list all contexts that have been explicitly created (plus the default context), use the `GET /contexts` endpoint:
+
+[source,bash]
+----
+curl -s http://localhost:8081/contexts
+----
+
+Example response:
+
+[source,json]
+----
+[".","production","staging"]
+----
+
+NOTE: The default context is always included in the response, represented as `"."`.
+
+=== List subjects in a context
+
+To list all subjects within a specific context, use the `/contexts/{context}/subjects` endpoint or the `subjectPrefix` query parameter on `GET /subjects`:
+
+.List subjects within a context using the context path prefix
+[source,bash]
+----
+curl -s http://localhost:8081/contexts/.production/subjects
+----
+
+.List subjects using subjectPrefix (explicit context)
+[source,bash]
+----
+curl -s "http://localhost:8081/subjects?subjectPrefix=:.production:"
+----
+
+.List subjects across all contexts (wildcard)
+[source,bash]
+----
+curl -s "http://localhost:8081/subjects?subjectPrefix=:*:"
+----
+
+.List subjects in the default context only (default behavior without subjectPrefix)
+[source,bash]
+----
+curl -s http://localhost:8081/subjects
+----
+
+=== Set context-level mode
+
+Mode can be set at the context level by specifying a qualified subject with an empty subject name (`:<context>:`):
+
+[source,bash]
+----
+# Set the .staging context to IMPORT mode
+curl -s -X PUT \
+  http://localhost:8081/mode/:.staging: \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  -d '{"mode": "IMPORT"}'
+----
+
+[source,bash]
+----
+# Get the mode for the .staging context
+curl -s http://localhost:8081/mode/:.staging:
+----
+
+=== Set context-level compatibility
+
+[source,bash]
+----
+# Set compatibility for the .production context
+curl -s -X PUT \
+  http://localhost:8081/config/:.production: \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  -d '{"compatibility": "BACKWARD"}'
+----
+
+[source,bash]
+----
+# Get compatibility for a specific subject within a context
+curl -s http://localhost:8081/config/:.production:user-events-value
+----
+
+=== Set the global context fallback
+
+The `\__GLOBAL` context provides the lowest-priority fallback for all contexts and subjects that do not have their own explicit setting:
+
+[source,bash]
+----
+# Set global default compatibility
+curl -s -X PUT \
+  http://localhost:8081/config/:__GLOBAL: \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  -d '{"compatibility": "FULL"}'
+----
+
+NOTE: `\__GLOBAL` and `\__EMPTY` are reserved names and cannot be used as regular context or subject names.
+
+=== Use a context as the base URL
+
+You can point a client at a specific context by setting the client's base URL to `${host}/contexts/{context}`. Redpanda rewrites requests under this path prefix to operate within the specified context automatically. For example:
+
+----
+# All requests to this base URL operate within the .production context
+http://localhost:8081/contexts/.production
+----
+
+A client with this base URL making a `GET /schemas/ids/42` request would retrieve schema ID 42 from the `.production` context.
+
+=== Set a pre-configured mode on a non-existent context
+
+You can set mode or compatibility on a context before any schemas are registered in it. When the first schema is registered under that context, it immediately inherits the pre-configured settings:
+
+[source,bash]
+----
+# Pre-configure a context that does not yet exist
+curl -s -X PUT \
+  http://localhost:8081/mode/:.new-team: \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  -d '{"mode": "READONLY"}'
+
+# Any attempt to register a schema in :.new-team: will now be rejected
+# until the mode is changed to READWRITE
+----
+
+=== Delete a context
+
+A context can be deleted only when it has no subjects (or all subjects have been hard-deleted). Attempting to delete a non-empty context returns a `ContextNotEmpty` error.
+
+[source,bash]
+----
+curl -s -X DELETE http://localhost:8081/contexts/.staging
+----
+
+=== Cross-context schema references
+
+Schemas can reference schemas in other contexts using qualified subject names in the `references` field:
+
+[source,json]
+----
+{
+  "schema": "...",
+  "references": [
+    {
+      "name": "Address",
+      "subject": ":.shared:Address",
+      "version": 1
+    }
+  ]
+}
+----
+
+Unqualified references in schema definitions resolve to the same context as the root schema, not to the default context.
+
+== Cluster configuration property
+
+The following cluster configuration property controls whether qualified subject parsing is enabled.
+
+`schema_registry_enable_qualified_subjects`::
++
+[cols="1,3"]
+|===
+| Type | Boolean
+| Default (26.1) | `false`
+| Default (26.2+) | `true`
+|===
++
+When set to `false`, subjects are treated as literal strings (existing behavior). When set to `true`, subjects matching the `:<context>:<subject>` pattern are parsed as context-qualified subjects.
++
+ifndef::env-cloud[]
+Configure using `rpk`:
++
+[source,bash]
+----
+rpk cluster config set schema_registry_enable_qualified_subjects true
+----
+endif::env-cloud[]
+
+== rpk commands
+
+[NOTE]
+====
+Native `rpk` commands for managing contexts (for example, listing, creating, or deleting contexts) are not available in 26.1. Use the Schema Registry HTTP API directly. rpk support for contexts will be delivered in a future release.
+====
+
+Existing `rpk registry` commands that accept a subject name already support qualified subject syntax once `schema_registry_enable_qualified_subjects` is enabled. Pass a qualified subject wherever a `--subject` flag is accepted:
+
+[source,bash]
+----
+# Create a schema in a named context
+rpk registry schema create \
+  --subject ":.production:user-events-value" \
+  --schema user-events.avsc \
+  --type avro
+
+# List schemas for a subject in a named context
+rpk registry schema list \
+  --subject ":.production:user-events-value"
+
+# Get a specific schema version from a context
+rpk registry schema get \
+  --subject ":.production:user-events-value" \
+  --version 1
+
+# Check compatibility for a subject in a context
+rpk registry schema check-compatibility \
+  --subject ":.production:user-events-value" \
+  --schema user-events-v2.avsc
+
+# Get the compatibility level for a context
+rpk registry compatibility-level get \
+  --subject ":.production:"
+
+# Set the compatibility level for a context
+rpk registry compatibility-level set \
+  --subject ":.production:" \
+  --level BACKWARD
+
+# Get the mode for a context
+rpk registry mode get \
+  --subject ":.production:"
+
+# Set the mode for a context
+rpk registry mode set \
+  --subject ":.production:" \
+  --mode READONLY
+
+# Delete a subject within a context
+rpk registry subject delete \
+  --subject ":.production:user-events-value"
+----
+
+For full reference documentation on these commands, see:
+
+* xref:reference:rpk/rpk-registry/rpk-registry-schema-create.adoc[rpk registry schema create]
+* xref:reference:rpk/rpk-registry/rpk-registry-schema-list.adoc[rpk registry schema list]
+* xref:reference:rpk/rpk-registry/rpk-registry-schema-get.adoc[rpk registry schema get]
+* xref:reference:rpk/rpk-registry/rpk-registry-schema-check-compatibility.adoc[rpk registry schema check-compatibility]
+* xref:reference:rpk/rpk-registry/rpk-registry-compatibility-level-get.adoc[rpk registry compatibility-level get]
+* xref:reference:rpk/rpk-registry/rpk-registry-compatibility-level-set.adoc[rpk registry compatibility-level set]
+* xref:reference:rpk/rpk-registry/rpk-registry-mode-get.adoc[rpk registry mode get]
+* xref:reference:rpk/rpk-registry/rpk-registry-mode-set.adoc[rpk registry mode set]
+* xref:reference:rpk/rpk-registry/rpk-registry-subject-delete.adoc[rpk registry subject delete]
+* xref:reference:rpk/rpk-registry/rpk-registry-subject-list.adoc[rpk registry subject list]
+
+== ACL authorization
+
+[#acl-authorization]
+
+Contexts use the existing `sr_subject` and `sr_registry` ACL resource types. No new resource types are needed.
+
+=== Grant access to all subjects in a context
+
+Use a prefix ACL on `sr_subject` with the context prefix `:<context>:` to grant access to all subjects within a context:
+
+[source,bash]
+----
+rpk security acl create \
+  --allow-principal User:team-a \
+  --operation read,write,describe \
+  --registry-subject ":.team-a:" \
+  --brokers <brokers>
+----
+
+This ACL matches `:.team-a:*`, granting the principal access to every subject in the `.team-a` context.
+
+=== Context-level mode and config operations
+
+Context-level mode and compatibility (`PUT /mode/:<context>:` and `PUT /config/:<context>:`) require `sr_registry` permission with the `alter_configs` operation—consistent with global mode and config endpoints.
+
+Subject-level operations (`PUT /mode/:<context>:<subject>` and `PUT /config/:<context>:<subject>`) require `sr_subject` permission on the specific subject.
+
+=== Audit log format
+
+When Schema Registry ACLs are enabled, audit log entries include the fully qualified subject name for non-default context operations:
+
+[source,json]
+----
+{
+  "resources": [
+    {
+      "name": ":.production:user-events-value",
+      "type": "subject"
+    }
+  ]
+}
+----
+
+Default context subjects are logged with their unqualified name (no change from existing behavior).
+
+== Metrics
+
+The following Schema Registry metrics have been updated to include a `context` label, enabling per-context monitoring:
+
+[cols="2,2", options="header"]
+|===
+| Metric | Change
+
+| `*_schema_registry_cache_schema_count`
+| New `context` label added.
+
+| `*_schema_registry_cache_subject_count`
+| New `context` label added.
+
+| `*_schema_registry_cache_subject_version_count`
+| New `context` label added.
+|===
+
+For the full metrics reference, see xref:reference:public-metrics-reference.adoc[Public Metrics Reference].
+
+== Upgrade considerations
+
+[#upgrade-considerations]
+
+[IMPORTANT]
+====
+*Breaking change*: When `schema_registry_enable_qualified_subjects` is enabled, any existing subject whose name matches the qualified subject pattern—for example, `:.staging:user-value`—is reinterpreted as subject `user-value` in context `.staging`, rather than as a literal subject name in the default context. Subjects without a `:.` prefix are unaffected.
+====
+
+This edge case is expected to be rare. To audit your existing subjects for affected names before enabling the feature:
+
+ifndef::env-cloud[]
+[source,bash]
+----
+rpk registry subject list | grep '^:\.'
+----
+endif::env-cloud[]
+
+ifdef::env-cloud[]
+[source,bash]
+----
+curl -s http://<schema-registry-host>:8081/subjects | jq '.[] | select(startswith(":."))'
+----
+endif::env-cloud[]
+
+If affected subjects are found, rename them before enabling the property, or plan to rename them after enabling and re-register any schemas under the reinterpreted context structure.
+
+In 26.2, if you need additional time to migrate, you can temporarily set `schema_registry_enable_qualified_subjects` to `false` to preserve the existing literal behavior while you complete the migration. This option is removed in 26.3.
+
+== Troubleshooting
+
+=== Schema registration fails after upgrading to 26.1
+
+*Symptom*: A `POST /subjects/{subject}/versions` request returns an unexpected error after upgrading.
+
+*Cause*: The subject name may contain a `:.` prefix that is now parsed as a context-qualified subject. If the inferred context was pre-configured in `READONLY` mode, new registrations are rejected.
+
+*Resolution*: Check whether the subject name matches the qualified pattern:
+
+ifndef::env-cloud[]
+[source,bash]
+----
+rpk registry subject list | grep '^:\.'
+----
+endif::env-cloud[]
+
+Rename affected subjects if needed, or change the context mode:
+
+[source,bash]
+----
+curl -s -X PUT http://localhost:8081/mode/:<affected-context>: \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  -d '{"mode": "READWRITE"}'
+----
+
+=== `GET /contexts` returns an empty list or does not include my context
+
+*Symptom*: A context that you believe exists does not appear in `GET /contexts`.
+
+*Cause*: A context is only listed after at least one schema has been registered in it (creating the internal `CONTEXT` record). Pre-configuring a mode or compatibility setting alone does not create a listed context.
+
+*Resolution*: Register a schema in the context to materialize it, or verify that at least one subject exists under the context.
+
+=== Qualified subjects not recognized (subjects treated as literal names)
+
+*Symptom*: Subjects with the `:.` prefix are stored as literal subject names in the default context rather than being parsed as context-qualified subjects.
+
+*Cause*: `schema_registry_enable_qualified_subjects` is set to `false` (the 26.1 default for self-managed clusters).
+
+*Resolution*:
+
+ifndef::env-cloud[]
+[source,bash]
+----
+rpk cluster config set schema_registry_enable_qualified_subjects true
+----
+endif::env-cloud[]
+
+=== Cross-context reference resolution fails
+
+*Symptom*: A schema registration that includes references to subjects in another context fails with a subject-not-found error.
+
+*Cause*: Unqualified references in schema definitions resolve within the same context as the root schema, not in the default context.
+
+*Resolution*: Use a fully qualified reference in the schema definition:
+
+[source,json]
+----
+{
+  "references": [
+    {
+      "name": "Address",
+      "subject": ":.shared:Address",
+      "version": 1
+    }
+  ]
+}
+----
+
+=== Context cannot be deleted
+
+*Symptom*: `DELETE /contexts/{context}` returns a `ContextNotEmpty` error.
+
+*Cause*: The context still has subjects that have not been fully deleted (hard-deleted).
+
+*Resolution*: Delete all subjects within the context before deleting the context itself. Use a soft delete followed by a permanent (hard) delete:
+
+[source,bash]
+----
+# Soft-delete the subject
+curl -s -X DELETE \
+  "http://localhost:8081/subjects/:<context>:<subject>"
+
+# Hard-delete the subject (permanent)
+curl -s -X DELETE \
+  "http://localhost:8081/subjects/:<context>:<subject>?permanent=true"
+----
+
+Repeat for each subject in the context, then retry the `DELETE /contexts/{context}` request.
+
+== Related topics
+
+* xref:manage:schema-reg/schema-reg-overview.adoc[Redpanda Schema Registry]
+* xref:manage:schema-reg/schema-reg-api.adoc[Use the Schema Registry API]
+* xref:manage:schema-reg/schema-reg-authorization.adoc[Schema Registry Authorization]
+* xref:reference:public-metrics-reference.adoc[Public Metrics Reference]
+ifndef::env-cloud[]
+* xref:reference:cluster-properties.adoc[Cluster Configuration Properties]
+endif::env-cloud[]
+ifdef::env-cloud[]
+* xref:reference:properties/cluster-properties.adoc[Cluster Configuration Properties]
+endif::env-cloud[]
