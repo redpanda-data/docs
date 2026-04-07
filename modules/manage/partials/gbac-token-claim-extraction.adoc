@@ -1,0 +1,76 @@
+ifdef::env-cloud[]
+In Redpanda Cloud, group claim extraction is configured through your SSO connection settings. 
+
+. In the Cloud UI, navigate to *Organization IAM > Single sign-on*, then select your IdP connection. 
+. For Mapping mode, select *use_map*.
+. Configure Attributes (JSON) to map attribute names to claim paths, including `federated_groups` for group claims. 
++
+A claim path is a https://goessner.net/articles/JsonPath/[JSON path^] expression that tells Redpanda where to find group information in the OIDC token. The appropriate claim path for each attribute may vary per IdP.
++
+For example, Okta exposes group claims in `${context.userinfo.groups}`. In this case, you must also include `groups` in *Userinfo scope*.
+endif::[]
+
+ifndef::env-cloud[]
+Two cluster properties control how Redpanda extracts group names:
+
+* xref:reference:properties/cluster-properties.adoc#oidc_group_claim_path[`oidc_group_claim_path`]: A https://goessner.net/articles/JsonPath/[JSON path^] expression that tells Redpanda where to find group information in the OIDC token. For example, Auth0 and Okta typically use a top-level `groups` claim (`$.groups`), while Keycloak nests roles inside `realm_access` (`$.realm_access.roles`). Default: `$.groups`.
+* xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior`]: Controls how Redpanda handles group names that use path-style notation (for example, `/departments/eng/platform`). Set to `none` to use the full path as-is, or `suffix` to extract only the last segment. Default: `none`.
++
+NOTE: When `nested_group_behavior` is set to `suffix`, groups that share a leaf name (for example, `/departments/eng/groupA` and `/departments/sales/groupA`) both resolve to `Group:groupA`. ACLs or role assignments for that principal apply to members of both groups. Design your group naming conventions to avoid unintended collisions.
+
+To update these properties, use xref:manage:cluster-maintenance/cluster-property-configuration.adoc[any configuration method] (`rpk cluster config set`, the Admin API, or Redpanda Console). Changes take effect immediately without a restart.
+endif::[]
+
+=== Token structure examples
+
+The following examples show how Redpanda extracts group principals from different token formats.
+
+==== Flat group values (default)
+
+With `oidc_group_claim_path: "$.groups"`, Redpanda extracts principals `Group:engineering` and `Group:analytics` from the token.
+
+[,json]
+----
+{"groups": ["engineering", "analytics"]}
+----
+
+==== Nested claim
+
+With `oidc_group_claim_path: "$.realm_access.roles"`, Redpanda extracts principals `Group:eng` and `Group:fin` from the token.
+
+[,json]
+----
+{"realm_access": {"roles": ["eng", "fin"]}}
+----
+
+==== Path-style group names with no suffix extraction (default)
+
+With `nested_group_behavior: "none"` (the default), Redpanda maps the full path to principals `Group:/departments/eng/platform` and `Group:/departments/eng/infra`.
+
+[,json]
+----
+{"groups": ["/departments/eng/platform", "/departments/eng/infra"]}
+----
+
+// Not supported in Cloud
+ifndef::env-cloud[]
+==== Path-style group names with suffix extraction
+
+When xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior`] is set to `suffix`, Redpanda maps the last path segment to principals `Group:platform` and `Group:infra`.
+
+[,json]
+----
+{"groups": ["/departments/eng/platform", "/departments/eng/infra"]}
+----
+endif::[]
+
+==== CSV-formatted group claim
+
+Some identity providers return group claims as a single comma-separated string instead of an array.
+
+[,json]
+----
+{"groups": "engineering,analytics,finance"}
+----
+
+Redpanda automatically splits comma-separated values and extracts principals `Group:engineering`, `Group:analytics`, and `Group:finance`.
