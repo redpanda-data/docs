@@ -5,8 +5,10 @@ ifdef::env-cloud[:acl-doc: security:authorization/acl.adoc]
 ifndef::env-cloud[:acl-doc: manage:security/authorization/acl.adoc]
 ifdef::env-cloud[:rbac-doc: security:authorization/rbac/index.adoc]
 ifndef::env-cloud[:rbac-doc: manage:security/authorization/rbac.adoc]
+ifdef::env-cloud[:in-data-plane: in the glossterm:data plane[]]
+ifndef::env-cloud[:in-data-plane:]
 
-Group-based access control (GBAC) lets you manage Redpanda permissions at scale using the groups that already exist in your identity provider (IdP). Instead of creating and maintaining per-user permissions in Redpanda, you define access once for a group and your IdP controls who belongs to it. When users join or leave a team, their Redpanda access updates automatically at next login with no changes needed in Redpanda.
+Group-based access control (GBAC) {in-data-plane} lets you manage Redpanda permissions at scale using the groups that already exist in your identity provider (IdP). Instead of creating and maintaining per-user permissions in Redpanda, you define access once for a group and your IdP controls who belongs to it. When users join or leave a team, their Redpanda access updates automatically at next login with no changes needed in Redpanda.
 
 GBAC extends xref:{oidc-doc}[OIDC authentication] and supports two ways to grant permissions to groups: create xref:{acl-doc}[ACLs] with `Group:<name>` principals, or assign groups as members of xref:{rbac-doc}[RBAC] roles. Both approaches can be used independently or together.
 
@@ -95,45 +97,12 @@ Mitigation: Filter token claims to include only the groups relevant to Redpanda.
 
 * No wildcard ACLs for groups: ACL matching for `Group:` principals uses literal string comparison only. Wildcard patterns are not supported.
 
-ifdef::env-cloud[]
-== Register groups in Redpanda Cloud
+ifndef::env-cloud[== Customize token claim extraction]
+ifdef::env-cloud[== Configure token claim extraction]
 
-To assign an IdP group to a role or ACL, you must first register the group:
+Different identity providers store group information in different locations within the JWT token.
 
-[tabs]
-====
-Cloud UI::
-+
---
-. In the left navigation menu, select *Organization IAM*, then select the *Groups* tab.
-. Click *Create group*.
-. Enter a *Name* that matches the group in your IdP exactly (for example, `engineering`).
-. Optionally, enter a *Description*, and configure a *Role binding* to assign the group to a role with a specific scope and resource.
-. Click *Create*.
---
-
-Control Plane API::
-+
---
-Make a link:/api/doc/cloud-controlplane/operation/operation-groupservice_creategroup[`POST /v1/groups`] request to the xref:redpanda-cloud:manage:api/cloud-byoc-controlplane-api.adoc[Control Plane API]:
-
-[,bash]
-----
-curl -X POST 'https://api.redpanda.com/v1/groups' \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer <token>' \
-  -d '{
-    "group": {
-      "name": "<group-name>",
-      "description": "<group-description>"
-    }
-  }'
-----
-
-Replace `<group-name>` with the name that matches the group in your IdP (for example, `engineering`). The name must match exactly for GBAC to map the group correctly.
---
-====
-endif::[]
+include::manage:partial$gbac-token-claim-extraction.adoc[]
 
 == Create group-based ACLs
 
@@ -172,8 +141,17 @@ ifdef::env-cloud[]
 Data Plane API::
 +
 --
-Make a link:/api/doc/cloud-dataplane/operation/operation-aclservice_createacl[`POST /v1/acls`] request with a `Group:` principal. For example, to grant the `engineering` group read access to a topic:
+. First, retrieve your cluster's Data Plane API URL:
++
+[,bash]
+----
+export DATAPLANE_API_URL=$(curl -s https://api.redpanda.com/v1/clusters/<cluster-id> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" | jq -r .cluster.dataplane_api)
+----
 
+. Make a link:/api/doc/cloud-dataplane/operation/operation-aclservice_createacl[`POST /v1/acls`] request with a `Group:` principal. For example, to grant the `engineering` group read access to a topic:
++
 [,bash]
 ----
 curl -X POST "${DATAPLANE_API_URL}/v1/acls" \
@@ -239,15 +217,6 @@ ifdef::env-cloud[]
 Data Plane API::
 +
 --
-First, retrieve your cluster's Data Plane API URL:
-
-[,bash]
-----
-export DATAPLANE_API_URL=$(curl -s https://api.redpanda.com/v1/clusters/<cluster-id> \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" | jq -r .cluster.dataplane_api)
-----
-
 Make a link:/api/doc/cloud-dataplane/operation/operation-securityservice_updaterolemembership[`PUT /v1/roles/\{role_name}`] request to assign a group to a role:
 
 [,bash]
@@ -422,87 +391,6 @@ curl \
 --
 endif::[]
 ====
-
-== Customize token claim extraction
-
-Different identity providers store group information in different locations within the JWT token.
-
-ifdef::env-cloud[]
-In Redpanda Cloud, group claim extraction is configured through your SSO connection settings. 
-
-. In the Cloud UI, navigate to *Organization IAM > Single sign-on*, then select your IdP connection. 
-. Ensure the mapping mode is set to *use_map*.
-. Configure *Attributes (JSON)* to map attribute names to claim paths, including `federated_groups` for group claims. 
-+
-A claim path is a https://goessner.net/articles/JsonPath/[JSON path^] expression that tells Redpanda where to find group information in the OIDC token. The appropriate claim path for each attribute may vary per IdP.
-+
-For example, Okta exposes group claims in `${context.userinfo.groups}`. In this case, you must also include `groups` in *Userinfo scope*.
-endif::[]
-
-ifndef::env-cloud[]
-Two cluster properties control how Redpanda extracts group names:
-
-* xref:reference:properties/cluster-properties.adoc#oidc_group_claim_path[`oidc_group_claim_path`]: A https://goessner.net/articles/JsonPath/[JSON path^] expression that tells Redpanda where to find group information in the OIDC token. For example, Auth0 and Okta typically use a top-level `groups` claim (`$.groups`), while Keycloak nests roles inside `realm_access` (`$.realm_access.roles`). Default: `$.groups`.
-* xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior`]: Controls how Redpanda handles group names that use path-style notation (for example, `/departments/eng/platform`). Set to `none` to use the full path as-is, or `suffix` to extract only the last segment. Default: `none`.
-+
-NOTE: When `nested_group_behavior` is set to `suffix`, groups that share a leaf name (for example, `/departments/eng/groupA` and `/departments/sales/groupA`) both resolve to `Group:groupA`. ACLs or role assignments for that principal apply to members of both groups. Design your group naming conventions to avoid unintended collisions.
-
-To update these properties, use xref:manage:cluster-maintenance/cluster-property-configuration.adoc[any configuration method] (`rpk cluster config set`, the Admin API, or Redpanda Console). Changes take effect immediately without a restart.
-endif::[]
-
-=== Token structure examples
-
-The following examples show how Redpanda extracts group principals from different token formats.
-
-==== Flat group values (default)
-
-With `oidc_group_claim_path: "$.groups"`, Redpanda extracts principals `Group:engineering` and `Group:analytics` from the token.
-
-[,json]
-----
-{"groups": ["engineering", "analytics"]}
-----
-
-==== Nested claim
-
-With `oidc_group_claim_path: "$.realm_access.roles"`, Redpanda extracts principals `Group:eng` and `Group:fin` from the token.
-
-[,json]
-----
-{"realm_access": {"roles": ["eng", "fin"]}}
-----
-
-==== Path-style group names with no suffix extraction (default)
-
-With `nested_group_behavior: "none"` (the default), Redpanda maps the full path to principals `Group:/departments/eng/platform` and `Group:/departments/eng/infra`.
-
-[,json]
-----
-{"groups": ["/departments/eng/platform", "/departments/eng/infra"]}
-----
-
-// Not supported in Cloud
-ifndef::env-cloud[]
-==== Path-style group names with suffix extraction
-
-When xref:reference:properties/cluster-properties.adoc#nested_group_behavior[`nested_group_behavior`] is set to `suffix`, Redpanda maps the last path segment to principals `Group:platform` and `Group:infra`.
-
-[,json]
-----
-{"groups": ["/departments/eng/platform", "/departments/eng/infra"]}
-----
-endif::[]
-
-==== CSV-formatted group claim
-
-Some identity providers return group claims as a single comma-separated string instead of an array.
-
-[,json]
-----
-{"groups": "engineering,analytics,finance"}
-----
-
-Redpanda automatically splits comma-separated values and extracts principals `Group:engineering`, `Group:analytics`, and `Group:finance`.
 
 ifndef::env-cloud[]
 == Troubleshoot GBAC
