@@ -58,8 +58,8 @@ To learn more about how partitioning schemes can affect query performance, and f
 
 Over time, Iceberg translation can produce many small Parquet files, especially with low-throughput topics or short lag targets. Compaction merges small files into larger ones, reducing the number of metadata operations query engines must perform and improving read performance.
 
-* Managed service: Some managed query engines and data platforms, such as Snowflake and Databricks, automatically compact Iceberg tables.
-* Manual or scheduled compaction: Tools like https://spark.apache.org/[Apache Spark^] can run compaction jobs on a schedule. This is useful if your query engine does not compact automatically.
+* Automatic compaction: Some catalog and data platform services, such as AWS Glue and Databricks, automatically compact Iceberg tables.
+* Manual or scheduled compaction: Tools like https://spark.apache.org/[Apache Spark^] can run compaction jobs on a schedule. This is useful if your catalog or platform does not compact automatically.
 
 If you observe degraded read performance or a high number of small files, investigate whether your query engine supports automatic compaction or schedule periodic compaction jobs.
 
@@ -117,6 +117,21 @@ Increasing the lag target means Iceberg tables receive new data less frequently.
 `datalake_translator_flush_bytes` and `iceberg_target_lag_ms` work best when tuned together. A high flush threshold combined with a short lag window may not improve file sizes if the lag window expires before enough data has accumulated.
 ====
 
+To check the current values of key translation properties:
+
+[,bash]
+----
+rpk cluster config get datalake_translator_flush_bytes
+rpk cluster config get iceberg_target_lag_ms
+----
+
+To check topic-level overrides:
+
+[,bash]
+----
+rpk topic describe <topic-name> -c
+----
+
 === Message size
 
 Redpanda has validated 32 MiB as the maximum recommended message size for Iceberg-enabled topics. With large messages, each Parquet file contains fewer records because the flush threshold is reached sooner. This can reduce the efficiency of analytical queries that need to scan many records.
@@ -124,11 +139,11 @@ Redpanda has validated 32 MiB as the maximum recommended message size for Iceber
 If query latency is a concern and your workload produces large messages, consider:
 
 * Reducing individual message sizes if your data model allows it.
-* Increasing `datalake_translator_flush_bytes` to produce Parquet files with more records per file.
+* Increasing `datalake_translator_flush_bytes` and `iceberg_target_lag_ms` to produce Parquet files with more records per file. See <<tune-flush-threshold-and-lag-target>>.
 
-=== Cluster sizing and backpressure
+=== Cluster sizing
 
-When you enable Iceberg for any substantial workload and start translating topic data to the Iceberg format, you may see most of your cluster's CPU utilization increase. If this additional workload overwhelms the brokers and causes the Iceberg table lag to exceed the configured target lag, Redpanda automatically applies backpressure to producers to prevent Iceberg tables from lagging further. This ensures that Iceberg tables keep up with the volume of incoming data, but sacrifices ingress throughput of the cluster.
+When you enable Iceberg for any substantial workload and start translating topic data to the Iceberg format, you may see most of your cluster's CPU utilization increase. If this additional workload overwhelms the brokers and causes the Iceberg table lag to exceed the configured target lag, Redpanda automatically increases the scheduling priority of Iceberg translation to help it catch up with incoming data. However, this does not substitute for adequate cluster resources.
 
 You may need to increase the size of your Redpanda cluster to accommodate the additional workload. To ensure that your cluster is sized appropriately, contact the Redpanda Customer Success team.
 
@@ -143,15 +158,6 @@ Use the following xref:reference:public-metrics-reference.adoc#iceberg-metrics[I
 * xref:reference:public-metrics-reference.adoc#redpanda_iceberg_translation_translations_finished[`redpanda_iceberg_translation_translations_finished`]: Number of completed translator executions. A stalling or zero rate indicates translation has stopped.
 
 For metrics related to DLQ files, invalid records, and catalog commit failures, see xref:manage:iceberg/iceberg-troubleshooting.adoc#troubleshooting-metrics[Troubleshooting metrics].
-
-To check the current values of key translation cluster properties:
-
-[,bash]
-----
-rpk cluster config get datalake_translator_flush_bytes
-rpk cluster config get iceberg_target_lag_ms
-rpk cluster config get iceberg_target_backlog_size
-----
 
 [TIP]
 ====
