@@ -54,7 +54,7 @@ Feature: Topic CRDs
 
   @skip:gke @skip:aks @skip:eks
   Scenario: Manage topic with cleanup policy
-    Given there is no topic "compacted-topic" in cluster "basic"
+    Given there is no topic "delete-policy-topic" in cluster "basic"
     When I apply Kubernetes manifest:
     """
 # tag::cleanup-policy-topic-example[]
@@ -64,7 +64,7 @@ Feature: Topic CRDs
     apiVersion: cluster.redpanda.com/v1alpha2
     kind: Topic
     metadata:
-      name: compacted-topic
+      name: delete-policy-topic
     spec:
       cluster:
         clusterRef:
@@ -75,5 +75,5 @@ Feature: Topic CRDs
         cleanup.policy: "delete"
 # end::cleanup-policy-topic-example[]
     """
-    And topic "compacted-topic" is successfully synced
-    Then I should be able to produce and consume from "compacted-topic" in cluster "basic"
+    And topic "delete-policy-topic" is successfully synced
+    Then I should be able to produce and consume from "delete-policy-topic" in cluster "basic"

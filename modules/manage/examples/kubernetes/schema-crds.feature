@@ -140,8 +140,41 @@ Feature: Schema CRDs
     Then I should be able to check compatibility against "fully-compatible-schema" in cluster "basic"
 
   @skip:gke @skip:aks @skip:eks
+  Scenario: Manage product schema (Avro)
+    Given there is no schema "product-schema" in cluster "basic"
+    When I apply Kubernetes manifest:
+    """
+    # This manifest creates an Avro schema named "product-schema" in the "basic" cluster.
+    # This schema will be referenced by other schemas to demonstrate schema references.
+    ---
+    apiVersion: cluster.redpanda.com/v1alpha2
+    kind: Schema
+    metadata:
+      name: product-schema
+      namespace: redpanda
+    spec:
+      cluster:
+        clusterRef:
+          name: basic
+      schemaType: avro
+      compatibilityLevel: Backward
+      text: |
+        {
+          "type": "record",
+          "name": "Product",
+          "fields": [
+            { "type": "string", "name": "product_id" },
+            { "type": "string", "name": "name" }
+          ]
+        }
+    """
+    And schema "product-schema" is successfully synced
+    Then I should be able to check compatibility against "product-schema" in cluster "basic"
+
+  @skip:gke @skip:aks @skip:eks
   Scenario: Manage order schema with references (Avro)
-    Given there is no schema "order-schema" in cluster "basic"
+    Given there is a schema "product-schema" in cluster "basic"
+    And there is no schema "order-schema" in cluster "basic"
     When I apply Kubernetes manifest:
     """
 # tag::schema-references-manifest[]
