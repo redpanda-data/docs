@@ -1,0 +1,269 @@
+= Migrate Node Pools
+:description: Migrate Redpanda brokers to a new Kubernetes node pool using the NodePool CRD for automated blue/green operations with zero downtime.
+:page-categories: Management, Upgrades
+:env-kubernetes: true
+:personas: platform_operator, platform_engineer
+
+You can migrate Redpanda brokers to a new Kubernetes node pool using the NodePool custom resource (CR). This approach performs a blue/green migration: it creates new brokers on the target node pool, replicates data, then decommissions old brokers. The Redpanda Operator manages the entire process automatically.
+
+Use this approach when you need to change node instance types, perform vertical scaling, or upgrade Kubernetes nodes.
+
+:caution-caption: Experimental feature
+
+[CAUTION]
+====
+The NodePool CRD is an experimental feature. You must enable experimental CRDs and the `--enable-v2-nodepools` operator flag to use it. Experimental features may change in future releases.
+====
+
+:caution-caption: Caution
+
+== How it works
+
+The NodePool migration follows a blue/green pattern:
+
+. You create a new NodePool targeting the new Kubernetes node pool.
+. New brokers join the cluster and begin replicating data.
+. You scale the old NodePool to zero replicas.
+. The operator decommissions old brokers one at a time, draining partitions automatically.
+. You delete the old NodePool and its underlying Kubernetes node pool.
+
+During migration, the cluster temporarily runs 2x the usual number of brokers to maintain availability. Both NodePools serve traffic until the old one is fully drained.
+
+[mermaid]
+----
+flowchart TB
+    A(("Start")) --> B["Verify cluster health on pool1"]
+    B --> C["Create pool2 NodePool"]
+    C --> D["New brokers join cluster (2x brokers)"]
+    D --> E["Scale pool1 replicas to 0"]
+    E --> F["Operator decommissions pool1 brokers"]
+    F --> G["Verify all brokers on pool2"]
+    G --> H["Delete pool1 NodePool"]
+    H --> I["Delete old Kubernetes node pool"]
+    I --> J(("Complete"))
+
+    classDef userAction stroke:#374D7C, fill:#E2EBFF, font-weight:bold, rx:5, ry:5;
+    classDef systemAction fill:#F6FBF6, stroke:#25855a, stroke-width:2px, color:#20293c, rx:5, ry:5;
+
+    class A,J systemAction;
+    class B,C,E,G,H,I userAction;
+    class D,F systemAction;
+
+    click B "#verify-health"
+    click C "#create-pool2"
+    click E "#scale-down-pool1"
+    click G "#verify-migration"
+    click H "#cleanup"
+----
+
+== Prerequisites
+
+* A Redpanda cluster deployed with the Redpanda Operator using the NodePool CRD. See xref:manage:kubernetes/k-node-pools.adoc[Node Pools] for setup instructions.
+* The Redpanda Operator deployed with experimental CRDs and the `--enable-v2-nodepools` flag enabled.
+* The Redpanda CR must have `statefulset.replicas` set to `0` so that NodePool CRs control the broker count.
+* An existing NodePool CR (for example, `pool1`) running your cluster.
+* A new Kubernetes node pool provisioned in your hosting platform (GKE, EKS, AKS, or self-managed) with nodes that meet xref:deploy:redpanda/kubernetes/k-requirements.adoc[Redpanda requirements].
+* A staging environment in which to test the migration before performing it in production.
+* Confirmation that the new node pool configuration is compatible with xref:upgrade:k-compatibility.adoc[Kubernetes and Operator compatibility requirements].
+
+== Pre-migration considerations
+
+Before migrating, consider the following:
+
+* **Cost**: During migration, the cluster runs 2x the usual number of brokers. Plan for temporary increased infrastructure costs.
+* **Data volume**: Decommissioning time depends on the amount of data to replicate. Large datasets may take hours per broker.
+* **Replication factor**: Your broker count should exceed your highest topic replication factor to maintain availability during decommissioning.
+* **Partition count**: Total partition count is generally determined by the overall CPU core count. Verify the new nodes can handle the partition load.
+
+[[verify-health]]
+== Verify cluster health
+
+Before starting the migration, verify that the existing cluster is healthy:
+
+[source,bash]
+----
+rpk cluster health
+----
+
+.Expected output
+[%collapsible]
+====
+[.no-copy]
+----
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:                          true
+Unhealthy reasons:                []
+Controller ID:                    0
+All nodes:                        [0 1 2]
+Nodes down:                       []
+Leaderless partitions (0):        []
+Under-replicated partitions (0):  []
+----
+====
+
+Confirm that all brokers in the current NodePool are running:
+
+[source,bash]
+----
+rpk cluster info
+----
+
+[[create-pool2]]
+== Create the new NodePool
+
+Create a NodePool CR targeting the new Kubernetes node pool. This example creates a `pool2` NodePool with three replicas scheduled on nodes labeled `nodetype: redpanda-pool2`:
+
+.`nodepool-pool2.yaml`
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: NodePool
+metadata:
+  name: pool2
+  namespace: <namespace>
+spec:
+  clusterRef:
+    name: redpanda
+  replicas: 3
+  nodeSelector:
+    nodetype: redpanda-pool2 # <1>
+  tolerations:
+    - key: redpanda-pool2 # <2>
+      effect: NoSchedule
+----
+<1> Replace with the label on your new Kubernetes nodes.
+<2> Replace with the taint key on your new Kubernetes nodes.
+
+Apply the NodePool:
+
+[source,bash]
+----
+kubectl apply -f nodepool-pool2.yaml
+----
+
+Wait for the new brokers to join the cluster. The cluster temporarily has 2x the usual broker count (for example, 6 brokers if each pool has 3 replicas):
+
+[source,bash]
+----
+rpk cluster info
+----
+
+.Expected output (6 brokers)
+[%collapsible]
+====
+[.no-copy]
+----
+CLUSTER
+=======
+redpanda.8a18c0db-ff14-40c8-9fc0-ba29c277707d
+
+BROKERS
+=======
+ID    HOST                                                   PORT
+0     redpanda-pool1-0.redpanda.redpanda.svc.cluster.local.  9093
+1     redpanda-pool1-1.redpanda.redpanda.svc.cluster.local.  9093
+2     redpanda-pool1-2.redpanda.redpanda.svc.cluster.local.  9093
+3     redpanda-pool2-0.redpanda.redpanda.svc.cluster.local.  9093
+4     redpanda-pool2-1.redpanda.redpanda.svc.cluster.local.  9093
+5     redpanda-pool2-2.redpanda.redpanda.svc.cluster.local.  9093
+----
+====
+
+[[scale-down-pool1]]
+== Scale down the old NodePool
+
+Scale the old NodePool to zero replicas. The Redpanda Operator decommissions each broker one at a time, draining partitions automatically:
+
+[source,bash]
+----
+kubectl patch nodepool pool1 -n <namespace> --type merge \
+  -p '{"spec":{"replicas":0}}'
+----
+
+Monitor decommission progress:
+
+[source,bash]
+----
+rpk redpanda admin brokers list
+----
+
+The operator decommissions brokers sequentially. Depending on the amount of data, this process can take several minutes per broker. You can check individual broker status:
+
+[source,bash]
+----
+rpk redpanda admin brokers decommission-status <broker-id>
+----
+
+Wait until all `pool1` brokers are fully decommissioned before proceeding.
+
+[[verify-migration]]
+== Verify the migration
+
+After all old brokers are decommissioned, verify that the cluster is healthy and all brokers are on the new pool:
+
+[source,bash]
+----
+rpk cluster health
+----
+
+[source,bash]
+----
+rpk cluster info
+----
+
+.Expected output (3 brokers on pool2)
+[%collapsible]
+====
+[.no-copy]
+----
+CLUSTER
+=======
+redpanda.8a18c0db-ff14-40c8-9fc0-ba29c277707d
+
+BROKERS
+=======
+ID    HOST                                                   PORT
+3     redpanda-pool2-0.redpanda.redpanda.svc.cluster.local.  9093
+4     redpanda-pool2-1.redpanda.redpanda.svc.cluster.local.  9093
+5     redpanda-pool2-2.redpanda.redpanda.svc.cluster.local.  9093
+----
+====
+
+Verify data integrity by checking your topics:
+
+[source,bash]
+----
+rpk topic list
+rpk topic describe <topic-name>
+----
+
+Confirm that no partitions are under-replicated:
+
+[source,bash]
+----
+rpk cluster health
+----
+
+[[cleanup]]
+== Clean up
+
+Delete the old NodePool:
+
+[source,bash]
+----
+kubectl delete nodepool pool1 -n <namespace>
+----
+
+Delete the old Kubernetes node pool following your hosting platform's best practices:
+
+* https://cloud.google.com/kubernetes-engine/docs/how-to/node-pools#deleting_a_node_pool[Delete a node pool on GKE^]
+* https://docs.aws.amazon.com/eks/latest/userguide/delete-managed-node-group.html[Delete a managed node group on EKS^]
+* https://learn.microsoft.com/en-us/azure/aks/manage-node-pools#delete-a-node-pool[Delete a node pool on AKS^]
+
+include::shared:partial$suggested-reading.adoc[]
+
+* xref:manage:kubernetes/k-node-pools.adoc[Node Pools]
+* xref:upgrade:k-migrate-node-pools-manually.adoc[Migrate Node Pools Manually]
+* xref:manage:kubernetes/k-decommission-brokers.adoc[Decommission Brokers]
+* xref:upgrade:k-compatibility.adoc[Kubernetes and Operator Compatibility]

@@ -1,0 +1,151 @@
+= Node Pools
+:description: Use the NodePool custom resource to manage groups of Redpanda brokers independently for flexible scaling, migration, and heterogeneous hardware configurations.
+:page-categories: Management
+:env-kubernetes: true
+:personas: platform_operator, platform_engineer
+
+The NodePool custom resource (CR) lets you manage groups of Redpanda brokers as independent units within a single cluster. Each NodePool creates its own StatefulSet, giving you fine-grained control over broker placement, resources, and lifecycle. This is especially useful for blue/green migrations, vertical scaling, and running brokers on different hardware configurations.
+
+:caution-caption: Experimental feature
+
+[CAUTION]
+====
+The NodePool CRD is an experimental feature. You must enable experimental CRDs and the `--enable-v2-nodepools` operator flag to use it. Experimental features may change in future releases.
+====
+
+:caution-caption: Caution
+
+== How NodePools work
+
+A NodePool is a Kubernetes custom resource (`cluster.redpanda.com/v1alpha2`, kind: `NodePool`) that defines a group of Redpanda brokers with shared configuration. Each NodePool:
+
+* Creates and manages its own StatefulSet.
+* Names Pods after the pool. For example, a NodePool named `pool1` with three replicas creates Pods `redpanda-pool1-0`, `redpanda-pool1-1`, and `redpanda-pool1-2`.
+* Can target specific Kubernetes nodes using `nodeSelector` and `tolerations`.
+* Specifies its own replica count independent of other pools.
+
+When you use NodePools, the Redpanda CR delegates broker management to the NodePool CRs. Set `statefulset.replicas` to `0` in the Redpanda CR so that NodePool CRs control the broker count.
+
+== When to use NodePools
+
+NodePools are useful when you need to:
+
+* **Migrate brokers to new nodes**: Perform blue/green migrations by creating a new NodePool on the target node pool, then scaling down the old NodePool. The Redpanda Operator handles decommissioning automatically. See xref:upgrade:k-migrate-node-pools.adoc[Migrate Node Pools].
+* **Scale vertically**: Move brokers to nodes with more CPU, memory, or storage without manual decommission and re-provision steps.
+* **Upgrade Kubernetes**: Migrate to a new Kubernetes node pool running a newer version while maintaining cluster availability.
+
+== Prerequisites
+
+* Redpanda Operator v26.1.2 or later.
+* The Operator must be deployed with experimental CRDs and the NodePool flag enabled. See <<enable-nodepools>>.
+
+[[enable-nodepools]]
+== Enable NodePools
+
+To enable the NodePool CRD, configure the Redpanda Operator Helm values with experimental CRDs and the `--enable-v2-nodepools` flag:
+
+.`operator-values.yaml`
+[source,yaml]
+----
+image:
+  tag: v26.1.2
+crds:
+  enabled: true
+  experimental: true
+additionalCmdFlags:
+  - "--enable-v2-nodepools"
+----
+
+Deploy or upgrade the Operator with these values:
+
+[source,bash]
+----
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <namespace> --create-namespace \
+  --values operator-values.yaml
+----
+
+Next, configure the Redpanda CR to delegate broker management to NodePools by setting `statefulset.replicas` to `0`:
+
+.`redpanda-cr.yaml`
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+  namespace: <namespace>
+spec:
+  image: redpandadata/redpanda:v26.1.2
+  clusterSpec:
+    statefulset:
+      replicas: 0 # <1>
+      budget:
+        maxUnavailable: 1
+    resources:
+      cpu:
+        cores: 1
+      memory:
+        container:
+          max: 2Gi
+    storage:
+      persistentVolume:
+        enabled: true
+        size: 5Gi
+        storageClass: premium-rwo
+----
+<1> Setting `replicas` to `0` delegates broker management to NodePool CRs.
+
+== Create a NodePool
+
+Define a NodePool CR that specifies the number of replicas and the target Kubernetes nodes:
+
+.`nodepool-pool1.yaml`
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: NodePool
+metadata:
+  name: pool1
+  namespace: <namespace>
+spec:
+  clusterRef:
+    name: redpanda
+  replicas: 3
+  nodeSelector:
+    nodetype: redpanda-pool1 # <1>
+  tolerations:
+    - key: redpanda-pool1 # <2>
+      effect: NoSchedule
+----
+<1> Targets Kubernetes nodes labeled `nodetype: redpanda-pool1`.
+<2> Allows scheduling on nodes tainted with `redpanda-pool1:NoSchedule`.
+
+Apply the NodePool:
+
+[source,bash]
+----
+kubectl apply -f nodepool-pool1.yaml
+----
+
+Verify that the brokers are running:
+
+[source,bash]
+----
+kubectl get pods -n <namespace> -l app.kubernetes.io/name=redpanda
+----
+
+== Lifecycle management
+
+For ongoing management of brokers in your cluster, see:
+
+* xref:manage:kubernetes/lifecycle/index.adoc[Lifecycle Management] -- Overview of broker lifecycle operations.
+* xref:manage:kubernetes/k-decommission-brokers.adoc[Decommission Brokers] -- Safely remove brokers from the cluster.
+* xref:manage:kubernetes/tiered-storage/k-recovery-mode.adoc[Recovery Mode] -- Start Redpanda with limited functionality to repair a failed cluster.
+* xref:manage:kubernetes/k-rolling-restart.adoc[Rolling Restart] -- Restart brokers one at a time during maintenance.
+
+include::shared:partial$suggested-reading.adoc[]
+
+* xref:upgrade:k-migrate-node-pools.adoc[Migrate Node Pools] -- Blue/green migration using the NodePool CRD.
+* xref:upgrade:k-migrate-node-pools-manually.adoc[Migrate Node Pools Manually] -- Manual migration without the NodePool CRD.
+* xref:reference:k-crd.adoc[Custom Resource Definition (CRD) Reference]
