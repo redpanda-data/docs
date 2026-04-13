@@ -135,6 +135,106 @@ Verify that the brokers are running:
 kubectl get pods -n <namespace> -l app.kubernetes.io/name=redpanda
 ----
 
+[[migrate-to-nodepools]]
+== Migrate an existing cluster to NodePools
+
+If you have an existing Redpanda cluster managed by the Redpanda Operator without NodePools, you must migrate it to use a NodePool CR before you can perform xref:upgrade:k-migrate-node-pools.adoc[NodePool-based migrations]. This process transitions your cluster from operator-managed StatefulSet replicas to NodePool-managed brokers with no downtime.
+
+NOTE: This migration is a prerequisite for using the NodePool CRD to upgrade or migrate node pools. Complete this process before attempting a blue/green NodePool migration.
+
+=== Verify cluster health
+
+Confirm the existing cluster is healthy before making changes:
+
+[source,bash]
+----
+rpk cluster health
+----
+
+[source,bash]
+----
+rpk cluster info
+----
+
+Note the number of brokers in your cluster. You will use this value for the NodePool `replicas` field.
+
+=== Enable NodePool support on the Operator
+
+If you have not already done so, upgrade the Redpanda Operator with experimental CRDs and the NodePool flag enabled. See <<enable-nodepools>>.
+
+=== Update the Redpanda CR
+
+Patch the Redpanda CR to set `statefulset.replicas` to `0`. This delegates broker management to NodePool CRs:
+
+[source,bash]
+----
+cat <<EOF > patch-replicas.yaml
+spec:
+  clusterSpec:
+    statefulset:
+      replicas: 0
+EOF
+kubectl patch redpanda redpanda -n <namespace> --type merge --patch-file patch-replicas.yaml
+----
+
+IMPORTANT: Setting `replicas` to `0` does not shut down your existing brokers. It tells the operator to stop managing the StatefulSet replica count directly, allowing NodePool CRs to take over.
+
+=== Create a NodePool for the existing brokers
+
+Create a NodePool CR that matches your current cluster configuration. Set `replicas` to the number of brokers currently running, and use `nodeSelector` and `tolerations` that match the nodes your brokers are already running on:
+
+.`nodepool-pool1.yaml`
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: NodePool
+metadata:
+  name: pool1
+  namespace: <namespace>
+spec:
+  clusterRef:
+    name: redpanda
+  replicas: 3 # <1>
+  nodeSelector:
+    nodetype: redpanda-pool1 # <2>
+  tolerations:
+    - key: redpanda-pool1 # <3>
+      effect: NoSchedule
+----
+<1> Set to the number of brokers in your existing cluster.
+<2> Replace with the label on your current Kubernetes nodes.
+<3> Replace with the taint key on your current Kubernetes nodes.
+
+Apply the NodePool:
+
+[source,bash]
+----
+kubectl apply -f nodepool-pool1.yaml
+----
+
+=== Verify the migration
+
+Confirm the NodePool has adopted the existing brokers:
+
+[source,bash]
+----
+kubectl get nodepool -n <namespace>
+----
+
+Verify the brokers are healthy:
+
+[source,bash]
+----
+rpk cluster health
+----
+
+[source,bash]
+----
+rpk cluster info
+----
+
+You should see the same number of healthy brokers as before. The cluster is now managed by the NodePool CR and ready for xref:upgrade:k-migrate-node-pools.adoc[NodePool-based migrations].
+
 == Lifecycle management
 
 For ongoing management of brokers in your cluster, see:
