@@ -1,0 +1,167 @@
+= COUNT()
+
+
+## Overview
+
+The `COUNT()` window function allows you to retrieve the number of records that meet a specific criteria. When using it with he `RANGE` clause, it allows you to perform counts within a defined range based on the values of the current row. 
+This function can be used with all <a href="/sql-reference/sql-data-types/overview" target="_blank">data types supported by Oxla</a>.  
+
+## Syntax
+
+There are two available variants of that function:
+
+* `COUNT(*)`: counts all rows in the target table, regardless of whether they contain NULL values or not
+* `COUNT(expression)`: counts the number of non-NULL values in a specific column or expression
+
+The syntax for this function is as follows:
+
+
+.COUNT RANGE
+[source,sql]
+----
+COUNT(expression) OVER (
+  [PARTITION BY partition_expression]
+  ORDER BY sort_expression
+  [ROWS | RANGE BETWEEN start_value AND end_value]
+)
+----
+
+
+The `COUNT()` window function always return `BIGINT` as an output, which represents the total number of rows in a table irrespective of the input types.
+
+## Parameters
+
+* `expression`: input's column or expression that the function operates on
+* `PARTITION BY`: optional clause, which divides the result set into partitions to which the function is applied
+* `ROWS | RANGE BETWEEN`: range-based window frame relative to the current row
+
+## Examples
+
+For the needs of this section, we will create a `winsales` table that stores the details of some sales transactions:
+
+[source,sql]
+----
+CREATE TABLE winsales(
+    salesid int,
+    dateid date,
+    sellerid int,
+    buyerid text,
+    qty int,
+    qty_shipped int);
+INSERT INTO winsales VALUES
+    (30001, '8/2/2003', 3, 'b', 10, 10),
+    (10001, '12/24/2003', 1, 'c', 10, 10),
+    (10005, '12/24/2003', 1, 'a', 30, null),
+    (40001, '1/9/2004', 4, 'a', 40, null),
+    (10006, '1/18/2004', 1, 'c', 10, null),
+    (20001, '2/12/2004', 2, 'b', 20, 20),
+    (40005, '2/12/2004', 4, 'a', 10, 10),
+    (20002, '2/16/2004', 2, 'c', 20, 20),
+    (30003, '4/18/2004', 3, 'b', 15, null),
+    (30004, '4/18/2004', 3, 'b', 20, null),
+    (30007, '9/7/2004', 3, 'c', 30, null);
+----
+
+
+### COUNT(*)
+
+In this example, we will focus on executing the variant of this function that counts all rows in the target table:
+
+[source,sql]
+----
+SELECT salesid, qty
+  COUNT(*) OVER (ORDER BY salesid rows unbounded preceding) AS count
+FROM winsales
+ORDER BY salesid;
+----
+
+The output of the code abote displays the sales ID, quantity and the count of all rows from the start of the data window:
+
+[source,sql]
+----
+salesid | qty | count 
+---------+-----+-------
+   10001 |  10 |     1
+   10005 |  30 |     2
+   10006 |  10 |     3
+   20001 |  20 |     4
+   20002 |  20 |     5
+   30001 |  10 |     6
+   30003 |  15 |     7
+   30004 |  20 |     8
+   30007 |  30 |     9
+   40001 |  40 |    10
+   40005 |  10 |    11
+(11 rows)
+----
+
+
+### COUNT(expression)
+
+In this example, we will focus on executing the variant of this function that counts the number of non-NULL values in a specific expression:
+
+[source,sql]
+----
+SELECT salesid, qty, qty_shipped,
+  COUNT(qty_shipped) OVER (ORDER BY salesid rows unbounded preceding) AS count
+FROM winsales
+ORDER BY salesid;
+----
+
+
+Here is the output for the query presented above:
+
+[source,sql]
+----
+salesid | qty | qty_shipped | count 
+---------+-----+-------------+-------
+   10001 |  10 |          10 |     1
+   10005 |  30 |             |     1
+   10006 |  10 |             |     1
+   20001 |  20 |          20 |     2
+   20002 |  20 |          20 |     3
+   30001 |  10 |          10 |     4
+   30003 |  15 |             |     4
+   30004 |  20 |             |     4
+   30007 |  30 |             |     4
+   40001 |  40 |             |     4
+   40005 |  10 |          10 |     5
+(11 rows)
+----
+
+
+### Time Series: COUNT(*) with RANGE for Last 90 Days
+
+In this example, we will demonstrate counting the number of sales within a 90-day window prior to each sale, based on `dateid`:
+
+[source,sql]
+----
+SELECT salesid, dateid, qty,
+  COUNT(*) OVER (
+    ORDER BY dateid
+    RANGE BETWEEN INTERVAL '90 days' PRECEDING AND CURRENT ROW
+  ) AS sales_count_90d
+FROM winsales
+ORDER BY dateid;
+----
+
+
+This query above counts the number of sales transactions within a 90-day window before each `dateid`, 
+including the current sale:
+
+[source,sql]
+----
+salesid |   dateid   | qty | sales_count_90d 
+---------+------------+-----+-----------------
+   30001 | 2003-08-02 |  10 |               1
+   10001 | 2003-12-24 |  10 |               2
+   10005 | 2003-12-24 |  30 |               2
+   40001 | 2004-01-09 |  40 |               3
+   10006 | 2004-01-18 |  10 |               4
+   20001 | 2004-02-12 |  20 |               6
+   40005 | 2004-02-12 |  10 |               6
+   20002 | 2004-02-16 |  20 |               7
+   30003 | 2004-04-18 |  15 |               6
+   30004 | 2004-04-18 |  20 |               6
+   30007 | 2004-09-07 |  30 |               1
+----
