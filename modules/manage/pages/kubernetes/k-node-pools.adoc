@@ -241,6 +241,95 @@ rpk cluster info
 
 You should see the same number of healthy brokers as before. The cluster is now managed by the NodePool CR and ready for xref:upgrade:k-migrate-node-pools.adoc[NodePool-based migrations].
 
+[[remove-nodepools]]
+== Remove NodePools and return to operator-managed replicas
+
+If you no longer need NodePools, you can migrate brokers back to the default StatefulSet managed by the Redpanda CR. This process restores the original replica count in the Redpanda CR, waits for the new brokers to stabilize, then removes the NodePool CR. The operator decommissions the NodePool brokers one by one.
+
+=== Restore replicas in the Redpanda CR
+
+Set `statefulset.replicas` in the Redpanda CR back to the desired broker count. For example, if your NodePool has 3 replicas, set the Redpanda CR to 3:
+
+[source,bash]
+----
+cat <<EOF > patch-replicas.yaml
+spec:
+  clusterSpec:
+    statefulset:
+      replicas: 3
+EOF
+kubectl patch redpanda redpanda -n <namespace> --type merge --patch-file patch-replicas.yaml
+----
+
+The operator creates new brokers in the default StatefulSet. The cluster temporarily runs 2x the usual number of brokers (for example, 6 brokers: 3 from the NodePool and 3 from the Redpanda CR).
+
+=== Wait for all brokers to stabilize
+
+Wait until all brokers are healthy and data is fully replicated across the cluster:
+
+[source,bash]
+----
+rpk cluster health
+----
+
+[source,bash]
+----
+rpk cluster info
+----
+
+.Expected output (6 brokers)
+[%collapsible]
+====
+[.no-copy]
+----
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:                          true
+Unhealthy reasons:                []
+Controller ID:                    0
+All nodes:                        [0 1 2 3 4 5]
+Nodes down:                       []
+Leaderless partitions (0):        []
+Under-replicated partitions (0):  []
+----
+====
+
+Do not proceed until the cluster reports as healthy with all brokers online.
+
+=== Delete the NodePool CR
+
+Delete the NodePool CR. The operator decommissions the NodePool brokers one by one, draining partitions to the Redpanda CR-managed brokers:
+
+[source,bash]
+----
+kubectl delete nodepool pool1 -n <namespace>
+----
+
+Monitor the decommission progress:
+
+[source,bash]
+----
+rpk redpanda admin brokers list
+----
+
+Wait until only the Redpanda CR-managed brokers remain.
+
+=== Verify the cluster
+
+Confirm that the cluster is healthy and running only the expected brokers:
+
+[source,bash]
+----
+rpk cluster health
+----
+
+[source,bash]
+----
+rpk cluster info
+----
+
+The cluster is now fully managed by the Redpanda CR without NodePools.
+
 == Lifecycle management
 
 For ongoing management of brokers in your cluster, see:
