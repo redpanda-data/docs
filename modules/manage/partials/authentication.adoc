@@ -396,6 +396,197 @@ helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --crea
 ====
 --
 ======
+
+[[bootstrap]]
+=== Bootstrap superuser at cluster formation
+
+When you enable authentication with `auth.sasl.enabled: true`, a default bootstrap user is created automatically at cluster formation time. This ensures your cluster is "secure by default" with authentication enforced from the first startup.
+
+To deploy a cluster with your own bootstrap user credentials instead of the default, configure `auth.sasl.bootstrapUser`. This creates an initial superuser with your specified username and password before the cluster accepts client connections. The user is automatically added to the `superusers` list and can be used to create additional users and configure ACLs.
+
+==== When to customize bootstrap user credentials
+
+Customize the bootstrap user configuration when:
+
+- You need to control the initial superuser credentials for security compliance
+- You're automating cluster deployments with infrastructure-as-code
+- You want to use your organization's credential management system
+- You need specific SASL mechanism requirements (SCRAM-SHA-256 vs SCRAM-SHA-512)
+
+NOTE: The bootstrap user is only created on the first startup of the cluster. The configuration is ignored on subsequent restarts. To create additional users after the cluster is running, use `rpk security user create` or update the `auth.sasl.users` list.
+
+==== Configure bootstrap user
+
+. Create a Kubernetes Secret to store the bootstrap user password:
++
+[,bash]
+----
+kubectl --namespace <namespace> create secret generic bootstrap-user-secret \
+  --from-literal=password='<your-secure-password>'
+----
++
+TIP: Generate a strong random password using a tool like `openssl rand -base64 32` or your organization's password management system.
++
+When using `auth.sasl.secretRef` with an empty `users` list (as shown in the examples below), you must also create the Secret referenced by `secretRef`, even if it contains no user data:
++
+[,bash]
+----
+kubectl --namespace <namespace> create secret generic redpanda-superusers \
+  --from-literal=superusers.txt=""
+----
++
+This Secret is required by the Helm chart when `secretRef` is specified, regardless of whether the `users` list is empty.
+
+. Configure the bootstrap user in your Helm values:
++
+[tabs]
+======
+Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml,lines=10-16]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    auth:
+      sasl:
+        enabled: true
+        secretRef: redpanda-superusers
+        users: []
+        bootstrapUser:
+          name: "kubernetes-controller"  <1>
+          secretKeyRef:
+            name: "bootstrap-user-secret"
+            key: "password"
+          mechanism: "SCRAM-SHA-256"  <2>
+----
+<1> Optional. Defaults to `kubernetes-controller` if not specified. This is the username that will be created.
+<2> Optional. The SASL/SCRAM authentication mechanism. Valid values are `SCRAM-SHA-256` or `SCRAM-SHA-512`. Defaults to `SCRAM-SHA-256`.
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`enable-sasl-with-bootstrap.yaml`
+[,yaml,lines=3-11]
+----
+auth:
+  sasl:
+    enabled: true
+    secretRef: redpanda-superusers
+    users: []
+    bootstrapUser:
+      name: "kubernetes-controller"  <1>
+      secretKeyRef:
+        name: "bootstrap-user-secret"
+        key: "password"
+      mechanism: "SCRAM-SHA-256"  <2>
+----
+<1> Optional. Defaults to `kubernetes-controller` if not specified. This is the username that will be created.
+<2> Optional. The SASL/SCRAM authentication mechanism. Valid values are `SCRAM-SHA-256` or `SCRAM-SHA-512`. Defaults to `SCRAM-SHA-256`.
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --values enable-sasl-with-bootstrap.yaml
+```
+
+--set::
++
+[,bash,lines=2-6]
+----
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set auth.sasl.enabled=true \
+  --set auth.sasl.secretRef=redpanda-superusers \
+  --set auth.sasl.bootstrapUser.name=kubernetes-controller \
+  --set auth.sasl.bootstrapUser.secretKeyRef.name=bootstrap-user-secret \
+  --set auth.sasl.bootstrapUser.secretKeyRef.key=password \
+  --set auth.sasl.bootstrapUser.mechanism=SCRAM-SHA-256
+----
+
+====
+--
+======
+
+. Verify that the bootstrap user was created successfully:
++
+[,bash]
+----
+kubectl --namespace <namespace> exec -it redpanda-0 -- \
+  rpk security user list \
+  -X user=kubernetes-controller \
+  -X pass='<your-secure-password>' \
+  -X sasl.mechanism=SCRAM-SHA-256
+----
++
+Expected output:
++
+[.no-copy]
+----
+USERNAME
+kubernetes-controller
+----
+
+==== Use the bootstrap user
+
+After the cluster is deployed with the bootstrap user, you can use these credentials to:
+
+. Create additional SCRAM users:
++
+[,bash]
+----
+kubectl --namespace <namespace> exec -it redpanda-0 -- \
+  rpk security user create <new-username> \
+  -p '<new-password>' \
+  --mechanism SCRAM-SHA-256 \
+  -X user=kubernetes-controller \
+  -X pass='<bootstrap-password>' \
+  -X sasl.mechanism=SCRAM-SHA-256
+----
+
+. Create ACLs to grant permissions:
++
+[,bash]
+----
+kubectl --namespace <namespace> exec -it redpanda-0 -- \
+  rpk security acl create --allow-principal User:<new-username> \
+  --operation all \
+  --topic <topic-name> \
+  -X user=kubernetes-controller \
+  -X pass='<bootstrap-password>' \
+  -X sasl.mechanism=SCRAM-SHA-256
+----
+
+==== Combine with bootstrap configuration
+
+For complete "secure by default" configuration, combine the bootstrap user with xref:deploy:redpanda/manual/production/production-deployment.adoc#configure-a-bootstrap-file[cluster bootstrap configuration] to set `admin_api_require_auth: true` and other security settings at cluster formation time.
+
+The operator automatically manages the `RP_BOOTSTRAP_USER` environment variable based on your `auth.sasl.bootstrapUser` configuration. This environment variable is read by Redpanda only on the first startup to create the initial user.
+
+[NOTE]
+====
+Security best practices:
+
+- Use strong, randomly generated passwords stored in Kubernetes Secrets
+- The bootstrap user has full superuser privileges - use it only for initial setup
+- Create dedicated users with appropriate ACLs for applications
+- Consider rotating the bootstrap user password after initial cluster setup is complete
+- Document the bootstrap user credentials in your organization's secret management system
+====
+
 endif::[]
 
 ifndef::env-kubernetes[]
