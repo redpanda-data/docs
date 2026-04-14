@@ -141,6 +141,111 @@ Verify that the brokers are running:
 kubectl get pods -n <namespace> -l app.kubernetes.io/name=redpanda
 ----
 
+[[node-placement]]
+== Control node placement with nodeSelector and tolerations
+
+Use `nodeSelector` and `tolerations` together to ensure that each NodePool's brokers run only on specific Kubernetes nodes. This guarantees uniform hardware for all brokers in a NodePool and prevents other workloads from consuming resources on those nodes.
+
+=== How it works
+
+`nodeSelector`:: Constrains Pods to Kubernetes nodes with a matching label. The NodePool's brokers are scheduled *only* on nodes that have the specified label.
+`tolerations`:: Allow Pods to be scheduled on nodes that have a matching taint. When you taint nodes with `NoSchedule`, only Pods with a matching toleration can run there.
+
+Together, these fields provide two-way isolation:
+
+* **NodePool brokers can only run on the designated nodes** (enforced by `nodeSelector`).
+* **No other workloads can run on those nodes** (enforced by the `NoSchedule` taint).
+
+This is especially important when you need to ensure that all brokers in a NodePool run on identical hardware, such as the same machine type in a cloud provider's Kubernetes node pool.
+
+=== Label and taint your Kubernetes nodes
+
+Before creating a NodePool, label and taint the target Kubernetes nodes. Each cloud provider handles this differently when you create a node pool:
+
+[tabs]
+======
+GKE::
++
+[source,bash]
+----
+gcloud container node-pools create redpanda-pool1 \
+  --cluster <cluster-name> \
+  --machine-type e2-standard-8 \
+  --node-labels nodetype=redpanda-pool1 \
+  --node-taints redpanda-pool1=true:NoSchedule
+----
+
+EKS::
++
+[source,bash]
+----
+eksctl create nodegroup \
+  --cluster <cluster-name> \
+  --name redpanda-pool1 \
+  --node-type m5.2xlarge \
+  --node-labels nodetype=redpanda-pool1 \
+  --node-taints redpanda-pool1=true:NoSchedule
+----
+
+AKS::
++
+[source,bash]
+----
+az aks nodepool add \
+  --resource-group <resource-group> \
+  --cluster-name <cluster-name> \
+  --name rppool1 \
+  --node-vm-size Standard_D8s_v3 \
+  --labels nodetype=redpanda-pool1 \
+  --node-taints redpanda-pool1=true:NoSchedule
+----
+======
+
+For existing nodes, you can apply labels and taints manually:
+
+[source,bash]
+----
+kubectl label nodes <node-name> nodetype=redpanda-pool1
+kubectl taint nodes <node-name> redpanda-pool1=true:NoSchedule
+----
+
+=== Configure the NodePool CR
+
+Reference the labels and taints in your NodePool CR:
+
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: NodePool
+metadata:
+  name: pool1
+  namespace: <namespace>
+spec:
+  clusterRef:
+    name: redpanda
+  replicas: 3
+  nodeSelector:
+    nodetype: redpanda-pool1 # <1>
+  tolerations:
+    - key: redpanda-pool1 # <2>
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+----
+<1> Must match the label applied to the target Kubernetes nodes.
+<2> Must match the taint key and effect on the target Kubernetes nodes.
+
+=== Verify node placement
+
+After applying the NodePool, confirm that all Pods are running on the expected nodes:
+
+[source,bash]
+----
+kubectl get pods -n <namespace> -o wide -l app.kubernetes.io/name=redpanda
+----
+
+The `NODE` column should show only nodes from the target Kubernetes node pool.
+
 [[migrate-to-nodepools]]
 == Migrate an existing cluster to NodePools
 
