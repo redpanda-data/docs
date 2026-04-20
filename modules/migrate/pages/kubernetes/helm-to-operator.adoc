@@ -217,6 +217,25 @@ The Redpanda Operator does not resynchronize this password for you. You must upd
 Only perform these steps if `rpk` fails SASL authentication after migration. You also need the original superuser password that the Helm chart used. If you no longer have it, see xref:manage:kubernetes/security/authentication/k-authentication.adoc[] for recovery options.
 ====
 
+. Confirm that every broker pod exposes the same `RPK_PASS` value. The resync step in the next item updates the SCRAM database to whatever the pod's env currently holds, so every pod must agree on that value first:
++
+```bash
+for pod in $(kubectl --namespace <namespace> get pods -l app.kubernetes.io/component=redpanda-statefulset -o name); do
+  echo "$pod: $(kubectl --namespace <namespace> exec $pod -c redpanda -- printenv RPK_PASS)"
+done
+```
++
+--
+If every pod reports the same password, continue to the next step.
+
+If one or more pods report a different `RPK_PASS` value from the rest, the bootstrap Secret on those pods' nodes is still cached by the kubelet. The Redpanda Operator creates the `<cluster-name>-bootstrap-user` Secret with `immutable: true`, and kubelet's local Secret cache does not always invalidate when an immutable Secret is deleted and re-created with the same name. To force affected pods to pick up the current Secret value:
+
+- Force-delete the pod: `kubectl --namespace <namespace> delete pod <pod-name> --force --grace-period=0`.
+- If the env still disagrees after the pod is re-created, drain the node that hosted the pod so the StatefulSet schedules it elsewhere: `kubectl drain <node> --ignore-daemonsets --delete-emptydir-data`.
+
+Repeat the check until every pod reports the same value before continuing.
+--
+
 . Open a shell in any broker pod. The pod's environment already exposes the new password from the regenerated Secret:
 +
 ```bash
@@ -243,6 +262,11 @@ rpk cluster info <5>
 --
 
 After the update, the SCRAM database and the bootstrap Secret agree on the password, and subsequent pod restarts continue to authenticate cleanly.
+
+[WARNING]
+====
+If you skipped the pre-check in step 1 and any pod still had the original password in its environment when you ran the update, that pod's `rpk` now fails SASL authentication even though it worked before: the SCRAM database has moved to the new password while the pod's env still holds the old one. Re-run the pre-check across all pods and force-delete any pod whose env does not match the regenerated Secret.
+====
 
 == Roll back from Redpanda Operator to Helm
 
