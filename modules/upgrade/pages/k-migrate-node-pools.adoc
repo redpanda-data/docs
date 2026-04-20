@@ -1,0 +1,442 @@
+= Migrate Node Pools
+:description: Migrate Redpanda brokers to a new Kubernetes node pool using the NodePool CRD for automated blue/green operations with zero downtime.
+:page-categories: Management, Upgrades
+:page-beta: true
+:env-kubernetes: true
+:personas: platform_operator, platform_engineer
+:learning-objective-1: Perform a blue/green node pool migration using the NodePool CRD
+:learning-objective-2: Verify cluster health and data integrity before and after migration
+
+You can migrate Redpanda brokers to a new Kubernetes node pool using the NodePool custom resource (CR). This approach performs a blue/green migration: it creates new brokers (green) on the target node pool, replicates data, then decommissions old brokers (blue). The Redpanda Operator manages the decommission process automatically.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+
+Use this approach when you need to upgrade Redpanda versions, change node instance types, perform vertical scaling, or upgrade Kubernetes nodes. For the previous manual method that does not use the NodePool CRD, see xref:upgrade:k-migrate-node-pools-manually.adoc[Migrate Node Pools Manually].
+
+[CAUTION]
+====
+The NodePool CRD is a beta feature. You must enable experimental CRDs and the `--enable-v2-nodepools` operator flag to use it.
+====
+
+== How it works
+
+The NodePool migration follows a blue/green pattern:
+
+. You verify that the existing (blue) NodePool is healthy.
+. You create a new (green) NodePool with the target Redpanda version, optionally targeting specific Kubernetes nodes with `nodeSelector` and `tolerations`.
+. New green brokers join the cluster and begin replicating data. The cluster temporarily runs 2x the usual number of brokers.
+. You delete the old (blue) NodePool. The operator decommissions blue brokers one at a time, draining partitions to the green brokers automatically.
+. Only green brokers remain. You clean up the old Kubernetes node pool.
+
+During migration, both NodePools serve traffic. No manual decommission commands are needed — deleting the old NodePool triggers the operator to handle everything.
+
+NOTE: The NodePool's `spec.image.tag` field controls which Redpanda version the brokers run. NodePools do *not* inherit `spec.clusterSpec.image.tag` from the Redpanda CR. You must set the image tag explicitly on each NodePool.
+
+++++
+<div class="mermaid">
+flowchart TB
+    A(("Start")) --> B["Verify blue NodePool is healthy"]
+    B --> C["Create green NodePool with target version"]
+    C --> D["Green brokers join cluster (2x brokers)"]
+    D --> E["Wait for all brokers to be healthy"]
+    E --> F["Delete blue NodePool"]
+    F --> G["Operator decommissions blue brokers one by one"]
+    G --> H["Verify only green brokers remain"]
+    H --> I["Delete old Kubernetes node pool"]
+    I --> J(("Complete"))
+
+    classDef userAction stroke:#374D7C, fill:#E2EBFF, font-weight:bold, rx:5, ry:5;
+    classDef systemAction fill:#F6FBF6, stroke:#25855a, stroke-width:2px, color:#20293c, rx:5, ry:5;
+
+    class A,J systemAction;
+    class B,C,E,F,H,I userAction;
+    class D,G systemAction;
+
+    click B "#verify-blue"
+    click C "#create-green"
+    click E "#wait-healthy"
+    click F "#delete-blue"
+    click H "#verify-green"
+    click I "#cleanup"
+</div>
+++++
+
+== Prerequisites
+
+* A Redpanda cluster deployed with the Redpanda Operator using the NodePool CRD. See xref:manage:kubernetes/k-node-pools.adoc[Node Pools] for setup instructions, including how to xref:manage:kubernetes/k-node-pools.adoc#migrate-to-nodepools[migrate an existing cluster to NodePools].
+* The Redpanda Operator deployed with experimental CRDs and the `--enable-v2-nodepools` flag enabled.
+* The Redpanda CR must have `statefulset.replicas` set to `0` so that NodePool CRs control the broker count.
+* An existing (blue) NodePool CR running your cluster.
+* If targeting specific Kubernetes nodes: a new Kubernetes node pool provisioned in your hosting platform (GKE, EKS, AKS, or self-managed) with nodes that meet xref:deploy:redpanda/kubernetes/k-requirements.adoc[Redpanda requirements]. See xref:manage:kubernetes/k-node-pools.adoc#node-placement[Control node placement with nodeSelector and tolerations] for setup.
+* A staging environment in which to test the migration before performing it in production.
+* Confirmation that the target Redpanda version is compatible with your Operator version. See xref:upgrade:k-compatibility.adoc[].
+
+== Pre-migration considerations
+
+Before migrating, consider the following:
+
+* **Cost**: During migration, the cluster runs 2x the usual number of brokers. Plan for temporary increased infrastructure costs.
+* **Data volume**: Decommissioning time depends on the amount of data to replicate. Large datasets may take hours per broker.
+* **Replication factor**: Your broker count should exceed your highest topic replication factor to maintain availability during decommissioning.
+* **Partition count**: Total partition count is generally determined by the overall CPU core count. Verify the new nodes can handle the partition load.
+* **Image tag**: You must set `spec.image.tag` on the green NodePool explicitly. NodePools do not inherit the image tag from the Redpanda CR.
+
+[[verify-blue]]
+== Verify the blue NodePool
+
+Before starting the migration, verify that the existing blue NodePool is running and healthy. This example assumes you are upgrading from Redpanda v26.1.1 to v26.1.3.
+
+Check the NodePool status:
+
+[source,bash]
+----
+kubectl get nodepool -n <namespace>
+----
+
+.Expected output
+[%collapsible]
+====
+[.no-copy]
+----
+NAME   CLUSTER    REPLICAS   READY   AGE
+blue   redpanda   3          3       24h
+----
+====
+
+Verify the NodePool conditions:
+
+[source,bash]
+----
+kubectl describe nodepool blue -n <namespace>
+----
+
+Confirm that the conditions show `Bound=True`, `Deployed=True`, and `Stable=True`.
+
+Verify the Pods are running:
+
+[source,bash]
+----
+kubectl get pods -n <namespace> -l app.kubernetes.io/name=redpanda -o wide
+----
+
+.Expected output
+[%collapsible]
+====
+[.no-copy]
+----
+NAME              READY   STATUS    RESTARTS   AGE   IP            NODE
+redpanda-blue-0   2/2     Running   0          24h   10.244.1.5    worker-1
+redpanda-blue-1   2/2     Running   0          24h   10.244.2.5    worker-2
+redpanda-blue-2   2/2     Running   0          24h   10.244.3.5    worker-3
+----
+====
+
+Check cluster health:
+
+[source,bash]
+----
+kubectl exec -n <namespace> redpanda-blue-0 -c redpanda -- rpk cluster health
+----
+
+.Expected output
+[%collapsible]
+====
+[.no-copy]
+----
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:                          true
+Unhealthy reasons:                []
+Controller ID:                    0
+All nodes:                        [0 1 2]
+Nodes down:                       []
+Leaderless partitions (0):        []
+Under-replicated partitions (0):  []
+----
+====
+
+List the brokers and confirm their current version:
+
+[source,bash]
+----
+kubectl exec -n <namespace> redpanda-blue-0 -c redpanda -- rpk redpanda admin brokers list
+----
+
+.Expected output
+[%collapsible]
+====
+[.no-copy]
+----
+NODE-ID  NUM-CORES  MEMBERSHIP-STATUS  IS-ALIVE  BROKER-VERSION
+0        1          active             true      v26.1.1
+1        1          active             true      v26.1.1
+2        1          active             true      v26.1.1
+----
+====
+
+All three brokers should show `membership-status: active`, `is-alive: true`, and the current Redpanda version (v26.1.1 in this example).
+
+[[create-green]]
+== Create the green NodePool
+
+Create a new (green) NodePool with the target Redpanda version. In this example, you are upgrading from v26.1.1 to v26.1.3:
+
+.`nodepool-green.yaml`
+[source,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: NodePool
+metadata:
+  name: green
+  namespace: <namespace>
+spec:
+  clusterRef:
+    name: redpanda
+  replicas: 3
+  image:
+    tag: v26.1.3 # <1>
+  nodeSelector:
+    nodetype: redpanda-green # <2>
+  tolerations:
+    - key: redpanda-green # <3>
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+----
+<1> The target Redpanda version. This must be set explicitly — NodePools do not inherit the image tag from the Redpanda CR.
+<2> Optional. Constrains green brokers to Kubernetes nodes labeled `nodetype: redpanda-green`. Omit if you don't need node placement control.
+<3> Optional. Allows scheduling on nodes tainted with `redpanda-green:NoSchedule`. Omit if you don't use taints.
+
+NOTE: If you don't need to pin brokers to specific Kubernetes nodes, you can omit `nodeSelector` and `tolerations`. The green brokers will be scheduled on any available nodes.
+
+Apply the NodePool:
+
+[source,bash]
+----
+kubectl apply -f nodepool-green.yaml
+----
+
+[[wait-healthy]]
+== Wait for all brokers to stabilize
+
+The cluster temporarily runs 2x the usual broker count (6 brokers in this example). Wait for the green Pods to become ready:
+
+[source,bash]
+----
+kubectl get pods -n <namespace> -l app.kubernetes.io/name=redpanda -o wide
+----
+
+.Expected output (6 Pods)
+[%collapsible]
+====
+[.no-copy]
+----
+NAME               READY   STATUS    RESTARTS   AGE     IP            NODE
+redpanda-blue-0    2/2     Running   0          24h     10.244.1.5    worker-1
+redpanda-blue-1    2/2     Running   0          24h     10.244.2.5    worker-2
+redpanda-blue-2    2/2     Running   0          24h     10.244.3.5    worker-3
+redpanda-green-0   2/2     Running   0          2m      10.244.4.5    worker-4
+redpanda-green-1   2/2     Running   0          2m      10.244.5.5    worker-5
+redpanda-green-2   2/2     Running   0          2m      10.244.6.5    worker-6
+----
+====
+
+Wait for the Redpanda cluster to report as healthy with all 6 brokers:
+
+[source,bash]
+----
+kubectl exec -n <namespace> redpanda-blue-0 -c redpanda -- rpk cluster health
+----
+
+.Expected output
+[%collapsible]
+====
+[.no-copy]
+----
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:                          true
+Unhealthy reasons:                []
+Controller ID:                    0
+All nodes:                        [0 1 2 3 4 5]
+Nodes down:                       []
+Leaderless partitions (0):        []
+Under-replicated partitions (0):  []
+----
+====
+
+Verify that all 6 brokers are active and confirm the version split:
+
+[source,bash]
+----
+kubectl exec -n <namespace> redpanda-blue-0 -c redpanda -- rpk redpanda admin brokers list
+----
+
+.Expected output
+[%collapsible]
+====
+[.no-copy]
+----
+NODE-ID  NUM-CORES  MEMBERSHIP-STATUS  IS-ALIVE  BROKER-VERSION
+0        1          active             true      v26.1.1
+1        1          active             true      v26.1.1
+2        1          active             true      v26.1.1
+3        1          active             true      v26.1.3
+4        1          active             true      v26.1.3
+5        1          active             true      v26.1.3
+----
+====
+
+IMPORTANT: Do not proceed until the cluster reports as `Healthy: true` with zero leaderless and zero under-replicated partitions. All 6 brokers must show `membership-status: active` and `is-alive: true`.
+
+[[delete-blue]]
+== Delete the blue NodePool
+
+Delete the old (blue) NodePool. The operator decommissions each blue broker one at a time, draining partitions to the green brokers before removing each one. No manual decommission commands are needed.
+
+[source,bash]
+----
+kubectl delete nodepool blue -n <namespace>
+----
+
+Monitor the decommission progress:
+
+[source,bash]
+----
+kubectl exec -n <namespace> redpanda-green-0 -c redpanda -- rpk redpanda admin brokers list
+----
+
+You will see blue brokers transition from `active` to `draining` as the operator decommissions them:
+
+.Example output (decommission in progress)
+[%collapsible]
+====
+[.no-copy]
+----
+NODE-ID  NUM-CORES  MEMBERSHIP-STATUS  IS-ALIVE  BROKER-VERSION
+0        1          draining           true      v26.1.1
+1        1          active             true      v26.1.1
+2        1          active             true      v26.1.1
+3        1          active             true      v26.1.3
+4        1          active             true      v26.1.3
+5        1          active             true      v26.1.3
+----
+====
+
+Wait for the cluster to stabilize with only green brokers:
+
+[source,bash]
+----
+kubectl wait --for=condition=Stable redpanda/redpanda -n <namespace> --timeout=600s
+----
+
+[[verify-green]]
+== Verify the migration
+
+Confirm that only the green brokers remain:
+
+[source,bash]
+----
+kubectl get pods -n <namespace> -l app.kubernetes.io/name=redpanda
+----
+
+.Expected output
+[%collapsible]
+====
+[.no-copy]
+----
+NAME               READY   STATUS    RESTARTS   AGE
+redpanda-green-0   2/2     Running   0          10m
+redpanda-green-1   2/2     Running   0          10m
+redpanda-green-2   2/2     Running   0          10m
+----
+====
+
+Verify cluster health:
+
+[source,bash]
+----
+kubectl exec -n <namespace> redpanda-green-0 -c redpanda -- rpk cluster health
+----
+
+.Expected output
+[%collapsible]
+====
+[.no-copy]
+----
+CLUSTER HEALTH OVERVIEW
+=======================
+Healthy:                          true
+Unhealthy reasons:                []
+Controller ID:                    3
+All nodes:                        [3 4 5]
+Nodes down:                       []
+Leaderless partitions (0):        []
+Under-replicated partitions (0):  []
+----
+====
+
+Confirm that all brokers are running the target version:
+
+[source,bash]
+----
+kubectl exec -n <namespace> redpanda-green-0 -c redpanda -- rpk redpanda admin brokers list
+----
+
+.Expected output
+[%collapsible]
+====
+[.no-copy]
+----
+NODE-ID  NUM-CORES  MEMBERSHIP-STATUS  IS-ALIVE  BROKER-VERSION
+3        1          active             true      v26.1.3
+4        1          active             true      v26.1.3
+5        1          active             true      v26.1.3
+----
+====
+
+Verify data integrity by checking your topics:
+
+[source,bash]
+----
+kubectl exec -n <namespace> redpanda-green-0 -c redpanda -- rpk topic list
+----
+
+Confirm that all topics are present and that partition replicas are fully replicated:
+
+[source,bash]
+----
+kubectl exec -n <namespace> redpanda-green-0 -c redpanda -- rpk topic describe <topic-name>
+----
+
+You can also verify that messages are consumable:
+
+[source,bash]
+----
+kubectl exec -n <namespace> redpanda-green-0 -c redpanda -- rpk topic consume <topic-name> -n 5
+----
+
+[[cleanup]]
+== Clean up
+
+Delete the old Kubernetes node pool following your hosting platform's best practices:
+
+* https://cloud.google.com/kubernetes-engine/docs/how-to/node-pools#deleting_a_node_pool[Delete a node pool on GKE^]
+* https://docs.aws.amazon.com/eks/latest/userguide/delete-managed-node-group.html[Delete a managed node group on EKS^]
+* https://learn.microsoft.com/en-us/azure/aks/manage-node-pools#delete-a-node-pool[Delete a node pool on AKS^]
+
+== Known limitations
+
+* **NodePool image tag is required.** NodePools do not inherit `spec.clusterSpec.image.tag` from the Redpanda CR. You must set `spec.image.tag` on each NodePool explicitly. If not specified, the operator uses its own default image version, which may not be the version you expect.
+* **`OnDelete` update strategy.** NodePool StatefulSets use the `OnDelete` update strategy. Changing `spec.image.tag` on an existing NodePool does not trigger an in-place rolling upgrade. Use the blue/green pattern (create a new NodePool) for version upgrades.
+* **Temporary 2x broker count.** During migration, the cluster runs double the usual broker count. Ensure your environment has sufficient CPU, memory, and storage resources.
+
+include::shared:partial$suggested-reading.adoc[]
+
+* xref:manage:kubernetes/k-node-pools.adoc[Node Pools]
+* xref:upgrade:k-migrate-node-pools-manually.adoc[Migrate Node Pools Manually]
+* xref:manage:kubernetes/k-decommission-brokers.adoc[Decommission Brokers]
+* xref:upgrade:k-compatibility.adoc[Kubernetes and Operator Compatibility]
