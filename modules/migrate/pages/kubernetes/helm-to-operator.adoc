@@ -201,6 +201,49 @@ NAME       READY   STATUS
 redpanda   True    Redpanda reconciliation succeeded
 ----
 
+== Resynchronize the bootstrap user password
+
+When the Redpanda Operator takes ownership of a SASL-enabled cluster, it manages a `<cluster-name>-bootstrap-user` Secret that holds the superuser credentials. If this Secret is regenerated after migration (for example, if you delete a Helm-era Secret and expect the operator to recreate it with clean ownership), the operator writes a new random password into the Secret and the pod environment variables, but Redpanda's internal SCRAM database continues to hold the original password that the Helm chart set. On the next pod restart, `rpk` inside the pod reads the new password from its environment and fails to authenticate:
+
+[.no-copy]
+----
+SASL_AUTHENTICATION_FAILED: Invalid credentials
+----
+
+The Redpanda Operator does not resynchronize this password for you. You must update the SCRAM database manually, using the old password to authenticate and the new password from the regenerated Secret as the target.
+
+[NOTE]
+====
+Only perform these steps if `rpk` fails SASL authentication after migration. You also need the original superuser password that the Helm chart used. If you no longer have it, see xref:manage:kubernetes/security/authentication/k-authentication.adoc[] for recovery options.
+====
+
+. Open a shell in any broker pod. The pod's environment already exposes the new password from the regenerated Secret:
++
+```bash
+kubectl --namespace <namespace> exec -it <cluster-name>-0 -c redpanda -- bash
+```
+
+. Resynchronize the SCRAM database. Replace `<old-password>` with the superuser password set by the Helm chart before migration:
++
+[,bash]
+----
+export RPK_NEW_PASS="$RPK_PASS" <1>
+export RPK_PASS="<old-password>" <2>
+rpk acl user update $RPK_USER --mechanism $RPK_SASL_MECHANISM --new-password $RPK_NEW_PASS <3>
+export RPK_PASS=$RPK_NEW_PASS <4>
+rpk cluster info <5>
+----
++
+--
+<1> Save the new password that the operator wrote to the Secret. `$RPK_PASS` in the pod already points to this value.
+<2> Switch `rpk` to authenticate with the original Helm-era password so the next command can reach the admin API.
+<3> Update the superuser's password in Redpanda's SCRAM database to match the new password in the Secret.
+<4> Restore `$RPK_PASS` to the new password for subsequent commands.
+<5> Verify that authentication succeeds with the new password.
+--
+
+After the update, the SCRAM database and the bootstrap Secret agree on the password, and subsequent pod restarts continue to authenticate cleanly.
+
 == Roll back from Redpanda Operator to Helm
 
 If you migrated to the Redpanda Operator and want to revert to using only Helm, follow these steps to uninstall the Redpanda Operator:
