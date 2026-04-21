@@ -3,7 +3,7 @@
 :page-tags: [Schema Registry, contexts, multi-tenant, Confluent compatibility]
 Learning objectives:
 :learning-objective-1: Understand what Schema Registry contexts are and when to use them.
-:learning-objective-2: Understand the qualified subject syntax (:<context>:<subject>).
+:learning-objective-2: Understand the qualified subject syntax (`:<context>:<subject>`).
 :learning-objective-3: Enable the feature using the cluster configuration property (requires broker restart), and configuring contexts, including per-context mode and compatibility settings.
 :learning-objective-4: Apply ACLs to control access at the context level.
 :learning-objective-5: Identify updated metrics and the new cluster configuration property.
@@ -22,7 +22,6 @@ After reading this page, you will be able to:
 * [ ] {learning-objective-4}
 * [ ] {learning-objective-5}
 * [ ] {learning-objective-6}
-* [ ] 
 
 Schema Registry contexts are namespaces that isolate schemas, subjects, and configurations from one another within a single Schema Registry instance.
 Each context maintains its own schema ID counter, mode settings, and compatibility settings.
@@ -69,12 +68,13 @@ The `schema_registry_enable_qualified_subjects` property defaults to `false`, so
 
 
 == How Schema Registry contexts work
+When you enable contexts, Schema Registry changes how it assigns schema IDs, resolves configuration, and interprets subject names.
 
 === Schema ID isolation
 
-Before contexts, the Schema Registry maintained a single global ID counter. All schemas shared one ID space, and a given schema ID pointed to exactly one schema across the entire registry.
+Prior to v26.1, the Schema Registry maintained a single global ID counter. All schemas shared one ID space, and a given schema ID pointed to exactly one schema across the entire registry.
 
-After enabling contexts, each context has its own independent ID counter. This means schema ID `1` in `.staging` and schema ID `1` in `.production` are different schemas. As a result (and by default), `GET /schemas/ids/{id}` searches the _default context only_. To retrieve a schema by ID from a non-default context, you must pass the `subject` query parameter to scope the lookup:
+With Schema Registry contexts, each context has its own independent ID counter. This means schema ID `1` in `.staging` and schema ID `1` in `.production` are different schemas. As a result (and by default), `GET /schemas/ids/{id}` searches the _default context only_. To retrieve a schema by ID from a non-default context, you must pass the `subject` query parameter to scope the lookup:
 
 [source,bash]
 ----
@@ -85,7 +85,7 @@ See also <<schema-id-lookup-fails>>.
 
 === Configuration resolution order
 
-Before contexts, mode and compatibility settings resolved as:
+Prior to v26.1, mode and compatibility settings resolved as:
 
 ----
 Subject → Global → Built-in defaults
@@ -128,7 +128,7 @@ Wherever the Schema Registry API accepts a subject, you can supply a qualified s
 
 === `GET /subjects` behavior change
 
-After enabling the flag, `GET /subjects` (with no `subjectPrefix`) returns subjects across *all* contexts. Non-default context subjects appear with their qualified names — for example, `:.staging:my-topic`. This is a behavioral change from the previous flat list of bare subject names.
+After enabling the flag, `GET /subjects` (with no `subjectPrefix`) returns subjects across _all_ contexts. Non-default context subjects appear with their qualified names (for example, `:.staging:my-topic`). Note that this is differs from the previous flat lists of bare subject names.
 
 === Cross-context schema references
 
@@ -137,7 +137,7 @@ Contexts do not enforce isolation of schema references. Schemas can reference sc
 == Enable Schema Registry contexts
 
 ifndef::env-cloud[]
-To enable contexts on a self-managed cluster, set the `schema_registry_enable_qualified_subjects` cluster configuration property to `true`:
+To enable contexts, set the `schema_registry_enable_qualified_subjects` cluster configuration property to `true`:
 
 [source,bash]
 ----
@@ -165,6 +165,7 @@ endif::env-cloud[]
 
 === Register a schema in a context
 
+The following configuration examples show how to perform common context operations using the Schema Registry HTTP API and qualified subject syntax.
 To register a schema in a named context, use the qualified subject form in the `POST /subjects/{subject}/versions` request:
 
 [source,bash]
@@ -341,7 +342,7 @@ Unqualified references in schema definitions resolve to the same context as the 
 
 === Delete a context
 
-A context can only be deleted when it contains no subjects. Soft-deleted subjects still count — you must hard-delete all subjects before the context can be removed. Attempting to delete a non-empty context returns a `context_not_empty` error.
+You can only delete a context when it contains no subjects. Soft-deleted subjects still count; however, you must hard-delete all subjects before removing the context. Attempting to delete a non-empty context returns a `context_not_empty` error.
 
 [NOTE]
 ====
@@ -358,11 +359,11 @@ curl -s -X DELETE http://localhost:8081/contexts/.staging
 ----
 
 
-== rpk commands
+== Configure Schema Registry contexts using rpk
 
 [NOTE]
 ====
-Native `rpk` commands for context management operations (listing, creating, and deleting contexts) are not yet available. Use the Schema Registry HTTP API directly for context-level operations. See <<client-integration-status>>.
+Native `rpk` commands for context management operations (listing, creating, and deleting contexts) are not available. Use the Schema Registry HTTP API for context-level operations. See <<client-integration-status>>.
 ====
 
 Existing `rpk registry` commands that accept a subject name support qualified subject syntax once `schema_registry_enable_qualified_subjects` is enabled. Pass a qualified subject wherever a `--subject` flag is accepted:
@@ -422,7 +423,7 @@ rpk security acl create \
   --allow-principal User:alice
 ----
 
-For full reference documentation on these commands, see:
+For additional detail, refer to the full reference documentation for these commands:
 
 * xref:reference:rpk/rpk-registry/rpk-registry-schema-create.adoc[]
 * xref:reference:rpk/rpk-registry/rpk-registry-schema-list.adoc[]
@@ -437,6 +438,7 @@ For full reference documentation on these commands, see:
 
 == Client integration status
 
+The following table identifies the support level of Schema Registry context client integrations.
 [#client-integration-status]
 
 [cols="2,1,3", options="header"]
@@ -444,7 +446,7 @@ For full reference documentation on these commands, see:
 | Client | Status | Notes
 
 | Schema Registry API (all operations)
-| Full support
+| Supported
 | Use qualified subjects directly in any endpoint.
 
 | Java SerDe (Confluent)
@@ -452,27 +454,27 @@ For full reference documentation on these commands, see:
 | Requires a custom `ContextNameStrategy`. See the Confluent SerDe documentation for details.
 
 | Non-Java SerDe
-| Not yet supported (26.1)
-| Planned in a 26.1.x patch release. Workaround: set the client's Schema Registry base URL to `http://<host>:8081/contexts/{context}`.
+| Not supported
+| Workaround: set the client's Schema Registry base URL to `http://<host>:8081/contexts/{context}`.
 
 | rpk
-| In progress
-| Context management commands not yet available. Qualified subjects work in existing `rpk registry` commands.
+| Not supported
+| Context management commands not available. Qualified subjects work in existing `rpk registry` commands.
 
 | Redpanda Console
-| In progress
-| Not available in 26.1.
+| Not supported
+| 
 
 | Server-side schema ID validation
 | Not supported
-| Out of scope for this release.
+| 
 |===
 
 == ACL authorization
 
 [#acl-authorization]
 
-Contexts use the existing `sr_subject` and `sr_registry` ACL resource types. No new resource types are needed.
+Contexts use the existing `sr_subject` and `sr_registry` ACL resource types.
 
 [cols="2,2,2", options="header"]
 |===
@@ -519,7 +521,7 @@ rpk security acl create \
 
 === Audit log format
 
-When Schema Registry ACLs are enabled, audit log entries include the fully qualified subject name for non-default context operations:
+When you enable Schema Registry ACLs, audit log entries include the fully qualified subject name for non-default context operations:
 
 [source,json]
 ----
@@ -533,11 +535,11 @@ When Schema Registry ACLs are enabled, audit log entries include the fully quali
 }
 ----
 
-Default context subjects are logged with their unqualified name (no change from existing behavior).
+Default context subjects are logged with their unqualified name.
 
 == Metrics
 
-The following Schema Registry metrics have been updated to include a `context` label, enabling per-context monitoring:
+The following Schema Registry metrics include a `context` label, enabling per-context monitoring:
 
 [cols="2,2", options="header"]
 |===
@@ -565,12 +567,12 @@ endif::env-cloud[]
 
 [IMPORTANT]
 ====
-*Breaking change*: When `schema_registry_enable_qualified_subjects` is enabled, any existing subject whose name matches the qualified subject pattern — for example, `:.staging:user-value` — is reinterpreted as subject `user-value` in context `.staging`, rather than as a literal subject name in the default context. Subjects without a `:.` prefix are unaffected.
+*Breaking change*: When `schema_registry_enable_qualified_subjects` is enabled, any existing subject whose name matches the qualified subject pattern (for example, `:.staging:user-value`) is reinterpreted as subject `user-value` in context `.staging`, rather than as a literal subject name in the default context. Subjects without a `:.` prefix are unaffected.
 
-This edge case is expected to be rare. No automatic migration is provided.
+This edge case is rare. No automatic migration is provided.
 ====
 
-To audit your existing subjects for affected names before enabling the feature:
+To audit your existing subjects for affected names before enabling Schema Registry contexts:
 
 ifndef::env-cloud[]
 [source,bash]
@@ -586,7 +588,7 @@ curl -s http://<schema-registry-host>:8081/subjects | jq '.[] | select(startswit
 ----
 endif::env-cloud[]
 
-If affected subjects are found, rename them before enabling the property, or plan to re-register them under the reinterpreted context structure after enabling.
+If you find affected subjects, rename them before enabling the property, or plan to re-register them under the reinterpreted context structure after enabling.
 
 
 [IMPORTANT]
@@ -596,6 +598,7 @@ Remember that changing `schema_registry_enable_qualified_subjects` requires a br
 
 == Troubleshooting
 
+Following is troubleshooting guidance for Schema Registry contexts.
 [#schema-id-lookup-fails]
 === Schema ID lookup returns 404 or wrong schema
 
@@ -614,7 +617,7 @@ curl -s "http://localhost:8081/schemas/ids/1?subject=:.staging:my-topic"
 
 *Symptom*: Subjects with the `:.` prefix are stored as literal subject names in the default context instead of being parsed as context-qualified subjects.
 
-*Cause 1*: `schema_registry_enable_qualified_subjects` is set to `false` (the 26.1 default for self-managed clusters).
+*Cause 1*: `schema_registry_enable_qualified_subjects` is set to `false` (the default).
 
 *Cause 2*: The property was set to `true` but the brokers have not yet been restarted. This property is not dynamic and requires a full broker restart to take effect.
 
@@ -628,7 +631,7 @@ rpk cluster config set schema_registry_enable_qualified_subjects true
 ----
 endif::env-cloud[]
 
-=== Schema registration fails after upgrading to 26.1
+=== Schema registration fails after upgrading to v26.1
 
 *Symptom*: A `POST /subjects/{subject}/versions` request returns an unexpected error after upgrading and enabling the flag.
 
