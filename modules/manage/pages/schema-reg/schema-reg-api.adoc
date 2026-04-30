@@ -1003,7 +1003,7 @@ The `/mode` endpoint allows you to put Schema Registry in read-only, read-write,
 
 * In read-write mode (the default), you can both register and look up schemas.
 * In <<use-readonly-mode-for-disaster-recovery,read-only mode>>, you can only look up schemas. This mode is most useful for standby clusters in a disaster recovery setup.
-* In <<use-import-mode-for-migration,import mode>>, you can only register schemas. This mode is most useful for target clusters in a migration setup.
+* In <<use-import-mode-for-migration,import mode>>, you can register new schemas with explicit IDs and versions, while existing schemas remain readable so producers and consumers continue to operate against them. This mode is most useful for target clusters in a migration setup, where IDs must be preserved across registries.
 
 If authentication is enabled on Schema Registry, only superusers can change global and subject-level modes.
 
@@ -1014,7 +1014,7 @@ If authentication is enabled on Schema Registry, only superusers can change glob
 Starting with 25.3, read-write mode returns an error when you try to register a schema with a specific ID or version. If you have custom scripts that rely on the ability to specify an ID or version with Redpanda 25.2 and earlier, you must do either of the following:
 
 * Omit the ID and version fields when registering a schema. The schema will be registered under a new ID and version.
-* Change the Schema Registry or the subject to import mode.
+* Change the Schema Registry or the subject to <<use-import-mode-for-migration,import mode>>. Existing producers and consumers continue to work against already-registered schemas in import mode; only auto-registration of new schemas is blocked.
 ====
 
 === Get global mode
@@ -1121,10 +1121,33 @@ A read-only Schema Registry does not accept direct writes. An active production 
 
 === Use IMPORT mode for migration
 
-Set the target Schema Registry to import mode to:
+Use import mode to:
 
-- Bypass compatibility checks when registering schemas.
-- Specify a specific schema ID and version for the registered schema, so you can retain the same IDs and version from the original Schema Registry and keep topic data associated with the correct schema.
+ - Migrate schemas from another Schema Registry while preserving their IDs and versions
+ - To register an individual schema with a specific ID and version into an existing registry
+
+While a Schema Registry or subject is in import mode:
+
+- You can only register new schemas with an explicit ID and version. This enables a replication tool to preserve schema IDs and versions from a source registry.
+- Compatibility checks are bypassed during registration, so schemas can be imported without re-validation against the subject's compatibility settings.
+- Existing schemas remain readable. Producers and consumers can continue to look up and use any schema that has already been registered.
+- Auto-registration is rejected. Client libraries that attempt to register a new schema without specifying an explicit ID and version will receive an error.
+
+[NOTE]
+====
+Import mode supports continuous migration: producers and consumers can keep operating against the target registry while it is in import mode, as long as they do not attempt to register new schemas. Lookups of already-registered schemas continue to succeed, while auto-registration calls (for example, `POST /subjects/{subject}/versions` without an explicit ID) are rejected.
+
+To avoid auto-registration errors on the client side, configure your clients to look up schemas instead of registering them. For Confluent serializers, set `auto.register.schemas=false` (and optionally `use.latest.version=true`).
+====
+
+==== Choose subject-level or global import mode
+
+You can put either a single subject or the entire Schema Registry into import mode:
+
+* *Global import mode* applies to all subjects that do not have a per-subject mode override. Use this when migrating an entire Schema Registry into a new cluster.
+* *Subject-level import mode* applies to a single subject and overrides the global mode for that subject. Use this to register or restore an individual schema with a specific ID into an otherwise active registry.
+
+==== Enable import mode
 
 To enable import mode, you must have:
 
@@ -1150,7 +1173,7 @@ curl -X PUT -H "Content-Type: application/vnd.schemaregistry.v1+json" --data '{"
 ```
 ====
 
-Use import mode to register a schema with a specific ID and version:
+==== Register a schema with an explicit ID and version
 
 [tabs]
 ====
@@ -1168,6 +1191,10 @@ Curl::
 curl -X POST -H "Content-Type: application/vnd.schemaregistry.v1+json" --data '{"schema": "syntax = \"proto3\";\nmessage Order {\n  string id = 1;\n}", "schemaType": "PROTOBUF", "id": 1, "version": 4}' http://localhost:8081/subjects/<subject-name>/versions
 ```
 ====
+
+==== Return to read-write mode
+
+When migration is complete, return the Schema Registry or subject to read-write mode so that normal schema registration resumes. Use the <<set-global-mode,Set global mode>> or <<set-mode-for-a-subject,Set mode for a subject>> commands shown earlier on this page, with `READWRITE` as the mode value.
 
 == Retrieve serialized schemas
 
