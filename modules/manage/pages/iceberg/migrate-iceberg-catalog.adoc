@@ -1,13 +1,23 @@
 = Migrate Iceberg Catalogs
 :description: Switch the Iceberg catalog backend for an existing Redpanda cluster without losing untranslated topic data.
-:page-topic-type: how-to
-:page-categories: Iceberg, Migration
 
 // tag::single-source[]
+:page-topic-type: how-to
+:page-categories: Iceberg, Migration
+:personas: ops_admin, streaming_developer
+:learning-objective-1: Verify that a target Iceberg catalog supports your existing schemas and partition specs
+:learning-objective-2: Pause Iceberg translation and drain pending commits without losing untranslated data
+:learning-objective-3: Apply new catalog configuration and resume translation safely
 
 Switch your cluster from one Iceberg catalog backend to another without losing untranslated topic data. Use this procedure when moving from the filesystem-based `object_storage` catalog to a managed REST catalog, or when changing between REST catalogs.
 
 The procedure pauses Iceberg translation per topic, lets pending commits drain to the old catalog, applies the new catalog configuration, and restarts the cluster. While translation is paused, retention is temporarily set to infinite to prevent untranslated data from being deleted.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
 
 [IMPORTANT]
 ====
@@ -21,10 +31,9 @@ Do not change config_ref:iceberg_catalog_type,true,properties/cluster-properties
 * Credentials configured for the new catalog (REST endpoint, authentication mode, secret or token). For configuration guidance for each catalog type, see xref:manage:iceberg/use-iceberg-catalogs.adoc[].
 * The new catalog must support the current schema and partition spec of every Iceberg topic. See <<verify-catalog-compatibility,Verify catalog compatibility>>.
 
-[[verify-catalog-compatibility]]
 == Verify catalog compatibility
 
-Before starting the migration, verify that the new catalog can host every Iceberg topic's table with its existing schema and partition spec. Mismatches discovered after migration cause already-translated parquet files to fail to commit, blocking translation in a state that is difficult to recover from.
+Before starting the migration, verify that the new catalog can host every Iceberg topic's table with its existing schema and partition spec. Mismatches discovered after migration cause already-translated Parquet files to fail to commit, blocking translation in a state that is difficult to recover from.
 
 The simplest validation is to manually create a test table in the new catalog with the same schema and partition spec as one of your Iceberg topics. If the create call fails, fix the partition spec or schema before migrating. Delete the test table after validation.
 
@@ -42,7 +51,7 @@ AWS Glue does not support partitioning on a nested field, which is Redpanda's de
 rpk topic alter-config <topic-name> --set retention.ms=-1 --set retention.bytes=-1
 ----
 +
-While Iceberg translation is paused in the next step, the topic's retention anchor on the log is released. Without infinite retention, untranslated data could be deleted before the migration completes.
+While Iceberg translation is paused in the next step, the topic's retention anchor on the log is released. Without infinite retention, the cluster could delete untranslated data before the migration completes.
 
 . Pause Iceberg translation on every Iceberg topic by setting `redpanda.iceberg.mode` to `disabled`. Save each topic's previous mode value so you can restore it later.
 +
@@ -51,13 +60,13 @@ While Iceberg translation is paused in the next step, the topic's retention anch
 rpk topic alter-config <topic-name> --set redpanda.iceberg.mode=disabled
 ----
 +
-Setting the mode to `disabled` stops new translation while letting already-translated data finish being committed to the old catalog. For more about Iceberg modes, see xref:manage:iceberg/specify-iceberg-schema.adoc[].
+Setting the mode to `disabled` stops new translation while letting already-translated data finish committing to the old catalog. For more about Iceberg modes, see xref:manage:iceberg/specify-iceberg-schema.adoc[].
 +
 NOTE: Do not change config_ref:iceberg_enabled,true,properties/cluster-properties[`iceberg_enabled`] at the cluster level. The Iceberg integration must remain enabled at the cluster level so that pending commits can drain to the old catalog.
 
 . Wait for pending commits to drain. Monitor the `redpanda_iceberg_pending_commit_lag` Prometheus metric on every broker until it reaches `0` for every Iceberg topic-partition.
 +
-This metric reports the number of offsets pending a commit to the Iceberg catalog. While it is non-zero, Redpanda is still flushing translated data to the old catalog. The translation lag metric, `redpanda_iceberg_pending_translation_lag`, can remain non-zero; this reflects new incoming data the cluster has not yet translated, which is expected because translation is paused.
+This metric reports the number of offsets pending a commit to the Iceberg catalog. While it is non-zero, Redpanda is still flushing translated data to the old catalog. The translation lag metric, `redpanda_iceberg_pending_translation_lag`, can remain non-zero. That value reflects new records the cluster has not yet translated, which is expected while translation is paused.
 +
 [TIP]
 ====
@@ -69,7 +78,7 @@ sum(redpanda_iceberg_pending_commit_lag)
 ----
 ====
 
-. Apply the new catalog configuration. Update the catalog cluster properties — for example, to switch from `object_storage` to a REST catalog:
+. Apply the new catalog configuration. For example, to switch from `object_storage` to a REST catalog, update the catalog cluster properties:
 +
 [,bash]
 ----
@@ -90,7 +99,7 @@ ifdef::env-cloud[]
 Coordinate the restart with Redpanda Support. The restart must occur after `redpanda_iceberg_pending_commit_lag` has reached `0` (step 3) and before you resume translation in the next step.
 endif::[]
 
-. After the cluster comes up, confirm it is connected to the new catalog by checking broker logs for successful catalog requests and the absence of authentication errors.
+. After the cluster comes up, check broker logs for successful catalog requests and the absence of authentication errors to verify the new catalog connection.
 
 . Resume Iceberg translation by restoring `redpanda.iceberg.mode` on every Iceberg topic to its previous value:
 +
@@ -108,11 +117,10 @@ After the migration completes, confirm that new data is reaching the new catalog
 * Query an Iceberg table in your query engine using the new catalog and confirm that row counts continue to increase as your topic produces new records.
 * Check broker logs for any commit failures referencing the new catalog. Repeated failures often indicate a schema or partition spec mismatch. See <<troubleshooting,Troubleshooting>> for details.
 
-[[troubleshooting]]
 == Troubleshooting
 
 * Pending commits stuck after restart: A schema or partition spec mismatch between the original tables and the new catalog is the most common cause. See <<verify-catalog-compatibility,Verify catalog compatibility>>. If you cannot resolve the mismatch, contact https://support.redpanda.com/hc/en-us/requests/new[Redpanda Support^].
 * Authentication errors against the new REST catalog: Verify that the credential cluster properties (for example, `iceberg_rest_catalog_client_id`, `iceberg_rest_catalog_client_secret`, `iceberg_rest_catalog_token`) match what the new catalog expects. For OAuth, also check `iceberg_rest_catalog_oauth2_server_uri`.
-* Translation does not resume after restoring `redpanda.iceberg.mode`: Check that `redpanda_iceberg_pending_translation_lag` is increasing as new records are produced. If it remains `0`, no new records are being translated. Verify that your producer is still writing to the topic and that the topic's mode value is one of `key_value`, `value_schema_id_prefix`, or `value_schema_latest`.
+* Translation does not resume after restoring `redpanda.iceberg.mode`: Check that `redpanda_iceberg_pending_translation_lag` is increasing as new records are produced. If it remains `0`, the cluster is not translating new records. Verify that your producer is still writing to the topic and that the topic's mode value is one of `key_value`, `value_schema_id_prefix`, or `value_schema_latest`.
 
 // end::single-source[]
