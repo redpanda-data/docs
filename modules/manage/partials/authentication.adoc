@@ -1134,6 +1134,60 @@ rpk cluster config set oidc_keys_refresh_interval 3600
 ----
 endif::[]
 
+[[oidc-rpk]]
+===== Connect to Redpanda with OIDC using rpk
+
+Starting with `rpk` v26.1.7 (also available in v25.3.x and v25.2.x patches), `rpk` supports the `OAUTHBEARER` SASL mechanism for Kafka API authentication. After you enable OIDC on a Kafka listener, you can authenticate `rpk` to Kafka with an OIDC access token issued by your IdP instead of a SASL/SCRAM username and password.
+
+NOTE: Confirm your `rpk` version with `rpk version`. Earlier versions reject `-X sasl.mechanism=OAUTHBEARER` as an unknown mechanism.
+
+Before you connect, make sure that:
+
+* `OAUTHBEARER` is in xref:reference:properties/cluster-properties.adoc#sasl_mechanisms[`sasl_mechanisms`], or is set on the target listener through xref:reference:properties/cluster-properties.adoc#sasl_mechanisms_overrides[`sasl_mechanisms_overrides`].
+* You have an access token from your IdP whose claims satisfy `oidc_token_audience`, `oidc_discovery_url`, and `oidc_principal_mapping`. For the claims that Redpanda validates, see <<oidc-credentials-flow-and-access-token-validation, OIDC credentials flow and access token validation>>.
+* xref:manage:security/authorization/index.adoc#acls[ACLs] (or xref:manage:security/authorization/gbac.adoc[GBAC]) grant the principal extracted from the token the operations you intend to run.
+
+[[oidc-rpk-token]]
+Pass the token using xref:reference:rpk/rpk-x-options.adoc[`-X` options]. Set `sasl.mechanism=OAUTHBEARER` and supply the token through `pass`, either as a raw value or in `token:<TOKEN>` form:
+
+[,bash]
+----
+export OIDC_TOKEN="<access-token>"
+
+rpk topic list \
+  -X brokers=<broker-host>:<oidc-listener-port> \
+  -X tls.enabled=true \
+  -X tls.ca=<path-to-ca-cert> \
+  -X sasl.mechanism=OAUTHBEARER \
+  -X pass="token:$OIDC_TOKEN"
+----
+
+The same `-X sasl.mechanism` and `-X pass` options work for any `rpk` command that talks to the Kafka API (for example, `rpk topic create`, `rpk topic produce`, `rpk topic consume`, `rpk group list`, `rpk cluster info`, and `rpk security acl list`).
+
+To avoid repeating connection flags, store them in an xref:reference:rpk/rpk-profile/rpk-profile-create.adoc[`rpk profile`]:
+
+[,bash]
+----
+rpk profile create oidc \
+  --set kafka_api.brokers=<broker-host>:<oidc-listener-port> \
+  --set kafka_api.tls.ca_file=<path-to-ca-cert> \
+  --set kafka_api.sasl.mechanism=OAUTHBEARER \
+  --set kafka_api.sasl.password="token:$OIDC_TOKEN"
+
+rpk topic list
+----
+
+If `rpk` returns `OAUTHBEARER requires a token`, the password is empty or contains only the `token:` prefix with no value. 
+
+If the broker rejects the token, verify that:
+
+* The `aud` claim matches `oidc_token_audience`
+* The `iss` claim matches the issuer at `oidc_discovery_url`
+* `exp` is in the future within `oidc_clock_skew_tolerance` 
+* The signature is valid against the JWK set published at the discovery URL
+
+See <<oidc-credentials-flow-and-access-token-validation, OIDC credentials flow and access token validation>> for the full list of validated claims.
+
 ifndef::env-kubernetes[]
 [[kerberos]]
 ==== GSSAPI (Kerberos)
