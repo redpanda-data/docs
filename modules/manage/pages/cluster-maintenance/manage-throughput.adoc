@@ -1,32 +1,47 @@
 = Manage Throughput
-:description: Learn how to manage the throughput of Kafka traffic.
+:description: Configure broker-wide and client-specific throughput quotas to prevent resource exhaustion and noisy-neighbor issues.
 :page-categories: Management, Networking
+:page-topic-type: how-to
+:personas: platform_admin, developer
+:learning-objective-1: Set user-based throughput quotas
+:learning-objective-2: Set client ID-based quotas
+:learning-objective-3: Monitor quota usage and throttling behavior
 
 // tag::single-source[]
 ifdef::env-cloud[]
 :monitor-doc: manage:monitor-cloud.adoc#throughput
 :connected-clients-api-doc-ref: link:/api/doc/cloud-dataplane/operation/operation-monitoringservice_listkafkaconnections
+:authentication-doc: security:cloud-authentication.adoc
 endif::[]
 ifndef::env-cloud[]
 :monitor-doc: manage:monitoring.adoc#throughput
 :connected-clients-api-doc-ref: link:/api/doc/admin/v2/operation/operation-redpanda-core-admin-v2-clusterservice-listkafkaconnections
+:authentication-doc: manage:security/authentication.adoc
 endif::[]
 
-Redpanda supports throughput throttling on both ingress and egress independently, and allows configuration at the broker and client levels. This helps prevent clients from causing unbounded network and disk usage on brokers. You can configure limits at two levels:
+Redpanda throttles throughput on ingress and egress independently, and you can configure limits at the broker and client levels. This prevents clients from causing unbounded network and disk usage on brokers.
 
-* *Broker limits*: These apply to all clients connected to the broker and restrict total traffic on the broker. See <<broker-wide-throughput-limits, Broker-wide throughput limits>>.
+You can configure limits at two levels:
+
+* Broker limits: These apply to all clients connected to the broker and restrict total traffic on the broker. See <<Broker-wide throughput limits>>.
 ifndef::env-cloud[]
-* *Client limits*: These apply to a set of clients defined by their `client_id` and help prevent a set of clients from starving other clients using the same broker. You can manage client quotas with xref:reference:rpk/rpk-cluster/rpk-cluster-quotas.adoc[`rpk cluster quotas`], with {ui}, or with the Kafka API. When no quotas apply, the client has unlimited throughput. 
+* Client limits: These apply to authenticated users or clients defined by their client ID. You can manage client quotas with xref:reference:rpk/rpk-cluster/rpk-cluster-quotas.adoc[`rpk cluster quotas`], with {ui}, or with the Kafka API. When no quotas apply, the client has unlimited throughput.
 endif::[]
 ifdef::env-cloud[]
-* *Client limits*: These apply to a set of clients defined by their `client_id` and help prevent a set of clients from starving other clients using the same broker. You can manage client quotas with xref:reference:rpk/rpk-cluster/rpk-cluster-quotas.adoc[`rpk cluster quotas`], with the {ui} UI, with the link:https://docs.redpanda.com/api/doc/cloud-dataplane/operation/operation-quotaservice_listquotas[Redpanda Cloud Data Plane API], or with the Kafka API. When no quotas apply, the client has unlimited throughput. 
+* Client limits: These apply to authenticated users or clients defined by their client ID. You can manage client quotas with xref:reference:rpk/rpk-cluster/rpk-cluster-quotas.adoc[`rpk cluster quotas`], with the {ui} UI, with the link:https://docs.redpanda.com/api/doc/cloud-dataplane/operation/operation-quotaservice_listquotas[Redpanda Cloud Data Plane API], or with the Kafka API. When no quotas apply, the client has unlimited throughput.
 
 NOTE: Throughput throttling is supported for BYOC and Dedicated clusters only.
 endif::[]
 
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
 == View connected client details
 
-You may find it helpful to check the xref:{monitor-doc}[current produce and consume throughput] of a client before you configure throughput quotas.
+Before configuring throughput quotas, check the xref:{monitor-doc}[current produce and consume throughput] of a client.
 
 ifndef::env-cloud[]
 Use the xref:reference:rpk/rpk-cluster/rpk-cluster-connections-list.adoc[`rpk cluster connections list`] command or the {connected-clients-api-doc-ref}[ListKafkaConnections] Admin API endpoint to view detailed information about active Kafka client connections.
@@ -258,6 +273,8 @@ UID                                   STATE  USER             CLIENT-ID         
 b41584f3-2662-4185-a4b8-0d8510f5c780  OPEN   UNAUTHENTICATED  perf-producer-client  127.0.0.1:55002   0     0      8s         7.743592270s  0B             0B              1
 b20601a3-624c-4a8c-ab88-717643f01d56  OPEN   UNAUTHENTICATED  perf-producer-client  127.0.0.1:55012   0     0      9s         0s            78.9MB         0B              292
 ----
+
+The `USER` field in the connection list shows the authenticated principal. Unauthenticated connections show `UNAUTHENTICATED`, which corresponds to an empty user principal (`user=""`) in quota configurations, not `user=<default>`.
 --
 
 ifndef::env-cloud[]
@@ -417,24 +434,19 @@ curl \
 }
 ----
 ====
+The user principal field in the connection list shows the authenticated principal. Unauthenticated connections show `AUTHENTICATION_STATE_UNAUTHENTICATED`, which corresponds to an empty user principal (`user=""`) in quota configurations, not `user=<default>`.
 --
 endif::[]
 ======
 
+To view connections for a specific authenticated user:
 
-== Throughput throttling enforcement
+[,bash]
+----
+rpk cluster connections list --user alice
+----
 
-NOTE: As of v24.2, Redpanda enforces all throughput limits per broker, including client throughput.  
-
-Throughput limits are enforced by applying backpressure to clients. When a connection is in breach of the throughput limit, the throttler advises the client about the delay (throttle time) that would bring the rate back to the allowed level. Redpanda starts by adding a `throttle_time_ms` field to responses. If that isn't honored, delays are inserted on the connection's next read operation. 
-
-ifdef::env-cloud[]
-In Redpanda Cloud, the throttling delay is set to 30 seconds.
-endif::[]
-
-ifndef::env-cloud[]
-The throttling delay may not exceed the limit set by xref:reference:tunable-properties.adoc#max_kafka_throttle_delay_ms[`max_kafka_throttle_delay_ms`].
-endif::[]
+This shows all connections from user `alice`, useful for monitoring clients that are subject to user-based quotas.
 
 == Broker-wide throughput limits
 
@@ -469,47 +481,96 @@ The properties for broker-wide throughput quota balancing are configured at the 
 ====
 By default, both `kafka_throughput_limit_node_in_bps` and `kafka_throughput_limit_node_out_bps` are disabled, and no throughput limits are applied. You must manually set them to enable throughput throttling.
 ====
+
+To set broker-wide throughput limits, use xref:reference:rpk/rpk-cluster/rpk-cluster-config-set.adoc[`rpk cluster config set`] to configure the cluster properties:
+
+[,bash]
+----
+# Set ingress limit to 100 MB/s per broker
+rpk cluster config set kafka_throughput_limit_node_in_bps 100000000
+
+# Set egress limit to 200 MB/s per broker
+rpk cluster config set kafka_throughput_limit_node_out_bps 200000000
+----
 endif::[]
 
 == Client throughput limits
 
-Redpanda provides configurable throughput quotas that apply to an individual client or a group of clients. You can apply a quota for an individual client based on an exact match with its `client_id`, or a group of clients based on IDs that start with a given prefix. 
+Redpanda provides configurable throughput quotas for individual clients or authenticated users. Quotas are managed through the Kafka-compatible AlterClientQuotas and DescribeClientQuotas APIs, accessible with `rpk`, Redpanda Console, or Kafka client libraries.
 
-As of v24.2, client throughput quotas are compatible with the https://cwiki.apache.org/confluence/display/KAFKA/KIP-546%3A+Add+Client+Quota+APIs+to+the+Admin+Client[AlterClientQuotas and DescribeClientQuotas^] Kafka APIs, and are separate from quotas configured through cluster configuration in earlier Redpanda versions. The client throughput quotas no longer apply on a per-shard basis, and now limit the rates across a Redpanda broker's node. The quotas are neither shared nor balanced between brokers.
+Redpanda supports two types of client throughput quotas:
 
-Redpanda supports the following Kafka API-based quota types on clients:
+* Client ID-based quotas: Limit throughput based on the self-declared `client-id` field.
+* User-based quotas: Limit throughput based on authenticated user glossterm:principal[]. Requires xref:{authentication-doc}[authentication].
 
-|===
-| Quota type | Description
+You can also combine both types for fine-grained control (for example, limiting a specific user when using a specific client application).
 
-| `producer_byte_rate`
-| Limit throughput of produce requests
+For conceptual information about quota types, entity hierarchy, precedence rules, and how Redpanda tracks and enforces quotas through throttling, see xref:manage:cluster-maintenance/about-throughput-quotas.adoc[].
 
-| `consumer_byte_rate`
-| Limit throughput of fetch requests
+=== Set user-based quotas
 
-| `controller_mutation_rate`
-| Limit rate of topic mutation requests, including create, add, and delete partition, in number of partitions per second
+IMPORTANT: User-based quotas require authentication to be enabled. To set up authentication, see xref:{authentication-doc}[].
 
-|===
+==== Quota for a specific user
 
-You can also apply a default quota for all other client requests that don't have a specific quota based on an exact match or `client_id` prefix. 
+To limit throughput for a specific authenticated user across all clients:
 
-It is possible to create conflicting quotas if you configure the same quotas through both the Kafka API and a cluster configuration. Redpanda resolves these conflicts by following an order of preference in finding a matching quota for a request:
+[,bash]
+----
+rpk cluster quotas alter --add producer_byte_rate=2000000 --name user=alice
+----
 
-. Quota configured through the Kafka API for an exact match on `client_id`
-. Quota configured through the Kafka API for a prefix match on `client_id`
-ifndef::env-cloud[]
-. Quota configured through cluster configuration properties (`kafka_client_group_byte_rate_quota`, `kafka_client_group_fetch_byte_rate_quota`-deprecated in v24.2) for a prefix match on `client_id`
-endif::[]
-. Default quota configured through the Kafka API on `client_id`
-ifndef::env-cloud[]
-. Default quota configured through cluster configuration properties (`target_quota_byte_rate`, `target_fetch_quota_byte_rate`, `kafka_admin_topic_api_rate`-deprecated in v24.2) on `client_id`
+This limits user `alice` to 2 MB/s for produce requests regardless of the client ID used.
 
-Redpanda recommends <<migrate,migrating>> over from cluster configuration-managed quotas to Kafka-compatible quotas. You can re-create the configuration-based quotas with `rpk`, and then remove the cluster configurations.
-endif::[]
+To view quotas for a user:
 
-=== Individual client throughput limit
+[,bash]
+----
+rpk cluster quotas describe --name user=alice
+----
+
+Expected output:
+
+[,bash,role=no-copy]
+----
+user=alice
+	producer_byte_rate=2000000
+----
+
+==== Default quota for all users
+
+To set a fallback quota for any user without a more specific quota:
+
+[,bash]
+----
+rpk cluster quotas alter --add consumer_byte_rate=5000000 --default user
+----
+
+This applies a 5 MB/s fetch quota to all authenticated users who don't have a more specific quota configured.
+
+=== Remove a user quota
+
+To remove a quota for a specific user:
+
+[,bash]
+----
+rpk cluster quotas alter --delete consumer_byte_rate --name user=alice
+----
+
+To remove all quotas for a user:
+
+[,bash]
+----
+rpk cluster quotas delete --name user=alice
+----
+
+=== Set client ID-based quotas
+
+Client ID-based quotas apply to all users using a specific client ID. These quotas do not require authentication. Because the client ID is self-declared, client ID-based quotas are not suitable for guaranteeing isolation between tenants.
+
+For multi-tenant environments, Redpanda recommends user-based quotas for per-tenant isolation.
+
+==== Individual client ID throughput limit
 
 ifdef::env-cloud[]
 NOTE: The following sections show how to manage throughput with `rpk`. You can also manage throughput with the link:https://docs.redpanda.com/api/doc/cloud-dataplane/operation/operation-quotaservice_listquotas[Redpanda Cloud Data Plane API].
@@ -531,7 +592,7 @@ client-id=consumer-1
 ----
 
 
-To set a throughput quota for a single client, use the xref:reference:rpk/rpk-cluster/rpk-cluster-quotas-alter.adoc[`rpk cluster quotas alter`] command. 
+To set a throughput quota for a single client, use the xref:reference:rpk/rpk-cluster/rpk-cluster-quotas-alter.adoc[`rpk cluster quotas alter`] command.
 
 [,bash]
 ----
@@ -544,7 +605,7 @@ ENTITY                STATUS
 client-id=consumer-1  OK
 ----
 
-=== Group of clients throughput limit
+==== Group of clients throughput limit
 
 Alternatively, you can view or configure throughput quotas for a group of clients based on a match on client ID prefix. The following example sets the `consumer_byte_rate` quota to client IDs prefixed with `consumer-`:
 
@@ -553,12 +614,11 @@ Alternatively, you can view or configure throughput quotas for a group of client
 rpk cluster quotas alter --add consumer_byte_rate=200000 --name client-id-prefix=consumer-
 ----
 
-NOTE: A client group specified with `client-id-prefix` is not the equivalent of a Kafka consumer group. It is used only to match requests based on the `client_id` prefix. The `client_id` field is typically a configurable property when you create a client with Kafka libraries.
+NOTE: A `client-id-prefix` quota group is not related to Kafka consumer groups. The client ID is an application-defined identifier sent with every request. Client libraries typically default to their own name (such as `kgo`, `rdkafka`, `sarama`, or `perf-producer-client`), but applications can set it using the https://kafka.apache.org/documentation/#consumerconfigs_client.id[`client.id`^] configuration property. This makes prefix-based quotas useful for grouping related applications (for example, `inventory-service-` to match `inventory-service-1`, `inventory-service-2`, etc.).
 
+==== Default client throughput limit
 
-=== Default client throughput limit
-
-You can apply default throughput limits to clients. Redpanda applies the default limits if no quotas are configured for a specific `client_id` or prefix.
+You can apply default throughput limits to clients. Redpanda applies the default limits if no quotas are configured for a specific client ID or prefix.
 
 To specify a produce quota of 1 GB/s through the Kafka API (applies across all produce requests to a single broker), run:
 
@@ -566,6 +626,50 @@ To specify a produce quota of 1 GB/s through the Kafka API (applies across all p
 ----
 rpk cluster quotas alter --default client-id --add producer_byte_rate=1000000000
 ----
+
+=== Set combined user and client quotas
+
+You can set quotas for specific (user, client ID) combinations for fine-grained control.
+
+==== User with specific client
+
+To limit a specific user when using a specific client:
+
+[,bash]
+----
+rpk cluster quotas alter --add consumer_byte_rate=1000000 --name user=alice --name client-id=consumer-1
+----
+
+User `alice` using `client-id=consumer-1` is limited to a 1 MB/s fetch rate. The same user with a different client ID would use a different quota (or fall back to less specific matches).
+
+To view combined quotas:
+
+[,bash]
+----
+rpk cluster quotas describe --name user=alice --name client-id=consumer-1
+----
+
+==== User with client prefix
+
+To set a shared quota for a user across multiple clients matching a prefix:
+
+[,bash]
+----
+rpk cluster quotas alter --add producer_byte_rate=3000000 --name user=bob --name client-id-prefix=app-
+----
+
+All clients used by user `bob` with a client ID starting with `app-` share a combined 3 MB/s produce quota.
+
+==== Default user with specific client
+
+To set a quota for a specific client across all users:
+
+[,bash]
+----
+rpk cluster quotas alter --add producer_byte_rate=500000 --default user --name client-id=payment-processor
+----
+
+Any user using `client-id=payment-processor` is limited to a 500 KB/s produce rate, unless they have a more specific quota configured.
 
 === Bulk manage client throughput limits
 
@@ -582,78 +686,10 @@ rpk cluster quotas describe --format json
 
 [,bash]
 ----
-rpk cluster quotas import --from '{"quotas":[{"entity":[{"name":"foo","type":"client-id"}],"values":[{"key":"consumer_byte_rate","values":"12123123"}]},{"entity":[{"name":"foo-","type":"client-id-prefix"}],"values":[{"key":"producer_byte_rate","values":"12123123"},{"key":"consumer_byte_rate","values":"4444444"}]}]}'
+rpk cluster quotas import --from '{"quotas":[{"entity":[{"name":"analytics-consumer","type":"client-id"}],"values":[{"key":"consumer_byte_rate","values":"10000000"}]},{"entity":[{"name":"analytics-","type":"client-id-prefix"}],"values":[{"key":"producer_byte_rate","values":"10000000"},{"key":"consumer_byte_rate","values":"5000000"}]}]}'
 ----
 
 You can also save the JSON or YAML output to a file and pass the file path in the `--from` flag.
-
-[[migrate]]
-=== Migrate cluster configuration quotas to Kafka API-based quotas
-
-. Use xref:reference:rpk/rpk-cluster/rpk-cluster-config-get.adoc[`rpk cluster config get`] to view current client quotas managed with cluster configuration. The following example shows how to retrieve the `kafka_client_group_byte_rate_quota` for two groups of producers:
-+
-[,bash]
-----
-rpk cluster config get kafka_client_group_byte_rate_quota
-
-----
-+
-[,bash,role=no-copy]
-----
-"kafka_client_group_byte_rate_quota": [ 
-  { 
-    "group_name": "group_1", 
-    "clients_prefix": "producer_group_alone_producer", 
-    "quota": 10240 
-  }, 
-  { "group_name": "group_2", 
-    "clients_prefix": "producer_group_multiple", 
-    "quota": 20480 
-  } 
-]
-----
-ifndef::env-cloud[]
-. Each client quota cluster property (xref:upgrade:deprecated/index.adoc[deprecated in v24.2]) corresponds to a quota type in Kafka. Check the corresponding `rpk` arguments to use when setting the new quota values:
-+
-|===
-| Cluster configuration property | `rpk cluster quotas` arguments
-
-| `target_quota_byte_rate`                      
-| `--default client-id --add producer_byte_rate=<producer-byte-rate-value>`
-
-| `target_fetch_quota_byte_rate`                
-| `--default client-id --add consumer_byte_rate=<consumer-byte-rate-value>`
-
-| `kafka_admin_topic_api_rate`                  
-| `--default client-id --add controller_mutation_rate=<controller-mutation-rate-value>`
-
-| `kafka_client_group_byte_rate_quota`          
-| `--name client-id-prefix=<prefix> --add producer_byte_rate=<group-producer-byte-rate-value>`
-
-| `kafka_client_group_fetch_byte_rate_quota`    
-| `--name client-id-prefix=<prefix> --add consumer_byte_rate=<group-consumer-byte-rate-value>`
-
-|===
-+
-The client throughput quotas set through the Kafka API apply per broker, so you must convert the cluster configuration values that were applied on a per-shard (logical CPU core) basis. For example, if you set `target_fetch_quota_byte_rate` to 100 MBps/shard, and you run Redpanda on 16-core brokers, you can set the new consumer_byte_rate quota to 100 * 16 = 1600 MBps.
-endif::[]
-
-. Use `rpk cluster quotas alter` to set the corresponding client throughput quotas based on the Kafka API:
-+
-[,bash]
-----
-rpk cluster quotas alter --name client-id-prefix=producer_group_alone_producer --add producer_byte_rate=<group-1-producer-byte-rate-value> 
-rpk cluster quotas alter --name client-id-prefix=producer_group_multiple --add producer_byte_rate=<group-2-producer-byte-rate-value> 
-----
-+
-Replace the placeholder values with the new quota values, accounting for the conversion to per-broker limits. For example, 10240 * broker core count = new quota.
-
-. Use xref:reference:rpk/rpk-cluster/rpk-cluster-config-set.adoc[`rpk cluster config set`] to remove the configuration-based quotas:
-+
-[,bash]
-----
-rpk cluster config set kafka_client_group_byte_rate_quota=
-----
 
 === View throughput limits in {ui}
 
@@ -674,6 +710,11 @@ ifndef::env-cloud[]
 ** `/metrics` - xref:reference:internal-metrics-reference.adoc#vectorized_kafka_quotas_client_quota_throttle_time[`vectorized_kafka_quotas_client_quota_throttle_time`]
 endif::[]
 
+To identify which clients are actively connected and generating traffic, see <<view-connected-client-details>>.
+
+Quota metrics use the `redpanda_quota_rule` label to identify which quota was applied to a request. The label distinguishes between different entity types (user, client, or combinations). See the label values in xref:reference:public-metrics-reference.adoc#redpanda_kafka_quotas_client_quota_throughput[`redpanda_kafka_quotas_client_quota_throughput`].
+
+ifndef::env-cloud[]
 The `kafka_quotas` logger provides details at the trace level on client quota throttling:
 
 [,bash]
@@ -684,9 +725,12 @@ TRACE 2024-06-14 15:37:44,835 [shard  2:main] kafka_quotas - quota_manager.cc:36
 TRACE 2024-06-14 15:37:59,195 [shard  2:main] kafka_quotas - quota_manager.cc:361 - request: ctx:{quota_type: produce_quota, client_id: {rpk}}, key:k_client_id{rpk}, value:{limit: {1111}, rule: kafka_client_default}, bytes: 1316, delay:184518451ns, capped_delay:184518451ns
 TRACE 2024-06-14 15:37:59,195 [shard  2:main] kafka_quotas - connection_context.cc:605 - [127.0.0.1:58636] throttle request:{snc:0, client:184}, enforce:{snc:-14359, client:-14359}, key:0, request_size:1316
 ----
+endif::[]
 
 == See also
 
-- xref:manage:cluster-maintenance/configure-client-connections.adoc[Configure Client Connections]
+- xref:manage:cluster-maintenance/about-throughput-quotas.adoc[]
+- xref:manage:cluster-maintenance/configure-client-connections.adoc[]
+- xref:{authentication-doc}[]
 
 // end::single-source[]
