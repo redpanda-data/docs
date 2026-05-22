@@ -45,7 +45,7 @@ When you enable the Iceberg integration for a Redpanda topic, Redpanda brokers s
 To enable Iceberg for Redpanda topics, you must have the following:
 
 ifdef::env-cloud[]
-* A running xref:get-started:cluster-types/byoc/index.adoc[BYOC] cluster on Redpanda version 25.1 or later. The Iceberg integration is supported only for BYOC, and the cluster properties to configure Iceberg are available with v25.1.
+* A running xref:get-started:cluster-types/byoc/index.adoc[BYOC] or BYOVPC cluster on Redpanda version 25.1 or later. The Iceberg integration is supported only for BYOC and BYOVPC, and the cluster properties to configure Iceberg are available with v25.1.
 * rpk: See xref:get-started:rpk-install.adoc[].
 * Familiarity with the Redpanda Cloud API. You must link:/api/doc/cloud-controlplane/authentication[authenticate] to the Cloud API and use the Control Plane API to update your cluster configuration.
 endif::[]
@@ -77,7 +77,9 @@ ifdef::env-cloud[]
 To create an Iceberg table for a Redpanda topic, you must set the cluster configuration property config_ref:iceberg_enabled,true,properties/cluster-properties[`iceberg_enabled`] to `true`, and also configure the topic property `redpanda.iceberg.mode`. You can choose to provide a schema if you need the Iceberg table to be structured with defined columns.
 endif::[]
 
-. Set the `iceberg_enabled` configuration option on your cluster to `true`. 
+. Set the `iceberg_enabled` configuration option on your cluster to `true`.
++
+When multiple clusters write to the same catalog, each cluster must use a distinct namespace to avoid table name collisions. This is especially critical for REST catalog providers that offer a single global catalog per account (such as AWS Glue), where there is no other isolation mechanism. By default, Redpanda creates Iceberg tables in a namespace called `redpanda`. To use a unique namespace for your cluster's REST catalog integration, also set config_ref:iceberg_default_catalog_namespace,true,properties/cluster-properties[`iceberg_default_catalog_namespace`] when you set `iceberg_enabled`. You cannot change this property after you enable Iceberg topics on the cluster.
 ifdef::env-cloud[]
 +
 [tabs]
@@ -88,8 +90,10 @@ rpk::
 [,bash]
 ----
 rpk cloud login
-rpk profile create  --from-cloud <CLUSTER ID>
+rpk profile create  --from-cloud <cluster-id>
 rpk cluster config set iceberg_enabled true
+# Optional: set a custom namespace (default is "redpanda")
+# rpk cluster config set iceberg_default_catalog_namespace '["<custom-namespace>"]'
 ----
 --
 
@@ -109,6 +113,8 @@ export RP_CLOUD_TOKEN=`curl -X POST "https://auth.prd.cloud.redpanda.com/oauth/t
     -d "client_secret=<client-secret>"`
 
 # Update cluster configuration to enable Iceberg topics
+# Optional: to set a custom namespace (default is "redpanda"),
+# add "iceberg_default_catalog_namespace":["<custom-namespace>"] to custom_properties
 curl -H "Authorization: Bearer ${RP_CLOUD_TOKEN}" -X PATCH \
   "https://api.cloud.redpanda.com/v1/clusters/${RP_CLUSTER_ID}" \
  -H 'accept: application/json'\
@@ -124,7 +130,9 @@ ifndef::env-cloud[]
 +
 [,bash]
 ----
-rpk cluster config set iceberg_enabled true 
+rpk cluster config set iceberg_enabled true
+# Optional: set a custom namespace (default is "redpanda")
+# rpk cluster config set iceberg_default_catalog_namespace '["<custom-namespace>"]'
 ----
 +
 [,bash,role=no-copy]
@@ -185,26 +193,9 @@ ifdef::env-cloud[]
 
 === Access Iceberg data
 
-To query the Iceberg table, you need access to the object storage bucket or container where the Iceberg data is stored. For BYOC clusters, the bucket name and table location are as follows:
+To query the Iceberg table, you need access to the object storage bucket or container where the Iceberg data is stored.
 
-|===
-| Cloud provider | Bucket or container name | Iceberg table location
-
-| AWS
-| `redpanda-cloud-storage-<cluster-id>`
-.3+a| `redpanda-iceberg-catalog/redpanda/<topic-name>`
-
-| Azure
-a| `<cluster-id>`
-
-The Redpanda cluster ID is also used as the container name (ID) and the storage account ID.
-
-
-| GCP
-| `redpanda-cloud-storage-<cluster-id>`
-
-
-|===
+include::manage:partial$iceberg-access-table.adoc[]
 
 For Azure clusters, you must add the public IP addresses or ranges from the REST catalog service, or other clients requiring access to the Iceberg data, to your cluster's allow list. Alternatively, add subnet IDs to the allow list if the requests originate from the same Azure region.
 
@@ -325,136 +316,11 @@ Querying the Iceberg table for `demo-topic` includes the new column `ts`:
 +---------+--------------+--------------------------+
 ----
 
-== Troubleshoot errors
-
-If Redpanda encounters an error while writing a record to the Iceberg table, Redpanda by default writes the record to a separate dead-letter queue (DLQ) Iceberg table named `<topic-name>~dlq`. The following can cause errors to occur when translating records in the `value_schema_id_prefix` and `value_schema_latest` modes to the Iceberg table format:
-
-- Redpanda cannot find the embedded schema ID in the Schema Registry.
-- Redpanda fails to translate one or more schema data types to an Iceberg type.
-- In `value_schema_id_prefix` mode, you do not use the Schema Registry wire format with the magic byte.
-
-The DLQ table itself uses the `key_value` schema, consisting of two columns: the record metadata including the key, and a binary column for the record's value.
-
-NOTE: Topic property misconfiguration, such as xref:manage:iceberg/specify-iceberg-schema.adoc#override-value-schema-latest-default[overriding the default behavior of `value_schema_latest` mode] but not specifying the fully qualified Protobuf message name, does not cause records to be written to the DLQ table. Instead, Redpanda pauses the topic data translation to the Iceberg table until you fix the misconfiguration.
-
-=== Inspect DLQ table
-
-You can inspect the DLQ table for records that failed to write to the Iceberg table, and you can take further action on these records, such as transforming and reprocessing them, or debugging issues that occurred upstream.
-
-The following example produces a record to a topic named `ClickEvent` and does not use the Schema Registry wire format that includes the magic byte and schema ID:
-
-[,bash,role=no-copy]
-----
-echo '"key1" {"user_id":2324,"event_type":"BUTTON_CLICK","ts":"2024-11-25T20:23:59.380Z"}' | rpk topic produce ClickEvent --format='%k %v\n'
-----
-
-Querying the DLQ table returns the record that was not translated:
-
-[,sql]
-----
-SELECT 
-    value
-FROM <catalog-name>."ClickEvent~dlq"; -- Fully qualified table name
-----
-
-[,bash,role=no-copy]
-----
-+-------------------------------------------------+
-| value                                           |
-+-------------------------------------------------+
-| 7b 22 75 73 65 72 5f 69 64 22 3a 32 33 32 34 2c |
-| 22 65 76 65 6e 74 5f 74 79 70 65 22 3a 22 42 55 |
-| 54 54 4f 4e 5f 43 4c 49 43 4b 22 2c 22 74 73 22 |
-| 3a 22 32 30 32 34 2d 31 31 2d 32 35 54 32 30 3a |
-| 32 33 3a 35 39 2e 33 38 30 5a 22 7d             |
-+-------------------------------------------------+
-----
-
-The data is in binary format, and the first byte is not `0x00`, indicating that it was not produced with a schema.
-
-=== Reprocess DLQ records
-
-You can apply a transformation and reprocess the record in your data lakehouse to the original Iceberg table. In this case, you have a JSON value represented as a UTF-8 binary. Depending on your query engine, you might need to decode the binary value first before extracting the JSON fields. Some engines may automatically decode the binary value for you:
-
-.ClickHouse SQL example to reprocess DLQ record
-[,sql]
-----
-SELECT
-    CAST(jsonExtractString(json, 'user_id') AS Int32) AS user_id,
-    jsonExtractString(json, 'event_type') AS event_type,
-    jsonExtractString(json, 'ts') AS ts
-FROM (
-    SELECT
-        CAST(value AS String) AS json
-    FROM <catalog-name>.`ClickEvent~dlq` -- Ensure that the table name is properly parsed
-);
-----
-
-[,bash,role=no-copy]
-----
-+---------+--------------+--------------------------+
-| user_id | event_type   | ts                       |
-+---------+--------------+--------------------------+
-|    2324 | BUTTON_CLICK | 2024-11-25T20:23:59.380Z |
-+---------+--------------+--------------------------+
-----
-
-You can now insert the transformed record back into the main Iceberg table. Redpanda recommends employing a strategy for exactly-once processing to avoid duplicates when reprocessing records.
-
-=== Drop invalid records
-
-ifndef::env-cloud[]
-To disable the default behavior and drop an invalid record, set the xref:reference:properties/topic-properties.adoc#redpanda-iceberg-invalid-record-action[`redpanda.iceberg.invalid.record.action`] topic property to `drop`. You can also configure the default cluster-wide behavior for invalid records by setting the `iceberg_invalid_record_action` property.
-endif::[]
-ifdef::env-cloud[]
-To disable the default behavior and drop an invalid record, set the `redpanda.iceberg.invalid.record.action` topic property to `drop`. You can also configure the default cluster-wide behavior for invalid records by setting the `iceberg_invalid_record_action` property.
-endif::[]
-
-== Performance considerations
-
-When you enable Iceberg for any substantial workload and start translating topic data to the Iceberg format, you may see most of your cluster's CPU utilization increase. If this additional workload overwhelms the brokers and causes the Iceberg table lag to exceed the configured target lag, Redpanda automatically applies backpressure to producers to prevent Iceberg tables from lagging further. This ensures that Iceberg tables keep up with the volume of incoming data, but sacrifices ingress throughput of the cluster.
-
-You may need to increase the size of your Redpanda cluster to accommodate the additional workload. To ensure that your cluster is sized appropriately, contact the Redpanda Customer Success team.
-
-=== Use custom partitioning
-
-ifndef::env-cloud[]
-To improve query performance, consider implementing custom https://iceberg.apache.org/docs/nightly/partitioning/[partitioning^] for the Iceberg topic. Use the xref:reference:properties/topic-properties.adoc#redpanda-iceberg-partition-spec[`redpanda.iceberg.partition.spec`] topic property to define the partitioning scheme:
-endif::[]
-ifdef::env-cloud[]
-To improve query performance, consider implementing custom https://iceberg.apache.org/docs/nightly/partitioning/[partitioning^] for the Iceberg topic. Use the `redpanda.iceberg.partition.spec` topic property to define the partitioning scheme:
-endif::[]
-
-[,bash,]
-----
-# Create new topic with five topic partitions, replication factor 3, and custom table partitioning for Iceberg
-rpk topic create <new-topic-name> -p5 -r3 -c redpanda.iceberg.mode=value_schema_id_prefix -c "redpanda.iceberg.partition.spec=(<partition-key1>, <partition-key2>, ...)"
-----
-
-Valid `<partition-key>` values include a source column name or a transformation of a column. The columns referenced can be Redpanda-defined (such as `redpanda.timestamp`) or user-defined based on a schema that you register for the topic. The Iceberg table stores records that share different partition key values in separate files based on this specification. 
-
-For example: 
-
-* To partition the table by a single key, such as a column `col1`, use: `redpanda.iceberg.partition.spec=(col1)`. 
-* To partition by multiple columns, use a comma-separated list: `redpanda.iceberg.partition.spec=(col1, col2)`. 
-* To partition by the year of a timestamp column `ts1`, and a string column `col1`, use: `redpanda.iceberg.partition.spec=(year(ts1), col1)`.
-
-To learn more about how partitioning schemes can affect query performance, and for details on the partitioning specification such as allowed transforms, see the https://iceberg.apache.org/spec/#partitioning[Apache Iceberg documentation^].
-
-[TIP]
-====
-* Partition by columns that you frequently use in queries. Columns with relatively few unique values, also known as low cardinality, are also good candidates for partitioning.
-* If you must partition based on columns with high cardinality, for example timestamps, use Iceberg's available transforms such as extracting the year, month, or day to avoid creating too many partitions. Too many partitions can be detrimental to performance because more files need to be scanned and managed.
-====
-
-=== Avoid high column count
-
-A high column count or schema field count results in more overhead when translating topics to the Iceberg table format. Small message sizes can also increase CPU utilization. To minimize the performance impact on your cluster, keep to a low column count and large message size for Iceberg topics.
-
 == Next steps
 
 * xref:manage:iceberg/use-iceberg-catalogs.adoc[]
-* xref:manage:iceberg/migrate-to-iceberg-topics.adoc[Migrate existing Iceberg integrations to Iceberg Topics]
+* xref:manage:iceberg/iceberg-performance-tuning.adoc[]
+* xref:manage:iceberg/iceberg-troubleshooting.adoc[]
 
 == Suggested reading
 
