@@ -15,6 +15,16 @@ You may want to decommission a broker in the following situations:
 
 NOTE: When a broker is decommissioned, it cannot rejoin the cluster. If a broker with the same ID tries to rejoin the cluster, it is rejected.
 
+== Decommissioning methods
+
+There are two ways to decommission brokers in Redpanda:
+
+* Manual decommissioning (described in this guide): Use `rpk` commands or Kubernetes automation to explicitly decommission a broker when you need full control over the timing and selection of brokers to remove.
+
+* Automatic decommissioning: When xref:manage:cluster-maintenance/continuous-data-balancing.adoc[Continuous Data Balancing] is enabled, you can configure the xref:manage:cluster-maintenance/continuous-data-balancing.adoc#partition_autobalancing_node_autodecommission_timeout_sec[partition_autobalancing_node_autodecommission_timeout_sec] property to automatically decommission brokers that remain unavailable for a specified duration.
+
+Both methods permanently remove the broker from the cluster. Decommissioned brokers cannot rejoin.
+
 == Prerequisites
 
 You must have the following:
@@ -568,6 +578,8 @@ When scaling in (removing brokers), remove only one broker at a time. If you red
 Operator::
 +
 --
+The Decommission controller is already running in the Redpanda Operator (enabled in the earlier `additionalCmdFlags={--additional-controllers="decommission"}` step). To trigger a decommission, change only the StatefulSet replica count on the Redpanda resource. Do not add `sideCars.brokerDecommissioner` here, as that field is not part of the Redpanda CRD and is silently dropped when the resource is applied.
+
 .`redpanda-cluster.yaml`
 [,yaml,lines=9]
 ----
@@ -579,15 +591,10 @@ spec:
   chartRef: {}
   clusterSpec:
     statefulset:
-      replicas: 6
-      sideCars:
-        brokerDecommissioner:
-          enabled: true
-          decommissionAfter: 60s
-          decommissionRequeueTimeout: 10s
-    rbac:
-      enabled: true
+      replicas: 6 <1>
 ----
++
+<1> `statefulset.replicas`: Reduce by one. The Decommission controller in the operator detects the change and decommissions the broker on the highest-ordinal Pod.
 
 ```bash
 kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
@@ -633,11 +640,20 @@ The BrokerDecommissioner detects when the number of replicas decreases and decom
 kubectl exec redpanda-0 --namespace <namespace> -- rpk cluster health
 ```
 +
-It may take some time for the BrokerDecommissioner to reconcile. You can check the progress by looking at the logs:
+It may take some time for the BrokerDecommissioner to reconcile. You can check the progress by looking at the controller's logs.
++
+For a Helm-only deployment, the controller runs in the broker Pod's `sidecars` container:
 +
 [,bash]
 ----
 kubectl logs <pod-name> --namespace <namespace> -c sidecars
+----
++
+For an Operator-managed deployment, the controller runs in the Redpanda Operator Pod:
++
+[,bash]
+----
+kubectl logs deployment/redpanda-controller --namespace <operator-namespace>
 ----
 
 You can repeat this procedure to continue to scale down.
@@ -659,6 +675,8 @@ helm_ref:logging[]
 If you have rack awareness enabled, you may want to reassign the remaining brokers to appropriate racks after the decommission process is complete. See xref:manage:kubernetes/k-rack-awareness.adoc[].
 
 include::shared:partial$suggested-reading.adoc[]
+
+- xref:manage:kubernetes/k-node-pools.adoc[Node Pools]
 
 - xref:reference:rpk/rpk-redpanda/rpk-redpanda-admin-brokers-decommission.adoc[`rpk-redpanda-admin-brokers-decommission`]
 

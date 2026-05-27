@@ -1,0 +1,49 @@
+---
+name: Check playbook branches
+on:
+  pull_request:
+    paths:
+      - local-antora-playbook.yml
+  push:
+    branches: [main]
+    paths:
+      - local-antora-playbook.yml
+
+jobs:
+  check-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for non-standard branch references
+        run: |
+          # Allowed branch patterns in local-antora-playbook.yml.
+          # Any value not matching these is likely a PR branch that
+          # must be reverted before merge.
+          ALLOWED='main|HEAD|v/\*|shared|site-search|!v-end-of-life/\*'
+
+          # Extract all branch values from the playbook
+          BRANCHES=$(grep 'branches:' local-antora-playbook.yml \
+            | sed 's/.*branches:[[:space:]]*//' \
+            | tr -d "[]'" \
+            | tr ',' '\n' \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+          FAILED=0
+          while IFS= read -r branch; do
+            [ -z "$branch" ] && continue
+            if ! echo "$branch" | grep -qE "^(${ALLOWED})$"; then
+              echo "::error::Non-standard branch reference found: '${branch}'"
+              FAILED=1
+            fi
+          done <<< "$BRANCHES"
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo ""
+            echo "local-antora-playbook.yml contains non-standard branch references."
+            echo "These are used for cross-repo Netlify previews during PR development,"
+            echo "but must be reverted to standard values (e.g., 'main') before merging."
+            exit 1
+          fi
+
+          echo "Playbook OK: all branch references are standard."
