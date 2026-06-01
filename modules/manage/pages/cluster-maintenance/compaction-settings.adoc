@@ -12,7 +12,7 @@ image::shared:compaction-example.png[Example of topic compaction]
 
 This diagram illustrates a compacted topic. Imagine a remote sensor network that uses image recognition to track appearances of red pandas in a geographic area. The sensor network employs special devices that send records to a topic when they detect one. You might enable compaction to reduce topic storage while still maintaining a record in the topic of the last time each device saw a red panda, perhaps to see if they stop frequenting a given area. The left side of the diagram shows all records sent across the topic. The right side illustrates the results of compaction; older records for certain keys are deleted from the log.
 
-NOTE: If your application requires consuming every record for a given key, consider using the `delete` xref:develop:config-topics#change-the-cleanup-policy.adoc[cleanup policy] instead.
+NOTE: If your application requires consuming every record for a given key, consider using the `delete` xref:develop:manage-topics/config-topics.adoc#change-the-cleanup-policy[cleanup policy] instead.
 
 IMPORTANT:  When using xref:manage:tiered-storage.adoc[Tiered Storage], compaction functions at the local storage level. As long as a segment remains in local storage, its records are eligible for compaction. Once a segment is uploaded to object storage and removed from local storage it is not retrieved for further compaction operations. A key may therefore appear in multiple segments between Tiered Storage and local storage.
 
@@ -154,7 +154,25 @@ If obtaining a complete snapshot of the log, including tombstone records, is imp
 
 On the other hand, if more frequent cleanup of tombstones is important for optimizing workloads and space management, consider setting a shorter tombstone retention, for example the typical default of 24 hours (86400000 ms).
 
-Compaction and tombstone removal are coordinated across replicas, preventing inconsistencies and ensuring that deleted records are properly recognized by all readers. As a result, tombstone removal on one replica may be delayed if another replica is stopped or lagging. 
+Compaction and tombstone removal are coordinated across replicas, preventing inconsistencies and ensuring that deleted records are properly recognized by all readers. As a result, tombstone removal on one replica may be delayed if another replica is stopped or lagging.
+
+== Transactional control batch removal
+
+Transactional workloads write control batches (commit and abort markers) to the log. By default, these markers are retained indefinitely. You can enable their removal during compaction by setting xref:reference:properties/cluster-properties.adoc#log_compaction_tx_batch_removal_enabled[`log_compaction_tx_batch_removal_enabled`] to `true`:
+
+[,bash]
+----
+rpk cluster config set log_compaction_tx_batch_removal_enabled=true
+----
+
+When enabled, the xref:reference:properties/topic-properties.adoc#delete-retention-ms[`delete.retention.ms`] setting is applied to transactional control batches, removing them after the retention period. This uses the same coordinated compaction mechanism as tombstone removal.
+
+[NOTE]
+====
+For topics with a `compact` only cleanup policy, you must explicitly set `delete.retention.ms` at the topic level to enable removal of transactional control batches.
+====
+
+Consider enabling this feature if you have compacted topics with heavy transactional workloads and observe disk usage from accumulated transaction markers.
 
 == Compaction policy settings
 
