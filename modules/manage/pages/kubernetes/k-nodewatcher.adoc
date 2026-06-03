@@ -49,30 +49,45 @@ Operator::
 +
 --
 
-To enable the PVCUnbinder:
+In Operator-managed deployments, the PVCUnbinder runs as a controller inside the Redpanda Operator process, not as a sidecar in each Redpanda broker Pod. Enable it by passing `--unbind-pvcs-after` to the operator binary through the operator chart's `additionalCmdFlags`.
 
-.`redpanda-cluster.yaml`
+[IMPORTANT]
+====
+The Redpanda custom resource (`cluster.redpanda.com/v1alpha2`) does not expose a `clusterSpec.statefulset.sideCars.pvcUnbinder` field. The Kubernetes API server silently drops the key when the CR is applied, so setting it there has no effect. Enable the PVCUnbinder on the operator deployment itself, as shown below.
+====
+
+[tabs]
+====
+--values::
++
+.`operator-values.yaml`
 [,yaml]
 ----
-apiVersion: cluster.redpanda.com/v1alpha2
-kind: Redpanda
-metadata:
-  name: redpanda
-spec:
-  chartRef: {}
-  clusterSpec:
-    statefulset:
-      sideCars:
-        pvcUnbinder:
-          enabled: true <1>
-          unbindAfter: 60s <2>
-    rbac:
-      enabled: true <3>
+additionalCmdFlags:
+  - --unbind-pvcs-after=60s <1>
 ----
++
+<1> `--unbind-pvcs-after`: How long a Redpanda Pod must be stuck in `Pending` with a volume node-affinity scheduling failure before the operator unbinds its PVC. A value of `0` (the default) disables the controller.
 
-<1> `statefulset.sideCars.pvcUnbinder.enabled`: Enables the PVCUnbinder sidecar.
-<2> `statefulset.sideCars.pvcUnbinder.unbindAfter`: Sets the time in seconds after which the PVCUnbinder sidecar removes the PVC after the Node resource is deleted.
-<3> `rbac.enabled`: Creates the required RBAC rules for the PVCUnbinder to monitor the Node resources and update PVCs and PVs.
+--set::
++
+[,bash]
+----
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <namespace> \
+  --create-namespace \
+  --set 'additionalCmdFlags={--unbind-pvcs-after=60s}' <1>
+----
++
+<1> `--unbind-pvcs-after`: How long a Redpanda Pod must be stuck in `Pending` with a volume node-affinity scheduling failure before the operator unbinds its PVC. A value of `0` (the default) disables the controller.
+====
+
+Optional flags you can append to `additionalCmdFlags`:
+
+* `--allow-pv-rebinding`: After unbinding the PVC, also clear the PV's `claimRef` so that the PV can be re-bound if the original node returns. Avoid when using `LocalPathProvisioner` or `hostPath` volumes.
+* `--unbinder-label-selector=<selector>`: Restrict the PVCUnbinder to Pods matching the given Kubernetes label selector.
+
+NOTE: The operator chart's default RBAC bundle already includes the permissions the PVCUnbinder needs to read Pods and PVCs and to patch PVs, so you do not need to enable any additional RBAC toggles.
 
 --
 Helm::
@@ -118,7 +133,7 @@ helm upgrade --install redpanda redpanda/redpanda \
 --
 ======
 
-== Test the PVCUnbinder sidecar
+== Test the PVCUnbinder
 
 . Test the PVCUnbinder sidecar by deleting a Node resource:
 +
@@ -129,11 +144,20 @@ kubectl delete node <node-name>
 +
 NOTE: This step is for testing purposes only.
 
-. Monitor the logs of the PVCUnbinder sidecar:
+. Monitor the PVCUnbinder logs.
++
+For a Helm-only deployment, the controller runs in the broker Pod's `sidecars` container:
 +
 [,bash]
 ----
 kubectl logs <pod-name> --namespace <namespace> -c sidecars
+----
++
+For an Operator-managed deployment, the controller runs in the Redpanda Operator Pod:
++
+[,bash]
+----
+kubectl logs deployment/redpanda-controller --namespace <operator-namespace>
 ----
 +
 You should see that the PVCUnbinder successfully deleted the PVC of the Pod that was running on the deleted Node resource.
