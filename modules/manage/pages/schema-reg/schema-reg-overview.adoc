@@ -146,22 +146,65 @@ All CRUD operations are supported for the JSON Schema (`json-schema`), and Redpa
 
 Schemas are held in subjects. Subjects have a compatibility configuration associated with them, either directly specified by a user, or inherited by the default. See `PUT /config` and `PUT/config/\{subject}` in the link:/api/doc/schema-registry/[Schema Registry API].
 
-If you have inserted a second schema into a subject where the compatibility level is anything but `NONE`, then any JSON Schema containing the following items are rejected:
+JSON Schema supports internal references (`$ref` using JSON Pointer fragments such as `#/definitions/...` or `#/$defs/...`) and bundled schemas (sub-schemas with their own `$id` defined within the same document). These work correctly with all compatibility levels.
 
-* `$ref`
-* `$defs` (`definitions` prior to draft 2019-09)
-* `dependentSchemas` / `dependentRequired` (`dependencies` prior to draft 2019-09)
-* `prefixItems`
-
-Consequently, you cannot https://json-schema.org/understanding-json-schema/structuring[structure a complex schema^] using these features.
+External references, where `$ref` points to a schema registered under a different subject, are not supported. To https://json-schema.org/understanding-json-schema/structuring[structure complex JSON schemas^], define referenced types within the same schema document using `definitions` / `$defs` or bundled `$id` schemas.
 
 ifndef::env-cloud[]
 Additionally, you cannot have xref:manage:schema-reg/schema-id-validation.adoc#about-schema-id-validation[schema ID validation] with JSON schemas if the xref:manage:schema-reg/schema-id-validation.adoc#set-subject-name-strategy-per-topic[subject name strategy] _is not_ `TopicNameStrategy`.
 endif::[]
 
+[#metadata-properties]
+== Metadata properties
+
+Schema Registry lets you store and retrieve arbitrary key-value metadata properties alongside schemas. Properties such as `owner`, `team`, or `application.version` travel with the schema through its lifecycle. You can register a new schema with associated metadata properties by sending a `POST` request to `/subjects/\{subject\}/versions` with a `metadata.properties` object in the request body:
+
+[,json]
+----
+{
+  "schema": "{\"type\":\"string\"}",
+  "metadata": {
+    "properties": {
+      "owner": "platform-team",
+      "application.version": "2.1.0"
+    }
+  }
+}
+----
+
+To set metadata using rpk, use the xref:reference:rpk/rpk-registry/rpk-registry-schema-create.adoc[`--metadata-properties`] flag (shorthand: `-p`). The flag accepts `key=value` pairs or a JSON string (for example, `{"key":"value"}`), and you can pass it multiple times to set multiple properties:
+
+[,bash]
+----
+# key=value pairs — pass the flag multiple times for multiple properties
+rpk registry schema create my-subject --schema schema.avsc \
+  --metadata-properties owner=platform-team \
+  --metadata-properties env=prod
+
+# JSON string — useful when values contain special characters
+rpk registry schema create my-subject --schema schema.avsc \
+  --metadata-properties '{"owner":"platform-team","application.version":"2.1.0"}'
+----
+
+Metadata properties are returned on `GET /subjects/\{subject\}/versions/\{version\}` and `GET /schemas/ids/\{id\}` responses. To view metadata on an existing schema, add `--print-metadata` to `rpk registry schema get`. You can also view metadata properties in {ui}.
+
+When you register a new schema version without a `metadata` field, the new version automatically inherits properties from the most recent version of that subject. To avoid inheriting the previous version's metadata, you can send `"metadata": {}` to register a schema with explicitly no metadata. Registering the same schema definition with different metadata properties creates a new schema version.
+
+[NOTE]
+====
+Redpanda supports only `metadata.properties` from the Confluent Data Contracts specification. The following configuration objects are not supported:
+
+* `metadata.tags`
+* `ruleSet`
+* `defaultMetadata` and `overrideMetadata` (configuration options)
+* `defaultRuleSet` and `overrideRuleSet` (configuration options)
+* `compatibilityGroup` (configuration option)
+====
+
 == Next steps
 
 * xref:manage:schema-reg/schema-reg-api.adoc[]
+* xref:manage:schema-reg/schema-reg-contexts.adoc[]
 
 == Suggested reading
 ifndef::env-cloud[]
