@@ -1,0 +1,74 @@
+= Configure Producers for Cloud Topics
+:page-categories: Clients, Development
+:description: Learn about producer configuration considerations for Cloud Topics.
+:page-topic-type: best-practices, how-to
+:personas: streaming_developer, platform_admin
+:learning-objective-1: Apply producer configuration settings to maximize throughput for Cloud Topics
+// tag::single-source[]
+
+This page describes how to tune the client producer for Cloud Topics (note that general producer configuration guidance still applies). See xref:develop:produce-data/configure-producers.adoc[].
+
+With idempotency enabled, Kafka's protocol allows only five in-flight requests at a time on a single broker connection. This imposes a tight limit on how much data can be in flight at a single time. Over high-latency links, this is already a problem for standard topics.
+
+Cloud Topics use a 250ms batching interval at the broker to reduce cloud storage costs, which effectively makes every producer connection a high-latency link. Compared to standard topics, this changes producer tuning priorities. Configuring batch size, linger time, and request size correctly is critical for achieving good single-producer throughput. This section covers the key settings and example values for the most common client libraries.
+Calculate the maximum throughput for a single producer as follows:
+
+[,text]
+----
+broker_count * max_in_flight * request_size / latency_seconds
+----
+
+Throughput formula definitions:
+
+* `broker_count`: The number of brokers in the cluster.
+* `max_in_flight`: The maximum number of in-flight requests on a single connection. With an idempotent producer, this is usually five.
+* `latency_seconds`: The latency of a single produce request. Assuming normal operation, this can be equated to the 250ms as earlier. In practice, it is typically lower, as the timer starts with the first byte arriving.
+* `request_size`: The size of a single produce request. This is the primary tuning lever because the other factors are effectively constants.
+
+Another way to increase throughput in the system is to increase producer count, as doing so naturally increases available parallelism in the system as more connections are opened to the brokers.
+
+== Producer settings
+
+Most Kafka client libraries offer an assortment of tunables, with many properties impacting request size. The most important ones are described here, along with an example for the Kafka Java client, along with caveats from other libraries.
+
+=== Batches and requests
+
+A Kafka produce request consists of one or more batches. A batch contains multiple records. Records mostly correspond to application-level messages as passed to the Kafka client API. At the broker level, the unit that matters is the batch, as everything happens at the batch level.
+
+Hence, creating the largest possible batches is the most important factor for performance in general, and equally applies for Cloud Topics.
+
+A request can contain multiple batches, this can sometimes alleviate the need for massive batches. However, this requires that a producer is producing to multiple partitions and that there are enough partitions per broker to fill the request with batches. As explained in <<java-client,Java client>>, there are also exceptions to this in some client libraries, so you should not blindly rely on them.
+
+=== Java client
+
+For the Java client, Redpanda Data recommends the following as minimal settings:
+
+[cols="1,1",options="header"]
+|===
+| Setting | Recommended value
+
+| `linger.ms`
+| `10ms`
+
+| `batch.size`
+| `131072`
+
+| `max.request.size`
+| `1048576 (default)`
+|===
+
+As shown in the preceding formula, with a basic three-broker setup and enough partitions, you can achieve a maximum throughput of ~65 MB/s per producer. If more throughput is needed on a single producer, increase batch and max request size.
+
+Setting `linger.ms` to a higher value is recommended, but it's less critical for Cloud Topics because as soon as there are five requests in flight, messages are force-batched even after crossing the `linger.ms` threshold.
+
+=== librdkafka
+
+librdkafka is a commonly-used Kafka C library. However, it's also the backing library for many other Kafka clients like confluent-kafka-python.
+
+librdkafka only allows a single batch in a produce request, unlike most other Kafka client libraries. This significantly cuts down how much data is packed into a single request. Thus, it's important to increase `batch.size` to even higher values, as it is effectively the limiting factor. librdkafka has a default of 1MB, which typically allows for decent throughput.
+
+=== idempotency considerations
+
+Disabling idempotency allows you to avoid the in-flight limitation and vastly increases the number of concurrent in-flight requests and throughput. However, running without idempotency can result in duplicate and out-of-order messages, which for most applications is a problem, and is not recommended. In cases where message requirements are fairly lax, it can be a viable alternative.
+
+// end::single-source[]
