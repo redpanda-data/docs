@@ -25,15 +25,84 @@ endif::[]
 * An Open Catalog account. To https://other-docs.snowflake.com/en/opencatalog/create-open-catalog-account[create an Open Catalog account^], you require ORGADMIN access in Snowflake.
 * An internal catalog created in Open Catalog with your Tiered Storage AWS S3 bucket configured as external storage.
 +
-Follow this guide to https://other-docs.snowflake.com/en/opencatalog/create-catalog#create-a-catalog-using-amazon-simple-storage-service-amazon-s3[create a catalog^] with the S3 bucket configured as external storage. You require admin permissions to carry out these steps in AWS:
+Follow the https://other-docs.snowflake.com/en/opencatalog/create-catalog#create-a-catalog-using-amazon-simple-storage-service-amazon-s3[Open Catalog documentation^] to create a catalog with the S3 bucket configured as external storage. For the required IAM permissions, see <<authorize-access-to-open-catalog>>.
 +
-. If you don't already have one, create an IAM policy that gives Open Catalog read and write access to your S3 bucket.
-. Create an IAM role and attach the IAM policy to the role.
-. After creating a new catalog in Open Catalog, grant the catalog's AWS IAM user access to the S3 bucket.
+* A Snowflake https://docs.snowflake.com/en/user-guide/tables-iceberg-configure-external-volume[external volume^] set up using the Tiered Storage bucket.
 +
-* A Snowflake https://docs.snowflake.com/en/user-guide/tables-iceberg-configure-external-volume[external volume^] set up using the Tiered Storage bucket. 
-+
-Follow this guide to https://docs.snowflake.com/en/user-guide/tables-iceberg-configure-external-volume-s3[configure the external volume with S3^]. You can use the same IAM policy as the catalog for the external volume's IAM role and user. 
+Follow the https://docs.snowflake.com/en/user-guide/tables-iceberg-configure-external-volume-s3[Snowflake documentation^] to configure the external volume with S3. You can use the same IAM policy and role as the catalog.
+
+[[authorize-access-to-open-catalog]]
+== Authorize access to Open Catalog
+
+You must create an AWS IAM policy and role that grants Open Catalog read and write access to the S3 bucket where your Iceberg data is stored. Redpanda writes Iceberg data and metadata files to the bucket using your cluster's existing object storage credentials, so no additional IAM configuration is needed for Redpanda's own S3 access.
+
+NOTE: Unlike the AWS Glue catalog integration, this IAM setup is not automatically provisioned for BYOC clusters. Both Cloud (BYOC) and self-managed users must create these resources manually.
+
+=== Create an IAM policy
+
+Create an IAM policy with the following S3 permissions, scoped to your cluster's storage bucket:
+
+[,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion"
+      ],
+      "Resource": "arn:aws:s3:::<bucket-name>/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::<bucket-name>"
+    }
+  ]
+}
+----
+
+Replace `<bucket-name>` with the name of your cluster's object storage bucket. You can use the same IAM policy for both the catalog and the Snowflake https://docs.snowflake.com/en/user-guide/tables-iceberg-configure-external-volume-s3[external volume^].
+
+=== Create an IAM role and configure the trust policy
+
+Create an IAM role and attach the IAM policy you created. To configure the trust relationship, you need the IAM user ARN and external ID provided by Open Catalog:
+
+. In Open Catalog, navigate to your catalog.
+. Under *Configuration*, find the *IAM user ARN* and *External ID*.
+
+Use these values in the trust policy for the IAM role:
+
+[,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "<open-catalog-iam-user-arn>"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "sts:ExternalId": "<open-catalog-external-id>"
+        }
+      }
+    }
+  ]
+}
+----
+
+After creating the IAM role, provide the role ARN to Open Catalog to complete the catalog configuration.
 
 == Set up catalog integration using Open Catalog
 
@@ -270,5 +339,13 @@ Your query results should look like the following:
 +--------------------------------------------------------------------------------------------------------------+------------+
 
 ----
+
+=== Manage access for query engine users
+
+Redpanda manages the permissions between Redpanda and Open Catalog. To grant your Snowflake users or other query engines read access to the Iceberg tables, use https://other-docs.snowflake.com/en/opencatalog/access-control[Open Catalog access control^] to assign catalog privileges. For example, you can grant `TABLE_READ_DATA` to a read-only role rather than the `CATALOG_MANAGE_CONTENT` privilege used by the Redpanda service principal.
+
+include::shared:partial$suggested-reading.adoc[]
+
+- xref:manage:iceberg/query-iceberg-topics.adoc[]
 
 // end::single-source[]
