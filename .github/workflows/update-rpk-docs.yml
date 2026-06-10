@@ -1,0 +1,225 @@
+name: Update rpk Documentation
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'rpk version tag (e.g., v26.2.0) or "dev" for latest dev branch'
+        required: true
+        default: 'dev'
+      diff_version:
+        description: 'Previous version for diff (optional, e.g., v26.1.9)'
+        required: false
+      draft_missing:
+        description: 'Generate draft pages for new commands'
+        required: false
+        default: 'false'
+        type: boolean
+  repository_dispatch:
+    types: [update-rpk-docs]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-rpk-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout docs repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Determine version parameters
+        id: params
+        run: |
+          # Handle workflow_dispatch vs repository_dispatch
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            VERSION="${{ github.event.client_payload.version || 'dev' }}"
+            DIFF_VERSION="${{ github.event.client_payload.diff_version || '' }}"
+            DRAFT_MISSING="${{ github.event.client_payload.draft_missing || 'false' }}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+            DIFF_VERSION="${{ github.event.inputs.diff_version }}"
+            DRAFT_MISSING="${{ github.event.inputs.draft_missing }}"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "diff_version=$DIFF_VERSION" >> $GITHUB_OUTPUT
+          echo "draft_missing=$DRAFT_MISSING" >> $GITHUB_OUTPUT
+
+          # Determine branch name
+          if [ "$VERSION" = "dev" ]; then
+            echo "branch_name=rpk-docs-dev-$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+          else
+            echo "branch_name=rpk-docs-$VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build rpk-docs command
+        id: command
+        run: |
+          # Build command - builds rpk from source using Go
+          CMD="npx doc-tools generate rpk-docs"
+
+          VERSION="${{ steps.params.outputs.version }}"
+          CMD="$CMD --ref $VERSION"
+
+          DIFF_VERSION="${{ steps.params.outputs.diff_version }}"
+          if [ -n "$DIFF_VERSION" ]; then
+            CMD="$CMD --diff $DIFF_VERSION"
+          fi
+
+          DRAFT_MISSING="${{ steps.params.outputs.draft_missing }}"
+          if [ "$DRAFT_MISSING" = "true" ]; then
+            CMD="$CMD --draft-missing"
+          fi
+
+          CMD="$CMD --output-dir modules/reference/pages/rpk"
+          echo "cmd=$CMD" >> $GITHUB_OUTPUT
+
+      - name: Run rpk-docs generator
+        id: generate
+        run: |
+          echo "Running: ${{ steps.command.outputs.cmd }}"
+          ${{ steps.command.outputs.cmd }} 2>&1 | tee generation-output.txt
+
+          # Extract summary for PR description
+          if [ -f "docs-data/rpk-diff-*.json" ]; then
+            DIFF_FILE=$(ls -t docs-data/rpk-diff-*.json 2>/dev/null | head -1)
+            if [ -n "$DIFF_FILE" ]; then
+              echo "diff_file=$DIFF_FILE" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Check for changes
+        id: changes
+        run: |
+          git add -A
+          if git diff --staged --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Changed files:"
+            git diff --staged --name-only | head -20
+          fi
+
+      - name: Generate PR description
+        if: steps.changes.outputs.has_changes == 'true'
+        id: pr_body
+        run: |
+          VERSION="${{ steps.params.outputs.version }}"
+          DIFF_VERSION="${{ steps.params.outputs.diff_version }}"
+
+          # Start building PR body
+          cat > pr-body.md << 'HEADER'
+          ## Summary
+
+          Automated update of rpk CLI documentation.
+
+          HEADER
+
+          # Add version info
+          if [ "$VERSION" = "dev" ]; then
+            echo "**Source**: \`dev\` branch (pre-release)" >> pr-body.md
+          else
+            echo "**Version**: \`$VERSION\`" >> pr-body.md
+          fi
+
+          if [ -n "$DIFF_VERSION" ]; then
+            echo "**Diff against**: \`$DIFF_VERSION\`" >> pr-body.md
+          fi
+
+          echo "" >> pr-body.md
+
+          # Add diff summary if available
+          DIFF_FILE="${{ steps.generate.outputs.diff_file }}"
+          if [ -n "$DIFF_FILE" ] && [ -f "$DIFF_FILE" ]; then
+            echo "## Changes detected" >> pr-body.md
+            echo "" >> pr-body.md
+
+            # Extract counts from diff JSON
+            NEW_CMDS=$(jq -r '.summary.newCommands // 0' "$DIFF_FILE")
+            REMOVED_CMDS=$(jq -r '.summary.removedCommands // 0' "$DIFF_FILE")
+            NEW_FLAGS=$(jq -r '.summary.newFlags // 0' "$DIFF_FILE")
+            REMOVED_FLAGS=$(jq -r '.summary.removedFlags // 0' "$DIFF_FILE")
+            CHANGED_DEFAULTS=$(jq -r '.summary.changedDefaults // 0' "$DIFF_FILE")
+
+            if [ "$NEW_CMDS" -gt 0 ]; then
+              echo "- **New commands**: $NEW_CMDS" >> pr-body.md
+              echo "" >> pr-body.md
+              jq -r '.details.newCommands[]? | "  - \`\(.path)\`"' "$DIFF_FILE" >> pr-body.md 2>/dev/null || true
+              echo "" >> pr-body.md
+            fi
+
+            if [ "$REMOVED_CMDS" -gt 0 ]; then
+              echo "- **Removed commands**: $REMOVED_CMDS" >> pr-body.md
+              echo "" >> pr-body.md
+              jq -r '.details.removedCommands[]? | "  - \`\(.path)\`"' "$DIFF_FILE" >> pr-body.md 2>/dev/null || true
+              echo "" >> pr-body.md
+            fi
+
+            if [ "$NEW_FLAGS" -gt 0 ]; then
+              echo "- **New flags**: $NEW_FLAGS" >> pr-body.md
+            fi
+
+            if [ "$REMOVED_FLAGS" -gt 0 ]; then
+              echo "- **Removed flags**: $REMOVED_FLAGS" >> pr-body.md
+            fi
+
+            if [ "$CHANGED_DEFAULTS" -gt 0 ]; then
+              echo "- **Changed defaults**: $CHANGED_DEFAULTS" >> pr-body.md
+            fi
+
+            echo "" >> pr-body.md
+          fi
+
+          # Add file change summary
+          echo "## Files changed" >> pr-body.md
+          echo "" >> pr-body.md
+          echo "\`\`\`" >> pr-body.md
+          git diff --staged --stat | tail -20 >> pr-body.md
+          echo "\`\`\`" >> pr-body.md
+          echo "" >> pr-body.md
+
+          # Add footer
+          cat >> pr-body.md << 'FOOTER'
+          ## Automation
+
+          Generated by [rpk-docs automation](https://github.com/redpanda-data/docs-extensions-and-macros/tree/main/tools/rpk-docs).
+
+          Review the changes and merge when ready.
+          FOOTER
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ steps.params.outputs.branch_name }}
+          title: "docs: update rpk CLI documentation (${{ steps.params.outputs.version }})"
+          body-path: pr-body.md
+          commit-message: "docs: update rpk CLI documentation for ${{ steps.params.outputs.version }}"
+          delete-branch: true
+          labels: |
+            documentation
+            automated
+
+      - name: No changes detected
+        if: steps.changes.outputs.has_changes == 'false'
+        run: |
+          echo "No documentation changes detected for version ${{ steps.params.outputs.version }}"
