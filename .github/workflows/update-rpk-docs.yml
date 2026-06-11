@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'rpk version tag (e.g., v26.2.0) or "dev" for latest dev branch'
+        description: 'rpk version tag (e.g., v26.2.0, v26.2.0-rc1) or "dev" for latest dev branch. RC versions target beta branch.'
         required: true
         default: 'dev'
       diff_version:
@@ -65,11 +65,50 @@ jobs:
           echo "diff_version=$DIFF_VERSION" >> $GITHUB_OUTPUT
           echo "draft_missing=$DRAFT_MISSING" >> $GITHUB_OUTPUT
 
+          # Detect RC versions (e.g., v26.2.0-rc1, 26.2.0-rc2)
+          if [[ "$VERSION" =~ -rc[0-9]+$ ]]; then
+            echo "is_rc=true" >> $GITHUB_OUTPUT
+            echo "base_branch=beta" >> $GITHUB_OUTPUT
+          else
+            echo "is_rc=false" >> $GITHUB_OUTPUT
+            echo "base_branch=main" >> $GITHUB_OUTPUT
+          fi
+
           # Determine branch name
           if [ "$VERSION" = "dev" ]; then
             echo "branch_name=rpk-docs-dev-$(date +%Y%m%d)" >> $GITHUB_OUTPUT
           else
             echo "branch_name=rpk-docs-$VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate RC version against beta branch
+        if: steps.params.outputs.is_rc == 'true'
+        run: |
+          VERSION="${{ steps.params.outputs.version }}"
+
+          # Extract major.minor from version (e.g., v26.2.0-rc1 -> 26.2)
+          VERSION_MAJOR_MINOR=$(echo "$VERSION" | sed -E 's/^v?([0-9]+\.[0-9]+).*/\1/')
+
+          # Get version from beta branch antora.yml
+          BETA_VERSION=$(git show origin/beta:antora.yml | grep "^version:" | sed -E "s/^version:[[:space:]]*['\"]?([0-9]+\.[0-9]+)['\"]?.*/\1/")
+
+          echo "RC version major.minor: $VERSION_MAJOR_MINOR"
+          echo "Beta branch version: $BETA_VERSION"
+
+          if [ "$VERSION_MAJOR_MINOR" != "$BETA_VERSION" ]; then
+            echo "::error::RC version $VERSION does not match beta branch version $BETA_VERSION"
+            echo "RC releases must target the current beta version."
+            exit 1
+          fi
+
+          echo "✓ RC version $VERSION matches beta branch version $BETA_VERSION"
+
+      - name: Checkout target branch
+        run: |
+          BASE_BRANCH="${{ steps.params.outputs.base_branch }}"
+          if [ "$BASE_BRANCH" != "main" ]; then
+            echo "Checking out $BASE_BRANCH branch for RC release"
+            git checkout "$BASE_BRANCH"
           fi
 
       - name: Build rpk-docs command
@@ -216,6 +255,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ steps.params.outputs.branch_name }}
+          base: ${{ steps.params.outputs.base_branch }}
           title: "docs: update rpk CLI documentation (${{ steps.params.outputs.version }})"
           body-path: pr-body.md
           commit-message: "docs: update rpk CLI documentation for ${{ steps.params.outputs.version }}"
