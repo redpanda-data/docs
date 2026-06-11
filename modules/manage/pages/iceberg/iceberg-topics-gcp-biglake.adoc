@@ -1,6 +1,7 @@
-= Use Iceberg Topics with GCP BigLake
-:description: Add Redpanda topics as Iceberg tables to your Google BigLake data lakehouse that you can query from Google BigQuery.
+= Use Iceberg Topics with GCP Lakehouse
+:description: Add Redpanda topics as Iceberg tables to Google Lakehouse for Apache Iceberg that you can query from Google BigQuery.
 :page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
+
 
 [NOTE]
 ====
@@ -8,8 +9,17 @@ include::shared:partial$enterprise-license.adoc[]
 ====
 
 // tag::single-source[]
+:page-topic-type: how-to
+:personas: developer, sre
+:learning-objective-1: Create a catalog in GCP Lakehouse for Iceberg topic data.
+:learning-objective-2: Configure a Redpanda cluster to use GCP Lakehouse as an Iceberg REST catalog.
+:learning-objective-3: Query Iceberg topic data from Google BigQuery.
+
+ifdef::env-cloud[]
+:rpk_install_doc: manage:rpk/rpk-install.adoc
+endif::[]
+
 ifndef::env-cloud[]
-:rp_version: 25.3
 :rpk_install_doc: get-started:rpk-install.adoc
 endif::[]
 
@@ -20,59 +30,82 @@ This guide is for integrating Iceberg topics with a managed REST catalog. Integr
 ifndef::env-cloud[The blog post uses a Redpanda Cloud cluster, but you follow the same steps for a Self-Managed cluster.]
 ====
 
-This guide walks you through querying Redpanda topics as Iceberg tables stored in Google Cloud Storage, using a REST catalog integration with https://cloud.google.com/biglake/docs/introduction[Google BigLake^]. In this guide, you do the following:
+This guide walks you through querying Redpanda topics as Iceberg tables stored in Google Cloud Storage, using a REST catalog integration with https://docs.cloud.google.com/lakehouse/docs/introduction[Google Lakehouse for Apache Iceberg^] (formerly BigLake).
 
-- Create Google Cloud resources such as a storage bucket and service account
-- Grant permissions to the service account to access Iceberg data in the bucket
-- Create a catalog in BigLake
-- Configure the BigLake integration for your Redpanda cluster
-- Query the Iceberg data in Google BigQuery
+After completing this guide, you will be able to:
 
-This guide also includes optional steps to deploy a Redpanda quickstart cluster on a GCP VM instance using Docker Compose, which you can use to quickly test the BigLake Iceberg integration.
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
+ifndef::env-cloud[]
+This guide also includes optional steps to deploy a Redpanda quickstart cluster on a GCP VM instance using Docker Compose, which you can use to quickly test the Lakehouse Iceberg integration.
+endif::[]
 
 For general information about Iceberg catalog integrations in Redpanda, see xref:manage:iceberg/use-iceberg-catalogs.adoc[].
 
-NOTE: Check the https://cloud.google.com/biglake[BigLake product page^] for the latest status and availability of the REST Catalog API.
+NOTE: Check the https://docs.cloud.google.com/lakehouse/docs[Lakehouse product page^] for the latest status and availability of the REST Catalog API.
 
 == Prerequisites
 
 * A Google Cloud Platform (GCP) project.
+ifdef::env-cloud[]
++
+** Lakehouse must be in the same GCP project as the cluster. Cross-project Lakehouse is not supported.
+endif::[]
 +
 If you do not have permissions to manage GCP resources such as VMs, storage buckets, and service accounts in your project, ask your project owner to create or update them for you.
 * The https://docs.cloud.google.com/sdk/docs/install[`gcloud` CLI^] installed and configured for your GCP project.
-* https://cloud.google.com/biglake/docs/enable-biglake-api[BigLake API^] enabled for your GCP project.
-* Redpanda v{full-version} or later. Your Redpanda cluster must be deployed on GCP VMs.
+* https://cloud.google.com/biglake/docs/enable-biglake-api[Lakehouse (BigLake) API^] enabled for your GCP project.
+* Redpanda version 25.3 or later.
+ifndef::env-cloud[]
+Your Redpanda cluster must be deployed on GCP VMs.
+endif::[]
 * `rpk` xref:{rpk_install_doc}[installed or updated] to the latest version.
+ifdef::env-cloud[]
+** You can also use the Redpanda Cloud API to xref:manage:cluster-maintenance/config-cluster.adoc#set-cluster-configuration-properties[reference secrets in your cluster configuration].
+endif::[]
 ifndef::env-cloud[]
 * xref:manage:tiered-storage.adoc#configure-object-storage[Object storage configured] for your cluster and xref:manage:tiered-storage.adoc#enable-tiered-storage[Tiered Storage enabled] for the topics for which you want to generate Iceberg tables.
 +
-You also use the GCS bucket URI to set the warehouse location for the BigLake catalog.
+You also use the GCS bucket URI to set the warehouse location for the Lakehouse catalog.
+endif::[]
+
+ifdef::env-cloud[]
+NOTE: For BYOC clusters created before June 9, 2026, you must re-run `rpk cloud byoc gcp apply --redpanda-id=<cluster-id> --project-id=<gcp-project-id>` to enable the required API services before following this guide. This is a one-time operation.
 endif::[]
 
 == Limitations
 
 === Multi-region bucket support
 
-BigLake metastore does not support multi-region buckets. Use single-region buckets to store your Iceberg topics.
+The Lakehouse runtime catalog does not support multi-region buckets. Use single-region buckets to store your Iceberg topics.
 
 === Catalog deletion
 
-Currently, it is not possible to delete non-empty BigLake Iceberg catalogs through the BigLake interface. If you need to reconfigure your setup, create a new bucket or use the REST API to remove the existing catalog.
+Currently, it is not possible to delete non-empty Lakehouse Iceberg catalogs through the Lakehouse interface. If you need to reconfigure your setup, create a new bucket or use the REST API to remove the existing catalog.
 
 === Topic names
 
-BigLake does not support Iceberg table names that contain dots (`.`). When creating Iceberg topics in Redpanda that you plan to access through BigLake, either:
+Lakehouse does not support Iceberg table names that contain dots (`.`). When creating Iceberg topics in Redpanda that you plan to access through Lakehouse, either:
 
 - Use the `iceberg_topic_name_dot_replacement` cluster property to set a replacement string for dots in topic names. Ensure that the replacement value does not cause table name collisions. For example, `current.orders` and `current_orders` would both map to the same table name if you set the replacement to an underscore (`_`).
 - Ensure that the new topic names do not include dots.
 
-You must also set the `iceberg_dlq_table_suffix` property to a value that does not include dots or tildes (`~`). See <<configure-redpanda-for-iceberg>> for the list of cluster properties to set when enabling the BigLake REST catalog integration.
+You must also set the `iceberg_dlq_table_suffix` property to a value that does not include dots or tildes (`~`). See <<configure-redpanda-for-iceberg>> for the list of cluster properties to set when enabling the Lakehouse REST catalog integration.
 
 == Set up Google Cloud resources
 
+ifdef::env-cloud[]
+For BYOC clusters, the required Lakehouse IAM permissions are automatically provisioned and attached to the cluster's service account when Iceberg is enabled with a Lakehouse endpoint. You can skip to <<create-a-lakehouse-catalog>>.
+
+For BYOVPC clusters, you must grant the required permissions to your cluster's service account and enable the `biglake.googleapis.com` and `bigquery.googleapis.com` APIs in your GCP project.
+endif::[]
+
+ifndef::env-cloud[]
 === Create a service account for Redpanda
 
-If you don't already have a Google Cloud service account to use, create a new service account that will be used by the VMs running Redpanda. Redpanda uses this account for writing data to Tiered Storage, Iceberg data and metadata, and for interacting with the BigLake catalog:
+If you don't already have a Google Cloud service account to use, create a new service account that will be used by the VMs running Redpanda. Redpanda uses this account for writing data to Tiered Storage, Iceberg data and metadata, and for interacting with the Lakehouse catalog:
 
 [,bash]
 ----
@@ -81,8 +114,9 @@ gcloud iam service-accounts create <service-account-name> --display-name "<displ
 
 Replace the placeholder values:
 
-* `<service-account-name>`: You can use a https://docs.cloud.google.com/iam/docs/service-accounts-create[name^] that contains lowercase alphanumeric characters and dashes. 
+* `<service-account-name>`: You can use a https://docs.cloud.google.com/iam/docs/service-accounts-create[name^] that contains lowercase alphanumeric characters and dashes.
 * `<display-name>`: Enter a display name for the service account.
+endif::[]
 
 === Grant required permissions
 
@@ -113,15 +147,13 @@ gcloud projects add-iam-policy-binding $(gcloud config get-value project) \
   --role="roles/biglake.editor"
 ----
 
-=== Create a BigLake catalog
+=== Create a Lakehouse catalog
 
-Create a BigLake Iceberg REST catalog using the `gcloud` CLI:
-
-NOTE: This command is currently pre-GA and may change. Check the https://docs.cloud.google.com/sdk/gcloud/reference/alpha/biglake/iceberg/catalogs/create[gcloud reference^] for the latest information.
+Create a Lakehouse Iceberg REST catalog using the https://docs.cloud.google.com/sdk/gcloud/reference/biglake/iceberg/catalogs/create[`gcloud biglake`^] command:
 
 [,bash]
 ----
-gcloud alpha biglake iceberg catalogs create <bucket-name> --catalog-type=gcs-bucket --project=<gcp-project-id>
+gcloud biglake iceberg catalogs create <bucket-name> --catalog-type=gcs-bucket --project=<gcp-project-id>
 ----
 
 Replace the placeholder values:
@@ -129,9 +161,10 @@ Replace the placeholder values:
 * `<bucket-name>`: Use the name of your storage bucket as the catalog ID.
 * `<gcp-project-id>`: Your GCP project ID.
 
+ifndef::env-cloud[]
 == Optional: Deploy Redpanda quickstart on GCP
 
-If you want to quickly test Iceberg topics in BigLake, you can deploy a test environment using the Redpanda Streaming quickstart. In this section, you create a new storage bucket for Tiered Storage and Iceberg data. You configure a Redpanda cluster for the BigLake catalog integration and deploy the cluster on a GCP Linux VM instance using Docker Compose.
+If you want to quickly test Iceberg topics in Lakehouse, you can deploy a test environment using the Redpanda Streaming quickstart. You create a new storage bucket for Tiered Storage and Iceberg data, configure a Redpanda cluster for the Lakehouse catalog integration, and deploy the cluster on a GCP Linux VM instance using Docker Compose.
 
 NOTE: If you already have a Redpanda cluster deployed on GCP, skip to <<configure-redpanda-for-iceberg>>.
 
@@ -233,7 +266,7 @@ cloud_storage_disable_tls: false
 cloud_storage_bucket: <bucket-name>
 cloud_storage_credentials_source: gcp_instance_metadata
 
-# Configure Iceberg REST catalog integration with BigLake
+# Configure Iceberg REST catalog integration with Lakehouse
 iceberg_enabled: true
 iceberg_catalog_type: rest
 iceberg_rest_catalog_endpoint: https://biglake.googleapis.com/iceberg/v1/restcatalog
@@ -271,6 +304,7 @@ curl -LO https://github.com/redpanda-data/redpanda/releases/latest/download/rpk-
 
 rpk profile create quickstart --from-profile rpk-profile.yaml
 ----
+endif::[]
 
 == Configure Redpanda for Iceberg
 
@@ -295,12 +329,40 @@ iceberg_dlq_table_suffix: _dlq
 * Replace `<bucket-name>` with your bucket name and `<gcp-project-id>` with your Google Cloud project ID.
 * You must set the `iceberg_dlq_table_suffix` property to a value that does not include dots or tildes (`~`). The example above uses `_dlq` as the suffix for the xref:manage:iceberg/iceberg-troubleshooting.adoc#dead-letter-queue[dead-letter queue (DLQ) table].
 --
+endif::[]
+ifdef::env-cloud[]
++
+Use `rpk` as shown in the following example, or xref:manage:cluster-maintenance/config-cluster.adoc#set-cluster-configuration-properties[use the Cloud API] to update these cluster properties. The update might take several minutes to complete.
++
+[,bash]
+----
+rpk cloud login
+
+rpk profile create --from-cloud <cluster-id>
+
+rpk cluster config set \
+  iceberg_enabled=true \
+  iceberg_catalog_type=rest \
+  iceberg_rest_catalog_endpoint=https://biglake.googleapis.com/iceberg/v1/restcatalog \
+  iceberg_rest_catalog_authentication_mode=gcp \
+  iceberg_rest_catalog_warehouse=gs://<bucket-name>/ \
+  iceberg_rest_catalog_gcp_user_project=<gcp-project-id> \
+  iceberg_dlq_table_suffix=_dlq
+----
++
+--
+* `<cluster-id>`: Your Redpanda cluster ID.
+* `<bucket-name>`: For BYOC clusters, the bucket name is `redpanda-cloud-storage-<cluster-id>`. For BYOVPC clusters, use the name of the object storage bucket you created as a customer-managed resource.
+* `<gcp-project-id>`: Your GCP project ID.
+* You must set the `iceberg_dlq_table_suffix` property to a value that does not include dots or tildes (`~`). The example above uses `_dlq` as the suffix for the xref:manage:iceberg/iceberg-troubleshooting.adoc#dead-letter-queue[dead-letter queue (DLQ) table].
+--
+endif::[]
 
 ifndef::env-cloud[]
 . If you change the configuration for a running cluster, you must restart that cluster now.
 endif::[]
 
-. Enable the REST catalog integration for a topic by configuring the topic property `redpanda.iceberg.mode`. The following examples show how to use xref:get-started:rpk-install.adoc[`rpk`] to either create a new topic or alter the configuration for an existing topic and set the Iceberg mode to `key_value`. The `key_value` mode creates a two-column Iceberg table for the topic, with one column for the record metadata including the key, and another binary column for the record's value. See xref:manage:iceberg/choose-iceberg-mode.adoc[] for more details on Iceberg modes.  
+. Enable the REST catalog integration for a topic by configuring the topic property `redpanda.iceberg.mode`. The following examples show how to use xref:get-started:rpk-install.adoc[`rpk`] to either create a new topic or alter the configuration for an existing topic and set the Iceberg mode to `key_value`. The `key_value` mode creates a two-column Iceberg table for the topic, with one column for the record metadata including the key, and another binary column for the record's value. See xref:manage:iceberg/specify-iceberg-schema.adoc[] for more details on Iceberg modes.
 +
 .Create a new topic and set `redpanda.iceberg.mode`:
 [,bash]
@@ -312,8 +374,9 @@ rpk topic create <topic-name> --topic-config=redpanda.iceberg.mode=key_value
 [,bash]
 ----
 rpk topic alter-config <topic-name> --set redpanda.iceberg.mode=key_value
----- 
+----
 +
+ifndef::env-cloud[]
 [NOTE]
 ====
 If you're using the Self-managed quickstart for testing, your Redpanda cluster includes a `transactions` topic with data in it, and a sample schema in the Schema Registry. To enable Iceberg for the `transactions` topic, run:
@@ -323,8 +386,9 @@ If you're using the Self-managed quickstart for testing, your Redpanda cluster i
 rpk topic alter-config transactions --set redpanda.iceberg.mode=value_schema_latest:subject=transactions
 ----
 ====
+endif::[]
 
-It may take a few moments for the Iceberg data to become available in BigLake.
+Iceberg data can take a few moments to become available in Lakehouse.
 
 == Query Iceberg topics in BigQuery
 
@@ -344,8 +408,9 @@ LIMIT 10
 +
 Replace `<bucket-name>` with your bucket name.
 
-Your Redpanda topic is now available as Iceberg tables in BigLake, allowing you to run analytics queries directly on your streaming data.
+Your Redpanda topic is now available as Iceberg tables in Lakehouse, allowing you to run analytics queries directly on your streaming data.
 
+ifndef::env-cloud[]
 == Optional: Clean up resources
 
 When you're finished with the quickstart example, you can clean up the resources you created:
@@ -362,12 +427,13 @@ gcloud storage buckets delete gs://<bucket-name>
 gcloud iam service-accounts delete <service-account-name>@$(gcloud config get-value project).iam.gserviceaccount.com
 ----
 
-NOTE: Manually delete the BigLake catalog using the https://docs.cloud.google.com/bigquery/docs/reference/biglake/rest/v1/projects.locations.catalogs/delete[REST API^].
+NOTE: Manually delete the Lakehouse catalog using the https://docs.cloud.google.com/bigquery/docs/reference/biglake/rest/v1/projects.locations.catalogs/delete[REST API^].
+endif::[]
 
 include::shared:partial$suggested-reading.adoc[]
 
 - xref:manage:iceberg/use-iceberg-catalogs.adoc[]
 - xref:manage:iceberg/query-iceberg-topics.adoc[]
-- https://cloud.google.com/biglake/docs/introduction[Google BigLake documentation^]
+- https://docs.cloud.google.com/lakehouse/docs/introduction[Google Lakehouse for Apache Iceberg documentation^]
 
 // end::single-source[]
