@@ -4,6 +4,13 @@ export default async (request, context) => {
   const url = new URL(request.url);
   const originalOrigin = url.origin;
 
+  // Frame/partial requests (for example, ?partial=true) return HTML fragments,
+  // not the full document. They must never share a CDN cache entry with the
+  // root page, or a cached fragment gets served as the root document (and vice
+  // versa). Handled by the cache-control / Netlify-Vary headers on the HTML
+  // response below.
+  const isPartialRequest = url.searchParams.has("partial");
+
   // Redirects from old API paths to new ones
   const redirects = {
     "/api/doc": "/api",
@@ -239,7 +246,11 @@ export default async (request, context) => {
     status: 200,
     headers: {
       "content-type": "text/html; charset=utf-8",
-      "cache-control": "public, max-age=300", // Cache for 5 minutes
+      // Vary the CDN cache key on the query string so frame/partial requests
+      // can never collide with the root document. Additionally, don't store
+      // partial fragments in the shared cache at all (defense in depth).
+      "cache-control": isPartialRequest ? "no-store" : "public, max-age=300", // root docs: cache 5 minutes
+      "netlify-vary": "query",
     },
   });
 
