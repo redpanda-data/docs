@@ -120,6 +120,48 @@ jobs:
             git checkout "$BASE_BRANCH"
           fi
 
+      - name: Resolve diff base version
+        id: diffbase
+        run: |
+          DIFF_VERSION="${{ steps.params.outputs.diff_version }}"
+          VERSION="${{ steps.params.outputs.version }}"
+
+          # When no diff version is supplied (the usual case for the rpk-release
+          # repository_dispatch trigger), fall back to the currently-published
+          # version recorded in antora.yml (full-version). That is the version the
+          # docs currently target, so it is the correct baseline for "what's new".
+          if [ -z "$DIFF_VERSION" ]; then
+            FULL_VERSION=$(grep -E '^\s*full-version:' antora.yml \
+              | head -1 \
+              | sed -E "s/.*full-version:[[:space:]]*['\"]?([^'\"[:space:]]+).*/\1/")
+            if [ -n "$FULL_VERSION" ]; then
+              DIFF_VERSION="v${FULL_VERSION#v}"
+              echo "Using antora.yml full-version as diff base: $DIFF_VERSION"
+            else
+              echo "Could not read full-version from antora.yml; skipping diff"
+            fi
+          else
+            echo "Using supplied diff version: $DIFF_VERSION"
+          fi
+
+          # Never diff a version against itself.
+          if [ -n "$DIFF_VERSION" ] && { [ "$DIFF_VERSION" = "$VERSION" ] || [ "$DIFF_VERSION" = "v${VERSION#v}" ]; }; then
+            echo "Diff base ($DIFF_VERSION) equals the target version; skipping diff"
+            DIFF_VERSION=""
+          fi
+
+          # The generator diffs against a committed baseline snapshot
+          # (docs-data/rpk-<version>.json); it does not rebuild the old version
+          # from source. If the snapshot is missing, skip the diff so the PR does
+          # not claim a comparison that did not run. The snapshot is written and
+          # committed on each run, so it is available from the next run onward.
+          if [ -n "$DIFF_VERSION" ] && [ ! -f "docs-data/rpk-${DIFF_VERSION}.json" ]; then
+            echo "::warning::No baseline snapshot docs-data/rpk-${DIFF_VERSION}.json found. What's new update and change summary are skipped until a baseline is committed."
+            DIFF_VERSION=""
+          fi
+
+          echo "diff_version=$DIFF_VERSION" >> $GITHUB_OUTPUT
+
       - name: Build rpk-docs command
         id: command
         run: |
@@ -129,9 +171,11 @@ jobs:
           VERSION="${{ steps.params.outputs.version }}"
           CMD="$CMD --ref $VERSION"
 
-          DIFF_VERSION="${{ steps.params.outputs.diff_version }}"
+          DIFF_VERSION="${{ steps.diffbase.outputs.diff_version }}"
           if [ -n "$DIFF_VERSION" ]; then
+            # A diff is required for the What's new update and the change summary.
             CMD="$CMD --diff $DIFF_VERSION"
+            CMD="$CMD --update-whats-new"
           fi
 
           DRAFT_MISSING="${{ steps.params.outputs.draft_missing }}"
@@ -139,25 +183,18 @@ jobs:
             CMD="$CMD --draft-missing"
           fi
 
-          # Update what's-new if doing a diff
-          if [ -n "$DIFF_VERSION" ]; then
-            CMD="$CMD --update-whats-new"
-          fi
-
           CMD="$CMD --output-dir modules/reference/pages/rpk"
+          # Write the generator's own (richer) PR summary outside the repo tree so
+          # it is not committed into the generated PR.
+          CMD="$CMD --summary-file ${{ runner.temp }}/pr-summary.md"
           echo "cmd=$CMD" >> $GITHUB_OUTPUT
 
       - name: Run rpk-docs generator
         id: generate
         run: |
           echo "Running: ${{ steps.command.outputs.cmd }}"
-          ${{ steps.command.outputs.cmd }} 2>&1 | tee generation-output.txt
-
-          # Extract summary for PR description
-          DIFF_FILE=$(ls -t docs-data/rpk-diff-*.json 2>/dev/null | head -1)
-          if [ -n "$DIFF_FILE" ]; then
-            echo "diff_file=$DIFF_FILE" >> $GITHUB_OUTPUT
-          fi
+          # Log outside the repo tree so it is not committed into the generated PR.
+          ${{ steps.command.outputs.cmd }} 2>&1 | tee "${{ runner.temp }}/generation-output.txt"
 
       - name: Check for changes
         id: changes
@@ -174,83 +211,49 @@ jobs:
       - name: Generate PR description
         if: steps.changes.outputs.has_changes == 'true'
         id: pr_body
+        env:
+          PR_BODY: ${{ runner.temp }}/pr-body.md
+          PR_SUMMARY: ${{ runner.temp }}/pr-summary.md
+          WHATS_NEW: modules/get-started/pages/release-notes/redpanda.adoc
         run: |
           VERSION="${{ steps.params.outputs.version }}"
-          DIFF_VERSION="${{ steps.params.outputs.diff_version }}"
+          DIFF_VERSION="${{ steps.diffbase.outputs.diff_version }}"
 
-          # Start building PR body
-          cat > pr-body.md << 'HEADER'
+          # Header
+          cat > "$PR_BODY" << 'HEADER'
           ## Summary
 
           Automated update of rpk CLI documentation.
 
           HEADER
 
-          # Add version info
+          # Version info
           if [ "$VERSION" = "dev" ]; then
-            echo "**Source**: \`dev\` branch (pre-release)" >> pr-body.md
+            echo "**Source**: \`dev\` branch (pre-release)" >> "$PR_BODY"
           else
-            echo "**Version**: \`$VERSION\`" >> pr-body.md
+            echo "**Version**: \`$VERSION\`" >> "$PR_BODY"
           fi
 
           if [ -n "$DIFF_VERSION" ]; then
-            echo "**Diff against**: \`$DIFF_VERSION\`" >> pr-body.md
+            echo "**Diff against**: \`$DIFF_VERSION\`" >> "$PR_BODY"
+          fi
+          echo "" >> "$PR_BODY"
+
+          # Call out the What's new update when the generator touched it.
+          if git diff --staged --name-only | grep -q "$WHATS_NEW"; then
+            echo "> :memo: Updated the What's new page (\`$WHATS_NEW\`) with the Redpanda CLI changes." >> "$PR_BODY"
+            echo "" >> "$PR_BODY"
           fi
 
-          echo "" >> pr-body.md
-
-          # Add diff summary if available
-          DIFF_FILE="${{ steps.generate.outputs.diff_file }}"
-          if [ -n "$DIFF_FILE" ] && [ -f "$DIFF_FILE" ]; then
-            echo "## Changes detected" >> pr-body.md
-            echo "" >> pr-body.md
-
-            # Extract counts from diff JSON
-            NEW_CMDS=$(jq -r '.summary.newCommands // 0' "$DIFF_FILE")
-            REMOVED_CMDS=$(jq -r '.summary.removedCommands // 0' "$DIFF_FILE")
-            NEW_FLAGS=$(jq -r '.summary.newFlags // 0' "$DIFF_FILE")
-            REMOVED_FLAGS=$(jq -r '.summary.removedFlags // 0' "$DIFF_FILE")
-            CHANGED_DEFAULTS=$(jq -r '.summary.changedDefaults // 0' "$DIFF_FILE")
-
-            if [ "$NEW_CMDS" -gt 0 ]; then
-              echo "- **New commands**: $NEW_CMDS" >> pr-body.md
-              echo "" >> pr-body.md
-              jq -r '.details.newCommands[]? | "  - \`\(.path)\`"' "$DIFF_FILE" >> pr-body.md 2>/dev/null || true
-              echo "" >> pr-body.md
-            fi
-
-            if [ "$REMOVED_CMDS" -gt 0 ]; then
-              echo "- **Removed commands**: $REMOVED_CMDS" >> pr-body.md
-              echo "" >> pr-body.md
-              jq -r '.details.removedCommands[]? | "  - \`\(.path)\`"' "$DIFF_FILE" >> pr-body.md 2>/dev/null || true
-              echo "" >> pr-body.md
-            fi
-
-            if [ "$NEW_FLAGS" -gt 0 ]; then
-              echo "- **New flags**: $NEW_FLAGS" >> pr-body.md
-            fi
-
-            if [ "$REMOVED_FLAGS" -gt 0 ]; then
-              echo "- **Removed flags**: $REMOVED_FLAGS" >> pr-body.md
-            fi
-
-            if [ "$CHANGED_DEFAULTS" -gt 0 ]; then
-              echo "- **Changed defaults**: $CHANGED_DEFAULTS" >> pr-body.md
-            fi
-
-            echo "" >> pr-body.md
+          # Detailed, maintained change summary produced by the generator
+          # (generation stats, change tables, command lists, and validation report).
+          if [ -f "$PR_SUMMARY" ]; then
+            cat "$PR_SUMMARY" >> "$PR_BODY"
+            echo "" >> "$PR_BODY"
           fi
 
-          # Add file change summary
-          echo "## Files changed" >> pr-body.md
-          echo "" >> pr-body.md
-          echo "\`\`\`" >> pr-body.md
-          git diff --staged --stat | tail -20 >> pr-body.md
-          echo "\`\`\`" >> pr-body.md
-          echo "" >> pr-body.md
-
-          # Add footer
-          cat >> pr-body.md << 'FOOTER'
+          # Footer
+          cat >> "$PR_BODY" << 'FOOTER'
           ## Automation
 
           Generated by [rpk-docs automation](https://github.com/redpanda-data/docs-extensions-and-macros/tree/main/tools/rpk-docs).
@@ -266,7 +269,7 @@ jobs:
           branch: ${{ steps.params.outputs.branch_name }}
           base: ${{ steps.params.outputs.base_branch }}
           title: "docs: update rpk CLI documentation (${{ steps.params.outputs.version }})"
-          body-path: pr-body.md
+          body-path: ${{ runner.temp }}/pr-body.md
           commit-message: "docs: update rpk CLI documentation for ${{ steps.params.outputs.version }}"
           delete-branch: true
           labels: |
