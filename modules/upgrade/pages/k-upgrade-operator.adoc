@@ -9,6 +9,8 @@ For complete upgrade instructions, including how to upgrade both the Redpanda Op
 
 In some cases, you might need to upgrade only the Redpanda Operator without upgrading your Redpanda cluster. For example, you might need to apply a patch release that fixes an operator bug.
 
+NOTE: An operator-only upgrade still restarts your broker Pods, even though the Redpanda version does not change. The Redpanda Operator injects its own container images (the configurator init container and the sidecar) into each broker Pod, and these image references track the operator version. When you upgrade the operator, the broker Pod template changes and the brokers roll one at a time. For why this happens and how to plan or stage it, see <<broker-restarts,Broker restarts during operator upgrades>>.
+
 To upgrade only the operator:
 
 . https://github.com/redpanda-data/redpanda-operator/releases[Review the Redpanda Operator release notes^] and xref:upgrade:k-compatibility.adoc[the Kubernetes compatibility matrix].
@@ -50,4 +52,53 @@ kubectl --namespace <namespace> rollout status --watch deployment/redpanda-contr
 ----
 deployment "redpanda-controller-operator" successfully rolled out
 ----
+====
+
+[[broker-restarts]]
+== Broker restarts during operator upgrades
+
+Upgrading the Redpanda Operator restarts your broker Pods, even when the Redpanda version itself does not change. Plan for a rolling restart of every broker on each managed cluster whenever you bump the operator version.
+
+=== Why brokers restart
+
+The Redpanda Operator renders the broker StatefulSet from its own templates. The configurator init container and the sidecar container that run inside each broker Pod use an image whose tag tracks the operator version by default. When you upgrade the operator, those image references change, which changes the broker Pod template. Kubernetes detects the change and the operator performs a rolling restart to bring the Pods in line with the new Pod template.
+
+This restart is safe: the operator places each broker into maintenance mode, restarts it, and waits for the cluster to report healthy before moving to the next broker.
+
+A roll also occurs when a new operator version changes any other part of the broker Pod template, such as adding a sidecar argument, container, or volume mount. These changes are independent of the image tag.
+
+=== Plan the upgrade
+
+Treat every operator version bump as a broker-restarting change:
+
+* Upgrade one cluster at a time, during a maintenance window.
+* Size each window from the number of brokers. Each broker is restarted sequentially and the operator waits for the cluster to become healthy between brokers, so allow a few minutes per broker plus a buffer.
+* Always test the upgrade in a non-production cluster first, and confirm the cluster returns to a healthy state.
+
+[[stage-broker-restart]]
+=== Stage the broker restart separately (advanced)
+
+If you want to apply an operator control-plane fix without immediately restarting your brokers, you can pin the configurator and sidecar image so that upgrading the operator does not change the broker Pod template. You then bump the pinned image in a later, separately scheduled change, which is when the brokers restart.
+
+Pin the image to your current operator version before you upgrade the control plane, by passing the operator's image flags through the chart's `additionalCmdFlags` value:
+
+[source,bash]
+----
+helm upgrade redpanda-controller redpanda/operator \
+  --namespace <namespace> \
+  --version <new-operator-version> \
+  --set crds.enabled=true \
+  --set "additionalCmdFlags={--configurator-base-image=docker.redpanda.com/redpandadata/redpanda-operator,--configurator-tag=<current-operator-version>}"
+----
+
+Replace `<current-operator-version>` with the operator version your brokers are currently running. The operator control plane upgrades to `<new-operator-version>` and its fixes take effect, but the broker Pod template keeps the pinned image, so the brokers do not restart. To restart the brokers on the new image later, repeat the upgrade with `--configurator-tag` set to `<new-operator-version>` (or remove the override so the tag tracks the operator version again).
+
+[WARNING]
+====
+This staging technique has important limitations:
+
+* It only avoids the restart for releases whose *only* broker Pod template change is the image tag. If the new operator version also changes the broker Pod template in another way, such as adding a sidecar argument or container, the brokers restart regardless of the pinned image.
+* While the image is pinned, the operator control plane and the broker sidecar or configurator run different versions. Keep the gap small and reconcile the pinned image with the operator version promptly. Do not run a mismatched control plane and sidecar long term. Review the https://github.com/redpanda-data/redpanda-operator/releases[release notes^] for each version before staging.
+
+Verify the behavior in a non-production cluster before relying on it in production.
 ====
