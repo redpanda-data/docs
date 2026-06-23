@@ -482,6 +482,8 @@ helm upgrade --install redpanda-controller redpanda/operator \
 +
 - `--additional-controllers="decommission"`: Enables the Decommission controller.
 - `rbac.createAdditionalControllerCRs=true`: Creates the required RBAC rules for the Redpanda Operator to monitor the StatefulSet and update PVCs and PVs.
++
+TIP: To change how often the Decommission controller re-checks the cluster for brokers that need decommissioning, pass the `--decommission-wait-interval` flag through `additionalCmdFlags`. See <<decommission-timing>>.
 
 .. Configure a Redpanda resource with seven Redpanda brokers:
 +
@@ -659,6 +661,60 @@ kubectl logs deployment/redpanda-controller --namespace <operator-namespace>
 ----
 
 You can repeat this procedure to continue to scale down.
+
+[[decommission-timing]]
+== Tune automatic decommission timing
+
+The <<Automated,automatic decommissioner>> polls the cluster on a regular interval to detect brokers that need to be decommissioned. The setting that controls this interval, and any debounce window before the decommissioner acts, depends on how the controller is deployed: as the Decommission controller inside the Redpanda Operator, or as the broker decommissioner sidecar in a Helm-only deployment.
+
+[cols="2,1,4"]
+|===
+| Setting | Default | Description
+
+| `--decommission-wait-interval` (Operator; set through `additionalCmdFlags`)
+| `8s`
+| Requeue interval (`RequeueAfter`) for the operator's Decommission controller: how often the controller re-checks the cluster for brokers that need decommissioning when a reconcile did not already schedule a sooner re-check.
+
+| `decommissionRequeueTimeout` (Helm sidecar; under `statefulset.sideCars.brokerDecommissioner`)
+| `10s`
+| How often the sidecar re-checks a cluster that already has a broker flagged for decommissioning.
+
+| `decommissionAfter` (Helm sidecar; under `statefulset.sideCars.brokerDecommissioner`)
+| `60s`
+| How long a broker must continuously meet the decommission conditions before the sidecar acts. This debounce window prevents acting on transient conditions, such as a broker that is briefly unreachable during a restart.
+|===
+
+=== Set the interval for the Operator
+
+The operator's Decommission controller does not expose its interval as a dedicated Helm value. Instead, pass the `--decommission-wait-interval` flag through `additionalCmdFlags` when you install or upgrade the operator:
+
+[,bash,subs="attributes+"]
+----
+helm upgrade --install redpanda-controller redpanda/operator \
+  --namespace <namespace> \
+  --create-namespace \
+  --set image.tag={latest-operator-version} \
+  --set "additionalCmdFlags={--additional-controllers=decommission,--decommission-wait-interval=30s}" \
+  --set rbac.createAdditionalControllerCRs=true
+----
+
+The flag accepts any Go duration string, such as `8s`, `30s`, or `2m`. The default is `8s`. After each reconcile, the controller logs the next scheduled run, and the `next run in` value reflects the configured interval:
+
+[.no-copy]
+----
+{"level":"info","logger":"DecommissionReconciler.Reconcile","msg":"successful reconciliation finished in 1m0s, next run in 30s","controller":"statefulset", ...}
+----
+
+=== Set the intervals for Helm
+
+For a Helm-only deployment, set the sidecar values directly under `statefulset.sideCars.brokerDecommissioner`. For a full example, see <<Automated,Use the BrokerDecommissioner>>.
+
+=== Guidance for adjusting the intervals
+
+* These settings control only how often the decommissioner *re-checks* for work and how long it waits before acting. They do not change how fast partition data is reallocated once a decommission begins. Reallocation throughput is governed by xref:reference:cluster-properties.adoc#raft_learner_recovery_rate[`raft_learner_recovery_rate`] and xref:reference:tunable-properties.adoc#partition_autobalancing_concurrent_moves[`partition_autobalancing_concurrent_moves`].
+* Increase the re-check interval to reduce reconcile frequency, and the associated log and Admin API traffic, on large or stable clusters. Decrease it for faster detection of brokers that need decommissioning.
+* For Helm (sidecar) deployments, keep `decommissionRequeueTimeout` smaller than `decommissionAfter` -- ideally well below it -- so the sidecar re-evaluates the cluster at least once within the debounce window. If the re-check interval is close to or larger than `decommissionAfter`, the decommissioner may wait up to one additional interval before acting. The Kubernetes controller-runtime work queue also adds a small amount of jitter.
+* A single operator reconcile can take up to about a minute because the Decommission controller verifies that cluster health is stable before it commits to a decommission. This is expected, and is independent of the `--decommission-wait-interval` value.
 
 == Troubleshooting
 
