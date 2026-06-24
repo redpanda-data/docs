@@ -598,7 +598,7 @@ Before enabling authorization in Redpanda, which can happen implicitly when you 
 
 IMPORTANT: Enabling authorization without a superuser can result in being locked out of the cluster, as you would not have the necessary permissions to manage the cluster's settings or users.
 
-A superuser can either be a SCRAM user or it can be provided by external authentication mechanisms, such as OIDC. However, `rpk` can only communicate with the Admin API using HTTP basic authentication, which requires a SCRAM user. This means that for administrative tasks executed through `rpk`, you must have a SCRAM user with superuser privileges.
+A superuser can either be a SCRAM user or it can be provided by external authentication mechanisms, such as OIDC. For administrative tasks executed through `rpk`, you can authenticate to the Admin API either with a SCRAM superuser (HTTP basic authentication) or, starting with `rpk` v26.1.7, with an OIDC access token (`-X sasl.mechanism=OAUTHBEARER`) whose principal has superuser privileges.
 
 . Specify the username of a superuser.
 +
@@ -1456,6 +1456,8 @@ rpk topic list \
 
 The same `-X sasl.mechanism` and `-X pass` options work for any `rpk` command that talks to the Kafka API (for example, `rpk topic create`, `rpk topic produce`, `rpk topic consume`, `rpk group list`, `rpk cluster info`, and `rpk security acl list`).
 
+Because `rpk` applies the same SASL configuration to its Admin API and Schema Registry clients, the same OIDC token also authenticates Admin API requests (for example, `rpk cluster health`) and Schema Registry requests when those listeners have OIDC enabled.
+
 To avoid repeating connection flags, store them in an xref:reference:rpk/rpk-profile/rpk-profile-create.adoc[`rpk profile`]:
 
 [,bash]
@@ -1469,7 +1471,26 @@ rpk profile create oidc \
 rpk topic list
 ----
 
-If `rpk` returns `OAUTHBEARER requires a token`, the password is empty or contains only the `token:` prefix with no value. 
+[[oidc-rpk-validate]]
+===== Validate OIDC authentication
+
+To confirm that OIDC authentication works end to end, run a read-only command against the OIDC listener and verify that it succeeds:
+
+[,bash]
+----
+rpk cluster info \
+  -X brokers=<broker-host>:<oidc-listener-port> \
+  -X tls.enabled=true \
+  -X tls.ca=<path-to-ca-cert> \
+  -X sasl.mechanism=OAUTHBEARER \
+  -X pass="token:$OIDC_TOKEN"
+----
+
+A successful response lists the cluster's brokers and topics, which confirms that Redpanda validated the token's signature and claims, mapped it to a principal, and authorized the request.
+
+If the command fails instead, use these checks:
+
+If `rpk` returns `OAUTHBEARER requires a token`, the password is empty or contains only the `token:` prefix with no value.
 
 If the broker rejects the token, verify that:
 
@@ -1939,7 +1960,7 @@ You can configure the HTTP APIs to authenticate users with the OIDC bearer token
 
 See <<Enable OIDC>> to configure the required OIDC cluster configuration properties before enabling OIDC for the HTTP APIs. You can configure OIDC without enabling it for the Kafka API.
 
-NOTE: If you enable OIDC authentication for the Admin API, you must also <<create-superusers,create a SCRAM superuser>> so that you can use `rpk` to create ACLs. `rpk` supports only basic authentication for the Admin API. See <<Authentication for the HTTP APIs>>.
+NOTE: To run administrative `rpk` commands against the Admin API when OIDC is enabled, either use an OIDC access token whose principal is a superuser (`rpk` v26.1.7+ supports `-X sasl.mechanism=OAUTHBEARER` for the Admin API) or <<create-superusers,create a SCRAM superuser>>. See <<Authentication for the HTTP APIs>>.
 
 To enable OIDC for the HTTP API listeners as well as basic authentication, include OIDC in the `http_authentication` cluster property list:
 
