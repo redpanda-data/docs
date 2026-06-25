@@ -1,0 +1,282 @@
+name: Update rpk Documentation
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'rpk version tag (e.g., v26.2.0, v26.2.0-rc1) or "dev" for latest dev branch. RC versions target beta branch.'
+        required: true
+        default: 'dev'
+      diff_version:
+        description: 'Previous version for diff (optional, e.g., v26.1.9)'
+        required: false
+      draft_missing:
+        description: 'Generate draft pages for new commands'
+        required: false
+        default: 'true'
+        type: boolean
+  repository_dispatch:
+    types: [update-rpk-docs]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-rpk-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout docs repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Must match or exceed the version in redpanda/src/go/rpk/go.mod
+          # Check with: curl -s https://raw.githubusercontent.com/redpanda-data/redpanda/dev/src/go/rpk/go.mod | grep "^go "
+          go-version: 'stable'
+
+      - name: Determine version parameters
+        id: params
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ github.event.client_payload.version }}
+          DISPATCH_DIFF_VERSION: ${{ github.event.client_payload.diff_version }}
+          DISPATCH_DRAFT_MISSING: ${{ github.event.client_payload.draft_missing }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_DIFF_VERSION: ${{ github.event.inputs.diff_version }}
+          INPUT_DRAFT_MISSING: ${{ github.event.inputs.draft_missing }}
+        run: |
+          # Handle workflow_dispatch vs repository_dispatch
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            VERSION="${DISPATCH_VERSION:-dev}"
+            DIFF_VERSION="${DISPATCH_DIFF_VERSION}"
+            DRAFT_MISSING="${DISPATCH_DRAFT_MISSING:-false}"
+          else
+            VERSION="${INPUT_VERSION}"
+            DIFF_VERSION="${INPUT_DIFF_VERSION}"
+            DRAFT_MISSING="${INPUT_DRAFT_MISSING}"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "diff_version=$DIFF_VERSION" >> $GITHUB_OUTPUT
+          echo "draft_missing=$DRAFT_MISSING" >> $GITHUB_OUTPUT
+
+          # Detect RC versions (e.g., v26.2.0-rc1, 26.2.0-rc2)
+          if [[ "$VERSION" =~ -rc[0-9]+$ ]]; then
+            echo "is_rc=true" >> $GITHUB_OUTPUT
+            echo "base_branch=beta" >> $GITHUB_OUTPUT
+          else
+            echo "is_rc=false" >> $GITHUB_OUTPUT
+            echo "base_branch=main" >> $GITHUB_OUTPUT
+          fi
+
+          # Determine branch name
+          if [ "$VERSION" = "dev" ]; then
+            echo "branch_name=rpk-docs-dev-$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+          else
+            echo "branch_name=rpk-docs-$VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate RC version against beta branch
+        if: steps.params.outputs.is_rc == 'true'
+        run: |
+          VERSION="${{ steps.params.outputs.version }}"
+
+          # Extract major.minor from version (e.g., v26.2.0-rc1 -> 26.2)
+          VERSION_MAJOR_MINOR=$(echo "$VERSION" | sed -E 's/^v?([0-9]+\.[0-9]+).*/\1/')
+
+          # Get version from beta branch antora.yml
+          BETA_VERSION=$(git show origin/beta:antora.yml | grep "^version:" | sed -E "s/^version:[[:space:]]*['\"]?([0-9]+\.[0-9]+)['\"]?.*/\1/")
+
+          echo "RC version major.minor: $VERSION_MAJOR_MINOR"
+          echo "Beta branch version: $BETA_VERSION"
+
+          if [ "$VERSION_MAJOR_MINOR" != "$BETA_VERSION" ]; then
+            echo "::error::RC version $VERSION does not match beta branch version $BETA_VERSION"
+            echo "RC releases must target the current beta version."
+            exit 1
+          fi
+
+          echo "✓ RC version $VERSION matches beta branch version $BETA_VERSION"
+
+      - name: Checkout target branch
+        run: |
+          BASE_BRANCH="${{ steps.params.outputs.base_branch }}"
+          if [ "$BASE_BRANCH" != "main" ]; then
+            echo "Checking out $BASE_BRANCH branch for RC release"
+            git checkout "$BASE_BRANCH"
+          fi
+
+      - name: Resolve diff base version
+        id: diffbase
+        run: |
+          DIFF_VERSION="${{ steps.params.outputs.diff_version }}"
+          VERSION="${{ steps.params.outputs.version }}"
+
+          # When no diff version is supplied (the usual case for the rpk-release
+          # repository_dispatch trigger), fall back to the currently-published
+          # version recorded in antora.yml (full-version). That is the version the
+          # docs currently target, so it is the correct baseline for "what's new".
+          if [ -z "$DIFF_VERSION" ]; then
+            FULL_VERSION=$(grep -E '^\s*full-version:' antora.yml \
+              | head -1 \
+              | sed -E "s/.*full-version:[[:space:]]*['\"]?([^'\"[:space:]]+).*/\1/")
+            if [ -n "$FULL_VERSION" ]; then
+              DIFF_VERSION="v${FULL_VERSION#v}"
+              echo "Using antora.yml full-version as diff base: $DIFF_VERSION"
+            else
+              echo "Could not read full-version from antora.yml; skipping diff"
+            fi
+          else
+            echo "Using supplied diff version: $DIFF_VERSION"
+          fi
+
+          # Never diff a version against itself.
+          if [ -n "$DIFF_VERSION" ] && { [ "$DIFF_VERSION" = "$VERSION" ] || [ "$DIFF_VERSION" = "v${VERSION#v}" ]; }; then
+            echo "Diff base ($DIFF_VERSION) equals the target version; skipping diff"
+            DIFF_VERSION=""
+          fi
+
+          # The generator diffs against a committed baseline snapshot
+          # (docs-data/rpk-<version>.json); it does not rebuild the old version
+          # from source. If the snapshot is missing, skip the diff so the PR does
+          # not claim a comparison that did not run. The snapshot is written and
+          # committed on each run, so it is available from the next run onward.
+          if [ -n "$DIFF_VERSION" ] && [ ! -f "docs-data/rpk-${DIFF_VERSION}.json" ]; then
+            echo "::warning::No baseline snapshot docs-data/rpk-${DIFF_VERSION}.json found. What's new update and change summary are skipped until a baseline is committed."
+            DIFF_VERSION=""
+          fi
+
+          echo "diff_version=$DIFF_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build rpk-docs command
+        id: command
+        run: |
+          # Build command - builds rpk from source using Go
+          CMD="npx doc-tools generate rpk-docs"
+
+          VERSION="${{ steps.params.outputs.version }}"
+          CMD="$CMD --ref $VERSION"
+
+          DIFF_VERSION="${{ steps.diffbase.outputs.diff_version }}"
+          if [ -n "$DIFF_VERSION" ]; then
+            # A diff is required for the What's new update and the change summary.
+            CMD="$CMD --diff $DIFF_VERSION"
+            CMD="$CMD --update-whats-new"
+          fi
+
+          DRAFT_MISSING="${{ steps.params.outputs.draft_missing }}"
+          if [ "$DRAFT_MISSING" = "true" ]; then
+            CMD="$CMD --draft-missing"
+          fi
+
+          CMD="$CMD --output-dir modules/reference/pages/rpk"
+          # Write the generator's own (richer) PR summary outside the repo tree so
+          # it is not committed into the generated PR.
+          CMD="$CMD --summary-file ${{ runner.temp }}/pr-summary.md"
+          echo "cmd=$CMD" >> $GITHUB_OUTPUT
+
+      - name: Run rpk-docs generator
+        id: generate
+        run: |
+          echo "Running: ${{ steps.command.outputs.cmd }}"
+          # Log outside the repo tree so it is not committed into the generated PR.
+          ${{ steps.command.outputs.cmd }} 2>&1 | tee "${{ runner.temp }}/generation-output.txt"
+
+      - name: Check for changes
+        id: changes
+        run: |
+          git add -A
+          if git diff --staged --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Changed files:"
+            git diff --staged --name-only | head -20
+          fi
+
+      - name: Generate PR description
+        if: steps.changes.outputs.has_changes == 'true'
+        id: pr_body
+        env:
+          PR_BODY: ${{ runner.temp }}/pr-body.md
+          PR_SUMMARY: ${{ runner.temp }}/pr-summary.md
+          WHATS_NEW: modules/get-started/pages/release-notes/redpanda.adoc
+        run: |
+          VERSION="${{ steps.params.outputs.version }}"
+          DIFF_VERSION="${{ steps.diffbase.outputs.diff_version }}"
+
+          # Header
+          cat > "$PR_BODY" << 'HEADER'
+          ## Summary
+
+          Automated update of rpk CLI documentation.
+
+          HEADER
+
+          # Version info
+          if [ "$VERSION" = "dev" ]; then
+            echo "**Source**: \`dev\` branch (pre-release)" >> "$PR_BODY"
+          else
+            echo "**Version**: \`$VERSION\`" >> "$PR_BODY"
+          fi
+
+          if [ -n "$DIFF_VERSION" ]; then
+            echo "**Diff against**: \`$DIFF_VERSION\`" >> "$PR_BODY"
+          fi
+          echo "" >> "$PR_BODY"
+
+          # Call out the What's new update when the generator touched it.
+          if git diff --staged --name-only | grep -q "$WHATS_NEW"; then
+            echo "> :memo: Updated the What's new page (\`$WHATS_NEW\`) with the Redpanda CLI changes." >> "$PR_BODY"
+            echo "" >> "$PR_BODY"
+          fi
+
+          # Detailed, maintained change summary produced by the generator
+          # (generation stats, change tables, command lists, and validation report).
+          if [ -f "$PR_SUMMARY" ]; then
+            cat "$PR_SUMMARY" >> "$PR_BODY"
+            echo "" >> "$PR_BODY"
+          fi
+
+          # Footer
+          cat >> "$PR_BODY" << 'FOOTER'
+          ## Automation
+
+          Generated by [rpk-docs automation](https://github.com/redpanda-data/docs-extensions-and-macros/tree/main/tools/rpk-docs).
+
+          Review the changes and merge when ready.
+          FOOTER
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ steps.params.outputs.branch_name }}
+          base: ${{ steps.params.outputs.base_branch }}
+          title: "docs: update rpk CLI documentation (${{ steps.params.outputs.version }})"
+          body-path: ${{ runner.temp }}/pr-body.md
+          commit-message: "docs: update rpk CLI documentation for ${{ steps.params.outputs.version }}"
+          delete-branch: true
+          labels: |
+            documentation
+            automated
+
+      - name: No changes detected
+        if: steps.changes.outputs.has_changes == 'false'
+        run: |
+          echo "No documentation changes detected for version ${{ steps.params.outputs.version }}"
