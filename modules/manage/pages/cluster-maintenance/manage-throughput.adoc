@@ -727,6 +727,63 @@ TRACE 2024-06-14 15:37:59,195 [shard  2:main] kafka_quotas - connection_context.
 ----
 endif::[]
 
+// DRAFT-VERIFY (DOC-226): This subsection documents ENG-37 (redpanda PR #30832, merged to
+// dev 2026-06-24, targets v26.2). Verify all flagged items against a 26.2 build before
+// publishing. SME: Mateusz Najda (@mnajda-redpanda).
+// DRAFT-VERIFY (DOC-226): Confirm whether Redpanda Cloud exposes the
+// kafka_per_entity_quota_metrics cluster property. Gated to Self-Managed until confirmed.
+ifndef::env-cloud[]
+==== Track quota use per entity
+
+The quota metrics above aggregate throttling and throughput by quota rule and quota type, so they cannot tell you which specific client is approaching its limit. Per-entity quota metrics label each series with the throttled entity's identity, so you can measure how much of an enforced quota each client actually uses, identify throttled clients by name, and alert on a workload before it saturates its quota.
+
+Per-entity quota metrics are disabled by default because each throttled entity adds metric series. To enable them:
+
+[,bash]
+----
+rpk cluster config set kafka_per_entity_quota_metrics true
+----
+
+The change takes effect without a broker restart.
+
+When enabled, Redpanda exposes two additional counters:
+
+* Total per-entity quota throttling delay, in milliseconds:
+** `/public_metrics` - `redpanda_kafka_quotas_client_quota_throttle_time_ms_by_entity`
+** `/metrics` - `vectorized_kafka_quotas_client_quota_throttle_time_ms_by_entity`
+* Per-entity quota throughput (bytes for produce and fetch quotas, partition mutations for partition mutation quotas):
+** `/public_metrics` - `redpanda_kafka_quotas_client_quota_throughput_by_entity`
+** `/metrics` - `vectorized_kafka_quotas_client_quota_throughput_by_entity`
+
+// DRAFT-VERIFY (DOC-226): Confirm the exposed internal metric names on a 26.2 build, then
+// replace the plain code spans above with xrefs to the regenerated metrics reference pages
+// (anchors do not exist until /gen-metrics runs for 26.2).
+
+Each series is labeled with the entity identity and the quota type:
+
+* `redpanda_quota_type`: Always present. One of `produce_quota`, `fetch_quota`, or `partition_mutation_quota`.
+* `redpanda_quota_user`: The user principal, for user-based quotas.
+* `redpanda_quota_client_id`: The client ID, for client ID-based quotas.
+* `redpanda_quota_group_name`: The client ID prefix, for quotas that apply to a <<group-of-clients-throughput-limit,group of clients>>.
+// DRAFT-VERIFY (DOC-226): Confirm the redpanda_quota_group_name label corresponds to
+// client-id-prefix quotas (not consumer groups) on a live build.
+
+Combined quotas, such as a user with a specific client ID, include each matching label on the same series.
+
+To keep metric cardinality bounded, Redpanda registers a per-entity series only while an entity is actively being throttled, and removes the series after the entity has been idle. An entity appears in these metrics only after it has been throttled at least once. From that point, Redpanda records the entity's throughput on every request, not only on throttled requests, so a Prometheus `rate()` query reflects the entity's actual throughput.
+
+To measure how much of its quota an entity is using, divide the entity's throughput rate by its configured limit. For example, the following query returns the produce throughput rate for each throttled client ID:
+
+[,promql]
+----
+sum by (redpanda_quota_client_id) (
+  rate(redpanda_kafka_quotas_client_quota_throughput_by_entity{redpanda_quota_type="produce_quota"}[5m])
+)
+----
+
+Compare the result with the entity's configured limit from xref:reference:rpk/rpk-cluster/rpk-cluster-quotas-describe.adoc[`rpk cluster quotas describe`]. A ratio close to 1 means the client is saturating its quota and its requests are being delayed.
+endif::[]
+
 == See also
 
 - xref:manage:cluster-maintenance/about-throughput-quotas.adoc[]
