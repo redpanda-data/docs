@@ -257,6 +257,16 @@ security_sync_options:
 
 schema_registry_sync_options:         # Schema Registry synchronization options
   shadow_schema_registry_topic: {}    # Enable byte-for-byte _schemas topic replication
+
+ifndef::env-cloud[]
+role_sync_options:                    # RBAC role synchronization options
+  interval: 30s                       # How often to sync roles
+  paused: false                       # Enable role synchronization
+  role_name_filters:                  # Default empty: no roles sync until you add an INCLUDE filter
+  - pattern_type: LITERAL             # Pattern type: "LITERAL", "PREFIX"
+    filter_type: INCLUDE              # Filter type: "INCLUDE", "EXCLUDE"
+    name: '*'                         # Include all roles ('*' must be the only character, LITERAL only)
+endif::[]
 ----
 ====
 
@@ -549,6 +559,52 @@ security_sync_options:
       permission_type: ALLOW          # Allow permission
       host: '*'                       # Any host
 ----
+
+// DRAFT-VERIFY (DOC-2292/DOC-2015): Role sync documents ENG-1233/ENG-898 (v26.2; all
+// engineering PRs merged to dev; feature flag shadow_link_role_sync). Confirm with
+// Andrew Nguyen (core) and Rogger Vasquez (rpk): (1) no special failover step for roles,
+// (2) behavior when the source is Apache Kafka (DescribeRedpandaRoles is Redpanda-specific),
+// (3) whether role sync counters (created/updated/deleted/failures) surface in
+// rpk shadow status or metrics, (4) exact source-cluster version requirement.
+ifndef::env-cloud[]
+==== Role filtering
+
+After a failover, your users and applications need the same permissions on the shadow cluster that they had on the source. Role synchronization prepares the shadow cluster for that moment: the xref:manage:disaster-recovery/shadowing/overview.adoc#shadow-link-tasks[Roles Migrator task] periodically reads xref:manage:security/authorization/rbac.adoc[RBAC] role definitions and role memberships from the source cluster and mirrors them to the shadow cluster. Use role synchronization together with <<acl-filtering,ACL filters>> whenever your authorization model uses roles, so that role-based permissions keep working after failover.
+
+[IMPORTANT]
+====
+No roles are replicated by default. The `role_name_filters` list defaults to empty, which synchronizes nothing. Add at least one `INCLUDE` filter to start replicating roles.
+====
+
+To replicate all roles:
+
+[,yaml]
+----
+role_sync_options:
+  interval: 30s                       # How often to sync roles
+  role_name_filters:
+  - pattern_type: LITERAL
+    filter_type: INCLUDE
+    name: '*'                         # '*' must be the only character and requires LITERAL
+----
+
+Role filters use the same pattern and filter types as topic filters: `pattern_type` is `LITERAL` or `PREFIX`, and `filter_type` is `INCLUDE` or `EXCLUDE`.
+
+Within the configured filters, the Roles Migrator task keeps the shadow cluster's roles as a full mirror of the source:
+
+* The task creates roles that exist on the source but not on the shadow.
+* The task updates roles whose membership changed on the source.
+* The task deletes roles that were deleted on the source.
+
+The task does not modify roles on the shadow cluster that fall outside your filters.
+
+Role synchronization replicates role definitions and memberships only:
+
+* **Shadowing does not replicate user credentials.** Replicating SCRAM credentials between clusters would create a security vulnerability, so Shadowing deliberately excludes them. Manage and distribute credentials outside of Shadowing, and provision users on the shadow cluster before failover.
+* **Role synchronization does not replicate the ACLs bound to roles.** Configure <<acl-filtering,ACL filters>> as well, so that both the roles and the permissions granted to them exist on the shadow cluster.
+
+Role synchronization uses the same connection and service account as the rest of the shadow link. The cluster `describe` permission already required for ACL replication also covers role reads, and no additional network configuration is required. Both the source and shadow clusters must be running Redpanda 26.2 or later; the capability activates after the upgrade completes on all brokers.
+endif::[]
 
 ==== Consumer group filtering and behavior
 
