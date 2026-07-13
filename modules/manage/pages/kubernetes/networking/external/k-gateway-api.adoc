@@ -1,0 +1,255 @@
+= Configure External Access through Gateway API
+:description: Use Gateway API TLSRoutes to expose your Redpanda cluster through a Gateway, without NodePort or LoadBalancer Services.
+:page-beta: true
+:tags: ["Kubernetes", "Helm configuration"]
+:page-categories: Management, Networking
+:env-kubernetes: true
+
+Expose your Redpanda cluster to external clients through a single https://gateway-api.sigs.k8s.io/[Gateway API^] entry point instead of NodePort or LoadBalancer Services. Clients connect to one static Gateway address, and the Gateway routes each connection to the right broker using TLS Server Name Indication (SNI), so you avoid per-broker LoadBalancers and node port management.
+
+This feature is in beta. The configuration surface (`external.gateway` and the per-listener `type` field) may change before general availability. Beta features are not recommended for production environments. To give feedback, reach out to the Redpanda team in https://redpanda.com/slack[Redpanda Community Slack^].
+
+== How it works
+
+You bring your own Gateway: deploy a Gateway API implementation that supports `TLSRoute` in passthrough mode, and create a Gateway resource with a TLS passthrough listener. Redpanda then creates the routing configuration for you:
+
+* **A bootstrap TLSRoute and Service**: Clients make their first connection to a single hostname, such as `redpanda.example.com`. The bootstrap Service targets all brokers, so initial connections are spread across the cluster.
+* **A TLSRoute and Service per broker**: After the initial connection, Kafka clients reconnect to individual brokers using the per-broker hostnames that the brokers advertise, such as `redpanda-0-broker.example.com`. The Gateway routes each connection to the right broker by matching the SNI hostname.
+
+The Gateway does not terminate TLS. Connections pass through to the brokers, which present their own certificates. All traffic enters through the Gateway's listener port, and brokers advertise that port (`443` by default) to clients.
+
+Each external listener opts in independently with `type: tlsroute`, so you can migrate from NodePort or LoadBalancer Services one listener at a time: listeners without `type: tlsroute` keep using the conventional Service, and listeners with it are excluded from that Service.
+
+== Prerequisites
+
+* Redpanda Helm chart or Redpanda Operator from the 26.2 release line or later.
+
+* The https://gateway-api.sigs.k8s.io/[Gateway API^] CRDs, version 1.5 or later, installed in your Kubernetes cluster. Redpanda creates `TLSRoute` resources from the GA `gateway.networking.k8s.io/v1` API, which is available in Gateway API 1.5.
+
+* A Gateway controller that supports `TLSRoute` with TLS passthrough, such as Envoy Gateway or Istio, and a deployed `Gateway` resource with a TLS listener in `Passthrough` mode. Redpanda does not create the Gateway.
+
+* TLS enabled on every listener that you route through the Gateway. The Gateway routes connections by SNI, which requires TLS. If you use xref:manage:kubernetes/security/tls/k-cert-manager.adoc[cert-manager-managed certificates], Redpanda automatically adds the bootstrap and per-broker hostnames to the certificate's Subject Alternative Names (SANs).
+
+* Control over DNS for your chosen hostnames. The bootstrap hostname and all per-broker hostnames must resolve to the Gateway's external address.
+
+* Install xref:get-started:rpk-install.adoc[rpk] on your local machine so that you can test connections from outside Kubernetes.
+
+== Configure Redpanda listeners for the Gateway
+
+. Enable gateway mode and reference your Gateway.
++
+[tabs]
+======
+Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  clusterSpec:
+    external:
+      enabled: true
+      gateway:
+        enabled: true
+        parentRefs:
+          - name: <gateway-name> # <1>
+            namespace: <gateway-namespace>
+            sectionName: <gateway-listener-name> # <2>
+    tls:
+      enabled: true
+      certs:
+        default:
+          caEnabled: true
+    listeners:
+      kafka:
+        external:
+          default:
+            port: 9094
+            type: tlsroute # <3>
+            host: redpanda.example.com # <4>
+            hostTemplate: redpanda-$POD_ORDINAL-broker.example.com # <5>
+            tls:
+              cert: default
+----
+<1> The name of the Gateway resource that you deployed. At least one `parentRefs` entry is required.
+<2> Optional: The name of the TLS passthrough listener on the Gateway.
+<3> Routes this listener through the Gateway and excludes it from the NodePort or LoadBalancer Service.
+<4> The bootstrap hostname that clients use for their first connection.
+<5> The per-broker hostname pattern. `$POD_ORDINAL` is replaced with the broker's ordinal, and `$POD_NAME` with the Pod name. Required for Kafka listeners when you run more than one broker.
+
+[,bash]
+----
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+----
+--
+Helm::
++
+--
+.`gateway-values.yaml`
+[,yaml]
+----
+external:
+  enabled: true
+  gateway:
+    enabled: true
+    parentRefs:
+      - name: <gateway-name> # <1>
+        namespace: <gateway-namespace>
+        sectionName: <gateway-listener-name> # <2>
+tls:
+  enabled: true
+  certs:
+    default:
+      caEnabled: true
+listeners:
+  kafka:
+    external:
+      default:
+        port: 9094
+        type: tlsroute # <3>
+        host: redpanda.example.com # <4>
+        hostTemplate: redpanda-$POD_ORDINAL-broker.example.com # <5>
+        tls:
+          cert: default
+----
+<1> The name of the Gateway resource that you deployed. At least one `parentRefs` entry is required.
+<2> Optional: The name of the TLS passthrough listener on the Gateway.
+<3> Routes this listener through the Gateway and excludes it from the NodePort or LoadBalancer Service.
+<4> The bootstrap hostname that clients use for their first connection.
+<5> The per-broker hostname pattern. `$POD_ORDINAL` is replaced with the broker's ordinal, and `$POD_NAME` with the Pod name. Required for Kafka listeners when you run more than one broker.
+
+[,bash]
+----
+helm upgrade --install redpanda redpanda/redpanda \
+  --namespace <namespace> --create-namespace \
+  --values gateway-values.yaml
+----
+--
+======
++
+By default, brokers advertise port `443` to clients. If your Gateway listens on a different port, set `external.gateway.advertisedPort`.
+
+. Create DNS records that resolve the bootstrap hostname and all per-broker hostnames to your Gateway's external address. A wildcard record such as `*.example.com` covers both.
+
+. Verify that Redpanda created the TLSRoutes and that the Gateway accepted them:
++
+[,bash]
+----
+kubectl get tlsroutes --namespace <namespace>
+----
++
+For a three-broker cluster named `redpanda`, expect a bootstrap route and one route per broker:
++
+----
+NAME                         HOSTNAMES
+redpanda-kafka-default-bootstrap   ["redpanda.example.com"]
+redpanda-kafka-default-0           ["redpanda-0-broker.example.com"]
+redpanda-kafka-default-1           ["redpanda-1-broker.example.com"]
+redpanda-kafka-default-2           ["redpanda-2-broker.example.com"]
+----
++
+Check that each route's `status.parents` reports `Accepted: True` from your Gateway controller:
++
+[,bash]
+----
+kubectl get tlsroute <route-name> --namespace <namespace> -o jsonpath='{.status.parents}'
+----
+
+. Test the connection from outside the Kubernetes cluster:
++
+[,bash]
+----
+rpk cluster info \
+  -X brokers=redpanda.example.com:443 \
+  -X tls.enabled=true \
+  -X tls.ca=ca.crt
+----
++
+The broker list shows the per-broker hostnames with the advertised port.
+
+== Route other listeners through the Gateway
+
+The HTTP Proxy, Admin API, and Schema Registry listeners support `type: tlsroute` with the same `host` field. For these listeners, `hostTemplate` is optional: without it, Redpanda creates only the bootstrap route, and the Gateway load-balances requests across brokers. Give each listener a unique hostname:
+
+[,yaml]
+----
+listeners:
+  kafka:
+    external:
+      default:
+        port: 9094
+        type: tlsroute
+        host: kafka.example.com
+        hostTemplate: kafka-$POD_ORDINAL.example.com
+        tls:
+          cert: default
+  http:
+    external:
+      default:
+        port: 8082
+        type: tlsroute
+        host: proxy.example.com
+        tls:
+          cert: default
+  schemaRegistry:
+    external:
+      default:
+        port: 8081
+        type: tlsroute
+        host: schema.example.com
+        tls:
+          cert: default
+----
+
+== Migrate from NodePort or LoadBalancer Services
+
+The per-listener `type` field lets conventional and Gateway-routed listeners coexist, so you can migrate with no downtime:
+
+. Add a new external listener with `type: tlsroute` on a different port, alongside your existing listener.
+. Point new clients, or a subset of clients, at the bootstrap hostname and verify connectivity.
+. Move the remaining clients over.
+. Remove the old external listener. When no listeners use the conventional Service, remove `external.type` and the associated NodePort or LoadBalancer configuration.
+
+== Configuration validation
+
+Redpanda refuses to render configurations that would silently break connectivity:
+
+* A listener with `type: tlsroute` requires `external.gateway.enabled: true` with at least one `parentRefs` entry. The listener is never placed in a NodePort or LoadBalancer Service as a fallback.
+* Every Gateway-routed listener requires `host`.
+* A Kafka listener with more than one broker requires `hostTemplate`, because Kafka clients must reconnect to individual brokers.
+
+If any of these conditions fail, the Helm release or Redpanda resource fails with an error that names the listener.
+
+== Troubleshooting
+
+**Clients connect to the bootstrap hostname but fail on reconnect**: The per-broker hostnames don't resolve to the Gateway, or the broker certificates don't include them. Check your DNS records, and verify the certificate SANs:
+
+[,bash]
+----
+kubectl get secret <cert-secret-name> --namespace <namespace> \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -text | grep DNS
+----
+
+**TLSRoutes exist but `status.parents` is empty or not Accepted**: Your Gateway controller doesn't support `TLSRoute` from `gateway.networking.k8s.io/v1`, the Gateway listener isn't in `Passthrough` mode, or the route's `parentRefs` doesn't match the Gateway's name, namespace, or listener `sectionName`.
+
+**Connection refused or routed to the wrong broker**: Verify that your client sends SNI. Connections without SNI (for example, plain TCP tools like `nc`) cannot be routed. Test with:
+
+[,bash]
+----
+openssl s_client -connect <gateway-address>:443 -servername redpanda.example.com </dev/null
+----
+
+== Next steps
+
+* xref:manage:kubernetes/networking/k-connect-to-redpanda.adoc[Connect to Redpanda] for client configuration details.
+* xref:manage:kubernetes/security/tls/k-cert-manager.adoc[Use cert-manager] to manage the broker certificates that carry your Gateway hostnames.
+
+include::shared:partial$suggested-reading.adoc[]
+
+* https://gateway-api.sigs.k8s.io/concepts/api-overview/[Gateway API overview^]
+* https://gateway-api.sigs.k8s.io/guides/tls/#tls-passthrough[Gateway API TLS passthrough^]
