@@ -24,9 +24,16 @@ Each external listener opts in independently with `type: tlsroute`, so you can m
 
 * Redpanda Helm chart or Redpanda Operator from the 26.2 release line or later.
 
+* Kubernetes 1.31 or later. The Gateway API 1.5 CRDs use Common Expression Language (CEL) functions that older API servers cannot compile, so they fail to install on earlier Kubernetes versions.
+
 * The https://gateway-api.sigs.k8s.io/[Gateway API^] CRDs, version 1.5 or later, installed in your Kubernetes cluster. Redpanda creates `TLSRoute` resources from the GA `gateway.networking.k8s.io/v1` API, which is available in Gateway API 1.5.
 
 * A Gateway controller that supports `TLSRoute` with TLS passthrough, such as Envoy Gateway or Istio, and a deployed `Gateway` resource with a TLS listener in `Passthrough` mode. Redpanda does not create the Gateway.
++
+[NOTE]
+====
+Check which `TLSRoute` API version your Gateway controller watches. Controllers that still watch the deprecated `v1alpha2` version, which includes Envoy Gateway 1.7 and earlier, cannot see routes when the Gateway API *standard* channel CRDs are installed, because the standard channel serves `TLSRoute` only at `v1`. In that case, install the Gateway API *experimental* channel CRDs instead: they serve `v1alpha2` alongside `v1`, so both Redpanda and the controller can work with the same routes. Also install such controllers without their bundled, older Gateway API CRDs (for example, `helm install --skip-crds` for Envoy Gateway).
+====
 
 * TLS enabled on every listener that you route through the Gateway. The Gateway routes connections by SNI, which requires TLS. If you use xref:manage:kubernetes/security/tls/k-cert-manager.adoc[cert-manager-managed certificates], Redpanda automatically adds the bootstrap and per-broker hostnames to the certificate's Subject Alternative Names (SANs).
 
@@ -235,7 +242,9 @@ kubectl get secret <cert-secret-name> --namespace <namespace> \
   -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -text | grep DNS
 ----
 
-**TLSRoutes exist but `status.parents` is empty or not Accepted**: Your Gateway controller doesn't support `TLSRoute` from `gateway.networking.k8s.io/v1`, the Gateway listener isn't in `Passthrough` mode, or the route's `parentRefs` doesn't match the Gateway's name, namespace, or listener `sectionName`.
+**TLSRoutes exist but have no `status`, and the Gateway reports `attachedRoutes: 0`**: Your Gateway controller cannot see the routes because it watches the deprecated `v1alpha2` version of `TLSRoute` and your installed Gateway API CRDs serve only `v1`. Install the Gateway API experimental channel CRDs, which serve both versions, and restart the controller. See <<Prerequisites>>.
+
+**TLSRoutes have a `status.parents` entry but the route is not Accepted**: The Gateway listener isn't in `Passthrough` mode, or the route's `parentRefs` doesn't match the Gateway's name, namespace, or listener `sectionName`.
 
 **Connection refused or routed to the wrong broker**: Verify that your client sends SNI. Connections without SNI (for example, plain TCP tools like `nc`) cannot be routed. Test with:
 
