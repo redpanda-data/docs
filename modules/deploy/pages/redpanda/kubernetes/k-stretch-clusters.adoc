@@ -1,0 +1,583 @@
+= Deploy a Stretch Cluster on Kubernetes
+:description: Deploy a Redpanda Stretch Cluster across multiple Kubernetes clusters for multi-region high availability.
+:env-kubernetes: true
+:page-categories: Deployment, Kubernetes, High Availability
+:page-toclevels: 1
+:page-topic-type: how-to
+:personas: platform_operator, platform_engineer
+:learning-objective-1: Install multicluster operators with bootstrapped TLS certificates across Kubernetes clusters
+:learning-objective-2: Deploy StretchCluster and RedpandaBrokerPool resources to form a single Redpanda cluster
+:learning-objective-3: Diagnose and resolve common Stretch Cluster deployment issues
+
+Get high availability across regions or data centers by running a single logical Redpanda cluster, called a Stretch Cluster, across multiple Kubernetes clusters. A Stretch Cluster fails over automatically through Raft consensus and is managed as a single unit.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
+A Stretch Cluster deployment includes:
+
+* **StretchCluster resource**: Cluster-wide configuration, including the Redpanda version, listeners, and networking mode.
+* **RedpandaBrokerPool resources**: Groups of brokers in each Kubernetes cluster, with per-pool replica counts, resources, and storage.
+* **Multicluster operators**: One Redpanda Operator in each Kubernetes cluster. The operators coordinate through Raft consensus to manage the Stretch Cluster as a single unit.
+* **Cross-cluster networking**: Direct broker-to-broker communication across Kubernetes clusters for Raft replication.
+
+== Prerequisites
+
+Before deploying a Stretch Cluster, ensure you have:
+
+* **Redpanda Operator {operator-beta-version} or later** on each Kubernetes cluster, installed with experimental CRDs enabled. See <<Install multicluster operators>>.
+
+* **Redpanda Enterprise Edition license**: The multicluster operator requires a valid license to start. Contact your Redpanda account team or https://redpanda.com/try-redpanda[request a trial license].
+
+* **rpk with the `k8s` plugin**: The xref:reference:rpk/index.adoc[rpk CLI] with the `k8s` plugin installed:
++
+[,bash]
+----
+rpk plugin install k8s
+----
+
+* **At least three Kubernetes clusters, running Kubernetes 1.28 or later**: The operators form a Raft group that needs a quorum of `⌊n/2⌋ + 1` members to elect a leader. With three clusters, the deployment tolerates the loss of one cluster. With only two clusters, the loss of either cluster stops the operator control plane, so two-cluster deployments are not recommended.
++
+NOTE: Brokers derive their advertised addresses from the `apps.kubernetes.io/pod-index` label, which Kubernetes adds in version 1.28. On older versions, brokers fail to start with an `invalid host` error.
+
+* **Cross-cluster networking**: One of the networking modes described in <<Choose a networking mode>>.
+
+* **Network requirements**:
+** Pod-to-pod connectivity between all clusters.
+** Inter-cluster network latency under 50 ms for optimal performance.
+** Sufficient bandwidth for cross-cluster replication traffic.
+
+* **Kubernetes API access**: Each operator must be able to reach the Kubernetes API servers of all peer clusters, and you need a kubeconfig with contexts for all participating clusters to run the bootstrap command.
+
+* **cert-manager**: https://cert-manager.io/docs/installation/[cert-manager^] installed on all clusters. The operator uses cert-manager to issue TLS certificates for the Redpanda listeners.
+
+NOTE: You do not need to create TLS certificates for inter-operator communication yourself. The `rpk k8s multicluster bootstrap` command generates an ECDSA P-256 certificate authority (CA) and per-operator certificates automatically.
+
+== Choose a networking mode
+
+Brokers in a Stretch Cluster replicate data and maintain Raft consensus across Kubernetes clusters, so every broker must be reachable from every other cluster. Set the mode in the StretchCluster's `spec.networking.crossClusterMode` field:
+
+[cols="1,2,2"]
+|===
+|Mode |How it works |Requirements
+
+|`mesh` (default)
+|Per-pod Services use selectors, and a service mesh such as Cilium Cluster Mesh or Istio mirrors the Service endpoints across clusters.
+|Service mesh installed on all clusters with multi-cluster federation configured.
+
+|`flat`
+|The operator renders per-pod Services headless, without selectors, and manages their endpoints with pod IPs directly. Brokers communicate over routable pod IPs.
+|CNI configuration that routes pod IPs across clusters, non-overlapping pod CIDR ranges, and firewall rules that allow traffic on the Redpanda ports (9092, 9093, 9644, 33145).
+
+|`mcs`
+|The operator exports per-pod Services through the Kubernetes https://github.com/kubernetes/enhancements/tree/master/keps/sig-multicluster/1645-multi-cluster-services-api[Multi-Cluster Services (MCS) API^], and brokers advertise addresses in the `clusterset.local` DNS domain.
+|An MCS API implementation installed on all clusters, such as GKE multi-cluster Services or Submariner.
+|===
+
+Choose `flat` for the best performance when you control the network infrastructure, `mesh` when you already run a service mesh with multi-cluster federation, or `mcs` for a Kubernetes-native approach on platforms that support the MCS API.
+
+== Install multicluster operators
+
+Install the Redpanda Operator in multicluster mode on each Kubernetes cluster.
+
+. Install cert-manager on each cluster, if it's not already installed:
++
+[,bash]
+----
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+
+for ctx in <cluster-1-context> <cluster-2-context> <cluster-3-context>; do
+  helm install cert-manager jetstack/cert-manager \
+    --kube-context "$ctx" \
+    --namespace cert-manager \
+    --create-namespace \
+    --set crds.enabled=true
+done
+----
++
+Replace `<cluster-1-context>`, `<cluster-2-context>`, and `<cluster-3-context>` with the kubeconfig context names of your clusters. To list your contexts, run `kubectl config get-contexts`.
+
+. Create a Secret containing your Enterprise Edition license on each cluster:
++
+[,bash]
+----
+for ctx in <cluster-1-context> <cluster-2-context> <cluster-3-context>; do
+  kubectl create namespace redpanda --context "$ctx" --dry-run=client -o yaml \
+    | kubectl apply --context "$ctx" -f -
+
+  kubectl create secret generic redpanda-license \
+    --namespace redpanda \
+    --context "$ctx" \
+    --from-file=license.key=<path-to-license-file>
+done
+----
+
+. Bootstrap TLS certificates and peer configuration:
++
+[,bash]
+----
+rpk k8s multicluster bootstrap \
+  --context <cluster-1-context> \
+  --context <cluster-2-context> \
+  --context <cluster-3-context> \
+  --namespace redpanda \
+  --loadbalancer
+----
++
+This command:
++
+* Generates an ECDSA P-256 CA, valid for 10 years, and an individual certificate for each operator, valid for one year.
+* Provisions a LoadBalancer Service named `<cluster-name>-multicluster-peer` in each cluster for operator peer communication on port 9443, and includes the resolved LoadBalancer addresses in the certificate Subject Alternative Names (SANs).
+* Creates the TLS and kubeconfig Secrets that the operators read at startup, in the given namespace on each cluster.
++
+When the command completes, it prints a `multicluster.peers` block with each cluster's name and peer address. Use these values in the Helm installation.
++
+NOTE: The bootstrap command uses your kubeconfig context names as the cluster names, which also become the prefixes of the generated Secrets and Services. To use different names, such as `us-east`, pass `--name-override <context>=<name>` for each cluster.
++
+.Bootstrap command flags
+[%collapsible]
+====
+[cols="1,3"]
+|===
+|Flag |Description
+
+|`--context`
+|Kubeconfig context of a participating cluster. Repeat for each cluster.
+
+|`--kubeconfig`
+|Path to a kubeconfig file. If you omit `--context`, all contexts in the file are used.
+
+|`--namespace`
+|Namespace for the generated Secrets and Services. Default: `redpanda`.
+
+|`--loadbalancer`
+|Provision a LoadBalancer Service per cluster for peer communication and include its external address in the certificate SANs. Without this flag, use `--dns-override` to provide the peer addresses.
+
+|`--loadbalancer-timeout`
+|How long to wait per cluster for a LoadBalancer address. Default: `10m`.
+
+|`--dns-override`
+|Override or add a peer address for a cluster, in `context=address` format. Repeat for each override.
+
+|`--name-override`
+|Override the cluster name for a context, in `context=name` format. Defaults to the context name. Repeat for each override.
+
+|`--create-namespace`
+|Create the namespace if it doesn't exist. Default: `true`.
+
+|`--organization`
+|Organization field for the generated certificates. Default: `Redpanda`.
+
+|`--output=yaml`
+|Emit the generated resources as YAML instead of applying them, for GitOps workflows. Use with `--output-dir` to write one file per cluster, which is required when emitting TLS Secrets because each cluster's private key must not be applied to any other cluster.
+|===
+====
+
+. Get the addresses required for the Helm installation.
++
+The bootstrap command already printed the peer addresses. To retrieve them again later, read them from the LoadBalancer Services:
++
+[,bash]
+----
+for ctx in <cluster-1-context> <cluster-2-context> <cluster-3-context>; do
+  kubectl get service "<cluster-name>-multicluster-peer" \
+    --namespace redpanda \
+    --context "$ctx" \
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+done
+----
++
+You also need the Kubernetes API server address of each cluster:
++
+[,bash]
+----
+kubectl cluster-info --context <cluster-context>
+----
+
+. Install the Redpanda Operator with multicluster mode enabled on the first cluster:
++
+[,bash,subs="attributes+"]
+----
+helm repo add redpanda https://charts.redpanda.com
+helm repo update
+
+helm install <cluster-1-name> redpanda/operator \
+  --kube-context <cluster-1-context> \
+  --namespace redpanda \
+  --version {operator-beta-version} \
+  --set fullnameOverride=<cluster-1-name> \
+  --set crds.enabled=true \
+  --set crds.experimental=true \
+  --set multicluster.enabled=true \
+  --set multicluster.name=<cluster-1-name> \
+  --set multicluster.apiServerExternalAddress=<cluster-1-api-server> \
+  --set-json 'multicluster.peers=[{"name":"<cluster-1-name>","address":"<cluster-1-peer-address>"},{"name":"<cluster-2-name>","address":"<cluster-2-peer-address>"},{"name":"<cluster-3-name>","address":"<cluster-3-peer-address>"}]' \
+  --set enterprise.licenseSecretRef.name=redpanda-license \
+  --set enterprise.licenseSecretRef.key=license.key
+----
++
+Replace the placeholders:
++
+--
+* `<cluster-1-name>`: The cluster's name from the bootstrap output. This is the kubeconfig context name unless you passed `--name-override`.
+* `<cluster-1-api-server>`: The API server address from `kubectl cluster-info`. It must be reachable from the other clusters.
+* `<cluster-N-peer-address>`: The peer addresses from the bootstrap output.
+--
++
+IMPORTANT: The `fullnameOverride` and `multicluster.name` values must match the cluster's name from the bootstrap output. The operator reads the Secrets that the bootstrap command created, and their names are derived from the cluster name. The `multicluster.peers` list must contain all clusters, including the one you're installing on, and must be identical in every installation. The peer addresses are the LoadBalancer addresses from the bootstrap command, not the API server addresses.
+
+. Repeat the installation for the other clusters, changing only the release name, `--kube-context`, `fullnameOverride`, `multicluster.name`, and `multicluster.apiServerExternalAddress`.
+
+. Verify that the operators are running:
++
+[,bash]
+----
+for ctx in <cluster-1-context> <cluster-2-context> <cluster-3-context>; do
+  kubectl get pods --namespace redpanda --context "$ctx"
+done
+----
++
+Each operator Pod shows `1/1` in the `READY` column after the operators form a Raft group. If a Pod does not become ready, see <<Troubleshooting>>.
+
+== Create the StretchCluster and broker pools
+
+After the operators are running, deploy a StretchCluster resource and one RedpandaBrokerPool for each Kubernetes cluster.
+
+. (Recommended) Create a Secret containing SASL superuser credentials on each cluster:
++
+[,bash]
+----
+ADMIN_PASSWORD=$(openssl rand -base64 24)
+echo "Save this password: ${ADMIN_PASSWORD}"
+
+for ctx in <cluster-1-context> <cluster-2-context> <cluster-3-context>; do
+  kubectl create secret generic redpanda-users \
+    --namespace redpanda \
+    --context "$ctx" \
+    --from-literal=users.txt="admin:${ADMIN_PASSWORD}:SCRAM-SHA-256" \
+    --from-literal=password="${ADMIN_PASSWORD}"
+done
+----
++
+The `users.txt` key defines the cluster's superusers in `username:password:mechanism` format, with one user per line. The `password` key holds the same password on its own, so that the User resource in a later step can reference it.
+
+. Create a StretchCluster resource.
++
+Save the following to `stretchcluster.yaml`. The spec must be identical on every cluster, so that the operators' consistency check passes.
++
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: StretchCluster
+metadata:
+  name: cluster
+  namespace: redpanda
+spec:
+  networking:
+    crossClusterMode: mesh # <1>
+  auth: # <2>
+    sasl:
+      enabled: true
+      mechanism: SCRAM-SHA-256
+      secretRef: redpanda-users
+  storage:
+    persistentVolume:
+      enabled: true
+      size: 100Gi
+  resources:
+    cpu:
+      cores: "4"
+    memory:
+      container:
+        max: 8Gi
+  enterprise:
+    licenseSecretRef:
+      name: redpanda-license
+      key: license.key
+  config:
+    cluster:
+      default_topic_replications: 3
+      # Wait 10 min before relocating replicas off an unavailable broker
+      # to avoid cross-region rebalancing on brief network blips.
+      partition_autobalancing_node_availability_timeout_sec: 600
+      # Increase the liveness probe interval to accommodate WAN latency.
+      node_status_interval: 1000
+      # Increase Raft timeouts for WAN latency.
+      raft_heartbeat_timeout_ms: 5000
+      replicate_append_timeout_ms: 5000
+      # Cache health metadata longer to reduce cross-cluster API calls.
+      health_monitor_max_metadata_age: 60000
+----
+<1> `mesh` is the default. Set `flat` for direct pod routing or `mcs` for the Multi-Cluster Services API. See <<Choose a networking mode>>.
+<2> Omit the `auth` block to deploy without SASL authentication. `secretRef` references the Secret created in the previous step.
++
+Apply the manifest to every cluster:
++
+[,bash]
+----
+for ctx in <cluster-1-context> <cluster-2-context> <cluster-3-context>; do
+  kubectl apply -f stretchcluster.yaml --context "$ctx"
+done
+----
+
+. Create one RedpandaBrokerPool for each Kubernetes cluster.
++
+Each RedpandaBrokerPool defines a group of brokers in one Kubernetes cluster and binds to the StretchCluster through `spec.clusterRef`. Save the following to `brokerpool-cluster1.yaml`:
++
+[,yaml,subs="attributes+"]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: RedpandaBrokerPool
+metadata:
+  name: pool-<cluster-1-name>
+  namespace: redpanda
+spec:
+  clusterRef: # <1>
+    group: cluster.redpanda.com
+    kind: StretchCluster
+    name: cluster
+  replicas: 3
+  image: # <2>
+    repository: docker.redpanda.com/redpandadata/redpanda
+    tag: {latest-redpanda-tag}
+  tls: # <3>
+    enabled: true
+    certs:
+      default:
+        caEnabled: true
+  services:
+    perPod: # <4>
+      local:
+        annotations:
+          service.cilium.io/global: "true"
+      remote:
+        annotations:
+          service.cilium.io/global: "true"
+----
+<1> References the StretchCluster. The `group` must be the bare API group (`cluster.redpanda.com`), without a version suffix.
+<2> The Redpanda image. Use the same image in every pool.
+<3> TLS for the Redpanda listeners, issued through cert-manager. Use the same TLS configuration in every pool.
+<4> Annotations for the per-pod Services. This example enables cross-cluster service discovery for Cilium Cluster Mesh (`mesh` mode). Adjust or omit the annotations for your networking mode.
++
+Apply each pool to its own cluster, changing `metadata.name` for each one:
++
+[,bash]
+----
+kubectl apply -f brokerpool-cluster1.yaml --context <cluster-1-context>
+----
++
+TIP: To spread partition replicas across failure domains within each Kubernetes cluster, set `spec.rackAwareness.enabled: true` on the pool. Rack awareness requires the operator Helm chart to be installed with `rbac.createAdditionalControllerCRs=true`. See xref:manage:kubernetes/k-rack-awareness.adoc[].
+
+. Verify that the StretchCluster is ready and the pools are bound:
++
+[,bash]
+----
+kubectl get stretchcluster --namespace redpanda --context <cluster-1-context>
+kubectl get redpandabrokerpool --namespace redpanda --context <cluster-1-context>
+----
++
+The StretchCluster's `READY` column shows `True` when the cluster is fully operational. Each cluster creates a StatefulSet and Pods for its local pool.
+
+. If you enabled SASL, create the superuser's credentials with a User resource.
++
+The `users.txt` Secret defines which users are superusers, but does not create their login credentials. Save the following to `user-admin.yaml` and apply it to one cluster:
++
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: User
+metadata:
+  name: admin
+  namespace: redpanda
+spec:
+  cluster:
+    clusterRef:
+      group: cluster.redpanda.com
+      kind: StretchCluster
+      name: cluster
+  authentication:
+    type: scram-sha-256
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: redpanda-users
+          key: password
+----
++
+[,bash]
+----
+kubectl apply -f user-admin.yaml --context <cluster-1-context>
+
+kubectl get user --namespace redpanda --context <cluster-1-context>
+----
++
+The `SYNCED` column shows `True` when the user is created. For more details about the User resource, see xref:manage:kubernetes/security/authentication/k-user-controller.adoc[].
+
+. After all brokers are running, verify that they form a single cluster:
++
+[,bash]
+----
+kubectl exec --namespace redpanda --context <cluster-1-context> -it <pod-name> -- \
+  rpk cluster info -X user=admin -X pass=<admin-password> -X sasl.mechanism=SCRAM-SHA-256
+----
++
+The output lists the brokers from all pools across all Kubernetes clusters. If you deployed without SASL, omit the `-X` flags.
+
+== Upgrade the operators
+
+Upgrade the multicluster operators one Kubernetes cluster at a time. The operator Raft group needs a quorum of `⌊n/2⌋ + 1` members, so upgrading two operators at once in a three-cluster deployment drops quorum and stalls reconciliation until the operators rejoin.
+
+. Before you start, verify that the Raft group is healthy on every cluster:
++
+[,bash]
+----
+rpk k8s multicluster status \
+  --context <cluster-1-context> \
+  --context <cluster-2-context> \
+  --context <cluster-3-context> \
+  --namespace redpanda
+----
+
+. Run `helm upgrade` on the first cluster, then wait for that cluster's operator Deployment to roll and for the Raft group to report healthy again.
+
+. Repeat for each remaining cluster, one at a time.
+
+The operators are not on the data path. While an operator restarts, the brokers continue to serve traffic; only reconciliation of new changes pauses.
+
+== Troubleshooting
+
+Run the diagnostic command to check the health of a multicluster deployment:
+
+[,bash]
+----
+rpk k8s multicluster status \
+  --context <cluster-1-context> \
+  --context <cluster-2-context> \
+  --context <cluster-3-context> \
+  --namespace redpanda
+----
+
+This command validates:
+
+* Operator Pod health and Deployment configuration
+* TLS certificate validity and SANs
+* Raft consensus state and leader agreement
+* Unique cluster names across all peers
+* Peer configuration consistency
+* CA certificate consistency across clusters
+
+To collect a diagnostics bundle for Redpanda Support, run `rpk k8s multicluster bundle` with the same connection flags.
+
+=== Operators not forming a Raft group
+
+If operator Pods remain in the `0/1 READY` state and logs show `unreachable` peer messages:
+
+. Check the operator logs for TLS or peer connection errors:
++
+[,bash]
+----
+kubectl logs --namespace redpanda --context <cluster-context> -l app.kubernetes.io/name=operator --tail=100
+----
+
+. Verify that the bootstrap-created Secrets exist on each cluster:
++
+[,bash]
+----
+kubectl get secrets --namespace redpanda --context <cluster-context> | grep multicluster
+----
+
+. Check the certificate contents and SANs:
++
+[,bash]
+----
+kubectl get secret <secret-name> --namespace redpanda --context <cluster-context> \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -text -noout
+----
++
+The SANs must include the peer addresses configured in `multicluster.peers`. If the LoadBalancer addresses changed after bootstrap, rerun the bootstrap command to regenerate the certificates.
+
+. Verify network connectivity to the peer Services on port 9443 from inside each cluster.
+
+=== RedpandaBrokerPools not binding to the StretchCluster
+
+If RedpandaBrokerPool resources don't report `Bound`:
+
+. Check the StretchCluster's conditions for error messages:
++
+[,bash]
+----
+kubectl get stretchcluster --namespace redpanda -o yaml
+----
+
+. Verify that each pool's `clusterRef` matches the StretchCluster's name:
++
+[,bash]
+----
+kubectl get redpandabrokerpool --namespace redpanda \
+  -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.spec.clusterRef.name}{"\n"}{end}'
+----
+
+. Check the operator logs for role-based access control (RBAC) errors:
++
+[,bash]
+----
+kubectl logs --namespace redpanda -l app.kubernetes.io/name=operator | grep -i "forbidden\|unauthorized"
+----
+
+=== Bootstrap user password mismatch
+
+If the StretchCluster doesn't deploy brokers and the operator logs show `bootstrap user password mismatch`, the operators created the internal `<stretchcluster-name>-bootstrap-user` Secret independently with different passwords. This can happen when the StretchCluster manifest is applied to all clusters at nearly the same time.
+
+Find the Raft leader with `rpk k8s multicluster status`, compare the Secret across clusters, then delete the copies that differ from the leader's cluster and let the operator recreate them:
+
+[,bash]
+----
+for ctx in <cluster-1-context> <cluster-2-context> <cluster-3-context>; do
+  printf '%s: ' "$ctx"
+  kubectl get secret cluster-bootstrap-user --namespace redpanda --context "$ctx" \
+    -o jsonpath='{.data.password}' | sha256sum
+done
+
+kubectl delete secret cluster-bootstrap-user --namespace redpanda --context <mismatched-cluster-context>
+----
+
+=== Brokers cannot communicate across clusters
+
+If brokers in different Kubernetes clusters cannot reach each other:
+
+. Get a broker Pod IP from another cluster and test connectivity from the local cluster:
++
+[,bash]
+----
+kubectl get pods --namespace redpanda --context <other-cluster-context> -o wide
+
+kubectl run -it --rm debug --image=busybox --restart=Never -- \
+  nc -zv <broker-pod-ip> 33145
+----
+
+. Check for NetworkPolicies that block cross-cluster traffic:
++
+[,bash]
+----
+kubectl get networkpolicy --namespace redpanda
+----
+
+. For `flat` mode, verify that routes to the remote pod CIDRs exist. For `mesh` mode, verify that the per-pod Services are mirrored to the remote clusters. For `mcs` mode, verify that `ServiceExport` and `ServiceImport` resources exist for the per-pod Services.
+
+. Review the broker logs for connection errors:
++
+[,bash]
+----
+kubectl logs --namespace redpanda <broker-pod-name> | grep -i "connection\|error"
+----
+
+== Next steps
+
+* xref:manage:kubernetes/k-rack-awareness.adoc[Enable rack awareness] to optimize replica placement across failure domains within each Kubernetes cluster.
+* xref:manage:kubernetes/monitoring/k-monitor-redpanda.adoc[Set up monitoring] for your Stretch Cluster deployment.
+* xref:develop:produce-data/leader-pinning.adoc[Configure leader pinning] to keep partition leaders in specific regions for latency optimization.
+* xref:manage:cluster-maintenance/cluster-balancing.adoc[Configure cluster balancing] for automatic partition rebalancing across brokers.
