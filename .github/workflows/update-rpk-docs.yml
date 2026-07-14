@@ -92,6 +92,9 @@ jobs:
 
       - name: Validate RC version against beta branch
         if: steps.params.outputs.is_rc == 'true'
+        id: beta_check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           VERSION="${{ steps.params.outputs.version }}"
 
@@ -105,6 +108,16 @@ jobs:
           echo "Beta branch version: $BETA_VERSION"
 
           if [ "$VERSION_MAJOR_MINOR" != "$BETA_VERSION" ]; then
+            # RC tags are also cut for patch releases of the current stable line
+            # (for example v26.1.12-rc1 while beta is 26.2). Those arrive through
+            # the automated repository_dispatch trigger and are expected, so skip
+            # quietly instead of failing the run. A manual workflow_dispatch run
+            # asked for this exact version, so a mismatch there is a real error.
+            if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+              echo "::notice::RC version $VERSION targets the $VERSION_MAJOR_MINOR line, not the current beta version ($BETA_VERSION). Skipping docs generation."
+              echo "skip=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
             echo "::error::RC version $VERSION does not match beta branch version $BETA_VERSION"
             echo "RC releases must target the current beta version."
             exit 1
@@ -113,6 +126,7 @@ jobs:
           echo "✓ RC version $VERSION matches beta branch version $BETA_VERSION"
 
       - name: Checkout target branch
+        if: steps.beta_check.outputs.skip != 'true'
         run: |
           BASE_BRANCH="${{ steps.params.outputs.base_branch }}"
           if [ "$BASE_BRANCH" != "main" ]; then
@@ -121,6 +135,7 @@ jobs:
           fi
 
       - name: Resolve diff base version
+        if: steps.beta_check.outputs.skip != 'true'
         id: diffbase
         run: |
           DIFF_VERSION="${{ steps.params.outputs.diff_version }}"
@@ -163,6 +178,7 @@ jobs:
           echo "diff_version=$DIFF_VERSION" >> $GITHUB_OUTPUT
 
       - name: Build rpk-docs command
+        if: steps.beta_check.outputs.skip != 'true'
         id: command
         run: |
           # Build command - builds rpk from source using Go
@@ -190,6 +206,7 @@ jobs:
           echo "cmd=$CMD" >> $GITHUB_OUTPUT
 
       - name: Run rpk-docs generator
+        if: steps.beta_check.outputs.skip != 'true'
         id: generate
         run: |
           echo "Running: ${{ steps.command.outputs.cmd }}"
@@ -197,6 +214,7 @@ jobs:
           ${{ steps.command.outputs.cmd }} 2>&1 | tee "${{ runner.temp }}/generation-output.txt"
 
       - name: Check for changes
+        if: steps.beta_check.outputs.skip != 'true'
         id: changes
         run: |
           git add -A
@@ -209,7 +227,7 @@ jobs:
           fi
 
       - name: Generate PR description
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.beta_check.outputs.skip != 'true' && steps.changes.outputs.has_changes == 'true'
         id: pr_body
         env:
           PR_BODY: ${{ runner.temp }}/pr-body.md
@@ -262,7 +280,7 @@ jobs:
           FOOTER
 
       - name: Create Pull Request
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.beta_check.outputs.skip != 'true' && steps.changes.outputs.has_changes == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -277,6 +295,6 @@ jobs:
             automated
 
       - name: No changes detected
-        if: steps.changes.outputs.has_changes == 'false'
+        if: steps.beta_check.outputs.skip != 'true' && steps.changes.outputs.has_changes == 'false'
         run: |
           echo "No documentation changes detected for version ${{ steps.params.outputs.version }}"
