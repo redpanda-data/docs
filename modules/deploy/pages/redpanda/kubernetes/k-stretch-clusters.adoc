@@ -11,6 +11,11 @@
 
 Get high availability across regions or data centers by running a single logical Redpanda cluster, called a Stretch Cluster, across multiple Kubernetes clusters. A Stretch Cluster fails over automatically through Raft consensus and is managed as a single unit.
 
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
 TIP: For an overview of all high-availability deployment patterns, see xref:deploy:redpanda/kubernetes/k-high-availability.adoc[]. For asynchronous disaster recovery between two independent clusters, see xref:manage:disaster-recovery/shadowing/overview.adoc[].
 
 After reading this page, you will be able to:
@@ -80,6 +85,19 @@ Brokers in a Stretch Cluster replicate data and maintain Raft consensus across K
 |===
 
 Choose `flat` for the best performance when you control the network infrastructure, `mesh` when you already run a service mesh with multi-cluster federation, or `mcs` for a Kubernetes-native approach on platforms that support the MCS API.
+
+=== Cross-cloud deployments
+
+You can stretch a cluster across Kubernetes clusters in different cloud providers, but you must first make the clouds' networks mutually routable. In addition to the general network requirements, cross-cloud deployments need:
+
+* **Site-to-site VPN connectivity between all clouds**: A full mesh of IPsec VPN tunnels between the provider networks, for example AWS VPN Gateway, Google Cloud HA VPN, and Azure VPN Gateway, with BGP or static routes advertising each cloud's CIDR ranges. Node IPs in every cloud must be routable from the others.
+* **Non-overlapping CIDR ranges** for the VPC or VNet networks and for the pod networks in every cloud.
+* **Pairwise latency under 100 ms** between all regions. Broker liveness checks fail at higher latencies, even with the WAN tuning shown in this page's StretchCluster example.
+* **A CNI that supports cross-cluster networking**, such as Cilium with Cluster Mesh (`mesh` mode), installed in place of each cloud's default CNI.
+
+Avoid double encryption: if the VPN layer already encrypts all cross-cloud traffic, don't also enable CNI-level node encryption, such as WireGuard, on the same path.
+
+NOTE: Cross-cloud egress is billed at each provider's internet egress rate, which is typically several times the cost of same-cloud, cross-region traffic. Factor replication traffic into your cost planning.
 
 == Install multicluster operators
 
@@ -428,6 +446,61 @@ kubectl exec --namespace redpanda --context <cluster-1-context> -it <pod-name> -
 ----
 +
 The output lists the brokers from all pools across all Kubernetes clusters. If you deployed without SASL, omit the `-X` flags.
+
+== Optimize for region failures
+
+To keep a Stretch Cluster performing predictably through a region outage, enable rack awareness on every broker pool, pin partition leaders near your clients, and let Redpanda eject brokers that are permanently gone.
+
+=== Enable rack awareness on broker pools
+
+Rack awareness is the foundation for both leader pinning and safe replica placement. Set it on each RedpandaBrokerPool:
+
+[,yaml]
+----
+spec:
+  rbac:
+    enabled: true # <1>
+  rackAwareness:
+    enabled: true
+    nodeAnnotation: topology.kubernetes.io/zone # <2>
+----
+<1> Rack awareness requires per-pool RBAC, and the operator Helm chart must be installed with `rbac.createAdditionalControllerCRs=true`.
+<2> The Kubernetes Node label whose value becomes each broker's rack ID. The default is `topology.kubernetes.io/zone`, which gives each availability zone its own rack. To treat each Kubernetes cluster or region as one rack, use a label whose value is shared by all nodes in that cluster.
+
+=== Pin partition leaders near your clients
+
+Without a leader preference, partition leaders can move to any region after a failure, including regions far from your producers. For example, when a broker fails and its replacement starts in a distant region, leaders can end up there. Pin leaders to the racks closest to your clients with the config_ref:default_leaders_preference,true,properties/cluster-properties[] cluster property in the StretchCluster spec:
+
+[,yaml]
+----
+spec:
+  config:
+    cluster:
+      default_leaders_preference: "racks:<zone-1>,<zone-2>" # <1>
+----
+<1> One or more rack IDs, which are the values of the node label configured in `rackAwareness.nodeAnnotation`. With multiple racks, Redpanda balances leaders across them.
+
+Leaders fail over to other regions when the preferred racks are unavailable and move back automatically when they recover. For details, see xref:develop:produce-data/leader-pinning.adoc[].
+
+=== Automatically eject ghost brokers
+
+When an entire region is lost, its brokers remain in the cluster as unreachable "ghost" brokers until they are decommissioned. With continuous partition balancing, Redpanda decommissions them automatically after the configured timeouts, so you don't have to clean up stale brokers manually after a regional outage:
+
+[,yaml]
+----
+spec:
+  config:
+    cluster:
+      partition_autobalancing_mode: continuous # <1>
+      # Wait before moving partitions off an unavailable broker.
+      partition_autobalancing_node_availability_timeout_sec: 600
+      # After this additional timeout, decommission the broker entirely.
+      partition_autobalancing_node_autodecommission_timeout_sec: 3600 # <2>
+----
+<1> Automatic ejection applies only in `continuous` mode, which is an Enterprise feature.
+<2> The total time before an unreachable broker is ejected is approximately the availability timeout plus the auto-decommission timeout.
+
+CAUTION: Keep these timeouts comfortably longer than any transient cross-region network disruption you expect. If they're too short, a brief WAN outage can trigger cross-region partition rebalancing or even decommission healthy brokers.
 
 == Upgrade the operators
 
