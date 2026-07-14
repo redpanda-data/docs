@@ -49,7 +49,11 @@ No published Redpanda Helm chart includes this feature yet. If you deploy with t
 +
 [NOTE]
 ====
-Check which `TLSRoute` API version your Gateway controller watches. Controllers that still watch the deprecated `v1alpha2` version, which includes Envoy Gateway 1.7 and earlier, cannot see routes when the Gateway API *standard* channel CRDs are installed, because the standard channel serves `TLSRoute` only at `v1`. In that case, install the Gateway API *experimental* channel CRDs instead: they serve `v1alpha2` alongside `v1`, so both Redpanda and the controller can work with the same routes. Also install such controllers without their bundled, older Gateway API CRDs (for example, `helm install --skip-crds` for Envoy Gateway).
+Use a controller version that watches `TLSRoute` at the GA `gateway.networking.k8s.io/v1` API, because Redpanda creates its routes at `v1`. For Envoy Gateway, this means version 1.8 or later.
+
+Envoy Gateway 1.7 and earlier watch the deprecated `v1alpha2` version and detect the `TLSRoute` CRD only at its server-preferred version. Because Gateway API 1.5 makes `v1` the preferred (storage) version of `TLSRoute`, these earlier controllers log `TLSRoute CRD not found, skipping TLSRoute watch` and never attach the routes, even when the *experimental* channel CRDs serve `v1alpha2` alongside `v1`. Upgrading the controller is the reliable fix; installing the experimental channel alone does not resolve it.
+
+Install the controller without its bundled Gateway API CRDs (for example, `helm install --skip-crds` for Envoy Gateway) so it uses your Gateway API 1.5 CRDs rather than replacing them with an older bundled version.
 ====
 
 * TLS enabled on every listener that you route through the Gateway. The Gateway routes connections by SNI, which requires TLS. If you use xref:manage:kubernetes/security/tls/k-cert-manager.adoc[cert-manager-managed certificates], Redpanda automatically adds the bootstrap and per-broker hostnames to the certificate's Subject Alternative Names (SANs).
@@ -166,17 +170,20 @@ By default, brokers advertise port `443` to clients. If your Gateway listens on 
 +
 [,bash]
 ----
-kubectl get tlsroutes --namespace <namespace>
+kubectl get tlsroutes --namespace <namespace> \
+  -o custom-columns='NAME:.metadata.name,HOSTNAMES:.spec.hostnames'
 ----
++
+NOTE: Plain `kubectl get tlsroutes` prints only the `NAME` and `AGE` columns. Use the `custom-columns` output above (or `-o yaml`) to see the hostnames.
 +
 For a three-broker cluster named `redpanda`, expect a bootstrap route and one route per broker:
 +
 ----
-NAME                         HOSTNAMES
-redpanda-kafka-default-bootstrap   ["redpanda.example.com"]
-redpanda-kafka-default-0           ["redpanda-0-broker.example.com"]
-redpanda-kafka-default-1           ["redpanda-1-broker.example.com"]
-redpanda-kafka-default-2           ["redpanda-2-broker.example.com"]
+NAME                               HOSTNAMES
+redpanda-kafka-default-0           [redpanda-0-broker.example.com]
+redpanda-kafka-default-1           [redpanda-1-broker.example.com]
+redpanda-kafka-default-2           [redpanda-2-broker.example.com]
+redpanda-kafka-default-bootstrap   [redpanda.example.com]
 ----
 +
 Check that each route's `status.parents` reports `Accepted: True` from your Gateway controller:
@@ -261,7 +268,7 @@ kubectl get secret <cert-secret-name> --namespace <namespace> \
   -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -text | grep DNS
 ----
 
-**TLSRoutes exist but have no `status`, and the Gateway reports `attachedRoutes: 0`**: Your Gateway controller cannot see the routes because it watches the deprecated `v1alpha2` version of `TLSRoute` and your installed Gateway API CRDs serve only `v1`. Install the Gateway API experimental channel CRDs, which serve both versions, and restart the controller. See <<Prerequisites>>.
+**TLSRoutes exist but have no `status`, and the Gateway reports `attachedRoutes: 0`**: Your Gateway controller isn't watching `TLSRoute` at the `v1` API that Redpanda uses. Controllers that watch only the deprecated `v1alpha2` version, such as Envoy Gateway 1.7 and earlier, cannot attach these routes, and the controller log shows a message such as `TLSRoute CRD not found, skipping TLSRoute watch`. Upgrade to a controller version that watches `TLSRoute` at `v1` (Envoy Gateway 1.8 or later). Installing the experimental channel CRDs or restarting the controller does not help on its own. See <<Prerequisites>>.
 
 **TLSRoutes have a `status.parents` entry but the route is not Accepted**: The Gateway listener isn't in `Passthrough` mode, or the route's `parentRefs` doesn't match the Gateway's name, namespace, or listener `sectionName`.
 
