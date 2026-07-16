@@ -560,12 +560,6 @@ security_sync_options:
       host: '*'                       # Any host
 ----
 
-// DRAFT-VERIFY (DOC-2292/DOC-2015): Role sync documents ENG-1233/ENG-898 (v26.2; all
-// engineering PRs merged to dev; feature flag shadow_link_role_sync). Confirm with
-// Andrew Nguyen (core) and Rogger Vasquez (rpk): (1) no special failover step for roles,
-// (2) behavior when the source is Apache Kafka (DescribeRedpandaRoles is Redpanda-specific),
-// (3) whether role sync counters (created/updated/deleted/failures) surface in
-// rpk shadow status or metrics, (4) exact source-cluster version requirement.
 ifndef::env-cloud[]
 ==== Role filtering
 
@@ -600,10 +594,14 @@ The task does not modify roles on the shadow cluster that fall outside your filt
 
 Role synchronization replicates role definitions and memberships only:
 
-* **Shadowing does not replicate user credentials.** Replicating SCRAM credentials between clusters would create a security vulnerability, so Shadowing deliberately excludes them. Manage and distribute credentials outside of Shadowing, and provision users on the shadow cluster before failover.
+* **Shadowing does not replicate user credentials.** Manage and distribute credentials outside of Shadowing, and provision users on the shadow cluster before failover.
 * **Role synchronization does not replicate the ACLs bound to roles.** Configure <<acl-filtering,ACL filters>> as well, so that both the roles and the permissions granted to them exist on the shadow cluster.
 
-Role synchronization uses the same connection and service account as the rest of the shadow link. The cluster `describe` permission already required for ACL replication also covers role reads, and no additional network configuration is required. Both the source and shadow clusters must be running Redpanda 26.2 or later; the capability activates after the upgrade completes on all brokers.
+Role synchronization uses the same connection and service account as the rest of the shadow link. The cluster `describe` permission already required for ACL replication also covers role reads, and no additional network configuration is required. Both the source and shadow clusters must be running Redpanda 26.2 or later; the capability activates after the upgrade completes on all brokers. Role synchronization requires a Redpanda source cluster: if the source is an Apache Kafka cluster, the Roles Migrator task enters the `LINK_UNAVAILABLE` state, without affecting the other tasks on the link.
+
+Role synchronization continues to run after a xref:manage:disaster-recovery/shadowing/failover.adoc[failover]. Failover acts on topic data only: it stops topic replication and makes shadow topics writable, but the sync tasks, including the Roles Migrator, keep running on their intervals. To stop role synchronization, set `paused: true` in `role_sync_options`, or delete the shadow link.
+
+To monitor role synchronization, run xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`]. The Roles Migrator task's `Reason` field reports the counts from the most recent sync cycle, for example: `Synced roles: 2 created, 0 updated, 0 deleted, 0 failures`.
 endif::[]
 
 ==== Consumer group filtering and behavior
