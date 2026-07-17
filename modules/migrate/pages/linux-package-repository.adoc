@@ -1,0 +1,169 @@
+= Migrate the Linux Package Repository
+:description: Re-point your apt or yum package manager from the legacy dl.redpanda.com host to linux.pkg.redpanda.com and import the new signing key.
+:page-categories: Upgrades, Migration
+:page-topic-type: how-to
+:env-linux: true
+:learning-objective-1: Identify whether a host installs Redpanda from the legacy dl.redpanda.com repository
+:learning-objective-2: Re-point your package manager to linux.pkg.redpanda.com and import the new signing key
+:learning-objective-3: Verify that packages resolve from the new repository
+
+Redpanda is migrating the hosting of its Linux package repositories (Debian/Ubuntu `.deb` and RHEL/CentOS/Fedora/SUSE `.rpm`) from the legacy `dl.redpanda.com` host to `linux.pkg.redpanda.com`. The new repositories are served from Google Artifact Registry and are signed with a new GPG key.
+
+If you install or upgrade Redpanda through the Linux package manager, you must re-point your package manager to `linux.pkg.redpanda.com` and import the new signing key. The new repository keeps all existing and historical package versions, so no Redpanda version is removed.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
+[IMPORTANT]
+====
+The legacy `dl.redpanda.com` repository shuts down on *{legacy-repo-shutdown-date}*. Until then, both repositories serve identical packages, so you can migrate on your own schedule. After that date, hosts still pointed at `dl.redpanda.com` cannot install new packages or upgrades from it, and `apt update` or `yum makecache` against the legacy repository fails.
+====
+
+This change has no impact on running clusters or already-installed packages. It only affects where future installs and upgrades are downloaded from. You can complete the migration at any time during the dual-publish window ({repo-dual-publish-start} - {legacy-repo-shutdown-date}) with no downtime.
+
+== Check whether you are affected
+
+You are affected if any host installs or upgrades Redpanda from the legacy `dl.redpanda.com` repository. Check your repository definitions for a `dl.redpanda.com` reference:
+
+[tabs]
+=====
+Debian/Ubuntu::
++
+--
+Look for a Redpanda entry in `/etc/apt/sources.list.d/` (for example, `redpanda.list`):
+
+[,bash]
+----
+grep -r dl.redpanda.com /etc/apt/sources.list.d/
+----
+--
+Fedora/RHEL/SUSE::
++
+--
+Look for a Redpanda entry in `/etc/yum.repos.d/` (or `/etc/zypp/repos.d/` on SUSE):
+
+[,bash]
+----
+grep -r dl.redpanda.com /etc/yum.repos.d/ /etc/zypp/repos.d/ 2>/dev/null
+----
+--
+=====
+
+Air-gapped installations and manual binary installs are not affected.
+
+== Re-point your package manager
+
+The recommended path is the setup script, which imports the new GPG key and writes the new repository definition for you. It does not install or upgrade any packages.
+
+[tabs]
+=====
+Debian/Ubuntu::
++
+--
+Run the setup script:
+
+[,bash]
+----
+curl -fsSL --tlsv1.2 https://linux.pkg.redpanda.com/setup-redpanda.deb.sh | sudo bash
+----
+
+Or configure the repository manually. Import the new GPG signing key, then write the repository definition:
+
+[,bash]
+----
+curl -fsSL --tlsv1.2 https://linux.pkg.redpanda.com/redpanda-deb-signing-public.gpg | \
+  sudo gpg --dearmor -o /usr/share/keyrings/artifact-registry.gpg
+echo 'deb [signed-by=/usr/share/keyrings/artifact-registry.gpg] https://linux.pkg.redpanda.com/apt redpanda-apt main' | \
+  sudo tee /etc/apt/sources.list.d/redpanda.list
+----
+--
+Fedora/RHEL/SUSE::
++
+--
+Run the setup script. It detects `dnf`, `yum`, `microdnf`, or `zypper` automatically:
+
+[,bash]
+----
+curl -fsSL --tlsv1.2 https://linux.pkg.redpanda.com/setup-redpanda.rpm.sh | sudo bash
+----
+
+Or configure the repository manually. Import the new GPG signing key, then write the repository definition. On SUSE, write the file to `/etc/zypp/repos.d/redpanda.repo` instead:
+
+[,bash]
+----
+sudo rpm --import https://linux.pkg.redpanda.com/redpanda-rpm-signing-public.key
+sudo tee /etc/yum.repos.d/redpanda.repo <<'EOF'
+[redpanda]
+name=Redpanda
+baseurl=https://linux.pkg.redpanda.com/yum/redpanda-yum
+enabled=1
+gpgcheck=1
+gpgkey=https://linux.pkg.redpanda.com/redpanda-rpm-signing-public.key
+repo_gpgcheck=0
+EOF
+----
+--
+=====
+
+== Disable the legacy repository
+
+Because the new repository uses a different hostname and key, it can coexist with the legacy one. If you prefer to validate before cutting over, complete the re-point step first and leave the legacy entry in place. Once you have confirmed that package metadata resolves from `linux.pkg.redpanda.com` (see <<verify-the-new-repository,Verify the new repository>>), disable the legacy entry. Both repositories serve identical packages until {legacy-repo-shutdown-date}.
+
+[tabs]
+=====
+Debian/Ubuntu::
++
+--
+Check `/etc/apt/sources.list.d/` for any other file that references `dl.redpanda.com` and delete it, or comment out its entries.
+--
+Fedora/RHEL/SUSE::
++
+--
+Check `/etc/yum.repos.d/` (or `/etc/zypp/repos.d/` on SUSE) for any other file that references `dl.redpanda.com` and delete it, or set `enabled=0` in it.
+--
+=====
+
+[[verify-the-new-repository]]
+== Verify the new repository
+
+Refresh the package metadata and confirm that the `redpanda` package now resolves from the new repository.
+
+[tabs]
+=====
+Debian/Ubuntu::
++
+--
+[,bash]
+----
+sudo apt update
+apt-cache policy redpanda
+----
+
+The package source should show `linux.pkg.redpanda.com`.
+--
+Fedora/RHEL/SUSE::
++
+--
+[,bash]
+----
+sudo yum makecache --repo=redpanda
+yum info redpanda
+----
+
+The `From repo` field should show `redpanda`.
+--
+=====
+
+Future installs and upgrades work as usual. For example, `sudo apt-get install redpanda` or `sudo yum update redpanda`. For full upgrade guidance, see xref:upgrade:rolling-upgrade.adoc[Upgrade Redpanda].
+
+== Update configuration management
+
+If you manage repository definitions through Ansible, Chef, Puppet, Terraform, or golden images, update the repository URL and GPG key in your source of truth rather than on individual hosts, and rebuild any machine images that bake in the legacy `dl.redpanda.com` definition.
+
+== Next steps
+
+* xref:deploy:redpanda/manual/production/production-deployment.adoc[Deploy for Production: Manual]
+* xref:upgrade:rolling-upgrade.adoc[Upgrade Redpanda]
