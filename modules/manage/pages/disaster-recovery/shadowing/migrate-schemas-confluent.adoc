@@ -67,7 +67,7 @@ Schema replication settings live in the shadow link configuration. Two cluster p
 * A shadow link replicates Schema Registry data in one mode only: either `shadow_schema_registry_topic` or `shadow_schema_registry_api`.
 * Replication is one way, from the source registry to the shadow cluster. Destination contexts owned by the link are read-only until failover.
 * Schemas that use Confluent features not supported by the Redpanda Schema Registry are not replicated as-is. Choose a <<choose-a-validation-policy,validation policy>> to control whether these schemas are skipped or imported without the unsupported fields.
-* Topic data replication and schema replication are not coordinated with each other. Records serialized in the Confluent SerDes wire format can arrive on the shadow cluster before the schema IDs they contain have been replicated.
+* Topic data replication and schema replication are not coordinated with each other. Records serialized in the Confluent SerDes wire format can arrive on the shadow cluster before the schema IDs they contain have been replicated. This does not cause replication errors, because schema IDs are not validated during topic data replication, but consumers that look up those schema IDs on the shadow cluster fail until the schemas arrive. Wait for schema replication to catch up before consuming schema-dependent shadow topics. See <<monitor-replication-status,Monitor replication status>>.
 * Deleting and recreating a subject: A hard delete on the source replicates on the next sync, not instantly. Wait until the subject is removed from the shadow cluster before registering a new schema under the same name, as recreating it too soon prevents the sync job from detecting the subject/subject-version change.
 
 == Configure schema replication
@@ -163,11 +163,18 @@ schema_registry_sync_options:
     # ...connection settings...
     source_filter:
       contexts:
-      - "."                                   # The default context
-      - ".prod"                               # A named context
+      - ".prod"                               # Replicate this entire context
       subjects:
-      - orders-value                          # A subject in the default context
+      - orders-value                          # One subject from the default context
 ----
+
+The two lists combine as a union:
+
+* `contexts` selects entire contexts: every subject in each listed context replicates.
+* `subjects` selects individual subjects, using qualified subject syntax: `orders-value` is the subject in the default context, and `:.staging:orders-value` is the subject of the same name in the `.staging` context.
+* When both lists are set, the link replicates everything selected by either list. A subject selected by both lists replicates once.
+
+For example, the preceding filter replicates every subject in the `.prod` context, plus the single `orders-value` subject from the default context.
 
 The `contexts` and `subjects` lists accept literal names only. Wildcard and prefix patterns are not supported.
 
