@@ -76,7 +76,7 @@ Starting in Redpanda v26.1, you can set the `redpanda.storage.mode` topic proper
 | Topic data is stored only on the broker's local disk. Object storage upload is disabled for the topic, regardless of `redpanda.remote.read` and `redpanda.remote.write` values.
 
 | `tiered`
-| Data is stored on local disk and uploaded to object storage. Enables xref:manage:tiered-storage.adoc[Tiered Storage] for the topic regardless of `redpanda.remote.read` and `redpanda.remote.write` values.
+| Data is stored on local disk and uploaded to object storage. Enables xref:manage:tiered-storage.adoc[Tiered Storage] for the topic regardless of `redpanda.remote.read` and `redpanda.remote.write` values. Starting in Redpanda v26.2, Tiered Storage is available in two versions (`tiered_v1` and `tiered_v2`). See xref:manage:tiered-storage.adoc#tiered-storage-versions[Choose a Tiered Storage version].
 
 | `cloud`
 | Data is stored durably in object storage using the glossterm:Cloud Topic[,Cloud Topics] architecture. Local storage is used only as a write buffer. See xref:develop:manage-topics/cloud-topics.adoc[].
@@ -90,6 +90,15 @@ rpk topic create <topic-name> -c redpanda.storage.mode=tiered
 ----
 
 When `redpanda.storage.mode` is set to `local`, `tiered`, or `cloud`, the `redpanda.remote.read` and `redpanda.remote.write` topic properties have no effect on the topic.
+
+Starting in Redpanda v26.2, the `tiered` value is an alias that resolves to one of two Tiered Storage versions when the topic is created. The xref:reference:cluster-properties.adoc#default_redpanda_storage_mode_tiered_impl[`default_redpanda_storage_mode_tiered_impl`] cluster property selects the version (`tiered_v1` by default). To select the version explicitly for a single topic, set the `redpanda.storage.mode.impl` property when you create the topic:
+
+[,bash]
+----
+rpk topic create <topic-name> -c redpanda.storage.mode.impl=tiered_v2
+----
+
+The `redpanda.storage.mode.impl` property reports the exact implementation of every topic's storage mode and is read-only after topic creation. For details, see xref:manage:tiered-storage.adoc#tiered-storage-versions[Choose a Tiered Storage version].
 
 To apply a default storage mode to all new topics in a cluster, set the `default_redpanda_storage_mode` cluster property:
 
@@ -151,25 +160,47 @@ You can change a topic's `redpanda.storage.mode` after creation, with the follow
 | From | To | Permitted | Notes
 
 | `local`
-| `tiered`
+| `tiered` (v1)
 | Yes
 | Enables Tiered Storage for the topic. Object storage must be configured.
 
-| `tiered`
+| `tiered` (v1)
 | `local`
 | With caution
 | Disables object storage uploads. Redpanda strongly recommends against repeatedly toggling this setting, as it can result in data gaps in Tiered Storage.
 
-| Any
+| `cloud`
+| `tiered` (v2)
+| Yes
+| Starting in Redpanda v26.2. All brokers must run v26.2 or later.
+
+| `tiered` (v2)
+| `cloud`
+| Yes
+| Starting in Redpanda v26.2.
+
+| `tiered` (v1)
+| `tiered` (v2)
+| No
+| Topics cannot be converted between Tiered Storage versions, in either direction.
+
+| `local`
+| `tiered` (v2)
+| No
+|
+
+| Any other mode
 | `cloud`
 | No
-| Cloud Topics can only be set at topic creation time.
+| Cloud Topics can otherwise only be set at topic creation time.
 
 | `cloud`
-| Any
+| `local` or `tiered` (v1)
 | No
-| A Cloud Topic cannot be converted to a local or Tiered Storage topic.
+| A Cloud Topic cannot be converted to a local or Tiered Storage v1 topic.
 |===
+
+When you change the storage mode, you always set the `redpanda.storage.mode` property. The `tiered` value resolves to the version selected by the xref:reference:cluster-properties.adoc#default_redpanda_storage_mode_tiered_impl[`default_redpanda_storage_mode_tiered_impl`] cluster property, so, for example, converting a `cloud` topic to Tiered Storage v2 requires `default_redpanda_storage_mode_tiered_impl=tiered_v2`. The `redpanda.storage.mode.impl` property cannot be changed after topic creation. See xref:manage:tiered-storage.adoc#tiered-storage-versions[Choose a Tiered Storage version].
 
 For example, to transition an existing local topic to Tiered Storage:
 
@@ -283,6 +314,7 @@ redpanda.remote.delete        true                           DEFAULT_CONFIG
 redpanda.remote.read          false                          DEFAULT_CONFIG
 redpanda.remote.write         false                          DEFAULT_CONFIG
 redpanda.storage.mode         unset                          DEFAULT_CONFIG
+redpanda.storage.mode.impl    unset                          DEFAULT_CONFIG
 retention.bytes               -1                             DEFAULT_CONFIG
 retention.local.target.bytes  -1                             DEFAULT_CONFIG
 retention.local.target.ms     86400000                       DEFAULT_CONFIG
