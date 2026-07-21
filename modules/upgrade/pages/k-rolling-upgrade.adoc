@@ -295,9 +295,84 @@ kubectl get console <console-name> --namespace <namespace> -o jsonpath='{.spec.w
 +
 If warnings are present, review them and manually update your Console configuration as needed. For details about migrating to Console v3, see xref:migrate:console-v3.adoc[].
 
+== Defer upgrade finalization
+
+By default, Redpanda finalizes an upgrade automatically as soon as every broker runs the new version: version-gated features activate and downgrade is no longer possible. Deferred finalization keeps the cluster in an unfinalized state after the roll completes, so you can soak test the new version and still <<Roll back,roll back>>, even after all brokers are upgraded. This feature requires an xref:get-started:licensing/overview.adoc[Enterprise Edition license].
+
+Deferred finalization is available when upgrading to 26.2 or later, and the cluster must be running at least version 26.1.9 or 25.3.15 before the upgrade so that the configuration property is available.
+
+. Before you upgrade, on the version you are upgrading from, disable automatic finalization:
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
+  rpk cluster config set features_auto_finalization false
+----
++
+This is a runtime change to the xref:reference:properties/cluster-properties.adoc#features_auto_finalization[`features_auto_finalization`] cluster property; no restart is required. You can also set it declaratively through your usual xref:manage:kubernetes/k-cluster-property-configuration.adoc[cluster property configuration].
+
+. <<Perform a rolling upgrade,Perform the rolling upgrade>> as usual. Nothing about the roll changes, and the Redpanda Operator and Helm chart require no special configuration.
+
+. After all brokers run the new version, verify that the cluster is holding the upgrade open:
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
+  rpk cluster upgrade status
+----
++
+The output reports `ready to finalize` while the rollback window is open, along with the active logical version (the downgrade floor) and each broker's reported version.
++
+.Example output
+[%collapsible]
+====
+[.no-copy]
+----
+STATE                       ready to finalize
+ACTIVE VERSION              18
+VERSION AFTER FINALIZATION  19
+AUTO-FINALIZATION ENABLED   false
+
+NODE  RELEASE-VERSION  LOGICAL-VERSION  VERSION-KNOWN  ALIVE
+0     v26.2.1          19               true           true
+1     v26.2.1          19               true           true
+2     v26.2.1          19               true           true
+----
+====
+
+. Soak test the new version. During this window:
++
+* Version-gated features remain inactive, and configuration that depends on them reports that it cannot be configured until the upgrade is finalized.
+* To abandon the upgrade, follow <<Roll back>>. Rolling back, re-upgrading, and rolling back again is supported.
+
+. When you are confident in the new version, finalize the upgrade:
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
+  rpk cluster upgrade finalize
+----
++
+Finalization is irreversible: the previous version is no longer available for downgrade. Run `rpk cluster upgrade status` again to confirm the state reports `finalized`.
+
+. Optionally, restore automatic finalization for future upgrades:
++
+[,bash]
+----
+kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
+  rpk cluster config set features_auto_finalization true
+----
+
+[NOTE]
+====
+* Setting `features_auto_finalization` back to `true` while an upgrade is pending does not reliably finalize it. Use `rpk cluster upgrade finalize`, then restore the property afterward.
+* A finalize request is not persisted across controller leadership changes. If leadership moves before the version advances, re-run the command. A successful `finalize` means the request was accepted; poll `rpk cluster upgrade status` to confirm the version advanced.
+* Deferred finalization holds back one upgrade at a time. You cannot defer across multiple feature releases.
+====
+
 == Roll back
 
-If something does not go as planned during a rolling upgrade, you can roll back to the original version as long as you have not upgraded all brokers.
+If something does not go as planned during a rolling upgrade, you can roll back to the original version as long as you have not upgraded all brokers. With <<Defer upgrade finalization,deferred finalization>>, you can roll back even after all brokers are upgraded, at any time before you finalize the upgrade: revert the version change as described in this section, and the cluster returns to normal operation on the previous release with the same data.
 
 The StatefulSet uses the `RollingUpdate` strategy by default in xref:reference:k-redpanda-helm-spec.adoc#statefulsetupdatestrategytype[`statefulset.updateStrategy.type`],
 which means all Pods in the StatefulSet are restarted in reverse-ordinal order. For details, see the https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#update-strategies[Kubernetes documentation^].
@@ -359,6 +434,19 @@ Leaderless partitions: []
 ======
 
 == Troubleshooting
+
+=== Broker crash-loops with Incompatible downgrade detected
+
+If a broker is downgraded to a previous feature release after the upgrade was finalized, it refuses to start and its logs show:
+
+[.no-copy]
+----
+Incompatible downgrade detected! My version 18, feature table 19 indicates that all nodes in cluster were previously >= that version
+----
+
+This is a guard rail, not a bug: after finalization, the previous version can no longer read the cluster's state. The StatefulSet rolls brokers one at a time, so the roll halts at the first refused broker and the rest of the cluster stays available.
+
+To recover, set the image back to the finalized version. The rolling update must pass through the already-updated brokers before it reaches the crash-looping one, so the recovery can take several minutes; deleting the crash-looping Pod does not speed this up, because the StatefulSet recreates it at the old revision until the roll reaches its ordinal.
 
 include::troubleshoot:partial$errors-and-solutions.adoc[tags=deployment]
 
