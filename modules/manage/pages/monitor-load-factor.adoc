@@ -1,0 +1,78 @@
+= Monitor Cluster Load with the Load Factor Dashboard
+:description: Use the Redpanda Load Factor Grafana dashboard to see how close each broker is running to the capacity of its host, across CPU, disk, memory, and network.
+:page-categories: Management, Monitoring
+:env-linux: true
+:page-topic-type: how-to
+:personas: platform_admin
+:learning-objective-1: Configure Prometheus to collect the metrics the Load Factor dashboard requires
+:learning-objective-2: Import the Redpanda Load Factor dashboard into Grafana
+:learning-objective-3: Interpret the load factor to decide when a cluster needs more capacity
+
+// DRAFT-VERIFY (DOC-1381): Dashboard distribution is unconfirmed with engineering
+// (Travis Downs pinged 2026-07-21): repo import vs published bundle vs Console.
+// The import procedure below assumes users take the JSON from the redpanda repo.
+// Also confirm the exact load-factor computation semantics before publishing;
+// the description below is concept-level, derived from the dashboard structure
+// and ENG-540.
+
+Starting in Redpanda 26.2, the *Redpanda - Load Factor* Grafana dashboard shows how close each broker is running to the capacity of its host. The dashboard compares live utilization against the estimated capacity of the broker's cloud instance type and reports the result as a percentage, the load factor, for each resource: CPU, disk read and write IOPS, memory, and network. Use it to see how much headroom a cluster has, to decide when to scale, and to identify which resource saturates first as traffic grows.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
+== Prerequisites
+
+* All brokers must be running Redpanda 26.2 or later.
+* *Prometheus must scrape the internal metrics endpoint* (`/metrics`). The dashboard queries internal (`vectorized_`) metrics only; scraping the xref:manage:monitoring.adoc[public metrics endpoint] (`/public_metrics`) alone is not sufficient.
+* The xref:reference:properties/cluster-properties.adoc#enable_host_metrics[`enable_host_metrics`] cluster property must be enabled (the default). If it has been disabled, re-enabling it requires a broker restart.
+* A Grafana instance connected to your Prometheus data source.
+
+== How load factor works
+
+Traditional utilization metrics tell you how busy a resource is, but not how much capacity remains. Load factor closes that gap by comparing utilization against what the host can deliver:
+
+* *Instance capacity metrics* estimate what the broker's host can sustain. Redpanda recognizes the cloud instance type it runs on and emits the vendor's nominal figures for it: vCPUs, memory, disk size, read and write IOPS, and network throughput (the `vectorized_instance_*` metric family, labeled with `cloud_provider` and `instance_type`). Capacity figures are emitted only when Redpanda recognizes the instance type.
+* *Host OS metrics* report actual host-level activity from `/proc`: disk statistics for the block devices that back the Redpanda data and cache directories, and network counters (the `vectorized_host_diskstats_*`, `vectorized_host_netstat_*`, and `vectorized_host_snmp_*` metric families, gated by the `enable_host_metrics` cluster property). The `vectorized_io_queue_config_*` metrics report the I/O rates measured for the host during startup.
+
+The dashboard computes a load factor for each resource and highlights the highest one, which shows the resource that saturates first. A load factor near 100% means the cluster is running close to its redline on that resource: sustained growth requires scaling up or out.
+
+NOTE: Redpanda does not emit a single `load_factor` metric. The load factor is computed by the dashboard from the metric families above.
+
+== Import the dashboard
+
+The dashboard is defined in https://github.com/redpanda-data/redpanda/blob/dev/tools/dashboards/single-load-factor.json[`single-load-factor.json`^] in the Redpanda repository.
+
+. Download `single-load-factor.json`.
+. In Grafana, go to *Dashboards*, click *New*, and select *Import*.
+. Upload the JSON file, select your Prometheus data source, and click *Import*.
+
+The dashboard appears as *Redpanda - Load Factor*.
+
+== Read the dashboard
+
+The top row answers the headline question:
+
+* *Load Factor*: The current load factor per resource, as a percentage of estimated capacity.
+* *Highest Load Factor*: The single highest load factor across resources, which shows how close the broker is to its first bottleneck.
+
+The information panels describe the environment the estimates are based on:
+
+* *Host Info* and *Host Metrics Info*: The host-level statistics feeding the disk and network factors. If this panel warns that `host_metrics_info` is missing, check the <<prerequisites,prerequisites>>: the internal metrics endpoint may not be scraped, or `enable_host_metrics` may be disabled.
+* *Instance Info*: The detected cloud provider and instance type, and whether capacity estimates are available for it.
+* *IO Properties*: The I/O rates measured for the host during startup.
+
+The remaining panels break each factor down over time so you can attribute load to a resource: reactor and CPU utilization (per instance and per shard), disk read and write IOPS, available memory, client connections, and network receive and transmit rates.
+
+== Limitations
+
+* Capacity estimates are nominal vendor figures for the detected instance type, not measured limits. Real capacity can differ, for example when disk throughput is provisioned separately from the instance type.
+* When Redpanda does not recognize the instance type, capacity gauges are not emitted and the dashboard cannot compute a load factor for the affected resources.
+
+== Next steps
+
+* xref:manage:monitoring.adoc[Monitor Redpanda]
+* xref:reference:internal-metrics-reference.adoc[Internal Metrics Reference]
+* xref:manage:cluster-maintenance/manage-throughput.adoc[Manage Throughput]
