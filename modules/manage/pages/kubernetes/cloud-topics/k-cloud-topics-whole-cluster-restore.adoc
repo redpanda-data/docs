@@ -1,0 +1,197 @@
+= Restore Cloud Topics with Whole Cluster Restore
+:description: Recover Cloud Topics onto a new Kubernetes cluster after total cluster loss, with topics returning in cloud storage mode and no manual data migration.
+:page-topic-type: how-to
+:page-categories: Management, High Availability, Disaster Recovery
+:personas: platform_admin
+:learning-objective-1: Deploy a target cluster that restores Cloud Topics from object storage on bootstrap
+:learning-objective-2: Verify that restored topics retain cloud storage mode and their data
+:learning-objective-3: Identify the recovery point for Cloud Topics data
+:env-kubernetes: true
+
+You can recover xref:manage:kubernetes/cloud-topics/k-cloud-topics.adoc[Cloud Topics] onto a new cluster after the loss of an entire Redpanda cluster. Because object storage is the source of truth for Cloud Topics, a xref:manage:kubernetes/tiered-storage/k-whole-cluster-restore.adoc[Whole Cluster Restore] brings the topics back in cloud storage mode, with their data and offsets, ready to serve producers and consumers again.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+== How Whole Cluster Restore works with Cloud Topics
+
+Cloud Topics acknowledge writes only after the data is uploaded to object storage, so the bucket already holds both the topic data and the cluster metadata that Whole Cluster Restore needs. When you bootstrap a new (target) cluster against the same bucket with restore enabled, Redpanda:
+
+* Recreates the topics from the most recent cluster metadata upload.
+* Restores Cloud Topics in cloud storage mode (`redpanda.storage.mode=cloud`). Topics do not fall back to Tiered Storage or local storage.
+* Restores users, ACLs, schemas, consumer offsets, and cluster configuration, as described in xref:manage:kubernetes/tiered-storage/k-whole-cluster-restore.adoc[Whole Cluster Restore].
+
+NOTE: Topics without per-topic archival to object storage are restored empty, with their definitions but no data. This does not apply to Cloud Topics (`redpanda.storage.mode=cloud`), whose data always resides in object storage and is fully restored.
+
+Restored Cloud Topics are immediately writable. New records continue from the next offset after the restored high watermark.
+
+=== Recovery point
+
+Whole Cluster Restore recovers each Cloud Topic partition up to the point covered by the most recent topic metadata in object storage. Records that were acknowledged shortly before the cluster loss might not yet be reflected in that metadata and are not restored.
+
+For planned scenarios, such as migrations or recovery drills, stop producers and wait for metadata uploads to complete before removing the source cluster. This results in a restore with no data loss. To make uploads more frequent, see xref:manage:kubernetes/tiered-storage/k-whole-cluster-restore.adoc#manage-source-metadata-uploads[Manage source metadata uploads].
+
+== Prerequisites
+
+You must have the following:
+
+* Redpanda v26.1 or later on both the source and target clusters. Cloud Topics require v26.1 or later.
+* xref:manage:kubernetes/cloud-topics/k-cloud-topics.adoc[Cloud Topics enabled] on the source cluster, with cluster metadata uploads enabled (`enable_cluster_metadata_upload_loop` is enabled by default).
+* The object storage bucket or container used by the source cluster. The restore reads everything from this bucket, so it must survive the cluster loss.
+* A valid Redpanda Enterprise license for the target cluster.
+
+The limitations in xref:manage:kubernetes/tiered-storage/k-whole-cluster-restore.adoc#limitations[Whole Cluster Restore] also apply to clusters with Cloud Topics.
+
+== Start a target cluster with restore enabled
+
+Here we describe how to deploy a new, empty cluster configured with the same object storage settings as the failed source cluster, with Cloud Topics enabled, and with restore on bootstrap enabled.
+
+CAUTION: Before you bootstrap the target cluster against the bucket, make sure that the failed source cluster is fully destroyed, including any persistent volumes. If brokers from the previous cluster are still running against the same bucket, the storage subsystems of the two clusters may interfere with each other.
+
+[tabs]
+======
+Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    storage:
+      tiered:
+        <object-storage-settings>
+    config:
+      cluster:
+        cloud_storage_attempt_cluster_restore_on_bootstrap: true
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`cluster-restore.yaml`
+[,yaml]
+----
+storage:
+  tiered:
+    <object-storage-settings>
+config:
+  cluster:
+    cloud_storage_attempt_cluster_restore_on_bootstrap: true
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+--values cluster-restore.yaml
+```
+
+--set::
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+  --set storage.tiered.<object-storage-settings> \
+  --set config.cluster.cloud_storage_attempt_cluster_restore_on_bootstrap=true
+```
+====
+--
+======
+
+* `storage.tiered`: Configure the target cluster with the same object storage settings as the failed source cluster, including the same bucket or container. Enabling cloud storage also enables Cloud Topics on the target cluster, so restored topics can be served in cloud storage mode without additional configuration.
+* `config.cluster.cloud_storage_attempt_cluster_restore_on_bootstrap`: Run the restore automatically when the new cluster bootstraps. No manual restore command is required.
+
+The restore runs while the cluster starts. Cluster size does not need to match the source cluster, but the target cluster must be empty of user-managed data.
+
+== Verify that the restore is complete
+
+. Run the following command until it returns `inactive`:
++
+[,bash]
+----
+rpk cluster storage restore status
+----
+
+. Check if a rolling restart is required:
++
+[,bash]
+----
+rpk cluster config status
+----
++
+Example output when a restart is required:
++
+[,bash]
+----
+NODE  CONFIG-VERSION  NEEDS-RESTART  INVALID  UNKNOWN
+1     4               true           []       []
+----
+
+. If a restart is required, perform a xref:manage:kubernetes/k-rolling-restart.adoc[rolling restart].
+
+. After the restore completes, set `cloud_storage_attempt_cluster_restore_on_bootstrap` back to `false` so that future bootstraps of the same deployment do not attempt another restore. Update the value in your Redpanda resource or Helm values, then perform a rolling restart if `rpk cluster config status` reports one is needed.
+
+== Verify restored Cloud Topics
+
+. Confirm that the topic is restored in cloud storage mode:
++
+[,bash]
+----
+rpk topic describe <topic-name> -c
+----
++
+The output includes `redpanda.storage.mode` with the value `cloud`:
++
+----
+redpanda.storage.mode    cloud    DYNAMIC_TOPIC_CONFIG
+----
++
+If the topic inherited cloud storage mode from the cluster default (`default_redpanda_storage_mode`), the source column shows `DEFAULT_CONFIG` instead of `DYNAMIC_TOPIC_CONFIG`.
+
+. Confirm that the partitions contain the restored data:
++
+[,bash]
+----
+rpk topic describe <topic-name> -p
+----
++
+The high watermark of each partition reflects the restored records.
+
+. Confirm that the topic accepts new records:
++
+[,bash]
+----
+echo "restore-probe" | rpk topic produce <topic-name>
+----
++
+The record is produced at the next offset after the restored high watermark.
+
+When verification succeeds, redirect your application workload to the new cluster. Make sure to update your application code to use the new addresses of your brokers.
+
+== Next steps
+
+* xref:manage:kubernetes/cloud-topics/k-cloud-topics.adoc[]
+* xref:manage:kubernetes/tiered-storage/k-whole-cluster-restore.adoc[]
+
+== Suggested reading
+
+* xref:manage:kubernetes/tiered-storage/k-topic-recovery.adoc[Topic recovery], to restore only a subset of topic data
