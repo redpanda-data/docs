@@ -1,12 +1,20 @@
 = Fetch Read Coalescing
 :description: Reduce redundant read CPU and fetch-response memory under high consumer fan-out by sharing one read result across concurrent fetches of the same data.
 :page-categories: Clients, Development
+// tag::single-source[]
 
 When many consumers fetch the same partition at the same offset concurrently (high read fan-out), the broker does redundant work: each fetch performs its own log read, its own serialization, and allocates its own copy of the response bytes. With a fan-out of N consumers, that is roughly N times the read CPU and N times the fetch-response memory for byte-identical output.
 
 Fetch read coalescing removes that redundancy. The broker reads and serializes each unique read once, and shares the single result with every concurrent (and eligible back-to-back) consumer of the same data: one read, one serialization, one buffer, fanned out to all requesters. Under aligned fan-out, read CPU and fetch-response memory drop from roughly N times to one.
 
+ifdef::env-cloud[]
+Fetch read coalescing is available on BYOC and Dedicated clusters.
+
+Fetch read coalescing is disabled by default. Enable it when many consumers tail the same partitions with the same fetch settings, for example fan-out delivery of one stream to many downstream applications. Workloads with misaligned or low fan-out see little-to-no benefit and should leave it disabled.
+endif::[]
+ifndef::env-cloud[]
 Fetch read coalescing is disabled by default. Enable it when many consumers tail the same partitions with the same fetch settings, for example fan-out delivery of one stream to many downstream applications. Workloads with misaligned or low fan-out see little-to-no benefit and should leave it disabled. See <<Evaluate coalescing effectiveness>> for how to measure whether it helps your workload.
+endif::[]
 
 == How fetch read coalescing works
 
@@ -39,6 +47,11 @@ rpk cluster config set kafka_fetch_read_coalescing_enabled true
 
 This is a runtime change; no restart is required. The coalescing cache is fixed-size (about 0.5 MB per shard) and is allocated only while the feature is enabled; there is no separate sizing property. Setting the property back to `false` disables coalescing and clears the per-shard cache immediately.
 
+ifdef::env-cloud[]
+For details about updating cluster properties in Redpanda Cloud, see xref:manage:cluster-maintenance/config-cluster.adoc[].
+endif::[]
+
+ifndef::env-cloud[]
 == Evaluate coalescing effectiveness
 
 The coalescer exports four counters on the internal `/metrics` endpoint, one series per shard. The metrics are registered only when internal metrics are enabled (that is, when `disable_metrics` is not set).
@@ -69,6 +82,7 @@ coalescing hit ratio =
 ----
 
 A ratio near 0 means little fan-out is being collapsed: the reads aren't aligning on the same partition, offset, and fetch settings, and the workload is unlikely to benefit from coalescing. A high ratio means the coalescer is absorbing most of the fan-out.
+endif::[]
 
 == Limitations
 
@@ -83,4 +97,11 @@ Before enabling fetch read coalescing, familiarize yourself with the following l
 == Suggested reading
 
 * xref:develop:consume-data/follower-fetching.adoc[]
+ifndef::env-cloud[]
 * xref:manage:monitoring.adoc[]
+endif::[]
+ifdef::env-cloud[]
+* xref:manage:monitor-cloud.adoc[]
+endif::[]
+
+// end::single-source[]
