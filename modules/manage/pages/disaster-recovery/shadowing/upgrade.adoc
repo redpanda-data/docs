@@ -1,0 +1,93 @@
+= Upgrade Clusters in a Shadowing Topology
+:description: Upgrade shadow-linked clusters safely: upgrade the shadow cluster before the source cluster, and use deferred finalization for bidirectional topologies.
+:page-categories: Management, Disaster Recovery, Upgrades
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+When two clusters are connected by a xref:manage:disaster-recovery/shadowing/overview.adoc[shadow link], an upgrade is no longer a single-cluster operation. The source and shadow clusters temporarily run different versions during the upgrade window, and the order in which you upgrade them determines whether topic metadata replication continues safely. This page gives you the upgrade order for shadow-linked clusters, and a coordinated procedure for bidirectional topologies, where each cluster shadows the other and no safe upgrade order exists. The bidirectional procedure uses xref:upgrade:deferred-finalization.adoc[deferred upgrade finalization] to keep new-version features inactive on both clusters until both are fully upgraded, so replication is never exposed to features that only one side supports.
+
+Use this guidance whenever you upgrade clusters that participate in a shadow link. Upgrading them like independent clusters risks breaking replication mid-upgrade.
+
+== Upgrade the shadow cluster before the source cluster
+
+When you upgrade a source cluster and its shadow cluster, upgrade the shadow cluster first.
+
+Shadowing replicates topic configuration from the source to the shadow. If the source cluster is upgraded first, it can start using topic property values that the not-yet-upgraded shadow cluster does not support, which can break the topic metadata replication flow. Upgrading the shadow cluster first means the shadow always understands everything the source can send.
+
+For each cluster, follow the standard rolling upgrade procedure for your platform: xref:upgrade:rolling-upgrade.adoc[Linux] or xref:upgrade:k-rolling-upgrade.adoc[Kubernetes]. After each cluster's upgrade completes, verify shadow link health before proceeding: run `rpk shadow status <shadow-link-name>` on the shadow cluster and confirm that the link and its topics are in expected states. See xref:manage:disaster-recovery/shadowing/monitor.adoc[].
+
+== Upgrade a bidirectional topology
+
+In a bidirectional topology, two clusters each maintain a shadow link to the other, replicating non-overlapping sets of topics in opposite directions. Each cluster is an active source for its own topics and a shadow for the other cluster's topics. The topic sets on the two links cannot overlap.
+
+Because each cluster is simultaneously a source and a shadow, the shadow-first upgrade order cannot be satisfied: whichever cluster you upgrade first is also a source for the other. The workaround is to defer upgrade finalization on both clusters. Both clusters roll to the new binaries while their version-gated features stay inactive, so neither side can start using functionality the other side doesn't support yet. When both clusters are fully upgraded, you finalize both together.
+
+=== Prerequisites
+
+* Both clusters must be running the same Redpanda version before you start the upgrade.
+* Both clusters must be running at least version 26.1.9 or 25.3.15, and the upgrade target must be 26.2 or later. See xref:upgrade:deferred-finalization.adoc#prerequisites[Defer Upgrade Finalization: Prerequisites].
+* Both clusters need a valid Enterprise Edition license. Setting `features_auto_finalization` to `false` is rejected without one.
+* You need superuser access on both clusters.
+
+=== Procedure
+
+. On both clusters, before touching any binaries, disable automatic finalization:
++
+[,bash]
+----
+rpk cluster config set features_auto_finalization false
+----
++
+This is a runtime change; no restart is required.
+
+. Perform a rolling upgrade of the first cluster, following the standard procedure for your platform (xref:upgrade:rolling-upgrade.adoc[Linux] or xref:upgrade:k-rolling-upgrade.adoc[Kubernetes]).
+
+. Verify both replication directions: on each cluster, run `rpk shadow status <shadow-link-name>` and confirm the link, topic, and task states are healthy. See xref:manage:disaster-recovery/shadowing/monitor.adoc[].
+
+. Perform a rolling upgrade of the second cluster, then verify both replication directions again.
+
+. Confirm that both clusters are holding the upgrade open:
++
+[,bash]
+----
+rpk cluster upgrade status
+----
++
+Each cluster should report `ready to finalize`. Soak for as long as your validation requires. While either cluster is unfinalized, it can still xref:upgrade:deferred-finalization.adoc#roll-back-to-the-previous-release[roll back to the previous release].
+
+. Finalize both clusters promptly together. Do not leave one cluster finalized and the other unfinalized for longer than necessary. On each cluster:
++
+[,bash]
+----
+rpk cluster upgrade finalize
+----
++
+Finalization is asynchronous: confirm on each cluster that `rpk cluster upgrade status` reports `finalized` before moving on. See xref:upgrade:deferred-finalization.adoc#finalize-the-upgrade[Finalize the upgrade].
+
+. On both clusters, restore automatic finalization for future upgrades:
++
+[,bash]
+----
+rpk cluster config set features_auto_finalization true
+----
+
+. Start using new-version features only after both clusters are finalized.
+
+=== What to expect while the upgrade is unfinalized
+
+* Existing shadow links keep replicating in both directions throughout the upgrade, the soak, and any rollback.
+* New shadow-link capabilities introduced by the new version cannot be configured yet. For example, on 26.2, configuring role sync or Schema Registry API-mode sync on a shadow link fails with a `FAILED_PRECONDITION` error stating that the feature cannot be configured until the upgrade is finalized. These errors are the feature gates working as designed. For the full list of gated features, see xref:upgrade:deferred-finalization.adoc#what-is-unavailable-while-unfinalized[What is unavailable while unfinalized].
+
+== Limitations
+
+* *Do not stay unfinalized indefinitely.* An unfinalized cluster blocks the next feature-release upgrade: Redpanda supports upgrades from exactly one feature release back, so both clusters must finalize before either can begin the next upgrade.
+* *New features wait for both clusters.* The risk in linked-cluster upgrades comes from using new-version functionality while the clusters are in a mixed or unfinalized state. Adopt new features only after both clusters are upgraded and finalized.
+
+== Suggested reading
+
+* xref:upgrade:deferred-finalization.adoc[]
+* xref:manage:disaster-recovery/shadowing/setup.adoc[]
+* xref:manage:disaster-recovery/shadowing/monitor.adoc[]
