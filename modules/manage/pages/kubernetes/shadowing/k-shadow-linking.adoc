@@ -100,6 +100,8 @@ spec:
 [WARNING]
 ====
 Use this same-cluster, cross-namespace topology only for development and testing, such as rehearsing replication and failover on a single Kubernetes cluster. A single Kubernetes cluster is a single failure domain, so it cannot provide disaster recovery. For production, deploy the source and shadow clusters in separate Kubernetes clusters, ideally in separate cloud regions, and connect them using `staticConfiguration`.
+
+When two Redpanda clusters run on the same Kubernetes cluster with default values, their external listeners collide on the same node ports and the second cluster fails to deploy with `provided port is already allocated`. Disable external access on at least one of the clusters with `external.enabled: false`, or assign non-overlapping node ports.
 ====
 
 - For external clusters, or clusters that are not managed by the same operator, use `staticConfiguration`:
@@ -485,6 +487,106 @@ security_sync_options:
 --
 ======
 
+== Configure schema replication
+
+A shadow link replicates Schema Registry data from the source cluster by default. Choose one of three modes with `schema_registry_shadowing_mode`:
+
+* `topic` (default): Shadow the source Redpanda cluster's internal `_schemas` topic byte for byte. Use this mode when the source is another Redpanda cluster.
+* `api`: Replicate schemas from the source Schema Registry over its REST API. Use this mode when the source is a Confluent Schema Registry, or when you need to filter contexts or subjects, remap contexts, or control how unsupported schema features are handled. For concepts, the migration workflow, and validation policies, see xref:manage:disaster-recovery/shadowing/migrate-schemas-confluent.adoc[].
+* `disabled`: Turn schema replication off.
+
+This example replicates schemas from a Confluent Schema Registry, with the API key and secret stored in a Kubernetes Secret named `sr-credentials`:
+
+[tabs]
+======
+Operator::
++
+--
+[,yaml]
+----
+spec:
+  schemaRegistrySyncOptions:
+    schema_registry_shadowing_mode: api
+    shadowSchemaRegistryAPI:
+      sourceURL: https://psrc-xxxxx.us-east-1.aws.confluent.cloud
+      authentication:
+        basic:
+          username:
+            secretKeyRef:
+              name: sr-credentials
+              key: api-key
+          password:
+            secretKeyRef:
+              name: sr-credentials
+              key: api-secret
+----
+
+For source filters, destination context mappings, sync intervals, and the unsupported-schema policy, see the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-shadowlinkschemaregistryapioptions[ShadowLinkSchemaRegistryAPIOptions] reference.
+--
+
+Helm::
++
+--
+[,yaml]
+----
+# shadow-config.yaml
+schema_registry_sync_options:
+  shadow_schema_registry_api:
+    source_url: https://psrc-xxxxx.us-east-1.aws.confluent.cloud
+    auth_options:
+      basic:
+        username: <sr-api-key>
+        password: <sr-api-secret>
+    tls_settings:
+      enabled: true
+----
+--
+======
+
+NOTE: While the link is active, the destination contexts that the link replicates into are read-only on the shadow cluster. Schema replication in `api` mode requires Redpanda 26.2 or later, and the feature activates only after all brokers complete the upgrade.
+
+== Configure role synchronization
+
+A shadow link replicates RBAC role definitions and role memberships from the source cluster by default, so that role-based permissions keep working after failover. Use role synchronization together with <<Configure ACL synchronization,ACL synchronization>> when your authorization model uses roles.
+
+[tabs]
+======
+Operator::
++
+--
+[,yaml]
+----
+spec:
+  roleSyncOptions:
+    enabled: true
+    interval: 30s
+    roleNameFilters:
+      - name: "*"
+        filterType: include
+        patternType: literal
+----
+
+Set `enabled: false` to turn role replication off. Role name filters use the same pattern and filter types as topic filters.
+--
+
+Helm::
++
+--
+[,yaml]
+----
+# shadow-config.yaml
+role_sync_options:
+  interval: 30s
+  role_name_filters:
+    - pattern_type: LITERAL
+      filter_type: INCLUDE
+      name: '*'
+----
+--
+======
+
+Within the configured filters, the shadow cluster's roles are kept as a full mirror of the source: roles are created, updated, and deleted to match. Role synchronization requires Redpanda 26.2 or later on both clusters, and the feature activates only after all brokers complete the upgrade.
+
 == Verify shadow link
 
 [tabs]
@@ -504,13 +606,15 @@ The status section shows replication details:
 [,yaml]
 ----
 status:
+  state: active
   conditions:
-    - type: Ready
+    - type: Synced
       status: "True"
-      lastTransitionTime: "2024-12-10T10:00:00Z"
-      reason: ReconciliationSucceeded
-      message: Shadow link is active and replicating
-  observedGeneration: 1
+      reason: Synced
+      message: Successfully synced "disaster-recovery-link" to cluster.
+  shadowTopicStatuses:
+    - name: orders
+      state: active
 ----
 
 Verify replication:
