@@ -7,7 +7,7 @@
 include::shared:partial$enterprise-license.adoc[]
 ====
 
-By default, Redpanda finalizes a feature-release upgrade (for example, 26.1 to 26.2) automatically: within seconds of the last broker restarting on the new version, the cluster commits to the new release, version-gated features activate, and rollback is no longer supported. Deferred finalization gives you control over that commit step. When you disable automatic finalization before the upgrade, the cluster holds at the previous logical version after all brokers are rolled to the new binaries. New-version features stay inactive, nothing that would break a downgrade is written to disk, and you can roll the binaries back to the previous release, repeatedly if needed, until you explicitly finalize.
+By default, Redpanda finalizes a feature-release upgrade (for example, v26.1 to v26.2) automatically: within seconds of the last broker restarting on the new version, the cluster commits to the new release, version-gated features activate, and rollback is no longer supported. Deferred finalization gives you control over that cluster commit step. When you disable automatic finalization before the upgrade, the cluster holds at the previous logical version after all brokers are rolled to the new binaries. New-version features stay inactive, nothing that would break a downgrade is written to disk, and you can roll the binaries back to the previous release, repeatedly if needed, until you explicitly finalize.
 
 Use deferred finalization when you need a soak period: run the new release under production load for hours, days, or weeks, and keep a guaranteed path back to the previous release if something looks wrong. This is especially valuable for organizations with regulatory or operational reversibility requirements for production changes.
 
@@ -21,15 +21,15 @@ A rolling upgrade moves through three phases:
 
 . *Mixed versions*: Some brokers are upgraded, some are not. The active version holds at the old version and new features stay gated off. This phase can last hours during a normal rolling upgrade.
 . *All brokers upgraded, not yet finalized*: Every broker runs the new binary, but the cluster has not yet committed to the new version. With automatic finalization (the default), this phase lasts only seconds.
-. *Finalized*: The cluster commits the new active version and the newly unlocked features activate. The active version is also the *downgrade floor*: a broker running an older binary refuses to start against finalized cluster state.
+. *Finalized*: The cluster commits the new active version and the newly unlocked features activate. The active version is also the *downgrade floor*: a broker running an older binary that refuses to start against finalized cluster state.
 
 Deferred finalization extends the second phase for as long as you choose. Nothing about the first or third phase changes; the feature adds an explicit commit step between them.
 
 == Prerequisites
 
 * A valid Enterprise Edition license. Setting `features_auto_finalization` to `false` is rejected unless a valid license (including the built-in trial license) is in effect. See <<License behavior>>.
-* The cluster must be running at least version 26.1.9 or 25.3.15 before the upgrade, so that the xref:reference:properties/cluster-properties.adoc#features_auto_finalization[`features_auto_finalization`] property is available to set.
-* The upgrade target must be 26.2 or later. The deferral logic ships in 26.2, so the first upgrade that can be held open is 26.1 to 26.2. Earlier upgrades, such as 25.3 to 26.1, finalize automatically regardless of the property setting.
+* The cluster must be running at least v26.1.9 or v25.3.15 before the upgrade, so that the xref:reference:properties/cluster-properties.adoc#features_auto_finalization[`features_auto_finalization`] property is available to set.
+* The upgrade target must be v26.2 or later. The deferral logic ships in v26.2, so the first upgrade that can be held open is v26.1 to v26.2. Earlier upgrades, such as v25.3 to v26.1, finalize automatically regardless of the property setting.
 * The `rpk cluster upgrade` commands and the underlying Admin API calls require superuser privileges.
 
 == Defer finalization for an upgrade
@@ -77,12 +77,12 @@ When your validation passes, <<finalize-the-upgrade,finalize the upgrade>>. If i
 
 While the cluster is unfinalized, everything that worked on the previous release keeps working, including produce and consume traffic, Tiered Storage, existing shadow links, and Iceberg topics in existing modes. What you give up during the soak is the new release's version-gated features. These gates are the mechanism of downgrade safety: they prevent new-format state from being persisted while the rollback path is open.
 
-For 26.2, the following gated features have user-visible behavior while the upgrade is unfinalized:
+For v26.2, the following gated features have user-visible behavior while the upgrade is unfinalized:
 
 |===
 | Feature | Behavior while unfinalized
 
-| Cloud topics storage mode
+| Cloud Topics storage mode
 | Creating a topic with the `tiered_v2` storage mode is rejected with an `INVALID_CONFIG` error. The storage mode becomes available automatically when you finalize.
 
 | Shadow link role sync
@@ -92,12 +92,12 @@ For 26.2, the following gated features have user-visible behavior while the upgr
 | Configuring Schema Registry API-mode sync on a shadow link fails with a `FAILED_PRECONDITION` error: "Schema Registry API sync mode cannot be configured until the upgrade is finalized." The pre-existing topic-mode Schema Registry sync is unaffected. See xref:manage:disaster-recovery/shadowing/migrate-schemas-confluent.adoc[].
 
 | Extended Iceberg mode configurations
-| The extended Iceberg mode topic configurations introduced in 26.2 are rejected until you finalize.
+| The extended Iceberg mode topic configurations introduced in v26.2 are rejected until you finalize.
 |===
 
-Two additional 26.2 feature gates are internal-only and have no user-visible difference while unfinalized.
+Two additional v26.2 feature gates are internal-only and have no user-visible difference while unfinalized.
 
-If new-in-26.2 functionality returns an error that mentions finalization, the feature gate is working as designed: the upgrade is not done until you finalize. Run `rpk cluster upgrade status` to confirm the cluster state.
+If new-in-v26.2 functionality returns an error that mentions finalization, the feature gate is working as designed: the upgrade is not done until you finalize. Run `rpk cluster upgrade status` to confirm the cluster state.
 
 [[roll-back-to-the-previous-release]]
 == Roll back to the previous release
@@ -192,15 +192,19 @@ The v1 Admin API is unchanged and still useful: `GET /v1/features` reports `clus
 
 == License behavior
 
+As noted in Prerequisites, a valid Enterprise license is required to specify deferred finalization. The following behaviors occur if you attempt to use deferred finalization without a license.
+
 * License enforcement happens when you set the property: without a valid Enterprise license, setting `features_auto_finalization` to `false` is rejected, and the error names the property.
 * If the license expires after the property is set, deferred finalization keeps operating. The cluster does not flip back to auto-finalizing mid-soak.
 * Finalizing is not license-checked: `rpk cluster upgrade finalize` works even if the license expired during the soak. The enforcement point is setting the property, nothing else.
 
 == Limitations
 
+Before starting, familiarize yourself with the limitations of the deferred finalization feature:
+
 * *Not available in Redpanda Cloud.* Cloud manages its own upgrade lifecycle, and `rpk` refuses to run the upgrade commands against cloud clusters.
-* *You cannot skip finalization and keep upgrading.* Redpanda supports upgrades from exactly one feature release back, so an unfinalized 26.2 cluster must finalize before you can begin an upgrade to 26.3. Staying unfinalized indefinitely blocks future upgrades.
-* *In multi-hop upgrades, only the newest hop is held.* The property value persists across hops, but intermediate hops finalize automatically. For example, in a 25.3 to 26.1 to 26.2 upgrade path, the 25.3 to 26.1 hop auto-finalizes (26.1 has the property definition but not the deferral logic), and only the 26.1 to 26.2 hop holds. You cannot roll back to 25.3 after reaching 26.1.
+* *You cannot skip finalization and keep upgrading.* Redpanda supports upgrades from exactly one feature release back, so an unfinalized v26.2 cluster must finalize before you can begin an upgrade to v26.3. Staying unfinalized indefinitely blocks future upgrades.
+* *In multi-hop upgrades, only the newest hop is held.* The property value persists across hops, but intermediate hops finalize automatically. For example, in a v25.3 to v26.1 to v26.2 upgrade path, the v25.3 to v26.1 hop auto-finalizes (v26.1 has the property definition but not the deferral logic), and only the v26.1 to v26.2 hop holds. You cannot roll back to v25.3 after reaching v26.1.
 * *No dedicated metric or alert.* There is no metric for "finalization pending." Monitor with `rpk cluster upgrade status --format json` or the `GetUpgradeStatus` RPC.
 * *Brokers advertise the new release version during the soak.* The Admin API, health reports, `rpk redpanda admin brokers list`, and the Redpanda Console broker view all show the new release string while unfinalized; only the logical version and feature activation are held back. The one wire-visible exception: Kafka API keys gated behind held features are absent from `ApiVersions` responses until finalization.
 * *`features_auto_finalization` is independent of `features_auto_enable`.* Auto-finalization controls when the cluster version advances; `features_auto_enable` is an older, unrelated property that controls whether individual features activate on their own after the version has advanced. Leave `features_auto_enable` alone.
@@ -216,7 +220,7 @@ For the Kubernetes procedure, see xref:upgrade:k-rolling-upgrade.adoc[].
 The design principle throughout is that the cluster never advances without an explicit request: the failure mode is always "you must ask again," never "it finalized when it shouldn't have."
 
 Finalize appears to do nothing::
-Finalize requests are asynchronous and one-shot. The controller validates preconditions (all broker versions known, uniform at the target version, all brokers alive) when it processes the request. If a precondition fails, for example because a broker went offline between your status check and the request being processed, the request is consumed and the version advance is skipped. Re-issue the finalize request once the cluster is healthy, and always confirm the result with `rpk cluster upgrade status`.
+Finalize requests are asynchronous and one-shot. The controller validates preconditions (all broker versions known, uniform at the target version, all brokers online) when it processes the request. If a precondition fails, for example because a broker went offline between your status check and the request being processed, the request is consumed and the version advance is skipped. Re-issue the finalize request once the cluster is healthy, and always confirm the result with `rpk cluster upgrade status`.
 
 Finalize request lost after a controller leadership change::
 A pending finalize request does not survive controller leader changes or restarts. If leadership moves after you finalize but before the advance lands, re-issue the request against any broker; it is forwarded to the new leader.
@@ -228,7 +232,7 @@ A down broker blocks finalization::
 If a broker is down, status reports `upgrade in progress` with `alive: false` for that broker, and finalization is blocked. This is by design and matches the rule the automatic path has always had. Restore or decommission the broker first.
 
 `Incompatible downgrade detected` error after finalization::
-If a broker starts with a binary older than the finalized cluster version, it logs `Incompatible downgrade detected!` and aborts with a backtrace and crash report. This looks like a crash, but it is the guard rail that protects finalized cluster state. To recover, reinstall the new release's binary on that broker; the data is untouched. If you believe you need to bypass this check, contact Redpanda support.
+If a broker starts with a binary older than the finalized cluster version, it logs `Incompatible downgrade detected!` and aborts with a backtrace and crash report. This looks like a crash, but it is the guard rail that protects finalized cluster state. To recover, reinstall the new release's binary on that broker; the data is untouched. If you must bypass this check, contact Redpanda support.
 
 A fresh cluster reports `finalized`::
 New clusters bootstrap already finalized at their binary's version, so `rpk cluster upgrade status` reports `finalized` with the active version equal to the version after finalization. This is normal; the `features_auto_finalization` property only matters across upgrades.
