@@ -60,7 +60,7 @@ graph TB
 
 The operators form the control plane: they coordinate through their own Raft group over TLS and manage the StretchCluster as a single unit. The brokers form the data plane: they replicate partition data directly with each other across clusters, without going through the operators.
 
-This design protects the control plane against split brain. Every operator is installed with the same fixed peer list (`multicluster.peers`), and the operators elect a single leader through Raft, which drives reconciliation for the whole Stretch Cluster. During a network partition, only the side that holds a majority of the peer list can elect a leader and reconcile changes; operators on the minority side stop reconciling until the partition heals. Because the operators are not on the data path, brokers continue to serve traffic while reconciliation is paused.
+This design protects the control plane against split brain. You install every operator with the same fixed peer list (`multicluster.peers`), and the operators elect a single leader through Raft, which drives reconciliation for the whole Stretch Cluster. During a network partition, only the side that holds a majority of the peer list can elect a leader and reconcile changes; operators on the minority side stop reconciling until the partition heals. Because the operators are not on the data path, brokers continue to serve traffic while reconciliation is paused.
 
 Leader election happens at two levels. Within each Kubernetes cluster, operator replicas elect a local leader through a standard Kubernetes Lease, so you can run multiple operator replicas per cluster for high availability. Across clusters, only each cluster's local leader participates in the Raft group, representing its cluster with a single identity.
 
@@ -68,9 +68,9 @@ NOTE: The peer list is fixed at installation time. To add or remove a participat
 
 == Limitations
 
-* *RedpandaBrokerPool works only with StretchCluster resources*. The CRD is installed only in multicluster mode, and standalone Redpanda resources cannot use it. To manage broker pools in a standalone cluster, use the beta xref:manage:kubernetes/k-node-pools.adoc[NodePool resource] instead.
-* *Tiered Storage is not supported* on Stretch Clusters in this release. This also means that features that depend on Tiered Storage are unavailable, including xref:manage:iceberg/about-iceberg-topics.adoc[Iceberg topics] and xref:manage:kubernetes/k-cloud-topics.adoc[Cloud Topics].
-* *Keep all locations on the same continent*. Transoceanic deployments are technically possible but produce latency degrades with distance, and pairwise latencies over the documented budgets cause broker liveness failures. See <<Prerequisites>>.
+* *RedpandaBrokerPool scope*: RedpandaBrokerPool works only with StretchCluster resources. The CRD is installed only in multicluster mode, and standalone Redpanda resources cannot use it. To manage broker pools in a standalone cluster, use the beta xref:manage:kubernetes/k-node-pools.adoc[NodePool resource] instead.
+* *Tiered Storage*: Not supported on Stretch Clusters in this release. This also means that features that depend on Tiered Storage are unavailable, including xref:manage:iceberg/about-iceberg-topics.adoc[Iceberg topics] and xref:manage:kubernetes/cloud-topics/k-cloud-topics.adoc[Cloud Topics].
+* *Distance*: Keep all locations on the same continent. Transoceanic deployments are technically possible, but produce latency degrades with distance, and pairwise latencies over the documented budgets cause broker liveness failures. See <<Prerequisites>>.
 
 == Prerequisites
 
@@ -89,13 +89,13 @@ rpk k8s install
 +
 The `k8s` plugin is a managed rpk plugin: it also downloads automatically, with checksum verification, the first time you run any `rpk k8s` command.
 
-* *At least three Kubernetes clusters, running a xref:upgrade:k-compatibility.adoc#compatibility-matrix[supported Kubernetes version]*: The operators form a Raft group that needs a quorum of `⌊n/2⌋ + 1` members to elect a leader. With three clusters, the deployment tolerates the loss of one cluster. With only two clusters, the loss of either cluster stops the operator control plane, so two-cluster deployments are not recommended. Stretch Clusters work on managed Kubernetes services, including Amazon EKS, Google GKE, and Azure AKS, as well as self-managed clusters.
+* *At least three Kubernetes clusters, running a xref:upgrade:k-compatibility.adoc#compatibility-matrix[supported Kubernetes version]*: The operators form a Raft group that needs a quorum of `⌊n/2⌋ + 1` members to elect a leader. With three clusters, the deployment tolerates the loss of one cluster. With only two clusters, the loss of either cluster stops the operator control plane, so two-cluster deployments are not recommended. Stretch Clusters work on managed Kubernetes services, including Amazon EKS, Google GKE, and Azure AKS, and on self-managed clusters.
 
 * *Cross-cluster networking*: One of the networking modes described in <<Choose a networking mode>>.
 
 * *Network requirements*:
 ** Pod-to-pod connectivity between all clusters.
-** Inter-cluster network latency under 50 ms for optimal performance. In practice, this means placing all Kubernetes clusters on the same continent, for example a same-continent region trio such as AWS us-east-1, us-east-2, and us-west-2, or GCP us-east1, us-central1, and us-west1. Measure the pairwise round-trip times between your candidate regions before deploying. Transoceanic links typically exceed this budget; for replication across greater distances, use xref:manage:disaster-recovery/shadowing/overview.adoc[Shadowing] instead.
+** Inter-cluster network latency under 50 ms for optimal performance; broker liveness checks begin to fail above roughly 100 ms, even with WAN tuning. In practice, this means choosing regions on the same continent, for example AWS us-east-1, us-east-2, and us-west-2, or GCP us-east1, us-central1, and us-west1. Measure the pairwise round-trip times between your candidate regions before deploying. Transoceanic links typically exceed this budget; for replication across greater distances, use xref:manage:disaster-recovery/shadowing/overview.adoc[Shadowing] instead.
 ** Sufficient bandwidth for cross-cluster replication traffic.
 
 * *Kubernetes API access*: Each operator must be able to reach the Kubernetes API servers of all peer clusters, and you need a kubeconfig with contexts for all participating clusters to run the bootstrap command.
@@ -503,7 +503,7 @@ With the recommended 2/2/2 layout and `default_topic_replications: 5`, at most t
 
 * *Two or more locations down*: Partitions lose their Raft majority and the cluster stops serving writes, and the operator control plane loses quorum and stops reconciling. This is an availability outage, not data loss: acknowledged writes persist on the surviving disks, and the cluster resumes when a location is restored. If a lost location cannot be restored, contact Redpanda Support before attempting recovery.
 
-* *Beyond quorum loss*: A Stretch Cluster cannot survive the simultaneous loss of a majority of its locations. For protection against failures of that scale, or for an isolated recovery copy, use xref:manage:disaster-recovery/shadowing/overview.adoc[Shadowing] between independent clusters. Failing over to a shadow cluster costs a replication-lag window (an RPO greater than zero) and requires repointing clients. For how the two features combine, see xref:deploy:redpanda/kubernetes/k-choose-deployment.adoc#stretch-clusters-and-shadowing[Stretch Clusters and Shadowing].
+* *Beyond quorum loss*: A Stretch Cluster cannot survive the simultaneous loss of a majority of its locations. For protection against failures of that scale, or for an isolated recovery copy, use xref:manage:disaster-recovery/shadowing/overview.adoc[Shadowing] between independent clusters. Failing over to a shadow cluster costs a replication-lag window (a recovery point objective, or RPO, greater than zero) and requires repointing clients. For how the two features combine, see xref:deploy:redpanda/kubernetes/k-choose-deployment.adoc#stretch-clusters-and-shadowing[Stretch Clusters and Shadowing].
 
 == Optimize for region failures
 
