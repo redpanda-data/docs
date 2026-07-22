@@ -4,10 +4,21 @@
 :tags: ["Kubernetes", "Helm configuration"]
 :page-categories: Management, Networking
 :env-kubernetes: true
+:page-topic-type: how-to
+:personas: platform_operator, platform_engineer
+:learning-objective-1: Choose between TLS passthrough and TLS termination for Gateway-routed listeners
+:learning-objective-2: Deploy a Gateway and configure Redpanda listeners to route through it
+:learning-objective-3: Diagnose TLSRoute and Gateway connectivity failures
 
 Expose your Redpanda cluster to external clients through a single https://gateway-api.sigs.k8s.io/[Gateway API^] entry point instead of NodePort or LoadBalancer Services. Clients connect to one static Gateway address, and the Gateway routes each connection to the right broker using TLS Server Name Indication (SNI), so you avoid per-broker LoadBalancers and node port management.
 
 This feature is in beta. The configuration surface (`external.gateway` and the per-listener `type` field) may change before general availability. Beta features are not recommended for production environments. To give feedback, reach out to the Redpanda team in https://redpanda.com/slack[Redpanda Community Slack^].
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
 
 == How it works
 
@@ -37,7 +48,7 @@ The Gateway listener's `tls.mode` determines where TLS ends. Redpanda creates th
 |TLS ends at the Gateway. Traffic between the Gateway and the brokers is unencrypted.
 
 |Certificates
-|The broker certificates must include the bootstrap and per-broker hostnames. Redpanda adds these SANs automatically to xref:manage:kubernetes/security/tls/k-cert-manager.adoc[cert-manager-managed certificates].
+|The broker certificates must include the bootstrap and per-broker hostnames. Redpanda adds these Subject Alternative Names (SANs) automatically to xref:manage:kubernetes/security/tls/k-cert-manager.adoc[cert-manager-managed certificates].
 |One certificate on the Gateway covers all hostnames. The broker certificates are not involved.
 
 |Client authentication
@@ -74,7 +85,7 @@ No published Redpanda Helm chart includes this feature yet. If you deploy with t
 
 * A xref:upgrade:k-compatibility.adoc#compatibility-matrix[supported Kubernetes version]. The Gateway API 1.5 CRDs fail to install on API servers earlier than Kubernetes 1.31. For the version support policy, see the https://gateway-api.sigs.k8s.io/docs/concepts/versioning/[Gateway API versioning documentation^].
 
-* The Gateway API CRDs, version 1.5 or later, installed from a https://gateway-api.sigs.k8s.io/docs/concepts/versioning/#release-channels[release channel^] that includes `TLSRoute`. Redpanda creates `TLSRoute` resources from the GA `gateway.networking.k8s.io/v1` API, which is available in Gateway API 1.5. For installation steps, see the https://gateway-api.sigs.k8s.io/guides/[Gateway API getting started guide^].
+* The Gateway API CRDs, version 1.5 or later, installed from a https://gateway-api.sigs.k8s.io/docs/concepts/versioning/#release-channels[release channel^] that includes `TLSRoute`. Redpanda creates `TLSRoute` resources from the generally available (GA) `gateway.networking.k8s.io/v1` API, which is available in Gateway API 1.5. For installation steps, see the https://gateway-api.sigs.k8s.io/guides/[Gateway API getting started guide^].
 
 * A Gateway controller that supports `TLSRoute`, such as Envoy Gateway or Istio. Redpanda does not create the Gateway resource. See <<Deploy a Gateway>>.
 +
@@ -85,7 +96,7 @@ Use a controller version that watches `TLSRoute` at the GA `gateway.networking.k
 If your controller bundles its own Gateway API CRDs, install it without them (for example, `helm install --skip-crds` for Envoy Gateway) so it uses your Gateway API 1.5 CRDs. For installation details, see your controller's documentation, such as the https://gateway.envoyproxy.io/docs/install/[Envoy Gateway installation guide^].
 ====
 
-* TLS between clients and the Gateway. The Gateway routes connections by SNI, which requires clients to connect with TLS in both modes. With passthrough, enable TLS on every Redpanda listener that you route through the Gateway; if you use xref:manage:kubernetes/security/tls/k-cert-manager.adoc[cert-manager-managed certificates], Redpanda automatically adds the bootstrap and per-broker hostnames to the certificate's Subject Alternative Names (SANs). With termination, the Gateway presents its own certificate instead. See <<Choose a TLS mode>>.
+* TLS between clients and the Gateway. The Gateway routes connections by SNI, which requires clients to connect with TLS in both modes. With passthrough, enable TLS on every Redpanda listener that you route through the Gateway; if you use xref:manage:kubernetes/security/tls/k-cert-manager.adoc[cert-manager-managed certificates], Redpanda automatically adds the bootstrap and per-broker hostnames to the certificate's SANs. With termination, the Gateway presents its own certificate instead. See <<Choose a TLS mode>>.
 
 * Control over DNS for your chosen hostnames. The bootstrap hostname and all per-broker hostnames must resolve to the Gateway's external address.
 
@@ -208,6 +219,8 @@ kubectl get gateway redpanda-gateway --namespace <namespace> \
 The listener reports `Accepted=True` and `Programmed=True`. The Gateway's external address comes from your Gateway implementation, typically through a LoadBalancer Service that it provisions.
 
 == Configure Redpanda listeners for the Gateway
+
+Opt each external listener into Gateway routing and point Redpanda at the Gateway you deployed.
 
 . Enable gateway mode and reference your Gateway.
 +
@@ -335,7 +348,7 @@ kubectl get tlsroutes --namespace <namespace> \
   -o custom-columns='NAME:.metadata.name,HOSTNAMES:.spec.hostnames'
 ----
 +
-NOTE: Plain `kubectl get tlsroutes` prints only the `NAME` and `AGE` columns. Use the `custom-columns` output above (or `-o yaml`) to see the hostnames.
+NOTE: Plain `kubectl get tlsroutes` prints only the `NAME` and `AGE` columns. Use this command's `custom-columns` output (or `-o yaml`) to see the hostnames.
 +
 For a three-broker cluster named `redpanda`, expect a bootstrap route and one route per broker:
 +
@@ -396,11 +409,11 @@ rpk cluster info \
 +
 The broker list shows the per-broker hostnames with the advertised port.
 +
-The CA to pass in `tls.ca` depends on the TLS mode: with passthrough, use the CA of the broker certificates; with termination, use the CA of the Gateway's certificate.
+The certificate authority (CA) to pass in `tls.ca` depends on the TLS mode: with passthrough, use the CA of the broker certificates; with termination, use the CA of the Gateway's certificate.
 
 == Route other listeners through the Gateway
 
-The HTTP Proxy, Admin API, and Schema Registry listeners support `type: tlsroute` with the same `host` field. For these listeners, `hostTemplate` is optional: without it, Redpanda creates only the bootstrap route, and the Gateway load-balances requests across brokers. Give each listener a unique hostname:
+You can route the HTTP Proxy, Admin API, and Schema Registry listeners through the same Gateway with `type: tlsroute` and the same `host` field. For these listeners, `hostTemplate` is optional: without it, Redpanda creates only the bootstrap route, and the Gateway load-balances requests across brokers. Give each listener a unique hostname:
 
 [,yaml]
 ----
@@ -410,8 +423,8 @@ listeners:
       default:
         port: 9094
         type: tlsroute
-        host: kafka.example.com
-        hostTemplate: kafka-$POD_ORDINAL.example.com
+        host: redpanda.example.com
+        hostTemplate: redpanda-$POD_ORDINAL-broker.example.com
         tls:
           cert: default
   http:
@@ -451,7 +464,9 @@ Redpanda refuses to render configurations that would silently break connectivity
 
 If any of these conditions fail, the Helm release or Redpanda resource fails with an error that names the listener.
 
-== Troubleshooting
+== Troubleshoot
+
+Here are some common troubleshooting scenarios and their solutions. For more troubleshooting steps, see xref:manage:kubernetes/troubleshooting/k-troubleshoot.adoc[].
 
 *Clients connect to the bootstrap hostname but fail on reconnect*: The per-broker hostnames don't resolve to the Gateway, or the broker certificates don't include them. Check your DNS records, and verify the certificate SANs:
 
