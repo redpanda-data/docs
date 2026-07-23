@@ -1,0 +1,245 @@
+= Defer Upgrade Finalization
+:description: Keep a feature-release upgrade open so you can soak test the new version with a guaranteed rollback path, then finalize the upgrade when you're ready.
+:page-categories: Upgrades
+
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+
+By default, Redpanda finalizes a feature-release upgrade (for example, v26.1 to v26.2) automatically: within seconds of the last broker restarting on the new version, the cluster commits to the new release, version-gated features activate, and rollback is no longer supported. Deferred finalization gives you control over that cluster commit step. When you disable automatic finalization before the upgrade, the cluster holds at the previous logical version after all brokers are rolled to the new binaries. New-version features stay inactive, nothing that would break a downgrade is written to disk, and you can roll the binaries back to the previous release, repeatedly if needed, until you explicitly finalize.
+
+Use deferred finalization when you need a soak period: run the new release under production load for hours, days, or weeks, and keep a guaranteed path back to the previous release if something looks wrong. This is especially valuable for organizations with regulatory or operational reversibility requirements for production changes.
+
+Deferred finalization is available in self-hosted deployments (Linux and Kubernetes). It is not available in Redpanda Cloud.
+
+== How upgrade finalization works
+
+Redpanda separates the *binary version* (the release each broker runs) from the cluster's *logical version* (the version all brokers most recently agreed on, persisted in the controller log). Features that introduce new on-disk or wire formats are gated behind the logical version: they cannot activate until the cluster's active version reaches the version that introduced them.
+
+A rolling upgrade moves through three phases:
+
+. *Mixed versions*: Some brokers are upgraded, some are not. The active version holds at the old version and new features stay gated off. This phase can last hours during a normal rolling upgrade.
+. *All brokers upgraded, not yet finalized*: Every broker runs the new binary, but the cluster has not yet committed to the new version. With automatic finalization (the default), this phase lasts only seconds.
+. *Finalized*: The cluster commits the new active version and the newly unlocked features activate. The active version is also the *downgrade floor*: a broker running an older binary refuses to start against finalized cluster state.
+
+Deferred finalization extends the second phase for as long as you choose. Nothing about the first or third phase changes; the feature adds an explicit commit step between them.
+
+== Prerequisites
+
+* A valid Enterprise Edition license. Setting `features_auto_finalization` to `false` is rejected unless a valid license (including the built-in trial license) is in effect. See <<License behavior>>.
+* The cluster must be running at least v26.1.9 or v25.3.15 before the upgrade, so that the xref:reference:properties/cluster-properties.adoc#features_auto_finalization[`features_auto_finalization`] property is available to set.
+* The upgrade target must be v26.2 or later. The deferral logic ships in v26.2, so the first upgrade that can be held open is v26.1 to v26.2. Earlier upgrades, such as v25.3 to v26.1, finalize automatically regardless of the property setting.
+* The `rpk cluster upgrade` commands and the underlying Admin API calls require superuser privileges.
+
+== Defer finalization for an upgrade
+
+. Before you upgrade, on the version you are upgrading from, disable automatic finalization:
++
+[,bash]
+----
+rpk cluster config set features_auto_finalization false
+----
++
+This is a runtime change to a cluster configuration property; no restart is required. The property must be set to `false` before the last broker rolls to the new binary. Setting it after the upgrade has already finalized has no effect.
+
+. Perform the xref:upgrade:rolling-upgrade.adoc#perform-a-rolling-upgrade[rolling upgrade] as usual, one broker at a time. Nothing about the roll changes.
+
+. After every broker runs the new binary, verify that the cluster is holding the upgrade open:
++
+[,bash]
+----
+rpk cluster upgrade status
+----
++
+Example output:
++
+[.no-copy]
+----
+State                       ready to finalize
+Active version              18
+Version after finalization  19
+Auto-finalization enabled   false
+
+NODE  RELEASE-VERSION  LOGICAL-VERSION  VERSION-KNOWN  ALIVE
+0     v26.2.1          19               true           true
+1     v26.2.1          19               true           true
+2     v26.2.1          19               true           true
+----
++
+The `ready to finalize` state means all brokers run the new binary and the cluster is waiting for your explicit commit. The active version is the cluster's committed logical version, which is also the downgrade floor. The command supports `--format json` and `--format yaml` for automation.
+
+. Soak test for as long as your validation requires. The cluster serves traffic normally; only features gated on the new version are unavailable. See <<What is unavailable while unfinalized>>.
+
+When your validation passes, <<finalize-the-upgrade,finalize the upgrade>>. If it doesn't, <<roll-back-to-the-previous-release,roll back>>.
+
+== What is unavailable while unfinalized
+
+While the cluster is unfinalized, everything that worked on the previous release keeps working, including produce and consume traffic, Tiered Storage, existing shadow links, and Iceberg topics in existing modes. What you give up during the soak is the new release's version-gated features. These gates are the mechanism of downgrade safety: they prevent new-format state from being persisted while the rollback path is open.
+
+For v26.2, the following gated features have user-visible behavior while the upgrade is unfinalized:
+
+|===
+| Feature | Behavior while unfinalized
+
+| Cloud Topics storage mode
+| Creating a topic with the `tiered_v2` storage mode is rejected with an `INVALID_CONFIG` error. The storage mode becomes available automatically when you finalize.
+
+| Shadow link role sync
+| Configuring role sync on a shadow link fails with a `FAILED_PRECONDITION` error: "Role sync cannot be configured until the upgrade is finalized."
+
+| Shadow link Schema Registry API sync
+| Configuring Schema Registry API-mode sync on a shadow link fails with a `FAILED_PRECONDITION` error: "Schema Registry API sync mode cannot be configured until the upgrade is finalized." The pre-existing topic-mode Schema Registry sync is unaffected. See xref:manage:disaster-recovery/shadowing/migrate-schemas-confluent.adoc[].
+
+| Extended Iceberg mode configurations
+| The extended Iceberg mode topic configurations introduced in v26.2 are rejected until you finalize.
+|===
+
+Two additional v26.2 feature gates are internal-only and have no user-visible difference while unfinalized.
+
+If new-in-v26.2 functionality returns an error that mentions finalization, the feature gate is working as designed: the upgrade is not done until you finalize. Run `rpk cluster upgrade status` to confirm the cluster state.
+
+[[roll-back-to-the-previous-release]]
+== Roll back to the previous release
+
+While `rpk cluster upgrade status` reports `ready to finalize` (or while the roll is still in progress), you can roll back: reinstall the previous release's binaries and perform a rolling restart, following your normal upgrade procedure in reverse. No cluster command is needed. Just don't finalize.
+
+* The cluster returns to normal operation on the previous release with the same data. Data written while the upgrade was unfinalized is readable by the previous release's binaries.
+* Rolling back, re-upgrading, and rolling back again is supported.
+* A rollback is a full rolling restart, so the usual rolling-restart care applies: place each broker in maintenance mode and check cluster health between brokers.
+* After rolling back, the `rpk cluster upgrade` commands are not available on the previous release's binaries. To check cluster version state, use the v1 Admin API instead: `GET /v1/features` reports `cluster_version` and `node_latest_version`.
+
+[[finalize-the-upgrade]]
+== Finalize the upgrade
+
+Finalization is the point of no return: after the cluster commits the new version, downgrade is no longer possible.
+
+. Finalize the upgrade:
++
+[,bash]
+----
+rpk cluster upgrade finalize
+----
++
+The command prompts for confirmation (use `--no-confirm` to skip). It validates the cluster state first and fails fast with an actionable message if finalization isn't possible, for example if auto-finalization is enabled, the upgrade is still in progress, or the upgrade is already finalized.
+
+. Confirm that the version advance completed. Finalization is asynchronous: a successful `finalize` means the request was accepted, not that the version has advanced.
++
+[,bash]
+----
+rpk cluster upgrade status
+----
++
+When finalization completes, the state reports `finalized` and the active version shows the new logical version.
+
+. (Optional) Restore automatic finalization for future upgrades:
++
+[,bash]
+----
+rpk cluster config set features_auto_finalization true
+----
+
+IMPORTANT: Do not try to finalize by setting `features_auto_finalization` back to `true` while the cluster is waiting to finalize. This does not reliably trigger the version advance. Use `rpk cluster upgrade finalize` (or the Admin API) to finalize, then optionally restore the property afterward.
+
+== Use the Admin API
+
+The `rpk cluster upgrade` commands wrap two Admin API v2 RPCs on the admin port (default 9644). You can call any broker; the request is forwarded to the controller leader. Both calls require superuser privileges, and both are recorded by audit logging (admin and management events) when auditing is enabled.
+
+To check upgrade status:
+
+[,bash]
+----
+curl -s -X POST \
+  http://<broker>:9644/redpanda.core.admin.v2.FeaturesService/GetUpgradeStatus \
+  -H 'Content-Type: application/json' -d '{}'
+----
+
+The response includes:
+
+|===
+| Field | Description
+
+| `state`
+| `FINALIZATION_STATE_FINALIZED` (nothing to finalize), `FINALIZATION_STATE_READY_TO_FINALIZE` (all brokers uniform at a higher version and alive; a finalize request would act), or `FINALIZATION_STATE_UPGRADE_IN_PROGRESS` (broker versions differ, or a broker's version is unknown or the broker is not alive).
+
+| `active_version`
+| The cluster's committed logical version. This is also the downgrade floor.
+
+| `version_after_finalization`
+| The logical version a finalize request would advance to. Exceeds `active_version` only in the `READY_TO_FINALIZE` state.
+
+| `auto_finalization_enabled`
+| Mirrors the `features_auto_finalization` cluster property.
+
+| `members[]`
+| Per broker: `node_id`, `logical_version`, `version_known`, `alive`, and a best-effort human-readable `release_version` (for example, `v26.2.1`). The `release_version` field may be empty; the numeric fields are authoritative.
+|===
+
+NOTE: Integer fields serialize as strings in the JSON response.
+
+To finalize the upgrade:
+
+[,bash]
+----
+curl -s -X POST \
+  http://<broker>:9644/redpanda.core.admin.v2.FeaturesService/FinalizeUpgrade \
+  -H 'Content-Type: application/json' -d '{}'
+----
+
+The request takes no parameters: at any moment there is exactly one valid target version (or none). `FinalizeUpgrade` returns `FAILED_PRECONDITION` if `features_auto_finalization` is enabled (the RPC is only valid in manual mode), and `UNAVAILABLE` if controller leadership moved mid-request (retry the call). A success response means the request was accepted, not that the version advanced; poll `GetUpgradeStatus` to confirm.
+
+The v1 Admin API is unchanged and still useful: `GET /v1/features` reports `cluster_version`, `node_latest_version`, and each feature's state (`unavailable` while gated, `active` after finalization).
+
+== License behavior
+
+As noted in Prerequisites, a valid Enterprise license is required to specify deferred finalization. The following behaviors occur if you attempt to use deferred finalization without a license.
+
+* License enforcement happens when you set the property: without a valid Enterprise license, setting `features_auto_finalization` to `false` is rejected, and the error names the property.
+* If the license expires after the property is set, deferred finalization keeps operating. The cluster does not flip back to auto-finalizing mid-soak.
+* Finalizing is not license-checked: `rpk cluster upgrade finalize` works even if the license expired during the soak. The enforcement point is setting the property, nothing else.
+
+== Limitations
+
+Before starting, familiarize yourself with the limitations of the deferred finalization feature:
+
+* *Not available in Redpanda Cloud.* Cloud manages its own upgrade lifecycle, and `rpk` refuses to run the upgrade commands against cloud clusters.
+* *You cannot skip finalization and keep upgrading.* Redpanda supports upgrades from exactly one feature release back, so an unfinalized v26.2 cluster must finalize before you can begin an upgrade to v26.3. Staying unfinalized indefinitely blocks future upgrades.
+* *In multi-hop upgrades, only the newest hop is held.* The property value persists across hops, but intermediate hops finalize automatically. For example, in a v25.3 to v26.1 to v26.2 upgrade path, the v25.3 to v26.1 hop auto-finalizes (v26.1 has the property definition but not the deferral logic), and only the v26.1 to v26.2 hop holds. You cannot roll back to v25.3 after reaching v26.1.
+* *No dedicated metric or alert.* There is no metric for "finalization pending." Monitor with `rpk cluster upgrade status --format json` or the `GetUpgradeStatus` RPC.
+* *Brokers advertise the new release version during the soak.* The Admin API, health reports, `rpk redpanda admin brokers list`, and the Redpanda Console broker view all show the new release string while unfinalized; only the logical version and feature activation are held back. The one wire-visible exception: Kafka API keys gated behind held features are absent from `ApiVersions` responses until finalization.
+* *`features_auto_finalization` is independent of `features_auto_enable`.* Auto-finalization controls when the cluster version advances; `features_auto_enable` is an older, unrelated property that controls whether individual features activate on their own after the version has advanced. Leave `features_auto_enable` alone.
+
+== Deferred finalization in Kubernetes
+
+Deferred finalization works in Kubernetes deployments, with one important caveat: the Redpanda Operator and Helm chart consider an upgrade complete when the pod rollout finishes and have no awareness of finalization state. Set the property through your usual cluster configuration mechanism, finalize manually with `rpk` or the Admin API after the rollout completes, and roll back by setting the previous image tag while the upgrade is unfinalized.
+
+For the Kubernetes procedure, see xref:upgrade:k-rolling-upgrade.adoc[].
+
+== Troubleshooting
+
+The design principle throughout is that the cluster never advances without an explicit request: the failure mode is always "you must ask again," never "it finalized when it shouldn't have."
+
+Finalize appears to do nothing::
+Finalize requests are asynchronous and one-shot. The controller validates preconditions (all broker versions known, uniform at the target version, all brokers online) when it processes the request. If a precondition fails, for example because a broker went offline between your status check and the request being processed, the request is consumed and the version advance is skipped. Re-issue the finalize request once the cluster is healthy, and always confirm the result with `rpk cluster upgrade status`.
+
+Finalize request lost after a controller leadership change::
+A pending finalize request does not survive controller leader changes or restarts. If leadership moves after you finalize but before the advance lands, re-issue the request against any broker; it is forwarded to the new leader.
+
+Status output looks wrong right after a leadership change::
+Immediately after a controller leadership change, the new leader rebuilds its per-broker version map. Until it has, status output can list brokers with `version_known: false` and can momentarily report a misleading state, and a finalize request issued in that window is consumed as a no-op. Treat status output as unsettled unless every broker reports `version_known: true` and `alive: true`, and re-poll before acting.
+
+A down broker blocks finalization::
+If a broker is down, status reports `upgrade in progress` with `alive: false` for that broker, and finalization is blocked. This is by design and matches the rule the automatic path has always had. Restore or decommission the broker first.
+
+`Incompatible downgrade detected` error after finalization::
+If a broker starts with a binary older than the finalized cluster version, it logs `Incompatible downgrade detected!` and aborts with a backtrace and crash report. This looks like a crash, but it is the guard rail that protects finalized cluster state. To recover, reinstall the new release's binary on that broker; the data is untouched. If you must bypass this check, contact Redpanda support.
+
+A fresh cluster reports `finalized`::
+New clusters bootstrap already finalized at their binary's version, so `rpk cluster upgrade status` reports `finalized` with the active version equal to the version after finalization. This is normal; the `features_auto_finalization` property only matters across upgrades.
+
+== Suggested reading
+
+* xref:upgrade:rolling-upgrade.adoc[]
+* xref:upgrade:k-rolling-upgrade.adoc[]
+* xref:reference:properties/cluster-properties.adoc#features_auto_finalization[`features_auto_finalization`]
+* xref:get-started:licensing/overview.adoc[]
