@@ -124,7 +124,7 @@ NOTE: If you don't specify the fully qualified Protobuf message name, Redpanda p
 
 For Redpanda clusters version 26.2 and later, in addition to the <<supported-iceberg-modes,supported modes>>, `redpanda.iceberg.mode` also accepts a section-based syntax that lets you independently configure how Redpanda translates the record key, value, and headers into the Iceberg table. The `key_value`, `value_schema_id_prefix`, and `value_schema_latest` modes are shorthand for common combinations of these sections.
 
-Redpanda writes one row to the Iceberg table for each record, and each section controls a different part of that row. The `key` and `headers` sections change fields inside the `redpanda` system struct column (`redpanda.key` and the `value` field of each entry in `redpanda.headers`), while the `value` section changes the columns outside that struct. See <<how-iceberg-modes-translate-to-table-format,How Iceberg modes translate to table format>> for the base row structure that every generated table includes.
+The `key` and `headers` sections change fields inside the `redpanda` system struct column (`redpanda.key` and the `value` field of each entry in `redpanda.headers`), while the `value` section changes the columns outside that struct. See <<how-iceberg-modes-translate-to-table-format,How Iceberg modes translate to table format>> for the base row structure that every generated table includes.
 
 Use the following syntax to configure one or more sections:
 
@@ -179,7 +179,9 @@ The `key` and `value` sections accept the same options, except for `layout`, whi
 | `mode`
 | `binary`, `schema_id_prefix`, `schema_latest`, `string`
 | `binary`
-| `string` stores the field as a UTF-8 string, replacing invalid bytes with the Unicode replacement character (`U+FFFD`).
+a| `string` stores the field as a UTF-8 string, replacing invalid bytes with the Unicode replacement character (`U+FFFD`).
+
+See <<key-type-by-key-mode,Resulting `redpanda.key` type by `key` mode>> and <<value-type-by-value-mode,Resulting value field type by `value` mode>> for the resulting column types in the generated table.
 
 | `subject`
 | Subject name
@@ -198,6 +200,7 @@ The `key` and `value` sections accept the same options, except for `layout`, whi
 
 |===
 
+[[key-type-by-key-mode]]
 .Resulting `redpanda.key` type by `key` mode
 |===
 | Mode | `redpanda.key` type | Description
@@ -205,10 +208,6 @@ The `key` and `value` sections accept the same options, except for `layout`, whi
 | `binary` (default)
 | `binary`
 | Raw key bytes; no decoding.
-
-| `string`
-| `string`
-| UTF-8 decoded; invalid bytes are replaced with `U+FFFD`.
 
 | `schema_id_prefix`
 | `struct` (from the schema)
@@ -218,65 +217,42 @@ The `key` and `value` sections accept the same options, except for `layout`, whi
 | `struct` (from the schema)
 | Decoded using the latest schema registered for the subject.
 
+| `string`
+| `string`
+| UTF-8 decoded. Invalid bytes are replaced with `U+FFFD`.
+
 |===
 
-NOTE: For `schema_id_prefix` and `schema_latest`, every field in the decoded key struct is optional, so the table can tolerate schema evolution.
+NOTE: For `schema_id_prefix` and `schema_latest`, every field in the decoded key struct is optional and an absent field is stored as null, so the table can tolerate schema evolution.
 
+[[value-type-by-value-mode]]
 .Resulting value field type by `value` mode
 |===
 | Mode | Value field type | Description
 
 | `binary` (default)
 | `binary` column named `value`
-| Raw value bytes; no decoding.
+| Raw value bytes (no decoding).
+
+| `schema_id_prefix`
+| Struct fields. Placement depends on `layout`.
+| Decoded using the schema ID embedded in the value, in Schema Registry wire format.
+
+| `schema_latest`
+| Struct fields. Placement depends on `layout`.
+| Decoded using the latest schema registered for the subject.
 
 | `string`
 | `string` column named `value`
 | UTF-8 decoded; invalid bytes are replaced with `U+FFFD`.
 
-| `schema_id_prefix`
-| Struct fields (placement depends on `layout`)
-| Decoded using the schema ID embedded in the value, in Schema Registry wire format.
-
-| `schema_latest`
-| Struct fields (placement depends on `layout`)
-| Decoded using the latest schema registered for the subject.
-
 |===
 
-By default (`layout=flat`), Redpanda places each decoded value field as a top-level column in the generated table, alongside the `redpanda` system struct. If a decoded value field is named `redpanda`, Redpanda moves it into the `redpanda` system struct as a `data` field, to avoid colliding with the record metadata column of the same name.
+==== Key field examples
 
-Set `layout=nested` to nest all decoded value fields inside a single `value` struct column instead. A field named `redpanda` stays nested under the value column and is unaffected.
+The `key` section supports the same schema-decoding modes as the `value` section (`key:mode=schema_id_prefix` and `key:mode=schema_latest`), but decoded key fields always land in the single `redpanda.key` field, and keys have no `layout` option.
 
-For example, using a value schema with fields `user_id` (int) and `region` (string), the default `layout=flat` promotes those fields to top-level columns:
-
-[,sql,role="no-placeholders"]
-----
-redpanda struct<
-    ...
->,
-user_id: int,
-region:  string
-----
-
-You then query the fields as top-level columns, for example `SELECT user_id, region FROM orders`.
-
-With `layout=nested`, the same fields are wrapped inside a single `value` struct column instead:
-
-[,sql,role="no-placeholders"]
-----
-redpanda struct<
-    ...
->,
-value: struct<
-    user_id: int,
-    region:  string
->
-----
-
-You then query the fields through the `value` struct, for example `SELECT value.user_id, value.region FROM orders`.
-
-The `key` section decodes the same way, though decoded key fields always land in the single `redpanda.key` field. Keys have no `layout` option. For example, given a key schema with fields `user_id` (int) and `region` (string):
+For example, given a key schema with fields `user_id` (int) and `region` (string):
 
 [,avro]
 ----
@@ -310,26 +286,62 @@ redpanda struct<
 >
 ----
 
+==== Value field examples
+
+The `layout` option (value section only) controls where decoded value fields appear as columns. By default (`layout=flat`), Redpanda places each decoded value field as a top-level column in the generated table, alongside the `redpanda` system struct. If a decoded value field is named `redpanda`, Redpanda moves it into the `redpanda` system struct as a `data` field, to avoid colliding with the record metadata column of the same name.
+
+Set `layout=nested` to nest all decoded value fields inside a single `value` struct column instead. A field named `redpanda` stays nested under the value column and is unaffected.
+
+For example, using a value schema with fields `user_id` (int) and `region` (string), the default `layout=flat` promotes those fields to top-level columns:
+
+[,sql,role="no-placeholders"]
+----
+redpanda struct<
+    ...
+>,
+user_id: int,
+region:  string
+----
+
+You then query the fields as top-level columns, for example `SELECT user_id, region FROM orders`.
+
+With `layout=nested`, the same fields are wrapped inside a single `value` struct column instead:
+
+[,sql,role="no-placeholders"]
+----
+redpanda struct<
+    ...
+>,
+value: struct<
+    user_id: int,
+    region:  string
+>
+----
+
+You then query the fields through the `value` struct, for example `SELECT value.user_id, value.region FROM orders`.
+
 === Headers section options
 
 The `headers` section accepts a single option, `value_type`, which controls how header values are stored in the generated table.
 
 |===
-| Mode | Header value type | Description
+| `value_type` | Header value type | Description
 
 | `binary` (default)
 | `binary`
-| Raw header value bytes; no decoding.
+| Raw header value bytes (no decoding).
 
 | `string`
 | `string`
-| UTF-8 decoded; invalid bytes are replaced with `U+FFFD`.
+| UTF-8 decoded. Invalid bytes are replaced with `U+FFFD`.
 
 |===
 
-NOTE: Header keys are always stored as strings; only header values are affected by `value_type`.
+NOTE: Only header values are affected by `value_type`. Header keys are always stored as strings.
 
-For example, given a record with two headers: `content-type` with the value `application/json` (valid UTF-8) and `trace-id` with the invalid UTF-8 byte sequence `0xDEADBEEF`.
+==== Header value examples
+
+Consider a record with two headers: `content-type` with the value `application/json` (valid UTF-8), and `trace-id` with the invalid UTF-8 byte sequence `0xDEADBEEF`.
 
 With the default `headers:value_type=binary`, both header values are stored as raw bytes:
 
@@ -347,7 +359,7 @@ With `headers:value_type=string`, both values are decoded as UTF-8. Valid bytes 
 ----
 redpanda.headers = [
     {key: "content-type", value: "application/json"},
-    {key: "trace-id",     value: "����"}    -- each of the four invalid bytes replaced with U+FFFD (�)
+    {key: "trace-id",     value: "����"}    -- Each of the four invalid bytes replaced with U+FFFD (�)
 ]
 ----
 
@@ -366,7 +378,7 @@ NOTE: Option values cannot contain `,` or `;`, and whitespace is not trimmed. Av
 
 === Example configurations
 
-To decode a Protobuf-schematized key and decode headers to strings:
+To decode a schema-encoded key and store header values as strings:
 
 [,bash]
 ----
