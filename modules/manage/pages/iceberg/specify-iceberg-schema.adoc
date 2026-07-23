@@ -1,10 +1,15 @@
 = Specify Iceberg Schema
 :description: Learn about supported Iceberg modes and how you can integrate schemas with Iceberg topics.
 :page-categories: Iceberg, Tiered Storage, Management, High Availability, Data Replication, Integration
-:page-aliases: manage:iceberg/choose-iceberg-mode.adoc 
+:page-aliases: manage:iceberg/choose-iceberg-mode.adoc
 :schema-id-val-doc: manage:schema-reg/schema-id-validation.adoc
 
 // tag::single-source[]
+:page-topic-type: how-to
+:personas: streaming_developer, data_engineer
+:learning-objective-1: Configure the redpanda.iceberg.mode property when you create or update a topic
+:learning-objective-2: Choose the Iceberg mode that produces the table structure your data consumers need
+:learning-objective-3: Configure independent translation for record keys, values, and headers
 
 ifndef::env-cloud[]
 [NOTE]
@@ -13,7 +18,13 @@ include::shared:partial$enterprise-license.adoc[]
 ====
 endif::[]
 
-In xref:manage:iceberg/about-iceberg-topics.adoc#enable-iceberg-integration[Iceberg-enabled clusters], the `redpanda.iceberg.mode` topic property determines how Redpanda maps topic data to the Iceberg table structure. You can have the generated Iceberg table match the structure of a schema in the Schema Registry, or you can use the `key_value` mode where Redpanda stores the record values as-is in the table. 
+In xref:manage:iceberg/about-iceberg-topics.adoc#enable-iceberg-integration[Iceberg-enabled clusters], the `redpanda.iceberg.mode` topic property determines how Redpanda maps topic data to the Iceberg table structure. You can have the generated Iceberg table match the structure of a schema in Schema Registry, or you can use the `key_value` mode where Redpanda stores the record values as-is in the table.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
 
 == Supported Iceberg modes
 
@@ -33,14 +44,14 @@ Creates an Iceberg table using a simple schema, consisting of two columns, one f
 [[value_schema_id_prefix]]
 === value_schema_id_prefix
 
-Creates an Iceberg table whose structure matches the Redpanda schema for the topic, with columns corresponding to each field. You must register a schema in the xref:manage:schema-reg/schema-reg-overview.adoc[Schema Registry] and producers must write to the topic using the Schema Registry wire format.
+Creates an Iceberg table whose structure matches the Redpanda schema for the topic, with columns corresponding to each field. You must register a schema in xref:manage:schema-reg/schema-reg-overview.adoc[Schema Registry] and producers must write to the topic using the Schema Registry wire format.
 
 In the xref:manage:schema-reg/schema-reg-overview.adoc#wire-format[Schema Registry wire format], a "magic byte" and schema ID are embedded in the message payload header. Producers to the topic must use the wire format in the serialization process so Redpanda can determine the schema used for each record, use the schema to define the Iceberg table, and store the topic values in the corresponding table columns.
 
 [[value_schema_latest]]
 === value_schema_latest
 
-Creates an Iceberg table whose structure matches the latest schema registered for the subject in the Schema Registry. You must register a schema in the Schema Registry.
+Creates an Iceberg table whose structure matches the latest schema registered for the subject in Schema Registry. You must register a schema in Schema Registry.
 
 Producers cannot use the wire format in `value_schema_latest` mode. Redpanda expects the serialized message as-is without the magic byte or schema ID prefix in the record value.
 
@@ -83,11 +94,11 @@ rpk topic alter-config <topic-name> --set redpanda.iceberg.mode=<iceberg-mode>
 === Override `value_schema_latest` default
 
 ifndef::env-cloud[]
-In `value_schema_latest` mode, you only need to set the property value to the string `value_schema_latest`. This enables the default behavior of `value_schema_latest` mode, which determines the subject for the topic using the xref:manage:schema-reg/schema-id-validation.adoc#set-subject-name-strategy-per-topic[TopicNameStrategy]. For example, if your topic is named `sensor` the schema is looked up in the `sensor-value` subject. For Protobuf data, the default behavior also deserializes records using the first message defined in the corresponding Protobuf schema stored in the Schema Registry.
+In `value_schema_latest` mode, you only need to set the property value to the string `value_schema_latest`. This enables the default behavior of `value_schema_latest` mode, which determines the subject for the topic using the xref:manage:schema-reg/schema-id-validation.adoc#set-subject-name-strategy-per-topic[TopicNameStrategy]. For example, if your topic is named `sensor` the schema is looked up in the `sensor-value` subject. For Protobuf data, the default behavior also deserializes records using the first message defined in the corresponding Protobuf schema stored in Schema Registry.
 endif::[]
 
 ifdef::env-cloud[]
-In `value_schema_latest` mode, you only need to set the property value to the string `value_schema_latest`. This enables the default behavior of `value_schema_latest` mode, which determines the subject for the topic using the TopicNameStrategy. For example, if your topic is named `sensor` the schema is looked up in the `sensor-value` subject. For Protobuf data, the default behavior also deserializes records using the first message defined in the corresponding Protobuf schema stored in the Schema Registry.
+In `value_schema_latest` mode, you only need to set the property value to the string `value_schema_latest`. This enables the default behavior of `value_schema_latest` mode, which determines the subject for the topic using the TopicNameStrategy. For example, if your topic is named `sensor` the schema is looked up in the `sensor-value` subject. For Protobuf data, the default behavior also deserializes records using the first message defined in the corresponding Protobuf schema stored in Schema Registry.
 endif::[]
 
 If you use a different strategy other than the topic name to derive the subject name, you can override the default behavior of `value_schema_latest` mode and explicitly set the subject name.
@@ -109,6 +120,305 @@ value_schema_latest:subject=<subject-name>,protobuf_name=<protobuf-message-full-
 +
 NOTE: If you don't specify the fully qualified Protobuf message name, Redpanda pauses the data translation to the Iceberg table until you fix the topic misconfiguration.
 
+== Configure key, value, and header translation
+
+For Redpanda clusters version 26.2 and later, in addition to the <<supported-iceberg-modes,supported modes>>, `redpanda.iceberg.mode` also accepts a section-based syntax that lets you independently configure how Redpanda translates the record key, value, and headers into the Iceberg table. The `key_value`, `value_schema_id_prefix`, and `value_schema_latest` modes are shorthand for common combinations of these sections.
+
+The `key` and `headers` sections change fields inside the `redpanda` system struct column (`redpanda.key` and the `value` field of each entry in `redpanda.headers`), while the `value` section changes the columns outside that struct. See <<how-iceberg-modes-translate-to-table-format,How Iceberg modes translate to table format>> for the base row structure that every generated table includes.
+
+Use the following syntax to configure one or more sections:
+
+[,bash]
+----
+<section>:<option>=<value>,<option>=<value>;<section>:<option>=<value>
+----
+
+* Valid sections are `key`, `value`, and `headers`.
+* Separate sections with `;`.
+* Separate options within a section with `,`.
+* Sections can appear in any order. Any section you omit uses its defaults.
+
+
+.Shorthand equivalents for section-based configuration
+|===
+| Iceberg mode | Equivalent section-based configuration
+
+| `disabled`
+| Not applicable. `disabled` turns off Iceberg table writes for the topic entirely. No key, value, or headers section applies.
+
+| `key_value`
+| `key:mode=binary;value:mode=binary;headers:value_type=binary` (every section left at its default)
+
+| `value_schema_id_prefix`
+| `value:mode=schema_id_prefix` (the `key` and `headers` sections stay at their defaults)
+
+| `value_schema_latest[:subject=...,protobuf_name=...]`
+| `value:mode=schema_latest[,subject=...,protobuf_name=...]` (the `key` and `headers` sections stay at their defaults)
+
+|===
+
+[IMPORTANT]
+====
+Configuring anything beyond `key:mode=binary` and `headers:value_type=binary` requires every broker in the cluster to be running Redpanda version 26.2 or later. Until all brokers are upgraded, Redpanda rejects these configurations with an error.
+
+The following configurations require all brokers to be running version 26.2 or later:
+
+* `key:mode=` set to anything other than `binary`
+* `headers:value_type=string`
+* `value:layout=nested`
+* `value:mode=string`
+====
+
+=== Key and value section options
+
+The `key` and `value` sections accept the same options, except for `layout`, which is available only in the `value` section.
+
+|===
+| Option | Values | Default | Notes
+
+| `mode`
+| `binary`, `schema_id_prefix`, `schema_latest`, `string`
+| `binary`
+a| `string` stores the field as a UTF-8 string, replacing invalid bytes with the Unicode replacement character (`U+FFFD`).
+
+See <<key-type-by-key-mode,Resulting `redpanda.key` type by `key` mode>> and <<value-type-by-value-mode,Resulting value field type by `value` mode>> for the resulting column types in the generated table.
+
+| `subject`
+| Subject name
+| Empty
+| Requires `mode=schema_latest`. When empty, Redpanda derives the subject using the `<topic-name>-key` or `<topic-name>-value` naming convention (TopicNameStrategy).
+
+| `protobuf_name`
+| Fully qualified Protobuf message name
+| Empty
+| Requires `mode=schema_latest`. When empty, Redpanda uses the first message definition in the schema.
+
+| `layout`
+| `flat`, `nested`
+| `flat`
+| *Value section only.* Requires `mode=schema_id_prefix` or `mode=schema_latest`.
+
+|===
+
+[[key-type-by-key-mode]]
+.Resulting `redpanda.key` type by `key` mode
+|===
+| Mode | `redpanda.key` type | Description
+
+| `binary` (default)
+| `binary`
+| Raw key bytes; no decoding.
+
+| `schema_id_prefix`
+| `struct` (from the schema)
+| Decoded using the schema ID embedded in the key, in Schema Registry wire format.
+
+| `schema_latest`
+| `struct` (from the schema)
+| Decoded using the latest schema registered for the subject.
+
+| `string`
+| `string`
+| UTF-8 decoded. Invalid bytes are replaced with `U+FFFD`.
+
+|===
+
+NOTE: For `schema_id_prefix` and `schema_latest`, every field in the decoded key struct is optional and an absent field is stored as null, so the table can tolerate schema evolution.
+
+[[value-type-by-value-mode]]
+.Resulting value field type by `value` mode
+|===
+| Mode | Value field type | Description
+
+| `binary` (default)
+| `binary` column named `value`
+| Raw value bytes (no decoding).
+
+| `schema_id_prefix`
+| Struct fields. Placement depends on `layout`.
+| Decoded using the schema ID embedded in the value, in Schema Registry wire format.
+
+| `schema_latest`
+| Struct fields. Placement depends on `layout`.
+| Decoded using the latest schema registered for the subject.
+
+| `string`
+| `string` column named `value`
+| UTF-8 decoded; invalid bytes are replaced with `U+FFFD`.
+
+|===
+
+==== Key field examples
+
+The `key` section supports the same schema-decoding modes as the `value` section (`key:mode=schema_id_prefix` and `key:mode=schema_latest`), but decoded key fields always land in the single `redpanda.key` field, and keys have no `layout` option.
+
+For example, given a key schema with fields `user_id` (int) and `region` (string):
+
+[,avro]
+----
+{
+    "type": "record",
+    "name": "OrderKey",
+    "fields": [
+        {
+            "name": "user_id",
+            "type": "int"
+        },
+        {
+            "name": "region",
+            "type": "string"
+        }
+    ]
+}
+----
+
+With the default `key:mode=binary`, `redpanda.key` is a single binary field. With `key:mode=schema_id_prefix` or `key:mode=schema_latest`, `redpanda.key` becomes a struct whose fields match the decoded schema:
+
+[,sql,role="no-placeholders"]
+----
+redpanda struct<
+    ...,
+    key: struct<
+        user_id: int,
+        region:  string
+    >,
+    ...
+>
+----
+
+==== Value field examples
+
+The `layout` option (value section only) controls where decoded value fields appear as columns. By default (`layout=flat`), Redpanda places each decoded value field as a top-level column in the generated table, alongside the `redpanda` system struct. If a decoded value field is named `redpanda`, Redpanda moves it into the `redpanda` system struct as a `data` field, to avoid colliding with the record metadata column of the same name.
+
+Set `layout=nested` to nest all decoded value fields inside a single `value` struct column instead. A field named `redpanda` stays nested under the value column and is unaffected.
+
+For example, using a value schema with fields `user_id` (int) and `region` (string), the default `layout=flat` promotes those fields to top-level columns:
+
+[,sql,role="no-placeholders"]
+----
+redpanda struct<
+    ...
+>,
+user_id: int,
+region:  string
+----
+
+You then query the fields as top-level columns, for example `SELECT user_id, region FROM orders`.
+
+With `layout=nested`, the same fields are wrapped inside a single `value` struct column instead:
+
+[,sql,role="no-placeholders"]
+----
+redpanda struct<
+    ...
+>,
+value: struct<
+    user_id: int,
+    region:  string
+>
+----
+
+You then query the fields through the `value` struct, for example `SELECT value.user_id, value.region FROM orders`.
+
+=== Headers section options
+
+The `headers` section accepts a single option, `value_type`, which controls how header values are stored in the generated table.
+
+|===
+| `value_type` | Header value type | Description
+
+| `binary` (default)
+| `binary`
+| Raw header value bytes (no decoding).
+
+| `string`
+| `string`
+| UTF-8 decoded. Invalid bytes are replaced with `U+FFFD`.
+
+|===
+
+NOTE: Only header values are affected by `value_type`. Header keys are always stored as strings.
+
+==== Header value examples
+
+Consider a record with two headers: `content-type` with the value `application/json` (valid UTF-8), and `trace-id` with the invalid UTF-8 byte sequence `0xDEADBEEF`.
+
+With the default `headers:value_type=binary`, both header values are stored as raw bytes:
+
+[,sql]
+----
+redpanda.headers = [
+    {key: "content-type", value: b"application/json"},
+    {key: "trace-id",     value: b"\xDE\xAD\xBE\xEF"}
+]
+----
+
+With `headers:value_type=string`, both values are decoded as UTF-8. Valid bytes pass through unchanged, and invalid bytes are replaced with `U+FFFD`:
+
+[,sql]
+----
+redpanda.headers = [
+    {key: "content-type", value: "application/json"},
+    {key: "trace-id",     value: "����"}    -- Each of the four invalid bytes replaced with U+FFFD (�)
+]
+----
+
+=== Validation rules
+
+Redpanda rejects the following configurations when you create or alter a topic:
+
+* Unknown section names (anything other than `key`, `value`, or `headers`).
+* Duplicate sections, or duplicate options within a section.
+* Empty keys or values in an `<option>=<value>` pair.
+* `subject` or `protobuf_name` set without `mode=schema_latest`.
+* `layout` set in the `key` section.
+* `layout=nested` set without `mode=schema_id_prefix` or `mode=schema_latest`.
+
+NOTE: Option values cannot contain `,` or `;`, and whitespace is not trimmed. Avoid extra spaces around subject names or Protobuf message names.
+
+=== Example configurations
+
+To decode a schema-encoded key and store header values as strings:
+
+[,bash]
+----
+rpk topic alter-config orders --set redpanda.iceberg.mode="key:mode=schema_id_prefix;headers:value_type=string"
+----
+
+* Key: decoded using the schema ID embedded in the key, stored as a struct in `redpanda.key`
+* Value: raw bytes (default)
+* Headers: decoded to UTF-8 strings
+
+To decode the key and value using the latest schema, override the key's subject, and nest the value fields under a `value` column:
+
+[,bash]
+----
+rpk topic alter-config orders --set redpanda.iceberg.mode="key:mode=schema_latest,subject=orders-key-v2;value:mode=schema_latest,layout=nested"
+----
+
+* Key: decoded using the latest schema registered for the `orders-key-v2` subject, stored as a struct in `redpanda.key`
+* Value: decoded using the latest schema registered for its subject, with fields nested under a `value` struct column
+* Headers: raw bytes (default)
+
+To store the key as a plain UTF-8 string and decode headers to strings:
+
+[,bash]
+----
+rpk topic create events --topic-config redpanda.iceberg.mode="key:mode=string;headers:value_type=string"
+----
+
+* Key: stored as a UTF-8 string in `redpanda.key`
+* Value: raw bytes (default)
+* Headers: decoded to UTF-8 strings
+
+To verify the current configuration:
+[,bash]
+----
+rpk topic describe orders -c | grep redpanda.iceberg.mode
+----
+
+NOTE: If a section-based configuration is equivalent to one of the modes described in <<supported-iceberg-modes,Supported Iceberg modes>>, `rpk topic describe` displays it using that mode's name instead of the section syntax.
+
 == How Iceberg modes translate to table format
 
 ifndef::env-cloud[]
@@ -118,7 +428,7 @@ include::upgrade:partial$iceberg-breaking-changes.adoc[]
 ====
 endif::[]
 
-Redpanda generates an Iceberg table with the same name as the topic. In each mode, Redpanda writes to a `redpanda` table column that stores a single Iceberg https://iceberg.apache.org/spec/#nested-types[struct^] per record, containing nested columns of the metadata from each record, including the record key, headers, timestamp, the partition it belongs to, and its offset. 
+Redpanda generates an Iceberg table with the same name as the topic. In each mode, Redpanda writes to a `redpanda` table column that stores a single Iceberg https://iceberg.apache.org/spec/#nested-types[struct^] per record, containing nested columns of the metadata from each record, including the record key, headers, timestamp, the partition it belongs to, and its offset.
 
 For example, if you produce to a topic `ClickEvent` according to the following Avro schema:
 
@@ -186,7 +496,7 @@ As you produce records to the topic, the data also becomes available in object s
 
 If Redpanda fails to translate the record to the columnar format as defined by the schema, it writes the record to a dead-letter queue (DLQ) table. See xref:manage:iceberg/iceberg-troubleshooting.adoc[Troubleshoot Iceberg Topics] for more information.
 
-NOTE: You cannot use schemas to parse or decode record keys for Iceberg. The record keys are always stored in binary format in the `redpanda.key` column.
+NOTE: By default, Redpanda stores the record key in binary format in the `redpanda.key` column. To decode the key using a schema, or store it as a string, configure the `key` section. See <<configure-key-value-and-header-translation,Configure key, value, and header translation>>.
 
 === Schema types translation
 
@@ -300,31 +610,31 @@ Requirements:
 |===
 | JSON type | Iceberg type | Notes
 
-| array 
-| list 
+| array
+| list
 | The keywords `items` and `additionalItems` must be used to constrain element types.
 
-| boolean 
+| boolean
 | boolean
 |
 
-| null 
-| 
+| null
+|
 | The `null` type is only supported as a nullability marker, either in a `type` array (for example, `["string", "null"]`) or in an exclusive `oneOf` nullable pattern.
 
-| number 
+| number
 | double
 |
 
-| integer 
-| long 
+| integer
+| long
 |
 
-| string 
+| string
 | string
 | The `format` keyword can be used for custom Iceberg types. See <<format-translation,`format` annotation translation>> for details.
 
-| object 
+| object
 | struct or map
 a| * Use `properties` to define `struct` fields and constrain their types. `additionalProperties: false` is supported for closed objects.
 * If `additionalProperties` contains a schema, it translates to an Iceberg `map<string, T>`.
@@ -352,7 +662,7 @@ The following keywords have specific behavior:
 The following are not supported for JSON Schema:
 
 * The `$dynamicRef` keyword
-* The `default` keyword 
+* The `default` keyword
 * Conditional typing (`if`, `then`, `else`, `dependencies` keywords)
 * Boolean JSON Schema combinations (`allOf`, `anyOf`, and non-nullable `oneOf` patterns)
 * Dynamic object members with the `patternProperties` keyword
