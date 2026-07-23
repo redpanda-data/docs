@@ -1,0 +1,128 @@
+= Monitor Iceberg Health
+:description: Monitor the health of Iceberg topics using the Admin API to check external catalog reachability and per-partition commit lag.
+:page-categories: Iceberg, Monitoring
+
+// tag::single-source[]
+:page-topic-type: how-to
+:personas: ops_admin, streaming_developer
+:learning-objective-1: Check whether the external Iceberg catalog is reachable
+:learning-objective-2: Identify Iceberg topics with the highest commit lag
+
+ifndef::env-cloud[]
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+endif::[]
+
+{description}
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+
+Use the `GetIcebergStatus` Admin API endpoint to check whether your external Iceberg catalog is reachable and to see how far behind catalog commit is for each Iceberg topic and partition. This helps you detect a misconfigured or unreachable catalog and identify the partitions with the highest commit lag on a busy cluster.
+
+NOTE: This endpoint is available in Redpanda version 26.2 and later.
+
+[IMPORTANT]
+====
+This endpoint requires superuser privileges, even though it is read-only. See xref:manage:use-admin-api.adoc#authentication[Admin API authentication].
+====
+
+== Check Iceberg health
+
+Send a POST request to the link:/api/doc/admin/v2/operation/operation-redpanda-core-admin-v2-icebergservice-geticebergstatus[`redpanda.core.admin.v2.IcebergService/GetIcebergStatus`] endpoint. With an empty request body, the response covers all Iceberg topics that Redpanda is currently tracking for translation:
+
+[,bash]
+----
+curl \
+ -u <user>:<password> \
+ --request POST 'http://<broker-address>:<admin-api-port>/redpanda.core.admin.v2.IcebergService/GetIcebergStatus' \
+ --header "Content-Type: application/json" \
+ --data '{}'
+----
+
+To report on specific topics only, set `topicsFilter` to a list of Iceberg topic names:
+
+[,bash]
+----
+curl \
+ -u <user>:<password> \
+ --request POST 'http://<broker-address>:<admin-api-port>/redpanda.core.admin.v2.IcebergService/GetIcebergStatus' \
+ --header "Content-Type: application/json" \
+ --data '{ "topicsFilter": ["orders", "clicks"] }'
+----
+
+* Request headers `Connect-Protocol-Version` and `Connect-Timeout-Ms` are optional.
+* v2 endpoints also accept binary-encoded Protobuf request bodies. Use the `Content-Type: application/proto` header.
+
+A response looks like the following:
+
+[,json]
+----
+{
+  "catalog": {
+    "reachable": true,
+    "errorCode": "",
+    "errorMessage": ""
+  },
+  "topics": [
+    {
+      "topic": "orders",
+      "lifecycleState": "ICEBERG_LIFECYCLE_STATE_LIVE",
+      "partitions": [
+        {
+          "partition": 0,
+          "lastTranslatedOffset": "10432",
+          "lastCommittedOffset": "10400",
+          "commitLag": "32"
+        }
+      ]
+    }
+  ]
+}
+----
+
+== Interpret catalog reachability
+
+The `catalog` object reports whether Redpanda can reach the external Iceberg catalog:
+
+* *`reachable`*: `true` if the catalog responded, `false` otherwise.
+* *`errorCode`*: When the catalog is unreachable, a short error identifier from the catalog error set, such as `io_error` or `timedout`. Empty when `reachable` is `true`.
+* *`errorMessage`*: A human-readable diagnostic for the failure. Empty when `reachable` is `true`.
+
+If `reachable` is `false`, no commits can succeed until the catalog is available again. Check the catalog endpoint configuration, network connectivity, and credentials.
+
+== Interpret commit lag
+
+For each Iceberg topic, `topics[]` reports a `lifecycleState` and a list of `partitions`. The `lifecycleState` is one of `ICEBERG_LIFECYCLE_STATE_LIVE`, `ICEBERG_LIFECYCLE_STATE_CLOSED`, `ICEBERG_LIFECYCLE_STATE_PURGED`, or `ICEBERG_LIFECYCLE_STATE_UNSPECIFIED`.
+
+Each entry in `partitions[]` reports the following offsets:
+
+* *`partition`*: The partition ID.
+* *`lastTranslatedOffset`*: The highest Kafka offset written to Parquet. Unset if nothing has been translated yet.
+* *`lastCommittedOffset`*: The last Kafka offset committed to the Iceberg catalog. Unset if nothing has been committed yet.
+* *`commitLag`*: The number of records written to Parquet but not yet committed to the catalog.
+
+A steadily rising `commitLag` across many partitions can indicate that the cluster is underpowered for the current write rate, or that catalog commits are slow or failing. To triage, sort partitions by `commitLag` and investigate the topics with the highest lag first.
+
+== Commit lag compared to translation lag
+
+[IMPORTANT]
+====
+This endpoint returns *commit lag* only: the number of records written to Parquet but not yet committed to the catalog. It does not return *translation lag* (the gap between the topic's high watermark and the last translated offset), because translation lag is a client-side calculation against the Kafka API.
+====
+
+To monitor both dimensions over time, use the corresponding metrics:
+
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_pending_commit_lag[`redpanda_iceberg_pending_commit_lag`]: The metric equivalent of `commitLag` from this endpoint.
+* xref:reference:public-metrics-reference.adoc#redpanda_iceberg_pending_translation_lag[`redpanda_iceberg_pending_translation_lag`]: Records that are pending translation to Iceberg. This is the translation lag that the endpoint does not return.
+
+== Next steps
+
+* xref:manage:iceberg/iceberg-performance-tuning.adoc[Tune Iceberg performance] if commit lag is consistently high.
+* xref:manage:iceberg/iceberg-troubleshooting.adoc[Troubleshoot Iceberg topics] to diagnose translation errors and inspect the dead-letter queue.
+
+// end::single-source[]
