@@ -33,6 +33,43 @@ Weigh the options against these dimensions:
 
 == Compare topologies
 
+.The three topologies at a glance
+[mermaid]
+----
+graph TB
+    subgraph single["Single cluster, multi-AZ: zonal resilience"]
+        direction LR
+        sa["Broker<br/>AZ 1"] <--> sb["Broker<br/>AZ 2"] <--> sc["Broker<br/>AZ 3"]
+    end
+    subgraph stretch["Stretch Cluster: one cluster across Kubernetes clusters"]
+        direction LR
+        subgraph k1["Kubernetes cluster 1"]
+            t1["2 brokers"]
+        end
+        subgraph k2["Kubernetes cluster 2"]
+            t2["2 brokers"]
+        end
+        subgraph k3["Kubernetes cluster 3"]
+            t3["2 brokers"]
+        end
+        t1 <-->|"synchronous Raft"| t2
+        t2 <--> t3
+    end
+    subgraph shadow["Independent clusters with Shadowing: disaster recovery"]
+        direction LR
+        subgraph src["Source cluster"]
+            p1["Brokers"]
+        end
+        subgraph dst["Shadow cluster"]
+            p2["Brokers"]
+        end
+        p1 -->|"asynchronous shadow link"| p2
+    end
+    single ~~~ stretch ~~~ shadow
+----
+
+A single cluster replicates synchronously between brokers, whether those brokers share one Kubernetes cluster (multi-AZ) or span several (Stretch Cluster). Shadowing instead copies data asynchronously between two independent clusters.
+
 [cols="1h,2,2,2"]
 |===
 | | Single cluster, multi-AZ | Stretch Cluster (one cluster across Kubernetes clusters) | Independent clusters with asynchronous replication (Shadowing)
@@ -45,7 +82,7 @@ Weigh the options against these dimensions:
 | Replication and RPO
 | Synchronous (Raft), zero data loss
 | Synchronous (Raft), zero data loss, one set of offsets
-| Asynchronous, near real time, offset-preserving; RPO greater than zero
+| Asynchronous, near real time, and offset-preserving, with an RPO greater than zero
 
 | Failover
 | Automatic
@@ -53,9 +90,19 @@ Weigh the options against these dimensions:
 | Runbook-driven: fail over shadow topics, then redirect clients
 
 | Latency requirement
-| Low inter-AZ latency
-| Low inter-cluster latency (under 50 ms recommended); requires WAN tuning
-| None; any distance
+| Low inter-AZ latency. Produce round trips stay in the single-digit milliseconds.
+| Low inter-cluster latency (under 50 ms recommended, which in practice means same-continent locations). Produce pays a cross-location round trip of tens of milliseconds. Requires WAN tuning.
+| None. Produce stays local at any distance because replication is out of band.
+
+| Relative cost
+| $$: one cluster, intra-region traffic only
+| $$$: cross-location replication traffic on every write
+| $$: two clusters, but the shadow can be provisioned for recovery rather than full production load
+
+| Tiered Storage
+| Supported
+| Not supported (including Iceberg topics and Cloud Topics)
+| Supported
 
 | License
 | Community
@@ -68,7 +115,7 @@ Weigh the options against these dimensions:
 | xref:manage:disaster-recovery/shadowing/overview.adoc[]
 |===
 
-For read-only offloading rather than disaster recovery, see xref:manage:kubernetes/k-remote-read-replicas.adoc[Remote Read Replicas].
+For read-only offloading rather than disaster recovery, see xref:manage:kubernetes/k-remote-read-replicas.adoc[Remote Read Replicas]. For the lowest-cost recovery option, xref:manage:kubernetes/tiered-storage/k-whole-cluster-restore.adoc[Whole Cluster Restore] rebuilds a cluster from Tiered Storage in the same region, accepting minutes of data loss (RPO) and a high recovery time (RTO) in exchange for the lower cost of object storage.
 
 == Quick picks
 
@@ -80,6 +127,41 @@ For read-only offloading rather than disaster recovery, see xref:manage:kubernet
 == Stretch Clusters and Shadowing
 
 Stretch Clusters and Shadowing solve different problems and can complement each other. A Stretch Cluster is one logical cluster with synchronous replication and a single set of offsets; Shadowing asynchronously replicates data and metadata between two independent clusters for disaster recovery, protecting against events that affect a whole cluster, including some it cannot survive synchronously.
+
+If you are deciding between the two, compare them dimension by dimension:
+
+[cols="1h,2,2"]
+|===
+| | Stretch Cluster | Shadowing
+
+|Replication
+|Synchronous: the Raft quorum spans locations.
+|Asynchronous: data is copied after the write is acknowledged.
+
+|RPO
+|Zero: acknowledged writes survive the loss of a location.
+|Greater than zero: a replication-lag window always exists.
+
+|RTO
+|Near zero: leaders re-elect automatically, with no cutover.
+|Minutes: you promote the shadow cluster and repoint clients.
+
+|Client failover
+|No re-bootstrap: clients keep one broker list and reconnect on their own.
+|Re-bootstrap required: you repoint clients to the promoted cluster. Offsets are preserved, so consumers resume where they left off.
+
+|Topology
+|One logical cluster with one set of offsets.
+|Two independent clusters: source and shadow.
+
+|Produce latency
+|Cross-location round trip on every acknowledged write.
+|Local: replication happens out of band.
+
+|Best for
+|Workloads that cannot lose an acknowledged write.
+|Disaster recovery where seconds of data loss is acceptable, or any deployment that spans distances too large for synchronous replication.
+|===
 
 A Stretch Cluster can act as the shadow (target) cluster of a shadow link. Using a Stretch Cluster as the source cluster of a shadow link is not supported.
 

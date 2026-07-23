@@ -31,6 +31,47 @@ A Stretch Cluster deployment includes:
 * *Multicluster operators*: One Redpanda Operator in each Kubernetes cluster. The operators coordinate through Raft consensus to manage the Stretch Cluster as a single unit. The rpk commands for this operator plane live under xref:reference:rpk/rpk-k8s/rpk-k8s-multicluster.adoc[`rpk k8s multicluster`].
 * *Cross-cluster networking*: Direct broker-to-broker communication across Kubernetes clusters for Raft replication.
 
+.Stretch Cluster architecture
+[mermaid]
+----
+graph TB
+    subgraph kc1["Kubernetes cluster 1"]
+        direction TB
+        o1["Redpanda Operator"]
+        b1["RedpandaBrokerPool<br/>2 brokers"]
+    end
+    subgraph kc2["Kubernetes cluster 2"]
+        direction TB
+        o2["Redpanda Operator"]
+        b2["RedpandaBrokerPool<br/>2 brokers"]
+    end
+    subgraph kc3["Kubernetes cluster 3"]
+        direction TB
+        o3["Redpanda Operator"]
+        b3["RedpandaBrokerPool<br/>2 brokers"]
+    end
+    o1 <-. "operator Raft group<br/>TLS, port 9443" .-> o2
+    o2 <-. " " .-> o3
+    o1 <-. " " .-> o3
+    b1 <--> |"data replication<br/>Raft, port 33145"| b2
+    b2 <--> b3
+    b1 <--> b3
+----
+
+The operators form the control plane: they coordinate through their own Raft group over TLS and manage the StretchCluster as a single unit. The brokers form the data plane: they replicate partition data directly with each other across clusters, without going through the operators.
+
+This design protects the control plane against split brain. You install every operator with the same fixed peer list (`multicluster.peers`), and the operators elect a single leader through Raft, which drives reconciliation for the whole Stretch Cluster. During a network partition, only the side that holds a majority of the peer list can elect a leader and reconcile changes. Operators on the minority side stop reconciling until the partition heals. Because the operators are not on the data path, brokers continue to serve traffic while reconciliation is paused.
+
+Leader election happens at two levels. Within each Kubernetes cluster, operator replicas elect a local leader through a standard Kubernetes Lease, so you can run multiple operator replicas per cluster for high availability. Across clusters, only each cluster's local leader participates in the Raft group, representing its cluster with a single identity.
+
+NOTE: The peer list is fixed at installation time. To add or remove a participating cluster, rerun the bootstrap command with the new set of contexts, then upgrade every operator installation with the updated `multicluster.peers` list and restart the operator Deployments.
+
+== Limitations
+
+* *RedpandaBrokerPool scope*: RedpandaBrokerPool works only with StretchCluster resources. The CRD is installed only in multicluster mode, and standalone Redpanda resources cannot use it. To manage broker pools in a standalone cluster, use the beta xref:manage:kubernetes/k-node-pools.adoc[NodePool resource] instead.
+* *Tiered Storage*: Not supported on Stretch Clusters in this release. This also means that features that depend on Tiered Storage are unavailable, including xref:manage:iceberg/about-iceberg-topics.adoc[Iceberg topics] and xref:manage:kubernetes/cloud-topics/k-cloud-topics.adoc[Cloud Topics].
+* *Distance*: Keep all locations on the same continent. Transoceanic deployments are technically possible, but produce latency degrades with distance, and pairwise latencies over the documented budgets cause broker liveness failures. See <<Prerequisites>>.
+
 == Prerequisites
 
 Before deploying a Stretch Cluster, ensure you have:
@@ -45,14 +86,16 @@ Before deploying a Stretch Cluster, ensure you have:
 ----
 rpk k8s install
 ----
++
+The `k8s` plugin is a managed rpk plugin: it also downloads automatically, with checksum verification, the first time you run any `rpk k8s` command.
 
-* *At least three Kubernetes clusters, running a xref:upgrade:k-compatibility.adoc#compatibility-matrix[supported Kubernetes version]*: The operators form a Raft group that needs a quorum of `⌊n/2⌋ + 1` members to elect a leader. With three clusters, the deployment tolerates the loss of one cluster. With only two clusters, the loss of either cluster stops the operator control plane, so two-cluster deployments are not recommended.
+* *At least three Kubernetes clusters, running a xref:upgrade:k-compatibility.adoc#compatibility-matrix[supported Kubernetes version]*: The operators form a Raft group that needs a quorum of `⌊n/2⌋ + 1` members to elect a leader. With three clusters, the deployment tolerates the loss of one cluster. With only two clusters, the loss of either cluster stops the operator control plane, so two-cluster deployments are not recommended. Stretch Clusters work on managed Kubernetes services, including Amazon EKS, Google GKE, and Azure AKS, and on self-managed clusters.
 
 * *Cross-cluster networking*: One of the networking modes described in <<Choose a networking mode>>.
 
 * *Network requirements*:
 ** Pod-to-pod connectivity between all clusters.
-** Inter-cluster network latency under 50 ms for optimal performance.
+** Inter-cluster network latency under 50 ms for optimal performance. Broker liveness checks begin to fail above roughly 100 ms, even with WAN tuning. In practice, this means choosing regions on the same continent, for example AWS us-east-1, us-east-2, and us-west-2, or GCP us-east1, us-central1, and us-west1. Measure the pairwise round-trip times between your candidate regions before deploying. Transoceanic links typically exceed this budget. For replication across greater distances, use xref:manage:disaster-recovery/shadowing/overview.adoc[Shadowing] instead.
 ** Sufficient bandwidth for cross-cluster replication traffic.
 
 * *Kubernetes API access*: Each operator must be able to reach the Kubernetes API servers of all peer clusters, and you need a kubeconfig with contexts for all participating clusters to run the bootstrap command.
@@ -90,7 +133,7 @@ You can stretch a cluster across Kubernetes clusters in different cloud provider
 
 * *Site-to-site VPN connectivity between all clouds*: A full mesh of IPsec VPN tunnels between the provider networks, for example AWS VPN Gateway, Google Cloud HA VPN, and Azure VPN Gateway, with BGP or static routes advertising each cloud's CIDR ranges. Node IPs in every cloud must be routable from the others.
 * *Non-overlapping CIDR ranges* for the VPC or VNet networks and for the pod networks in every cloud.
-* *Pairwise latency under 100 ms* between all regions. Broker liveness checks fail at higher latencies, even with the WAN tuning shown in this page's StretchCluster example.
+* *Pairwise latency under 100 ms* between all regions, which means choosing regions on the same continent. Broker liveness checks fail at higher latencies, even with the WAN tuning shown in this page's StretchCluster example.
 * *A CNI that supports cross-cluster networking*, such as Cilium with Cluster Mesh (`mesh` mode), installed in place of each cloud's default CNI.
 
 Avoid double encryption: if the VPN layer already encrypts all cross-cloud traffic, don't also enable CNI-level node encryption, such as WireGuard, on the same path.
@@ -150,7 +193,7 @@ This command:
 +
 * Generates an ECDSA P-256 CA, valid for 10 years, and an individual certificate for each operator, valid for one year.
 * Provisions a LoadBalancer Service named `<cluster-name>-multicluster-peer` in each cluster for operator peer communication on port 9443, and includes the resolved LoadBalancer addresses in the certificate Subject Alternative Names (SANs).
-* Creates the TLS and kubeconfig Secrets that the operators read at startup, in the given namespace on each cluster.
+* Creates the TLS and kubeconfig Secrets that the operators read at startup, in the given namespace on each cluster. Every operator caches kubeconfigs for all peer clusters, so a newly elected leader can manage resources in the other clusters immediately.
 +
 When the command completes, it prints a `multicluster.peers` block with each cluster's name and peer address. Use these values in the Helm installation.
 +
@@ -284,7 +327,7 @@ The `users.txt` key defines the cluster's superusers in `username:password:mecha
 
 . Create a StretchCluster resource.
 +
-Save the following to `stretchcluster.yaml`. The spec must be identical on every cluster, so that the operators' consistency check passes.
+Save the following to `stretchcluster.yaml`. You apply this same manifest to every participating cluster, and the spec must be identical everywhere: the operators compare the spec across clusters before reconciling, and if any copy differs, they block changes until the specs are aligned. See <<StretchCluster specs differ across clusters>>.
 +
 [,yaml]
 ----
@@ -317,8 +360,8 @@ spec:
       key: license.key
   config:
     cluster:
-      # Five replicas spread over a 2/2/1 broker layout keep a Raft
-      # majority through the loss of any one location.
+      # Five replicas spread over three locations keep a Raft majority
+      # through the loss of any one location.
       default_topic_replications: 5
       # Wait 10 min before relocating replicas off an unavailable broker
       # to avoid cross-region rebalancing on brief network blips.
@@ -349,7 +392,7 @@ done
 +
 Each RedpandaBrokerPool defines a group of brokers in one Kubernetes cluster and binds to the StretchCluster through `spec.clusterRef`.
 
-Redpanda Data recommends five brokers distributed 2/2/1 across the three Kubernetes clusters, with `default_topic_replications: 5`. With this layout, every partition and the cluster's Raft groups keep a majority through the loss of any one location, including either two-broker location, and the single-broker location acts as a tiebreaker. Save the following to `brokerpool-cluster1.yaml`:
+Redpanda Data recommends six brokers distributed 2/2/2 across the three Kubernetes clusters, with `default_topic_replications: 5`. With five replicas over three locations, at most two replicas of any partition share a location, so every partition and the cluster's Raft groups keep a majority through the loss of any one location. The sixth broker also lets the cluster restore full replication after a single broker failure: five brokers remain, which is enough to host all five replicas of every partition. Save the following to `brokerpool-cluster1.yaml`:
 +
 [,yaml,subs="attributes+"]
 ----
@@ -363,7 +406,7 @@ spec:
     group: cluster.redpanda.com
     kind: StretchCluster
     name: cluster
-  replicas: 2 # 2/2/1 across the three clusters
+  replicas: 2 # 2/2/2 across the three clusters
   image: # <2>
     repository: docker.redpanda.com/redpandadata/redpanda
     tag: {latest-redpanda-tag}
@@ -388,7 +431,7 @@ spec:
 
 For all RedpandaBrokerPool fields, see the xref:reference:k-crd.adoc#k8s-api-github-com-redpanda-data-redpanda-operator-operator-api-redpanda-v1alpha2-redpandabrokerpool[RedpandaBrokerPool reference].
 +
-Apply each pool to its own cluster, changing `metadata.name` for each one and setting `replicas` to 2, 2, and 1:
+Apply each pool to its own cluster, changing only `metadata.name` for each one:
 +
 [,bash]
 ----
@@ -452,6 +495,16 @@ kubectl exec --namespace redpanda --context <cluster-1-context> -it <pod-name> -
 +
 The output lists the brokers from all pools across all Kubernetes clusters. If you deployed without SASL, omit the `-X` flags.
 
+== Understand failure scenarios
+
+With the recommended 2/2/2 layout and `default_topic_replications: 5`, at most two of any partition's five replicas share a location, so the deployment behaves as follows:
+
+* *One location down*: Every partition keeps a three-of-five majority, leaders re-elect automatically (along your leader preference, if set), and clients keep working with zero data loss. After the configured timeouts, continuous partition balancing decommissions the unreachable brokers and restores full replication on the survivors (see <<Automatically eject ghost brokers>>). When the location returns, its brokers rejoin as fresh brokers and pinned leaders migrate back.
+
+* *Two or more locations down*: Partitions lose their Raft majority and the cluster stops serving writes, and the operator control plane loses quorum and stops reconciling. This is an availability outage, not data loss: acknowledged writes persist on the surviving disks, and the cluster resumes when a location is restored. If a lost location cannot be restored, contact Redpanda Support before attempting recovery.
+
+* *Beyond quorum loss*: A Stretch Cluster cannot survive the simultaneous loss of a majority of its locations. For protection against failures of that scale, or for an isolated recovery copy, use xref:manage:disaster-recovery/shadowing/overview.adoc[Shadowing] between independent clusters. Failing over to a shadow cluster costs a replication-lag window (a recovery point objective, or RPO, greater than zero) and requires repointing clients. For how the two features combine, see xref:deploy:redpanda/kubernetes/k-choose-deployment.adoc#stretch-clusters-and-shadowing[Stretch Clusters and Shadowing].
+
 == Optimize for region failures
 
 To keep a Stretch Cluster performing predictably through a region outage, enable rack awareness on every broker pool, pin partition leaders near your clients, and let Redpanda eject brokers that are permanently gone.
@@ -470,7 +523,7 @@ spec:
     nodeAnnotation: topology.kubernetes.io/zone # <2>
 ----
 <1> Rack awareness requires per-pool RBAC, and the operator Helm chart must be installed with `rbac.createAdditionalControllerCRs=true`.
-<2> The Kubernetes Node label whose value becomes each broker's rack ID. The default is `topology.kubernetes.io/zone`, which gives each availability zone its own rack. To treat each Kubernetes cluster or region as one rack, use a label whose value is shared by all nodes in that cluster.
+<2> The Kubernetes Node label whose value becomes each broker's rack ID. The default is `topology.kubernetes.io/zone`, which gives each availability zone its own rack. To treat each Kubernetes cluster or region as one rack, use a label whose value is shared by all nodes in that cluster, such as `topology.kubernetes.io/region`.
 
 === Pin partition leaders near your clients
 
@@ -481,11 +534,11 @@ Without a leader preference, partition leaders can move to any region after a fa
 spec:
   config:
     cluster:
-      default_leaders_preference: "racks:<zone-1>,<zone-2>" # <1>
+      default_leaders_preference: "ordered_racks:<region-1>,<region-2>" # <1>
 ----
-<1> One or more rack IDs, which are the values of the node label configured in `rackAwareness.nodeAnnotation`. With multiple racks, Redpanda balances leaders across them.
+<1> Rack IDs in priority order, which are the values of the node label configured in `rackAwareness.nodeAnnotation`. Redpanda places leaders in the first listed rack when it's available and fails over down the list in order. `ordered_racks` requires Redpanda 26.1 or later. To balance leaders across racks without a priority order, use `racks:<rack-1>,<rack-2>` instead.
 
-Leaders fail over to other regions when the preferred racks are unavailable and move back automatically when they recover. For details, see xref:develop:produce-data/leader-pinning.adoc[].
+Leaders fail over along the preference list when the preferred racks are unavailable and move back automatically when they recover. To let consumers read from replicas in their own region instead of fetching from a leader in another region, pair leader pinning with xref:develop:consume-data/follower-fetching.adoc[follower fetching]. For details, see xref:develop:produce-data/leader-pinning.adoc[].
 
 === Automatically eject ghost brokers
 
@@ -608,6 +661,20 @@ kubectl get redpandabrokerpool --namespace redpanda \
 kubectl logs --namespace redpanda -l app.kubernetes.io/name=operator | grep -i "forbidden\|unauthorized"
 ----
 
+=== StretchCluster specs differ across clusters
+
+If you change the StretchCluster on one cluster but not the others, the operators detect the drift and block all changes until the specs are aligned. While blocked, the operators still remediate local failures, such as restarting downed pods, but do not apply any spec changes.
+
+The drift is reported in the StretchCluster's `SpecSynced` condition and in the operator logs:
+
+[,bash]
+----
+kubectl get stretchcluster <name> --namespace redpanda --context <cluster-context> \
+  -o jsonpath='{.status.conditions[?(@.type=="SpecSynced")].message}'
+----
+
+The message names the clusters and the top-level fields that differ, for example `StretchCluster .spec differs on clusters: <cluster-name> (fields: config)`. To recover, apply the same manifest to every cluster.
+
 === Bootstrap user password mismatch
 
 If the StretchCluster doesn't deploy brokers and the operator logs show `bootstrap user password mismatch`, the operators created the internal `<stretchcluster-name>-bootstrap-user` Secret independently with different passwords. This can happen when the StretchCluster manifest is applied to all clusters at nearly the same time.
@@ -638,15 +705,15 @@ done
 
 If a region comes back online after its broker was automatically decommissioned (see <<Automatically eject ghost brokers>>), the returning broker cannot rejoin with its old identity: the pod starts but never becomes ready, and its logs show that the broker was removed from the cluster.
 
-Delete the broker's PersistentVolumeClaim and Pod so it rejoins as a new broker with a fresh ID:
+The operator recovers from this automatically. When the pod stays not-ready past a threshold (five minutes by default) and its on-disk identity conflicts with the cluster's authoritative broker list, the operator wipes the stale disk by deleting the pod's PersistentVolumeClaim and Pod. The broker reschedules onto a fresh disk, joins with a new broker ID, and continuous balancing moves partition replicas back onto it. To change the threshold, set the operator's `--wipe-stale-disk-after` flag. A negative duration disables the wipe.
+
+To recover immediately, or if you disabled the automatic wipe, delete the broker's PersistentVolumeClaim and Pod yourself:
 
 [,bash]
 ----
 kubectl delete pvc <data-pvc-name> --namespace redpanda --context <recovered-cluster-context> --wait=false
 kubectl delete pod <broker-pod-name> --namespace redpanda --context <recovered-cluster-context>
 ----
-
-The broker joins with a new broker ID, and continuous balancing moves partition replicas back onto it.
 
 === Brokers cannot communicate across clusters
 
