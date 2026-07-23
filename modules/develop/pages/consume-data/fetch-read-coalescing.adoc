@@ -1,0 +1,123 @@
+= Fetch Read Coalescing
+:description: Reduce redundant read CPU and fetch-response memory under high consumer fan-out by sharing one read result across concurrent fetches of the same data.
+:page-categories: Clients, Development
+// tag::single-source[]
+
+ifndef::env-cloud[]
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+endif::[]
+
+When many consumers fetch the same partition at the same offset concurrently (high read fan-out), the broker does redundant work: each fetch performs its own log read, its own serialization, and allocates its own copy of the response bytes. With a fan-out of N consumers, that is roughly N times the read CPU and N times the fetch-response memory for byte-identical output.
+
+Fetch read coalescing removes that redundancy. The broker reads and serializes each unique read once, and shares the single result with every concurrent (and eligible back-to-back) consumer of the same data: one read, one serialization, one buffer, fanned out to all requesters. When all N consumers fetch the same partition at the same offset with the same fetch settings, read CPU and fetch-response memory drop from roughly N times to one.
+
+ifdef::env-cloud[]
+Fetch read coalescing is available on BYOC and Dedicated clusters.
+
+Fetch read coalescing is disabled by default, and the cluster property that controls it is managed by Redpanda; see <<Enable fetch read coalescing>>. It benefits workloads where many consumers tail the same partitions with the same fetch settings, for example fan-out delivery of one stream to many downstream applications. Request it only for high fan-out workloads: at low fan-out (for example, one or two consumers per partition), the de-duplication logic saves little to nothing and its overhead can increase reactor utilization.
+endif::[]
+ifndef::env-cloud[]
+Fetch read coalescing is disabled by default. Enable it when many consumers tail the same partitions with the same fetch settings, for example fan-out delivery of one stream to many downstream applications. Enable it only for high fan-out workloads: at low fan-out (for example, one or two consumers per partition), the de-duplication logic saves little to nothing and its overhead can increase reactor utilization. See <<Evaluate coalescing effectiveness>> for how to measure whether it helps your workload.
+endif::[]
+
+ifndef::env-cloud[]
+== Prerequisites
+
+* A valid xref:get-started:licensing/index.adoc[Redpanda Enterprise license].
+endif::[]
+
+== How fetch read coalescing works
+
+The coalescer sits on the fetch read path of each shard and groups reads by the properties that make two reads produce byte-identical output:
+
+* Partition
+* Fetch offset
+* Isolation level
+* `max_bytes` budget
+* Whether the read is obligatory (guarantees at least one batch and ignores the strict byte limit) or strict (honors `max_bytes`). These are grouped apart, so neither serves the other.
+
+For each fetch read, one of three things happens:
+
+* *Ready hit*: A previously completed read is still retained and covers what this fetch needs, so its result is reused with no new read.
+* *In-flight hit*: A read for the same data is already running, so this fetch awaits that read instead of starting its own.
+* *Miss*: The read runs exactly once, and its result is shared with any waiting fetches and retained for later readers. If the read fails, the error is propagated to all waiters.
+
+The shared result is reference-counted. The coalescer keeps only a weak handle to it, so it never pins memory; the requesting fetches hold the only strong references until their responses are sent. This is where the memory savings come from: coalesced consumers share one buffer instead of each holding its own copy.
+
+Coalescing is scoped per shard: it collapses only the fan-out that lands on the same shard. It composes with xref:develop:consume-data/follower-fetching.adoc[follower fetching] rather than replacing it: follower fetching spreads consumers across replicas to distribute the read load, and coalescing removes the redundancy within each shard.
+
+== Enable fetch read coalescing
+
+ifndef::env-cloud[]
+Enable coalescing with the `kafka_fetch_read_coalescing_enabled` cluster property:
+
+[,bash]
+----
+rpk cluster config set kafka_fetch_read_coalescing_enabled true
+----
+
+This is a runtime change; no restart is required. The coalescing cache is fixed-size (about 0.5 MB per shard) and is allocated only while the feature is enabled; there is no separate sizing property. Setting the property back to `false` disables coalescing and clears the per-shard cache immediately.
+endif::[]
+ifdef::env-cloud[]
+The `kafka_fetch_read_coalescing_enabled` cluster property that controls coalescing is not user-configurable in Redpanda Cloud. To enable coalescing on a BYOC or Dedicated cluster, contact https://support.redpanda.com/hc/en-us/requests/new[Redpanda Support^].
+
+Enabling or disabling coalescing is a runtime change: no cluster restart is required, and the coalescing cache (about 0.5 MB per shard) is allocated only while the feature is enabled.
+endif::[]
+
+ifndef::env-cloud[]
+== Evaluate coalescing effectiveness
+
+The coalescer exports four counters on the internal `/metrics` endpoint, one series per shard. The metrics are registered only when internal metrics are enabled (that is, when `disable_metrics` is not set).
+
+|===
+| Metric | Description
+
+| `vectorized_kafka_fetch_read_coalescer_insertions_total`
+| Fetch reads that missed and performed a new read.
+
+| `vectorized_kafka_fetch_read_coalescer_reinsertions_total`
+| Fetch reads that re-read an existing stale or expired entry.
+
+| `vectorized_kafka_fetch_read_coalescer_ready_hits_total`
+| Fetch reads served from a retained, already-completed read.
+
+| `vectorized_kafka_fetch_read_coalescer_inflight_hits_total`
+| Fetch reads served by awaiting an in-flight read.
+|===
+
+The effectiveness of coalescing is the ratio of hits (reads avoided) to insertions (reads actually performed):
+
+[.no-copy]
+----
+coalescing hit ratio =
+  (ready_hits_total + inflight_hits_total)
+  / (insertions_total + reinsertions_total + ready_hits_total + inflight_hits_total)
+----
+
+A ratio near 0 means little fan-out is being collapsed: the reads aren't aligning on the same partition, offset, and fetch settings, and the workload is unlikely to benefit from coalescing. A high ratio means the coalescer is absorbing most of the fan-out.
+endif::[]
+
+== Limitations
+
+Before enabling fetch read coalescing, familiarize yourself with the following limitations:
+
+* *Only identical reads coalesce.* Consumers reading the same data but with a different `max_bytes`, a different offset, or a different isolation level do not share a read. The benefit scales with how closely the concurrent fetches match: the ideal case is many consumers tailing the same partition at the same offset with the same fetch sizing.
+* *Obligatory and strict reads are grouped apart.* A single partition and offset fetched both ways at the same time incurs one duplicate read by design.
+* *Retention is best-effort.* Completed results are only reusable by later readers while a fetch still references them; the coalescer never keeps a result alive on its own. The reliable savings are on genuinely concurrent readers of the same data, and back-to-back reuse is opportunistic.
+* *Per-shard scope.* Coalescing collapses only the fan-out that lands on the same shard. Where consumers are spread across replicas and shards, for example with follower fetching, each shard coalesces the fan-out local to it.
+* *De-duplication adds per-read overhead.* The de-duplication logic runs on every fetch read, whether or not reads coalesce. At low fan-out (for example, one or two consumers per partition), this overhead can increase reactor utilization while saving little to nothing, so only enable coalescing for high fan-out workloads.
+
+== Suggested reading
+
+* xref:develop:consume-data/follower-fetching.adoc[]
+ifndef::env-cloud[]
+* xref:manage:monitoring.adoc[]
+endif::[]
+ifdef::env-cloud[]
+* xref:manage:monitor-cloud.adoc[]
+endif::[]
+
+// end::single-source[]
