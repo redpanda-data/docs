@@ -1,0 +1,314 @@
+= Autoscale Redpanda Connect Pipelines
+:description: Scale Redpanda Connect pipelines manually or automatically with kubectl scale, a HorizontalPodAutoscaler, or KEDA.
+:page-topic-type: how-to
+:page-beta: true
+:env-kubernetes: true
+:page-categories: Management, Integration
+:personas: platform_operator, platform_engineer
+:learning-objective-1: Scale a pipeline manually through the scale subresource
+:learning-objective-2: Autoscale a pipeline on CPU and memory with a HorizontalPodAutoscaler
+:learning-objective-3: Autoscale a pipeline on consumer group lag or Connect metrics with KEDA
+
+// DRAFT (DOC-2275): Hold until the Pipeline resource ships in a released operator.
+
+Match pipeline capacity to your workload by scaling the number of pipeline replicas, either manually or automatically based on resource usage, consumer group lag, or the metrics that Redpanda Connect emits.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
+The xref:manage:kubernetes/k-connect-pipelines.adoc[Pipeline resource] implements the Kubernetes https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/[scale subresource^], so anything that speaks the `/scale` API can drive `spec.replicas`: `kubectl scale`, a HorizontalPodAutoscaler (HPA), or a https://keda.sh/[KEDA^] ScaledObject.
+
+IMPORTANT: Always target the Pipeline resource, never its Deployment. The operator resets the Deployment's replica count to the Pipeline's value on every sync, so an autoscaler pointed at the Deployment is continuously fought and undone.
+
+== Prerequisites
+
+You must have the following:
+
+* A running pipeline managed by the Redpanda Operator with the Connect controller enabled. See xref:manage:kubernetes/k-connect-pipelines.adoc[].
+* For HPA on CPU or memory: https://github.com/kubernetes-sigs/metrics-server[metrics-server^] installed in the cluster.
+* For KEDA: https://keda.sh/docs/latest/deploy/[KEDA^] installed in the cluster.
+* For scaling on Redpanda Connect metrics: a Prometheus installation that scrapes pipeline Pods, for example https://github.com/prometheus-operator/kube-prometheus[kube-prometheus-stack^] together with the operator chart's `connectController.monitoring.enabled=true` setting.
+
+Configure only one autoscaler per pipeline. An HPA and a KEDA ScaledObject targeting the same Pipeline fight each other.
+
+== Scale a pipeline manually
+
+Scale the Pipeline directly with `kubectl scale`:
+
+[,bash]
+----
+kubectl scale pipeline/<pipeline-name> --replicas=3 --namespace <namespace>
+----
+
+The operator updates the pipeline's Deployment to match, and the pipeline's consumer group rebalances its partitions across the new replicas.
+
+To confirm that the scale subresource is wired up, read it directly:
+
+[,bash]
+----
+kubectl get --raw "/apis/cluster.redpanda.com/v1alpha2/namespaces/<namespace>/pipelines/<pipeline-name>/scale"
+----
+
+The response reports `spec.replicas`, `status.replicas`, and `status.selector`, the label selector that autoscalers use to find the pipeline's Pods. To list a pipeline's Pods yourself, the `app.kubernetes.io/instance=<pipeline-name>` label is the simplest filter.
+
+[NOTE]
+====
+When you scale a pipeline that consumes from Redpanda, replicas beyond the topic's partition count sit idle, because a consumer group assigns each partition to at most one member. Size `--replicas`, and any autoscaler's maximum, to the partition count of the input topic.
+====
+
+== Autoscale on CPU and memory with HPA
+
+CPU-based and memory-based HPAs work without any extra configuration, because pipeline Pods always carry resource requests: if you don't set `spec.resources`, the operator applies default requests of `100m` CPU and `256Mi` memory.
+
+. Ensure metrics-server is running. If `kubectl top pods` returns metrics, you're ready. Otherwise, install it:
++
+[,bash]
+----
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+----
+
+. Set explicit resource requests on the pipeline, so utilization percentages are meaningful for your workload:
++
+[,yaml]
+----
+spec:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+----
+
+. Create an HPA whose `scaleTargetRef` points at the Pipeline:
++
+.`pipeline-hpa.yaml`
+[,yaml]
+----
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: orders-to-warehouse
+  namespace: <namespace>
+spec:
+  scaleTargetRef:
+    apiVersion: cluster.redpanda.com/v1alpha2
+    kind: Pipeline
+    name: orders-to-warehouse
+  minReplicas: 1
+  maxReplicas: 4
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+    scaleDown:
+      stabilizationWindowSeconds: 60
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+----
+
+. Apply the manifest and watch the HPA react. Resource metrics lag by about a minute:
++
+[,bash]
+----
+kubectl apply -f pipeline-hpa.yaml
+kubectl get hpa orders-to-warehouse --namespace <namespace> --watch
+----
++
+Example output while the pipeline is busy. CPU is at 300% of its request, above the 50% target, so the HPA scales out toward `maxReplicas`:
++
+[.no-copy]
+----
+NAME                  REFERENCE                      TARGETS                          MINPODS   MAXPODS   REPLICAS   AGE
+orders-to-warehouse   Pipeline/orders-to-warehouse   cpu: 300%/50%, memory: 30%/80%   1         4         4          2m
+----
+
+. Verify that the Pipeline followed:
++
+[,bash]
+----
+kubectl get pipeline orders-to-warehouse --namespace <namespace>
+kubectl get pods -l app.kubernetes.io/instance=orders-to-warehouse --namespace <namespace>
+----
+
+To scale an HPA on the metrics Redpanda Connect emits instead of CPU or memory, either expose them to the HPA as custom metrics through https://github.com/kubernetes-sigs/prometheus-adapter[prometheus-adapter^], or use KEDA's Prometheus trigger, described next, which queries Prometheus directly and needs no adapter.
+
+== Autoscale with KEDA
+
+KEDA drives the same scale subresource, but adds event-driven triggers, such as consumer group lag and arbitrary Prometheus queries, and can scale a pipeline to zero when it's idle. Under the hood, KEDA materializes and manages an HPA named `keda-hpa-<scaledobject-name>` for you.
+
+Install KEDA if it isn't already present:
+
+[,bash]
+----
+helm repo add kedacore https://kedacore.github.io/charts
+helm upgrade --install keda kedacore/keda --namespace keda --create-namespace
+----
+
+=== Scale on consumer group lag
+
+For pipelines that consume from Redpanda, consumer group lag is usually the signal you actually want: it measures how far the pipeline is behind, not how busy its CPUs are. KEDA's `kafka` trigger works with Redpanda because Redpanda is Kafka API-compatible.
+
+. Create a ScaledObject that targets the Pipeline and watches the pipeline's consumer group:
++
+.`scaledobject-lag.yaml`
+[,yaml]
+----
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: orders-to-warehouse
+  namespace: <namespace>
+spec:
+  scaleTargetRef:
+    apiVersion: cluster.redpanda.com/v1alpha2
+    kind: Pipeline
+    name: orders-to-warehouse
+  minReplicaCount: 1
+  maxReplicaCount: 6
+  pollingInterval: 10        # How often KEDA evaluates the trigger (seconds).
+  cooldownPeriod: 120        # Delay before scaling to zero (only with minReplicaCount: 0).
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Pods
+              value: 2
+              periodSeconds: 30
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: <cluster-name>.<namespace>.svc.cluster.local:9093
+        consumerGroup: orders-to-warehouse-ingest
+        topic: orders
+        lagThreshold: "500"            # Target lag per replica.
+        offsetResetPolicy: earliest
+        allowIdleConsumers: "false"    # Never scale beyond the partition count.
+----
++
+Replace `<cluster-name>.<namespace>.svc.cluster.local:9093` with the bootstrap address of your cluster's internal Kafka listener, and set `consumerGroup` and `topic` to match the pipeline's `input.redpanda` block.
++
+KEDA sizes the pipeline at roughly `total lag / lagThreshold` replicas, clamped between `minReplicaCount` and `maxReplicaCount`. With `allowIdleConsumers: "false"`, KEDA also caps replicas at the topic's partition count, matching consumer group parallelism.
+
+. If the listener requires TLS or SASL, add a https://keda.sh/docs/latest/scalers/apache-kafka/[TriggerAuthentication^] and reference it from the trigger:
++
+[,yaml]
+----
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: redpanda-kafka-auth
+  namespace: <namespace>
+spec:
+  secretTargetRef:
+    - parameter: sasl
+      name: keda-redpanda-auth
+      key: sasl            # For example: scram_sha512
+    - parameter: username
+      name: keda-redpanda-auth
+      key: username
+    - parameter: password
+      name: keda-redpanda-auth
+      key: password
+    - parameter: tls
+      name: keda-redpanda-auth
+      key: tls             # enable
+    - parameter: ca
+      name: keda-redpanda-auth
+      key: ca.crt
+----
++
+Reference it in the ScaledObject trigger with `authenticationRef.name: redpanda-kafka-auth`. The referenced user needs `Describe` permissions on the topic and consumer group to read lag.
+
+. Apply the manifest and watch the pipeline scale as lag grows and drains:
++
+[,bash]
+----
+kubectl apply -f scaledobject-lag.yaml
+kubectl get scaledobject orders-to-warehouse --namespace <namespace>
+kubectl get pipeline orders-to-warehouse --namespace <namespace> --watch
+----
++
+As producers outpace the pipeline, lag crosses the threshold and KEDA raises `spec.replicas`; the consumer group rebalances partitions across the new Pods, lag drains, and after the scale-down stabilization window KEDA scales the pipeline back in.
+
+=== Scale on Redpanda Connect metrics
+
+Redpanda Connect emits pipeline-level metrics such as `input_received`, `output_sent`, and latency timings on each Pod's `http` port (4195) at `/metrics`. Scaling on these lets you react to actual pipeline throughput even when the input isn't a Redpanda topic.
+
+. Get the metrics into Prometheus. With Prometheus Operator installed, set `connectController.monitoring.enabled=true` on the operator chart so it renders a PodMonitor for every pipeline:
++
+[,bash]
+----
+helm upgrade --install redpanda-operator redpanda/operator \
+  --namespace <namespace> \
+  --reuse-values \
+  --set connectController.monitoring.enabled=true
+kubectl get podmonitor --namespace <namespace>
+----
+
+. Create a ScaledObject with a `prometheus` trigger. This example adds one replica for every 5,000 messages per second the pipeline receives:
++
+.`scaledobject-metrics.yaml`
+[,yaml]
+----
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: orders-to-warehouse-throughput
+  namespace: <namespace>
+spec:
+  scaleTargetRef:
+    apiVersion: cluster.redpanda.com/v1alpha2
+    kind: Pipeline
+    name: orders-to-warehouse
+  minReplicaCount: 1
+  maxReplicaCount: 4
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-operated.monitoring.svc:9090
+        query: sum(rate(input_received{namespace="<namespace>", pod=~"orders-to-warehouse-.*"}[2m]))
+        threshold: "5000"
+----
+
+. Apply the manifest and confirm that KEDA created its HPA against the Pipeline:
++
+[,bash]
+----
+kubectl apply -f scaledobject-metrics.yaml
+kubectl get hpa keda-hpa-orders-to-warehouse-throughput --namespace <namespace>
+----
+
+=== Scale to zero
+
+Set `minReplicaCount: 0` on a ScaledObject to let KEDA stop an idle pipeline entirely and restart it when the trigger fires again, for example when lag reappears on the consumer group. KEDA manages the 0 to 1 transition itself, waiting `cooldownPeriod` seconds after the last trigger activity before scaling to zero. A plain HPA cannot do this.
+
+== How autoscaling interacts with the Pipeline spec
+
+* *`spec.paused` wins over the autoscaler.* A paused pipeline stays at zero replicas (phase `Stopped`) even while an HPA or KEDA keeps writing `spec.replicas`. When you unpause it, the pipeline resumes at the autoscaler-managed count.
+* *An explicit `spec.replicas: 0` is preserved.* The operator does not re-default it to 1. Note that a plain HPA stops managing a target whose replica count is 0; this is standard HPA behavior. Scale back up manually, or use KEDA with `minReplicaCount: 0`, which manages the zero state itself.
+* *Stop declaring `replicas` in manifests once an autoscaler owns it.* Every re-apply of a manifest that sets `spec.replicas` overwrites the autoscaler's value. Remove the field from the manifests you apply, or configure your GitOps tool to ignore it, for example with Argo CD's `ignoreDifferences`.
+
+== Next steps
+
+* xref:manage:kubernetes/k-connect-pipelines.adoc[]
+* https://keda.sh/docs/latest/scalers/[KEDA scalers reference^]
+* https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/[Kubernetes HPA documentation^]
