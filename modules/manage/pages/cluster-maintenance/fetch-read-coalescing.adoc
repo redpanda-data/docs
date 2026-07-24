@@ -49,6 +49,16 @@ The shared result is reference-counted. The coalescer keeps only a weak handle t
 
 Coalescing is scoped per shard: it collapses only the fan-out that lands on the same shard. It composes with xref:develop:consume-data/follower-fetching.adoc[follower fetching] rather than replacing it: follower fetching spreads consumers across replicas to distribute the read load, and coalescing removes the redundancy within each shard.
 
+== Limitations
+
+Before enabling fetch read coalescing, familiarize yourself with the following limitations:
+
+* *Only identical reads coalesce.* Consumers reading the same data but with a different `max_bytes`, a different offset, or a different isolation level do not share a read. The benefit scales with how closely the concurrent fetches match: the ideal case is many consumers tailing the same partition at the same offset with the same fetch sizing.
+* *Obligatory and strict reads are grouped apart.* A single partition and offset fetched both ways at the same time incurs one duplicate read by design.
+* *Retention is best-effort.* Completed results are only reusable by later readers while a fetch still references them; the coalescer never keeps a result alive on its own. The reliable savings are on genuinely concurrent readers of the same data, and back-to-back reuse is opportunistic.
+* *Per-shard scope.* Coalescing collapses only the fan-out that lands on the same shard. Where consumers are spread across replicas and shards, for example with follower fetching, each shard coalesces the fan-out local to it.
+* *De-duplication adds per-read overhead.* The de-duplication logic runs on every fetch read, whether or not reads coalesce. At low fan-out (for example, one or two consumers per partition), this overhead can increase reactor utilization while saving little to nothing, so only enable coalescing for high fan-out workloads.
+
 == Enable fetch read coalescing
 
 ifndef::env-cloud[]
@@ -99,16 +109,6 @@ coalescing hit ratio =
 
 A ratio near 0 means little fan-out is being collapsed: the reads aren't aligning on the same partition, offset, and fetch settings, and the workload is unlikely to benefit from coalescing. A high ratio means the coalescer is absorbing most of the fan-out.
 endif::[]
-
-== Limitations
-
-Before enabling fetch read coalescing, familiarize yourself with the following limitations:
-
-* *Only identical reads coalesce.* Consumers reading the same data but with a different `max_bytes`, a different offset, or a different isolation level do not share a read. The benefit scales with how closely the concurrent fetches match: the ideal case is many consumers tailing the same partition at the same offset with the same fetch sizing.
-* *Obligatory and strict reads are grouped apart.* A single partition and offset fetched both ways at the same time incurs one duplicate read by design.
-* *Retention is best-effort.* Completed results are only reusable by later readers while a fetch still references them; the coalescer never keeps a result alive on its own. The reliable savings are on genuinely concurrent readers of the same data, and back-to-back reuse is opportunistic.
-* *Per-shard scope.* Coalescing collapses only the fan-out that lands on the same shard. Where consumers are spread across replicas and shards, for example with follower fetching, each shard coalesces the fan-out local to it.
-* *De-duplication adds per-read overhead.* The de-duplication logic runs on every fetch read, whether or not reads coalesce. At low fan-out (for example, one or two consumers per partition), this overhead can increase reactor utilization while saving little to nothing, so only enable coalescing for high fan-out workloads.
 
 == Suggested reading
 
