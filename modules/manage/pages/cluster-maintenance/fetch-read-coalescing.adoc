@@ -31,21 +31,9 @@ endif::[]
 
 == How fetch read coalescing works
 
-The coalescer sits on the fetch read path of each shard and groups reads by the properties that make two reads produce byte-identical output:
+Redpanda coalesces fetch reads only when they request the same data in the same way: the same partition and offset, with the same isolation level and fetch size (`max_bytes`). When matching reads arrive concurrently, or back-to-back while a previous result is still in use, the broker performs the read once and shares the single result with every requester. Reads that differ in any of these properties run independently. If a shared read fails, all coalesced fetches receive the error.
 
-* Partition
-* Fetch offset
-* Isolation level
-* `max_bytes` budget
-* Whether the read is obligatory (guarantees at least one batch and ignores the strict byte limit) or strict (honors `max_bytes`). These are grouped apart, so neither serves the other.
-
-For each fetch read, one of three things happens:
-
-* *Ready hit*: A previously completed read is still retained and covers what this fetch needs, so its result is reused with no new read.
-* *In-flight hit*: A read for the same data is already running, so this fetch awaits that read instead of starting its own.
-* *Miss*: The read runs exactly once, and its result is shared with any waiting fetches and retained for later readers. If the read fails, the error is propagated to all waiters.
-
-The shared result is reference-counted. The coalescer keeps only a weak handle to it, so it never pins memory; the requesting fetches hold the only strong references until their responses are sent. This is where the memory savings come from: coalesced consumers share one buffer instead of each holding its own copy.
+Coalesced consumers share one response buffer instead of each holding its own copy, which is where the memory savings come from. A completed result is retained only while at least one fetch still references it, so the coalescer never pins memory on its own.
 
 Coalescing is scoped per shard: it collapses only the fan-out that lands on the same shard. It composes with xref:develop:consume-data/follower-fetching.adoc[follower fetching] rather than replacing it: follower fetching spreads consumers across replicas to distribute the read load, and coalescing removes the redundancy within each shard.
 
