@@ -303,31 +303,24 @@ Redpanda Console now connects securely to your Redpanda cluster using TLS. For p
 [[expose-console-gateway-api]]
 == Expose Redpanda Console with the Gateway API
 
-As an alternative to Ingress, you can expose Redpanda Console through a Kubernetes https://gateway-api.sigs.k8s.io/[Gateway API^] HTTPRoute. The Gateway API separates infrastructure from application routing: a cluster operator manages a shared Gateway, which is the entry point that terminates TLS, and Redpanda Console attaches to that Gateway with an HTTPRoute that the Helm chart or the Redpanda Operator renders and manages for you.
+As an alternative to Ingress, you can expose Redpanda Console through a Kubernetes https://gateway-api.sigs.k8s.io/[Gateway API^] HTTPRoute. This feature is in beta and requires Redpanda Operator 26.2 or later, or Redpanda Helm chart 26.2.0 or later. Beta features are not recommended for production environments. The Gateway API separates infrastructure from application routing: your platform team manages a shared Gateway, which is the entry point that terminates TLS, and Redpanda Console attaches to that Gateway with an HTTPRoute that the Redpanda Operator or Helm chart renders and manages for you.
 
 Choose the Gateway API over Ingress when your cluster already routes traffic through a Gateway controller, such as Envoy Gateway, Istio, Cilium, or NGINX Gateway Fabric, or when you want typed, role-based routing configuration instead of controller-specific Ingress annotations.
 
 Ingress and the Gateway API are mutually exclusive for Redpanda Console: enabling both fails validation with `ingress and gateway cannot both be enabled; use one or the other`.
 
-NOTE: With an HTTPRoute, TLS terminates at the Gateway's listener, so the certificate is configured on the Gateway resource rather than in the Redpanda Console configuration.
+NOTE: With an HTTPRoute, TLS terminates at the Gateway's listener, so you configure the certificate on the Gateway resource instead of in the Redpanda Console configuration.
 
 === Prerequisites
 
-The Gateway API resources are not bundled with Redpanda Console or the Redpanda Operator:
+Redpanda Console and the Redpanda Operator don't bundle Gateway API resources:
 
-. Install the https://gateway-api.sigs.k8s.io/guides/[Gateway API CRDs^]:
-+
-[,bash]
-----
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/standard-install.yaml
-----
-
-. Install a Gateway API-compatible controller, such as https://gateway.envoyproxy.io/[Envoy Gateway^], https://istio.io/latest/docs/tasks/traffic-management/ingress/gateway-api/[Istio^], https://docs.cilium.io/en/stable/network/servicemesh/gateway-api/gateway-api/[Cilium^], or https://github.com/nginx/nginx-gateway-fabric[NGINX Gateway Fabric^].
+. Install the Gateway API CRDs and a compatible controller, such as https://gateway.envoyproxy.io/[Envoy Gateway^], https://istio.io/latest/docs/tasks/traffic-management/ingress/gateway-api/[Istio^], https://docs.cilium.io/en/stable/network/servicemesh/gateway-api/gateway-api/[Cilium^], or https://github.com/nginx/nginx-gateway-fabric[NGINX Gateway Fabric^]. For versions and installation steps, see the prerequisites in xref:manage:kubernetes/networking/external/k-gateway-api.adoc#prerequisites[Configure External Access through Gateway API]. HTTPRoute ships in the standard channel, so either release channel works for this feature.
 
 . Create a Gateway for the HTTPRoute to attach to, or identify an existing one:
 +
-.`gateway.yaml`
 [,yaml]
+.`gateway.yaml`
 ----
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -353,6 +346,18 @@ spec:
 <2> A Secret in the Gateway's namespace that contains the TLS certificate for your Redpanda Console hostname.
 <3> The listener must allow routes from the namespace where Redpanda Console runs. `from: All` accepts routes from any namespace. Use `from: Selector` to restrict which namespaces can attach.
 
+. Apply the manifest and verify that the controller accepts the listener:
++
+[,bash]
+----
+kubectl apply -f gateway.yaml
+
+kubectl get gateway my-gateway --namespace gateway-system \
+  -o jsonpath='{range .status.listeners[*]}{.name}: {range .conditions[*]}{.type}={.status} {end}{"\n"}{end}'
+----
++
+The listener reports `Accepted=True` and `Programmed=True`.
+
 === Enable the HTTPRoute
 
 Configure the `gateway` block instead of the `ingress` block:
@@ -365,8 +370,8 @@ Operator::
 
 . Add a `gateway` block to the Console resource:
 +
-.`console.yaml`
 [,yaml]
+.`console.yaml`
 ----
 apiVersion: cluster.redpanda.com/v1alpha2
 kind: Console
@@ -389,7 +394,7 @@ spec:
     pathType: PathPrefix
 ----
 +
-<1> References the Gateway that the HTTPRoute attaches to. `sectionName` optionally pins the route to one listener on that Gateway. Without `parentRefs`, the HTTPRoute is created but does not attach to any Gateway.
+<1> References the Gateway that the HTTPRoute attaches to. `sectionName` optionally pins the route to one listener on that Gateway. Without `parentRefs`, Redpanda creates the HTTPRoute but it doesn't attach to any Gateway.
 <2> The hostnames that the route matches. Point DNS for these hostnames at the Gateway's address.
 <3> The path to match. `pathType` is one of `PathPrefix`, `Exact`, or `RegularExpression`.
 
@@ -409,8 +414,8 @@ Helm::
 
 . Add a `gateway` block to your values file:
 +
-.`console-values.yaml`
 [,yaml]
+.`console-values.yaml`
 ----
 gateway: <1>
   enabled: true
@@ -440,7 +445,7 @@ helm upgrade --install redpanda-console redpanda/console \
 
 === Verify the route
 
-. Check that the HTTPRoute exists and was accepted by the Gateway:
+. Check that the HTTPRoute exists and that the Gateway accepted it:
 +
 [,bash]
 ----
@@ -448,7 +453,7 @@ kubectl get httproute --namespace redpanda
 kubectl describe httproute redpanda-console --namespace redpanda
 ----
 +
-In the route's status, the `Accepted` and `ResolvedRefs` conditions should both be `True` for the referenced Gateway. If `Accepted` is `False` with reason `NotAllowedByListeners`, update the Gateway listener's `allowedRoutes` to include the Redpanda Console namespace.
+In the route's status, the `Accepted` and `ResolvedRefs` conditions are both `True` for the referenced Gateway. If `Accepted` is `False` with reason `NotAllowedByListeners`, update the Gateway listener's `allowedRoutes` to include the Redpanda Console namespace.
 
 . Get the Gateway's external address and point DNS for your Redpanda Console hostname at it:
 +
@@ -461,14 +466,14 @@ kubectl get gateway my-gateway --namespace gateway-system
 +
 [,bash]
 ----
-curl --resolve console.example.com:443:<gateway-address> https://console.example.com -I
+curl --resolve console.example.com:443:<gateway-address> https://console.example.com -I # Replace <gateway-address> with the address from the previous step.
 ----
 
 === Switch between Ingress and the Gateway API
 
-To move an existing Redpanda Console deployment from Ingress to the Gateway API, remove or disable the `ingress` block and add the `gateway` block in the same update. The operator or chart deletes the Ingress and creates the HTTPRoute. Switching back works the same way in reverse: remove the `gateway` block, add the `ingress` block, and the HTTPRoute is removed and an Ingress created.
+To move an existing Redpanda Console deployment from Ingress to the Gateway API, remove or disable the `ingress` block and add the `gateway` block in the same update. The operator or chart deletes the Ingress and creates the HTTPRoute. Switching back works the same way in reverse: remove the `gateway` block, add the `ingress` block, and the operator or chart removes the HTTPRoute and creates an Ingress.
 
-TIP: To expose the Redpanda cluster itself through the Gateway API, see xref:manage:kubernetes/networking/external/k-gateway-api.adoc[].
+TIP: To expose the Redpanda cluster itself through the Gateway API, see xref:manage:kubernetes/networking/external/k-gateway-api.adoc[Configure External Access through Gateway API].
 
 == Deploy Redpanda Console as standalone service with YAML manifests
 
