@@ -39,7 +39,7 @@ endif::[]
 
 ifndef::env-cloud[]
 - Both clusters must be running Redpanda v25.3 or later. 
-- If you use Redpanda Console, ensure that it is running v3.30 or later.
+- If you use Redpanda Console, ensure that it is running v3.3.0 or later.
 
 - You must have xref:get-started:licensing/overview.adoc[Enterprise Edition] licenses on both clusters.
 
@@ -329,6 +329,12 @@ In the shadow cluster, create a secret to store the authentication credential th
 
 Use the xref:manage:api/cloud-dataplane-api.adoc[Data Plane API] to programmatically create the secret.
 --
+
+Terraform::
++
+--
+With Terraform, you define the secret and the shadow link together: the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/secret[`redpanda_secret` resource^] in the next step's Terraform tab creates this secret as part of the same configuration, so there is nothing to do in this step.
+--
 ======
 
 . In the shadow cluster, create a shadow link to the source cluster.
@@ -422,9 +428,64 @@ Replace the placeholders with your own values:
 * `<sasl-password-secret-id>`: The name of the secret containing the SASL/SCRAM password from the source cluster.
 * `<topic-prefix-to-exclude>`: Exclude topics that use this prefix, for example, `temp-`, `test-`, `debug-`.
 
-The response object represents the xref:manage:api/cloud-byoc-controlplane-api.adoc#lro[long-running operation] of creating a shadow link. 
+The response object represents the xref:manage:api/cloud-byoc-controlplane-api.adoc#lro[long-running operation] of creating a shadow link.
 
 For the full API reference, see link:/api/doc/cloud-controlplane/operation/operation-shadowlinkservice_createshadowlink[Control Plane API reference].
+--
+
+Terraform::
++
+--
+Manage shadow links declaratively with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/shadow_link[`redpanda_shadow_link` resource^] in the https://registry.terraform.io/providers/redpanda-data/redpanda/latest[Redpanda Terraform provider^] (version 2.0.0 or later). The resource supports the full shadow link lifecycle: create, update, import, and destroy.
+
+Store the SASL/SCRAM password for the source cluster user in the shadow cluster's secret store with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/secret[`redpanda_secret` resource^] (see xref:manage:terraform-provider.adoc#manage-cluster-secrets[Manage cluster secrets] for naming, write-only behavior, and rotation), then reference the secret from the shadow link configuration:
+
+[,hcl]
+----
+resource "redpanda_secret" "source_password" {
+  name                = "<secret-name>"
+  secret_data         = var.source_user_password
+  secret_data_version = 1   # Increment when you rotate the password.
+  scopes              = ["SCOPE_REDPANDA_CLUSTER"]
+  cluster_api_url     = redpanda_cluster.shadow.cluster_api_url
+}
+
+resource "redpanda_shadow_link" "production_dr" {
+  name               = "<shadow-link-name>"
+  shadow_redpanda_id = "<destination-redpanda-cluster-id>"
+  source_redpanda_id = "<source-redpanda-cluster-id>"
+
+  client_options = {
+    tls_settings = {
+      enabled = true
+    }
+    authentication_configuration = {
+      scram_configuration = {
+        scram_mechanism = "SCRAM_SHA_256"
+        username        = "<sasl-username>"
+        password        = "$${secrets.${redpanda_secret.source_password.name}}"
+      }
+    }
+  }
+}
+----
+
+Replace the placeholders with your own values:
+
+* `<secret-name>`: Name for the secret that stores the SASL/SCRAM password. Must be uppercase, matching `^[A-Z][A-Z0-9_]*$`, for example, `SOURCE_SCRAM_PASSWORD`.
+* `<shadow-link-name>`: Unique name for this shadow link, for example, `production-dr`.
+* `<destination-redpanda-cluster-id>`: ID of the shadow (destination) cluster.
+* `<source-redpanda-cluster-id>`: ID of the source cluster. For a source cluster that is not managed in Redpanda Cloud, omit `source_redpanda_id` and set `client_options.bootstrap_servers` instead.
+* `<sasl-username>`: SASL/SCRAM username, for example, `shadow-replication-user`. You create this user in the source cluster, and you can manage it with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/user[`redpanda_user` resource^]. Grant it the permissions listed in <<Replication service permissions>>, which you can manage with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/acl[`redpanda_acl` resource^].
+
+To configure topic, consumer group, ACL, and Schema Registry synchronization, add the corresponding option blocks (`topic_metadata_sync_options`, `consumer_offset_sync_options`, `security_sync_options`, `schema_registry_sync_options`) to the resource. For the full schema and a complete working example, see the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/shadow_link[`redpanda_shadow_link` reference^] and the https://github.com/redpanda-data/terraform-provider-redpanda/blob/main/examples/shadow_link/main.tf[provider example^].
+
+[NOTE]
+====
+If you manage the shadow cluster with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/cluster[`redpanda_cluster` resource^], you can set the `enable_shadow_linking` cluster property in `cluster_configuration.custom_properties_json`.
+
+To protect against accidental deletion, Terraform refuses to destroy a shadow link unless the resource sets `allow_deletion = true`.
+====
 --
 ======
 endif::[]
@@ -852,6 +913,12 @@ curl -X PATCH 'https://api.redpanda.com/v1/shadow-links/<shadow-link-id>' \
 This endpoint returns a xref:manage:api/cloud-byoc-controlplane-api.adoc#lro[long-running operation].
 
 For the full API reference, see link:/api/doc/cloud-controlplane/operation/operation-shadowlinkservice_updateshadowlink[Control Plane API reference].
+--
+
+Terraform::
++
+--
+Edit the `redpanda_shadow_link` resource configuration and run `terraform apply`. The provider sends only the changed fields to the API. The shadow link name and cluster IDs are immutable: if you change them, Terraform plans a replacement (destroy and recreate) instead of an update. The destroy step of a replacement succeeds only when the resource sets `allow_deletion = true`, the same guard described in the create step.
 --
 ======
 endif::[]
