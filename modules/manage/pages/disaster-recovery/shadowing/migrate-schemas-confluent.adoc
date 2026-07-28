@@ -55,6 +55,9 @@ Schema replication settings live in the shadow link configuration. Two cluster p
 == Prerequisites
 
 * A cluster running Redpanda version 26.2 or later. The schema replication feature activates after all brokers complete the upgrade.
+ifndef::env-cloud[]
+* To configure schema replication in xref:console:index.adoc[Redpanda Console] rather than with `rpk`, Redpanda Console v3.9.0 or later. The Schema Registry fields appear only when the shadow cluster reports Redpanda 26.2.0 or later. On an earlier cluster, Redpanda Console falls back to a single toggle that enables `_schemas` topic replication, and API mode is unavailable.
+endif::[]
 * Network connectivity from the shadow cluster to the source Schema Registry HTTP endpoint.
 * Credentials for the source registry with permission to read subjects, versions, and configuration. For Confluent Cloud, use a Schema Registry API key and secret.
 * Basic Shadow link settings. See xref:manage:disaster-recovery/shadowing/setup.adoc[Configure Shadowing].
@@ -257,9 +260,92 @@ For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-creat
 
 To change the schema replication settings on an existing link, see xref:reference:rpk/rpk-shadow/rpk-shadow-update.adoc[`rpk shadow update`].
 
+ifndef::env-cloud[]
+== Configure schema replication in Redpanda Console
+
+xref:console:index.adoc[Redpanda Console] writes the same schema replication settings as a configuration file. The modes, filters, and validation policy behave identically; only the names of the fields differ. Use the <<console-fields-and-configuration-keys,field mapping>> to move between the two.
+
+=== Create a shadow link with API-mode schema replication
+
+. From the navigation menu, select *Shadow Link*, then click *Create shadow link*.
+. Complete the connection details for the source Kafka cluster. See xref:manage:disaster-recovery/shadowing/setup.adoc#create-a-shadow-link[Configure Shadowing].
+. On the *Schema Registry* step, in the *Shadow Schema Registry* card, select the *Other* mode tab. *Other* is API mode. *Redpanda* shadows the `_schemas` topic instead, and *None* leaves the shadow cluster's Schema Registry independent.
+. Under *Source connection*, enter the *Source URL* of the source Schema Registry.
+. For *Authentication*, select *HTTP Basic* and enter the *Username* and *Password*. For Confluent Cloud, these are the Schema Registry API key and secret.
+. Turn on *Enable TLS* if the source registry uses HTTPS. To trust a private certificate authority, upload a CA certificate. To authenticate with mTLS instead of HTTP basic authentication, provide a client certificate and private key.
+. Under *Scope*, choose what to replicate:
++
+--
+* *Entire Schema Registry* replicates every context and subject.
+* *Specify contexts and subjects* limits replication to the *Contexts* and *Subjects* that you enter. Press Enter after each entry. The two lists combine as a union. For the selection rules and the qualified subject syntax, see <<select-contexts-and-subjects,Select contexts and subjects>>.
+--
+. Under *Destination contexts*, select *Preserve source context names* to keep the source names, or *Map source contexts to explicit destination contexts* to rename them. With explicit mapping, every source context in scope must map to a distinct destination context. See <<map-source-contexts-to-destination-contexts,Map source contexts to destination contexts>>.
+. Optional: expand *Sync behavior* to change the *Tail interval*, *Full sync interval*, *Max source request rate*, or the *Unsupported schema features* policy. Leave these fields empty to use the cluster defaults.
+. Save the shadow link.
+
+Redpanda Console does not test the source connection or list the matching subjects before you save. To confirm that the link works, <<verify-the-configuration,verify the configuration>>, then <<monitor-replication-status,monitor replication status>>.
+
+[[console-fields-and-configuration-keys]]
+=== Console fields and configuration keys
+
+[cols="1,1"]
+|===
+| Redpanda Console | Configuration key
+
+| *Shadow Schema Registry* mode: *Redpanda*, *Other*, or *None*
+| `shadow_schema_registry_topic`, `shadow_schema_registry_api`, or neither
+
+| *Source URL*
+| `source_url`
+
+| *Authentication*: *HTTP Basic*, with *Username* and *Password*
+| `auth_options.basic.username` and `auth_options.basic.password`
+
+| *Enable TLS*, CA certificate, and client certificate and key
+| `tls_settings`
+
+| *Scope*: *Entire Schema Registry* or *Specify contexts and subjects*, with *Contexts* and *Subjects*
+| `source_filter.contexts` and `source_filter.subjects`
+
+| *Destination contexts*: *Preserve source context names*
+| `destination.identity`
+
+| *Destination contexts*: *Map source contexts to explicit destination contexts*
+| `destination.exact.mappings`
+
+| *Tail interval*
+| `tail_interval`
+
+| *Full sync interval*
+| `full_sync_interval`
+
+| *Max source request rate*
+| `max_source_requests_per_second`
+
+| *Unsupported schema features*: *Fail the sync* or *Remove unsupported features*
+| `unsupported_schema_feature_policy: FAIL` or `REMOVE`
+|===
+
+=== Edit an existing shadow link
+
+You can change the schema replication settings of an existing link in Redpanda Console, with the following constraints:
+
+* You cannot switch directly between *Redpanda* and *Other*. To change between these modes, select *None*, save the link, then select the mode you want. Redpanda Console locks the unavailable tab.
+* Switching away from *Other* discards the stored Schema Registry connection settings, including credentials, scope, and sync behavior. Redpanda Console warns you before you save.
+* Turning off *Redpanda* mode does not remove a `_schemas` shadow topic that the link already added. To stop shadowing that topic, fail over or delete the shadow topic after you save.
+* Redpanda Console never populates a password field with the stored value. Leave the field empty to keep the existing credential, or enter a new value to replace it.
+* Redpanda Console preserves settings that it does not expose, such as `paused`, when you save.
+
+endif::[]
+
+[[verify-the-configuration]]
 == Verify the configuration
 
-Confirm that the link is configured for API-based schema replication:
+Confirm that the link is configured for API-based schema replication.
+
+ifndef::env-cloud[]
+=== Use rpk
+endif::[]
 
 [,bash]
 ----
@@ -267,6 +353,36 @@ rpk shadow describe <link-name>
 ----
 
 The output includes the shadowing mode, source URL, sync intervals, validation policy, and your context and subject filters. For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-describe.adoc[`rpk shadow describe`].
+
+ifndef::env-cloud[]
+=== Use Redpanda Console
+
+On the shadow link's detail page, the *Schema Registry* section reports the stored configuration as read-only:
+
+[cols="1,3"]
+|===
+| Field | Description
+
+| Connection
+| The *Source URL* of the source Schema Registry.
+
+| Authentication
+| The authentication *Type* and *Username*. The *Password* shows as `Set` or `Not set`; Redpanda Console never displays the stored value.
+
+| TLS
+| Whether TLS is *Enabled*, whether the *Trust store* is a `Custom CA` or the `System trust store`, and whether *Client auth* uses an mTLS certificate.
+
+| Scope
+| Either `Entire Schema Registry`, or the *Contexts* and *Subjects* that the link replicates.
+
+| Destination contexts mapping
+| The source-to-destination context mappings, or the source names when the link preserves them.
+
+| Sync behavior
+| The tail interval, full sync interval, max source request rate, and unsupported schema features policy. Shows `Cluster defaults` when the link does not override them.
+|===
+
+endif::[]
 
 == Monitor replication status
 
