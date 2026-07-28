@@ -39,7 +39,7 @@ endif::[]
 
 ifndef::env-cloud[]
 - Both clusters must be running Redpanda v25.3 or later. 
-- If you use Redpanda Console, ensure that it is running v3.30 or later.
+- If you use Redpanda Console, ensure that it is running v3.3.0 or later.
 
 - You must have xref:get-started:licensing/overview.adoc[Enterprise Edition] licenses on both clusters. 
 endif::[]
@@ -327,6 +327,12 @@ In the shadow cluster, create a secret to store the authentication credential th
 
 Use the xref:manage:api/cloud-dataplane-api.adoc[Data Plane API] to programmatically create the secret.
 --
+
+Terraform::
++
+--
+With Terraform, you define the secret and the shadow link together: the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/secret[`redpanda_secret` resource^] in the next step's Terraform tab creates this secret as part of the same configuration, so there is nothing to do in this step.
+--
 ======
 
 . In the shadow cluster, create a shadow link to the source cluster.
@@ -430,14 +436,14 @@ Terraform::
 --
 Manage shadow links declaratively with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/shadow_link[`redpanda_shadow_link` resource^] in the https://registry.terraform.io/providers/redpanda-data/redpanda/latest[Redpanda Terraform provider^] (version 2.0.0 or later). The resource supports the full shadow link lifecycle: create, update, import, and destroy.
 
-Store the SASL/SCRAM password for the source cluster user in the shadow cluster's secret store with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/secret[`redpanda_secret` resource^], then reference the secret from the shadow link configuration:
+Store the SASL/SCRAM password for the source cluster user in the shadow cluster's secret store with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/secret[`redpanda_secret` resource^] (see xref:manage:terraform-provider.adoc#manage-cluster-secrets[Manage cluster secrets] for naming, write-only behavior, and rotation), then reference the secret from the shadow link configuration:
 
 [,hcl]
 ----
 resource "redpanda_secret" "source_password" {
   name                = "<secret-name>"
   secret_data         = var.source_user_password
-  secret_data_version = 1
+  secret_data_version = 1   # Increment when you rotate the password.
   scopes              = ["SCOPE_REDPANDA_CLUSTER"]
   cluster_api_url     = redpanda_cluster.shadow.cluster_api_url
 }
@@ -464,7 +470,7 @@ resource "redpanda_shadow_link" "production_dr" {
 
 Replace the placeholders with your own values:
 
-* `<secret-name>`: Name for the secret that stores the SASL/SCRAM password.
+* `<secret-name>`: Name for the secret that stores the SASL/SCRAM password. Must be uppercase, matching `^[A-Z][A-Z0-9_]*$`, for example, `SOURCE_SCRAM_PASSWORD`.
 * `<shadow-link-name>`: Unique name for this shadow link, for example, `production-dr`.
 * `<destination-redpanda-cluster-id>`: ID of the shadow (destination) cluster.
 * `<source-redpanda-cluster-id>`: ID of the source cluster. For a source cluster that is not managed in Redpanda Cloud, omit `source_redpanda_id` and set `client_options.bootstrap_servers` instead.
@@ -910,7 +916,7 @@ For the full API reference, see link:/api/doc/cloud-controlplane/operation/opera
 Terraform::
 +
 --
-Edit the `redpanda_shadow_link` resource configuration and run `terraform apply`. The provider sends only the changed fields to the API. The shadow link name and cluster IDs are immutable: if you change them, Terraform plans a replacement (destroy and recreate) instead of an update.
+Edit the `redpanda_shadow_link` resource configuration and run `terraform apply`. The provider sends only the changed fields to the API. The shadow link name and cluster IDs are immutable: if you change them, Terraform plans a replacement (destroy and recreate) instead of an update. The destroy step of a replacement succeeds only when the resource sets `allow_deletion = true`, the same guard described in the create step.
 --
 ======
 endif::[]
