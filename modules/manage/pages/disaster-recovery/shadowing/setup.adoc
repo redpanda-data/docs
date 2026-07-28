@@ -39,9 +39,11 @@ endif::[]
 
 ifndef::env-cloud[]
 - Both clusters must be running Redpanda v25.3 or later. 
-- If you use Redpanda Console, ensure that it is running v3.30 or later.
+- If you use Redpanda Console, ensure that it is running v3.3.0 or later.
 
-- You must have xref:get-started:licensing/overview.adoc[Enterprise Edition] licenses on both clusters. 
+- You must have xref:get-started:licensing/overview.adoc[Enterprise Edition] licenses on both clusters.
+
+TIP: When you later upgrade linked clusters, the upgrade order matters. See xref:manage:disaster-recovery/shadowing/upgrade.adoc[].
 endif::[]
 
 === Cluster configuration
@@ -257,6 +259,16 @@ security_sync_options:
 
 schema_registry_sync_options:         # Schema Registry synchronization options
   shadow_schema_registry_topic: {}    # Enable byte-for-byte _schemas topic replication
+
+ifndef::env-cloud[]
+role_sync_options:                    # RBAC role synchronization options
+  interval: 30s                       # How often to sync roles
+  paused: false                       # Enable role synchronization
+  role_name_filters:                  # Default empty: no roles sync until you add an INCLUDE filter
+  - pattern_type: LITERAL             # Pattern type: "LITERAL", "PREFIX"
+    filter_type: INCLUDE              # Filter type: "INCLUDE", "EXCLUDE"
+    name: '*'                         # Include all roles ('*' must be the only character, LITERAL only)
+endif::[]
 ----
 ====
 
@@ -316,6 +328,12 @@ Data Plane API::
 In the shadow cluster, create a secret to store the authentication credential that the cluster will use (`"scram_configuration": "password"` in the example configuration in the next step). Your secret must be scoped to "Redpanda Cluster".
 
 Use the xref:manage:api/cloud-dataplane-api.adoc[Data Plane API] to programmatically create the secret.
+--
+
+Terraform::
++
+--
+With Terraform, you define the secret and the shadow link together: the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/secret[`redpanda_secret` resource^] in the next step's Terraform tab creates this secret as part of the same configuration, so there is nothing to do in this step.
 --
 ======
 
@@ -410,9 +428,64 @@ Replace the placeholders with your own values:
 * `<sasl-password-secret-id>`: The name of the secret containing the SASL/SCRAM password from the source cluster.
 * `<topic-prefix-to-exclude>`: Exclude topics that use this prefix, for example, `temp-`, `test-`, `debug-`.
 
-The response object represents the xref:manage:api/cloud-byoc-controlplane-api.adoc#lro[long-running operation] of creating a shadow link. 
+The response object represents the xref:manage:api/cloud-byoc-controlplane-api.adoc#lro[long-running operation] of creating a shadow link.
 
 For the full API reference, see link:/api/doc/cloud-controlplane/operation/operation-shadowlinkservice_createshadowlink[Control Plane API reference].
+--
+
+Terraform::
++
+--
+Manage shadow links declaratively with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/shadow_link[`redpanda_shadow_link` resource^] in the https://registry.terraform.io/providers/redpanda-data/redpanda/latest[Redpanda Terraform provider^] (version 2.0.0 or later). The resource supports the full shadow link lifecycle: create, update, import, and destroy.
+
+Store the SASL/SCRAM password for the source cluster user in the shadow cluster's secret store with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/secret[`redpanda_secret` resource^] (see xref:manage:terraform-provider.adoc#manage-cluster-secrets[Manage cluster secrets] for naming, write-only behavior, and rotation), then reference the secret from the shadow link configuration:
+
+[,hcl]
+----
+resource "redpanda_secret" "source_password" {
+  name                = "<secret-name>"
+  secret_data         = var.source_user_password
+  secret_data_version = 1   # Increment when you rotate the password.
+  scopes              = ["SCOPE_REDPANDA_CLUSTER"]
+  cluster_api_url     = redpanda_cluster.shadow.cluster_api_url
+}
+
+resource "redpanda_shadow_link" "production_dr" {
+  name               = "<shadow-link-name>"
+  shadow_redpanda_id = "<destination-redpanda-cluster-id>"
+  source_redpanda_id = "<source-redpanda-cluster-id>"
+
+  client_options = {
+    tls_settings = {
+      enabled = true
+    }
+    authentication_configuration = {
+      scram_configuration = {
+        scram_mechanism = "SCRAM_SHA_256"
+        username        = "<sasl-username>"
+        password        = "$${secrets.${redpanda_secret.source_password.name}}"
+      }
+    }
+  }
+}
+----
+
+Replace the placeholders with your own values:
+
+* `<secret-name>`: Name for the secret that stores the SASL/SCRAM password. Must be uppercase, matching `^[A-Z][A-Z0-9_]*$`, for example, `SOURCE_SCRAM_PASSWORD`.
+* `<shadow-link-name>`: Unique name for this shadow link, for example, `production-dr`.
+* `<destination-redpanda-cluster-id>`: ID of the shadow (destination) cluster.
+* `<source-redpanda-cluster-id>`: ID of the source cluster. For a source cluster that is not managed in Redpanda Cloud, omit `source_redpanda_id` and set `client_options.bootstrap_servers` instead.
+* `<sasl-username>`: SASL/SCRAM username, for example, `shadow-replication-user`. You create this user in the source cluster, and you can manage it with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/user[`redpanda_user` resource^]. Grant it the permissions listed in <<Replication service permissions>>, which you can manage with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/acl[`redpanda_acl` resource^].
+
+To configure topic, consumer group, ACL, and Schema Registry synchronization, add the corresponding option blocks (`topic_metadata_sync_options`, `consumer_offset_sync_options`, `security_sync_options`, `schema_registry_sync_options`) to the resource. For the full schema and a complete working example, see the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/shadow_link[`redpanda_shadow_link` reference^] and the https://github.com/redpanda-data/terraform-provider-redpanda/blob/main/examples/shadow_link/main.tf[provider example^].
+
+[NOTE]
+====
+If you manage the shadow cluster with the https://registry.terraform.io/providers/redpanda-data/redpanda/latest/docs/resources/cluster[`redpanda_cluster` resource^], you can set the `enable_shadow_linking` cluster property in `cluster_configuration.custom_properties_json`.
+
+To protect against accidental deletion, Terraform refuses to destroy a shadow link unless the resource sets `allow_deletion = true`.
+====
 --
 ======
 endif::[]
@@ -487,9 +560,17 @@ consumer_offset_sync_options:
 
 ==== Schema Registry synchronization
 
-Shadowing can replicate Schema Registry data by shadowing the `_schemas` system topic. When enabled, this provides byte-for-byte replication of schema definitions, versions, and compatibility settings.
+Shadowing can replicate Schema Registry data in one of two modes:
 
-To enable Schema Registry synchronization, add the following to your shadow link configuration:
+* **Topic mode** (`shadow_schema_registry_topic`): Shadows the `_schemas` system topic for byte-for-byte replication of schema definitions, versions, and compatibility settings from another Redpanda cluster.
+* **API mode** (`shadow_schema_registry_api`): Polls the source Schema Registry over HTTP and imports selected contexts and subjects, with validation. Use this mode to replicate schemas from a Confluent Schema Registry, or to replicate only part of the source registry.
+ifndef::env-cloud[]
+See xref:manage:disaster-recovery/shadowing/migrate-schemas-confluent.adoc[Migrate Schemas from Confluent Schema Registry].
+endif::[]
+
+A shadow link uses one mode or the other, not both.
+
+To enable topic mode, add the following to your shadow link configuration:
 
 [,yaml]
 ----
@@ -497,7 +578,7 @@ schema_registry_sync_options:
   shadow_schema_registry_topic: {}
 ----
 
-Requirements:
+Topic mode requirements:
 
 - The `_schemas` topic must exist on the source cluster
 - The `_schemas` topic must not exist on the shadow cluster, or must be empty
@@ -544,6 +625,50 @@ security_sync_options:
       permission_type: ALLOW          # Allow permission
       host: '*'                       # Any host
 ----
+
+ifndef::env-cloud[]
+==== Role filtering
+
+After a failover, your users and applications need the same permissions on the shadow cluster that they had on the source. Role synchronization prepares the shadow cluster for that moment: the xref:manage:disaster-recovery/shadowing/overview.adoc#roles-migrator-task[Roles Migrator task] periodically reads xref:manage:security/authorization/rbac.adoc[RBAC] role definitions and role memberships from the source cluster and mirrors them to the shadow cluster. Use role synchronization together with <<acl-filtering,ACL filters>> whenever your authorization model uses roles, so that role-based permissions keep working after failover.
+
+[IMPORTANT]
+====
+No roles are replicated by default. The `role_name_filters` list defaults to empty, which synchronizes nothing. Add at least one `INCLUDE` filter to start replicating roles.
+====
+
+To replicate all roles:
+
+[,yaml]
+----
+role_sync_options:
+  interval: 30s                       # How often to sync roles
+  role_name_filters:
+  - pattern_type: LITERAL
+    filter_type: INCLUDE
+    name: '*'                         # '*' must be the only character and requires LITERAL
+----
+
+Role filters use the same pattern and filter types as topic filters: `pattern_type` is `LITERAL` or `PREFIX`, and `filter_type` is `INCLUDE` or `EXCLUDE`.
+
+Within the configured filters, the Roles Migrator task keeps the shadow cluster's roles as a full mirror of the source:
+
+* The task creates roles that exist on the source but not on the shadow.
+* The task updates roles whose membership changed on the source.
+* The task deletes roles that were deleted on the source.
+
+The task does not modify roles on the shadow cluster that fall outside your filters.
+
+Role synchronization replicates role definitions and memberships only:
+
+* **Shadowing does not replicate user credentials.** Manage and distribute credentials outside of Shadowing, and provision users on the shadow cluster before failover.
+* **Role synchronization does not replicate the ACLs bound to roles.** Configure <<acl-filtering,ACL filters>> as well, so that both the roles and the permissions granted to them exist on the shadow cluster.
+
+Role synchronization uses the same connection and service account as the rest of the shadow link. The cluster `describe` permission already required for ACL replication also covers role reads, and no additional network configuration is required. Both the source and shadow clusters must be running Redpanda 26.2 or later; the capability activates after the upgrade completes on all brokers. Role synchronization requires a Redpanda source cluster: if the source is an Apache Kafka cluster, the Roles Migrator task enters the `LINK_UNAVAILABLE` state, without affecting the other tasks on the link.
+
+Role synchronization continues to run after a xref:manage:disaster-recovery/shadowing/failover.adoc[failover]. Failover acts on topic data only: it stops topic replication and makes shadow topics writable, but the sync tasks, including the Roles Migrator, keep running on their intervals. To stop role synchronization, set `paused: true` in `role_sync_options`, or delete the shadow link.
+
+To monitor role synchronization, run xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`]. The Roles Migrator task's `Reason` field reports the counts from the most recent sync cycle, for example: `Synced roles: 2 created, 0 updated, 0 deleted, 0 failures`.
+endif::[]
 
 ==== Consumer group filtering and behavior
 
@@ -788,6 +913,12 @@ curl -X PATCH 'https://api.redpanda.com/v1/shadow-links/<shadow-link-id>' \
 This endpoint returns a xref:manage:api/cloud-byoc-controlplane-api.adoc#lro[long-running operation].
 
 For the full API reference, see link:/api/doc/cloud-controlplane/operation/operation-shadowlinkservice_updateshadowlink[Control Plane API reference].
+--
+
+Terraform::
++
+--
+Edit the `redpanda_shadow_link` resource configuration and run `terraform apply`. The provider sends only the changed fields to the API. The shadow link name and cluster IDs are immutable: if you change them, Terraform plans a replacement (destroy and recreate) instead of an update. The destroy step of a replacement succeeds only when the resource sets `allow_deletion = true`, the same guard described in the create step.
 --
 ======
 endif::[]

@@ -1,0 +1,318 @@
+= Migrate Schemas from Confluent Schema Registry
+:description: Replicate subjects, versions, and compatibility settings from a Confluent Schema Registry into a Redpanda shadow cluster.
+:env-linux: true
+:page-topic-type: how-to
+:page-categories: Management, High Availability, Disaster Recovery
+:learning-objective-1: Configure a shadow link that continuously replicates schemas from a Confluent Schema Registry
+:learning-objective-2: Filter replication by context or subject and map source contexts to destination contexts
+:learning-objective-3: Monitor schema replication status and resolve validation errors
+// tag::single-source[]
+
+ifndef::env-cloud[]
+[NOTE]
+====
+include::shared:partial$enterprise-license.adoc[]
+====
+endif::[]
+
+When you migrate to Redpanda from a deployment that uses a Confluent Schema Registry, your producers and consumers depend on the glossterm:schema[,schemas] stored in that registry. Shadowing removes this migration obstacle: a glossterm:shadow link[] continuously replicates schemas from the source Confluent Schema Registry into the glossterm:Schema Registry[] built into the Redpanda glossterm:shadow cluster[], preserving glossterm:subject[] names, versions, and compatibility settings. Because both registries stay synchronized until cutover, your applications keep working on Redpanda without a separate schema migration step. Use this approach when you migrate from Confluent to Redpanda, or when you maintain a Redpanda disaster recovery cluster for a system that keeps its schemas in a Confluent Schema Registry.
+
+After reading this page, you will be able to:
+
+* [ ] {learning-objective-1}
+* [ ] {learning-objective-2}
+* [ ] {learning-objective-3}
+
+== How HTTP API schema replication works
+
+When you configure a shadow link with the `shadow_schema_registry_api` option, the shadow cluster polls the source Schema Registry over HTTP and imports changes into its own Schema Registry. Two sync cycles keep the registries in step:
+
+* *Tail syncs* run frequently (default: every 10 seconds) to pick up incremental changes.
+* *Full syncs* scan all selected subjects (default: every 5 minutes) to catch anything a tail sync missed.
+
+Replicated schemas keep their original subject names and version IDs, so producers and consumers that reference schemas by ID continue to work after failover. Schemas that reference other schemas import in dependency order.
+
+Before importing a schema, Redpanda validates it against the Redpanda Schema Registry implementation. If a schema uses features that Redpanda does not support, the sync either reports an error and skips the schema, or removes the unsupported fields and imports the rest, depending on the <<choose-a-validation-policy,validation policy>> you choose.
+
+While the link is active, the destination contexts that the link replicates into are read-only: the shadow cluster rejects client writes to those contexts so that replicated schemas remain identical to the source. Contexts outside the link's filter remain writable.
+
+[NOTE]
+====
+This API-based mode is an alternative to the byte-for-byte `_schemas` topic replication described in xref:manage:disaster-recovery/shadowing/setup.adoc#schema-registry-synchronization[Configure Shadowing]. A shadow link uses one Schema Registry sync mode or the other, not both:
+
+* Use *topic mode* (`shadow_schema_registry_topic`) when the source is another Redpanda cluster and you want an exact, complete replica of its Schema Registry. Topic mode shadows the `_schemas` topic byte for byte, so it does not filter, remap, or validate schemas.
+* Use *API mode* (`shadow_schema_registry_api`) when the source is a Confluent Schema Registry, or when you need to replicate only selected contexts or subjects, map source contexts to different destination contexts, or control how schemas that use unsupported features are handled with a validation policy.
+
+Schema replication settings live in the shadow link configuration. Two cluster properties, `schema_registry_sync_memory_bytes` and `schema_registry_sync_parallelism`, tune how much memory and concurrency the shadow cluster uses while importing schemas. The defaults suit most deployments.
+====
+
+== Use cases
+
+* *Migrate from Confluent to Redpanda*: Replicate schemas continuously while xref:manage:disaster-recovery/shadowing/setup.adoc[Shadowing] replicates your topic data, then cut applications over to Redpanda once both are in sync. No separate schema migration tooling is required.
+* *Phased migration*: Use context and subject filters to migrate one team, application, or environment at a time.
+* *Registry reorganization*: Map source contexts to different destination contexts to restructure your Schema Registry as part of the migration.
+
+== Prerequisites
+
+* A cluster running Redpanda version 26.2 or later. The schema replication feature activates after all brokers complete the upgrade.
+* Network connectivity from the shadow cluster to the source Schema Registry HTTP endpoint.
+* Credentials for the source registry with permission to read subjects, versions, and configuration. For Confluent Cloud, use a Schema Registry API key and secret.
+* Basic Shadow link settings. See xref:manage:disaster-recovery/shadowing/setup.adoc[Configure Shadowing].
+* The destination contexts that the link replicates into, as determined by your `source_filter` and `destination` mapping, must be empty on the shadow cluster. The rest of the shadow cluster's Schema Registry does not need to be empty: contexts outside the link's mappings are unaffected.
+* To replicate contexts other than the default context, the xref:reference:properties/cluster-properties.adoc#schema_registry_enable_qualified_subjects[`schema_registry_enable_qualified_subjects`] cluster property must be enabled on the shadow cluster (the default). See xref:manage:schema-reg/schema-reg-contexts.adoc#prerequisites[Schema Registry Contexts].
+
+== Limitations
+
+* HTTP basic authentication and mTLS are the supported authentication methods for the source registry.
+* A shadow link replicates Schema Registry data in one mode only: either `shadow_schema_registry_topic` or `shadow_schema_registry_api`.
+* Replication is one way, from the source registry to the shadow cluster. Destination contexts owned by the link are read-only until failover.
+* Schemas that use Confluent features not supported by the Redpanda Schema Registry are not replicated as-is. Choose a <<choose-a-validation-policy,validation policy>> to control whether these schemas are skipped or imported without the unsupported fields.
+* Topic data replication and schema replication are not coordinated with each other. Records serialized in the Confluent SerDes wire format can arrive on the shadow cluster before the schema IDs they contain have been replicated. This does not cause replication errors, because schema IDs are not validated during topic data replication, but consumers that look up those schema IDs on the shadow cluster fail until the schemas arrive. Wait for schema replication to catch up before consuming schema-dependent shadow topics. See <<monitor-replication-status,Monitor replication status>>.
+* Deleting and recreating a subject: A hard delete on the source replicates on the next sync, not instantly. Wait until the subject is removed from the shadow cluster before registering a new schema under the same name, as recreating it too soon prevents the sync job from detecting the subject/subject-version change.
+
+== Configure schema replication
+
+Add the `shadow_schema_registry_api` option to the `schema_registry_sync_options` section of your shadow link configuration file.
+
+The following sample configuration file creates a shadow link that replicates schemas from a Confluent Schema Registry. The highlighted lines show the schema replication settings, which the sections that follow explain.
+
+// NOTE: keep the lines= range pointing at the schema_registry_sync_options block
+// if you edit this sample.
+[,yaml,lines=13-31]
+----
+# Sample shadow link configuration with API-mode Schema Registry replication
+
+name: confluent-migration                    # Unique name for this shadow link
+
+client_options:
+  bootstrap_servers:                         # Source Kafka cluster brokers
+  - <source-broker-1>:<port>                 # Example: "pkc-xxxxx.us-east-1.aws.confluent.cloud:9092"
+  - <source-broker-2>:<port>
+  # For the TLS and authentication settings that the shadow cluster uses to
+  # connect to the source Kafka cluster, see the complete configuration file
+  # reference in Configure Shadowing.
+
+schema_registry_sync_options:
+  shadow_schema_registry_api:                # API mode: replicate from a Confluent Schema Registry
+    source_url: https://psrc-xxxxx.us-east-1.aws.confluent.cloud   # Source Schema Registry endpoint
+    auth_options:
+      basic:
+        username: <sr-api-key>               # Confluent Schema Registry API key
+        password: <sr-api-secret>            # Confluent Schema Registry API secret
+    tls_settings:
+      enabled: true                          # Use TLS for the connection
+    tail_interval: 10s                       # Optional: poll for incremental changes (default: 10s)
+    full_sync_interval: 5m                   # Optional: full source scan interval (default: 5m)
+    max_source_requests_per_second: 30       # Optional: rate limit for source requests (default: 30)
+    source_filter:
+      contexts:
+      - "."                                  # The default context
+      subjects: []                           # Empty: all subjects in the selected contexts
+    destination:
+      identity: {}                           # Keep source context names
+    unsupported_schema_feature_policy: FAIL  # FAIL (default) or REMOVE
+----
+
+For the complete configuration file, including consumer offset and security synchronization options, see xref:manage:disaster-recovery/shadowing/setup.adoc#create-a-shadow-link[Configure Shadowing].
+
+=== Generate a configuration template
+
+Generate a configuration file template that includes all available fields with comments:
+
+[,bash]
+----
+rpk shadow config generate --print-template -o shadow-config-template.yaml
+----
+
+For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-config-generate.adoc[`rpk shadow config generate`].
+
+=== Connect to the source registry
+
+Configure the connection to the source Schema Registry:
+
+[,yaml]
+----
+schema_registry_sync_options:
+  shadow_schema_registry_api:
+    source_url: https://psrc-xxxxx.us-east-1.aws.confluent.cloud  # Source Schema Registry endpoint
+    auth_options:
+      basic:
+        username: <sr-api-key>                # Confluent Schema Registry API key
+        password: <sr-api-secret>             # Confluent Schema Registry API secret
+    tls_settings:
+      enabled: true                           # Use TLS for the connection
+      tls_file_settings:
+        ca_path: /path/to/ca.crt              # Optional: CA certificate for custom trust
+    tail_interval: 10s                        # How often to poll for incremental changes
+    full_sync_interval: 5m                    # How often to run a full scan
+    max_source_requests_per_second: 30        # Rate limit for requests to the source registry
+----
+
+The intervals and rate limit are optional. If you omit them, Redpanda uses the defaults shown above.
+
+To authenticate to the source registry with mTLS instead of HTTP basic authentication, omit `auth_options` and provide a client certificate and key in `tls_settings`.
+
+=== Select contexts and subjects
+
+By default, the link replicates the entire source registry. To replicate a subset, add a `source_filter` with the contexts or subjects to include:
+
+[,yaml]
+----
+schema_registry_sync_options:
+  shadow_schema_registry_api:
+    # ...connection settings...
+    source_filter:
+      contexts:
+      - ".prod"                               # Replicate this entire context
+      subjects:
+      - orders-value                          # One subject from the default context
+----
+
+The two lists combine as a union:
+
+* `contexts` selects entire contexts: every subject in each listed context replicates.
+* `subjects` selects individual subjects, using qualified subject syntax: `orders-value` is the subject in the default context, and `:.staging:orders-value` is the subject of the same name in the `.staging` context.
+* When both lists are set, the link replicates everything selected by either list. A subject selected by both lists replicates once.
+
+For example, the preceding filter replicates every subject in the `.prod` context, plus the single `orders-value` subject from the default context.
+
+The `contexts` and `subjects` lists accept literal names only. Wildcard and prefix patterns are not supported.
+
+Schema Registry contexts provide independent namespaces for subjects within one registry. The default context is named `.`. For more information, see xref:manage:schema-reg/schema-reg-contexts.adoc[Schema Registry Contexts].
+
+=== Map source contexts to destination contexts
+
+Choose how replicated contexts are named on the shadow cluster:
+
+* `identity`: Keep the source context names (default behavior for migrations).
+* `exact`: Map each source context to a different destination context.
+
+[,yaml]
+----
+schema_registry_sync_options:
+  shadow_schema_registry_api:
+    # ...connection settings and filters...
+    destination:
+      identity: {}                            # Keep source context names
+----
+
+To rename contexts during replication:
+
+[,yaml]
+----
+schema_registry_sync_options:
+  shadow_schema_registry_api:
+    # ...connection settings and filters...
+    destination:
+      exact:
+        mappings:
+        - source: "."                         # Source context
+          destination: ".shadow"              # Destination context on the shadow cluster
+----
+
+[IMPORTANT]
+====
+With `exact` mapping, the mappings must cover every context that the link replicates. If the link encounters a source context that has no mapping, the schema replication task fails. If new contexts might be created on the source registry after you set up the link, scope the `source_filter` `contexts` list to the mapped contexts so that an unexpected context cannot stop replication.
+====
+
+[[choose-a-validation-policy]]
+=== Choose a validation policy
+
+The `unsupported_schema_feature_policy` setting controls what happens when a source schema uses features that the Redpanda Schema Registry does not support. The unsupported Confluent Schema Registry features are:
+
+* In schema definitions: rule sets and metadata tags.
+* In subject configurations: override metadata, override rule sets, default metadata, default rule sets, and compatibility groups. Compatibility groups are not the same as compatibility levels, which do replicate.
+
+The policy determines how the sync handles a schema or configuration that uses these features:
+
+[cols="1,3"]
+|===
+| Policy | Behavior
+
+| `FAIL` (default)
+| The schema is not replicated. The sync records an error, reports it in the link status, and continues with the remaining schemas.
+
+| `REMOVE`
+| The unsupported fields are removed and the rest of the schema is imported. The sync records each modification in the link status.
+|===
+
+[,yaml]
+----
+schema_registry_sync_options:
+  shadow_schema_registry_api:
+    # ...connection settings, filters, and destination...
+    unsupported_schema_feature_policy: FAIL
+----
+
+=== Create the shadow link
+
+Create the shadow link with your completed configuration file:
+
+[,bash]
+----
+rpk shadow create --config-file shadow-config.yaml
+----
+
+For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-create.adoc[`rpk shadow create`].
+
+To change the schema replication settings on an existing link, see xref:reference:rpk/rpk-shadow/rpk-shadow-update.adoc[`rpk shadow update`].
+
+== Verify the configuration
+
+Confirm that the link is configured for API-based schema replication:
+
+[,bash]
+----
+rpk shadow describe <link-name>
+----
+
+The output includes the shadowing mode, source URL, sync intervals, validation policy, and your context and subject filters. For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-describe.adoc[`rpk shadow describe`].
+
+== Monitor replication status
+
+Check schema replication progress and errors for a link:
+
+[,bash]
+----
+rpk shadow status <link-name>
+----
+
+The Schema Registry section of the output reports:
+
+[cols="1,3"]
+|===
+| Field | Description
+
+| Inventory
+| The number of selected subjects and subject versions on the source, compared with the number of subjects and versions on the destination. The registries are synchronized when the destination counts match the selected source counts. A destination that is behind the source indicates that replication is still in progress.
+
+| Current sync
+| The type of the sync in progress (`FULL` or `TAIL`) and the number of subject versions, compatibility configurations, and modes it has changed, including how many unsupported features were removed and how many errors occurred.
+
+| Last full sync
+| Start time, finish time, and change counts for the most recent completed full sync.
+
+| Totals since task start
+| Cumulative change and error counts since the schema replication task started.
+
+| Last error
+| The most recent replication error. With the `FAIL` validation policy, schemas that fail validation appear here.
+|===
+
+The schema replication task runs on the broker and shard that hosts the leader of the `_schemas` topic's partition. The counters in the status output are not persisted: expect them to reset to zero when that broker restarts or when leadership of the `_schemas` partition moves to another broker.
+
+For detailed command options, see xref:reference:rpk/rpk-shadow/rpk-shadow-status.adoc[`rpk shadow status`]. For general link monitoring, see xref:manage:disaster-recovery/shadowing/monitor.adoc[Monitor Shadowing].
+
+== Fail over
+
+For best results, shadow links should be failed over as a single unit, which prevents partial failover scenarios and unexpected results. Selective failover, such as topics only, does not stop schema replication. As part of failover, pause the schema replication task by setting `paused: true` in the `schema_registry_sync_options` section of the link configuration. Pausing the task stops further syncing from the source registry and makes the write-blocked destination contexts writable, so your applications can register new schemas on the promoted cluster.
+
+For the complete failover procedure, see xref:manage:disaster-recovery/shadowing/failover.adoc[Failover].
+
+== Next steps
+
+* xref:manage:disaster-recovery/shadowing/setup.adoc[Configure Shadowing] to replicate topic data, consumer offsets, and ACLs alongside your schemas.
+* xref:manage:disaster-recovery/shadowing/monitor.adoc[Monitor Shadowing]
+* xref:manage:schema-reg/schema-reg-contexts.adoc[Schema Registry Contexts]
+
+// end::single-source[]

@@ -314,7 +314,13 @@ endif::[]
 
 The retention time for tombstone records in a compacted topic. Redpanda removes tombstone records after the retention limit is exceeded.
 
-If you have enabled Tiered Storage and set <<redpandaremoteread,`redpanda.remote.read`>> or <<redpandaremotewrite,`redpanda.remote.write`>> for the topic, you cannot enable tombstone removal.
+For topics that use Tiered Storage v1, if you have enabled Tiered Storage and set <<redpandaremoteread,`redpanda.remote.read`>> or <<redpandaremotewrite,`redpanda.remote.write`>> for the topic, you cannot enable tombstone removal.
+ifndef::env-cloud[]
+This restriction does not apply to topics that use xref:manage:tiered-storage.adoc#tiered-storage-versions[Tiered Storage v2], available starting in Redpanda v26.2.
+endif::[]
+ifdef::env-cloud[]
+This restriction does not apply to topics that use Tiered Storage v2, available starting in Redpanda v26.2.
+endif::[]
 
 If both `delete.retention.ms` and the cluster property config_ref:tombstone_retention_ms,true,properties/cluster-properties[] are set, `delete.retention.ms` overrides the cluster level tombstone retention for an individual topic.
 
@@ -868,7 +874,7 @@ ifdef::env-cloud[]
 Available in the Redpanda Cloud Console
 endif::[]
 ifndef::env-cloud[]
-`0.2`
+`0.5`
 endif::[]
 
 | Nullable
@@ -1076,7 +1082,7 @@ endif::[]
 // tag::category-iceberg-integration[]
 === redpanda.iceberg.mode
 
-Enable the Iceberg integration for the topic. You can choose one of four modes.
+Enable the Iceberg integration for the topic and control how Redpanda translates records into the Iceberg table. Set one of the modes (`disabled`, `key_value`, `value_schema_id_prefix`, or `value_schema_latest`), or use the section-based syntax to independently configure key, value, and header translation.
 
 [cols="1s,2a"]
 |===
@@ -1105,7 +1111,7 @@ ifndef::env-cloud[]
 endif::[]
 
 | Related topics
-|xref:manage:iceberg/choose-iceberg-mode.adoc#override-value-schema-latest-default[Choose an Iceberg Mode]
+|xref:manage:iceberg/specify-iceberg-schema.adoc[Specify Iceberg Schema]
 
 |===
 
@@ -1562,6 +1568,44 @@ endif::[]
 
 // end::category-tiered-storage[]
 
+// tag::category-schema-registry[]
+=== redpanda.schema.registry.context
+
+The xref:manage:schema-reg/schema-reg-contexts.adoc[Schema Registry context] Redpanda uses to resolve the schemas for records in this topic, for example when translating the topic to an Iceberg table. Defaults to the Schema Registry default context (`.`).
+
+[cols="1s,2a"]
+|===
+| Property | Value
+
+| Type
+| `string`
+
+
+
+| Default
+|
+ifdef::env-cloud[]
+Available in the Redpanda Cloud Console
+endif::[]
+ifndef::env-cloud[]
+`.`
+endif::[]
+
+| Nullable
+| No
+
+ifndef::env-cloud[]
+| Restored on xref:manage:whole-cluster-restore.adoc[Whole Cluster Restore]
+| Yes
+endif::[]
+
+| Related topics
+|xref:manage:iceberg/specify-iceberg-schema.adoc#resolve-schemas-within-a-context[Resolve schemas within a Schema Registry context]
+
+|===
+
+// end::category-schema-registry[]
+
 // tag::category-tiered-storage[]
 === redpanda.storage.mode
 
@@ -1582,6 +1626,8 @@ ifdef::env-cloud[]
 endif::[]
 * `unset`: Specifies that the topic's storage mode is unset, regardless of the cluster default. The topic may still have Tiered Storage enabled through the legacy properties `redpanda.remote.read` and `redpanda.remote.write`.
 
+Starting in Redpanda v26.2, the `tiered` value is an alias that resolves to Tiered Storage v1 or v2 when the topic is created, according to the config_ref:default_redpanda_storage_mode_tiered_impl,true,properties/cluster-properties[] cluster property. The resolved version is reported by the read-only <<redpandastoragemodeimpl,`redpanda.storage.mode.impl`>> property, and the storage mode of a topic displays as `tiered` for both versions.
+
 This property overrides the cluster-wide config_ref:default_redpanda_storage_mode,true,properties/cluster-properties[] setting for individual topics.
 
 [cols="1s,2a"]
@@ -1594,10 +1640,10 @@ This property overrides the cluster-wide config_ref:default_redpanda_storage_mod
 | Accepted Values
 |
 ifndef::env-cloud[]
-`local`, `tiered`, `cloud`, `unset`
+`local`, `tiered`, `cloud`, `tiered_cloud`, `unset`
 endif::[]
 ifdef::env-cloud[]
-`local`, `tiered`, `cloud`, `unset`
+`local`, `tiered`, `cloud`, `tiered_cloud`, `unset`
 endif::[]
 
 
@@ -1632,6 +1678,58 @@ endif::[]
 |===
 
 // end::category-tiered-storage[]
+
+// tag::category-other[]
+=== redpanda.storage.mode.impl
+
+*Introduced in v26.2.1*
+
+The exact implementation of the topic's storage mode. Topics with the `tiered` storage mode report `tiered_v1` (Tiered Storage v1) or `tiered_v2` (Tiered Storage v2); topics with other storage modes mirror the value of <<redpandastoragemode,`redpanda.storage.mode`>>.
+
+This property is read-only after topic creation. To select the Tiered Storage version for a topic explicitly, set this property together with a matching `redpanda.storage.mode` value when you create the topic (both `tiered_v1` and `tiered_v2` correspond to the `tiered` mode). You can omit `redpanda.storage.mode` only if this property matches the version selected by the cluster default. To change a topic's storage mode after creation, alter `redpanda.storage.mode` instead.
+
+If this property is not set at topic creation, the `tiered` storage mode resolves to the version selected by the config_ref:default_redpanda_storage_mode_tiered_impl,true,properties/cluster-properties[] cluster property.
+
+[cols="1s,2a"]
+|===
+| Property | Value
+
+| Type
+| `string` (enum)
+
+| Accepted Values
+|
+ifndef::env-cloud[]
+`local`, `tiered_v1`, `tiered_v2`, `cloud`, `unset`
+endif::[]
+ifdef::env-cloud[]
+`local`, `tiered_v1`, `tiered_v2`, `cloud`, `unset`
+endif::[]
+
+
+| Default
+|
+ifdef::env-cloud[]
+Available in the Redpanda Cloud Console
+endif::[]
+ifndef::env-cloud[]
+`null`
+endif::[]
+
+| Nullable
+| No
+
+ifndef::env-cloud[]
+| Restored on xref:manage:whole-cluster-restore.adoc[Whole Cluster Restore]
+| Yes
+endif::[]
+
+| Related topics
+|xref:manage:tiered-storage.adoc#tiered-storage-versions[]
+
+|===
+
+// end::category-other[]
 
 // tag::category-schema-registry[]
 === redpanda.value.schema.id.validation
@@ -1988,7 +2086,7 @@ This property supports three states:
 | Property | Value
 
 | Type
-| `retention_duration_property`
+| `object`
 
 
 

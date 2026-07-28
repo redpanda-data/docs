@@ -28,7 +28,10 @@ Shadowing replicates:
 * **Topic configurations**: Partition counts, retention policies, and other topic properties
 * **Consumer group offsets**: Enables seamless consumer resumption after failover
 * **Access control lists (ACLs)**: User permissions and security policies
-* **Schema Registry data**: Schema definitions and compatibility settings
+ifndef::env-cloud[]
+* **RBAC roles**: Role definitions and memberships, for the roles you select with filters
+endif::[]
+* **Schema Registry data**: Schema definitions, versions, and compatibility settings, replicated from another Redpanda cluster or from a Confluent Schema Registry
 
 == How Shadowing fits into disaster recovery
 
@@ -44,7 +47,7 @@ Shadowing complements Redpanda's existing availability and recovery capabilities
 endif::[]
 
 ifndef::env-cloud[]
-Shadowing complements Redpanda's existing availability and recovery capabilities. xref:deploy:redpanda/manual/high-availability.adoc[High availability] actively protects your day-to-day operations, handling reads and writes seamlessly during node or availability zone failures within a region. Shadowing is your safety net for catastrophic regional disasters. While xref:deploy:redpanda/manual/disaster-recovery/whole-cluster-restore.adoc[Whole Cluster Restore] provides point-in-time recovery from xref:manage:tiered-storage.adoc[Tiered Storage], Shadowing delivers near real-time, cross-region replication for mission-critical applications that require rapid failover with minimal data loss.
+Shadowing complements Redpanda's existing availability and recovery capabilities. xref:manage:high-availability.adoc[High availability] actively protects your day-to-day operations, handling reads and writes seamlessly during node or availability zone failures within a region. Shadowing is your safety net for catastrophic regional disasters. While xref:deploy:redpanda/manual/disaster-recovery/whole-cluster-restore.adoc[Whole Cluster Restore] provides point-in-time recovery from xref:manage:tiered-storage.adoc[Tiered Storage], Shadowing delivers near real-time, cross-region replication for mission-critical applications that require rapid failover with minimal data loss. If you run Redpanda on Kubernetes and need multi-region availability without a separate standby cluster, you can instead deploy a single cluster across multiple Kubernetes clusters with synchronous replication. See xref:deploy:redpanda/kubernetes/k-stretch-clusters.adoc[].
 endif::[]
 
 // TODO: insert diagram. Possibly with a .gif animation showing cluster Cluster A being written and cluster B being replicated with a data flow arrow and geo-separation. Diagram must show Icons or labels for topics, configurations, offsets, ACLs, schemas that are being copied
@@ -109,6 +112,39 @@ The task is controlled by the `security_sync_options` section in the configurati
 
 By default, all ACLs replicate to ensure your shadow cluster maintains the same security posture as your source cluster.
 --
+
+Schema Registry Sync::
++
+--
+[#schema-registry-sync-task]
+The **Schema Registry Sync task** replicates Schema Registry content so that applications that depend on schemas keep working after failover.
+
+The task is controlled by the `schema_registry_sync_options` section in the configuration file. It supports two modes:
+
+* **Topic mode** (`shadow_schema_registry_topic`): Shadows the `_schemas` system topic for byte-for-byte replication from another Redpanda cluster.
+* **API mode** (`shadow_schema_registry_api`): Polls the source Schema Registry over HTTP and imports selected contexts and subjects, with validation. Use this mode to replicate schemas from a Confluent Schema Registry.
+ifndef::env-cloud[]
+See xref:manage:disaster-recovery/shadowing/migrate-schemas-confluent.adoc[Migrate Schemas from Confluent Schema Registry].
+endif::[]
+
+A shadow link uses one mode or the other, not both. Only API mode runs as a separate task that appears in the shadow link status. Topic mode adds the `_schemas` topic to the set of shadowed topics, so it is monitored like any other shadow topic rather than as a separate task.
+--
+
+ifndef::env-cloud[]
+Roles Migrator::
++
+--
+[#roles-migrator-task]
+The **Roles Migrator task** replicates RBAC role definitions and role memberships from the source cluster, so that role-based permissions authorize the same operations on the shadow cluster after failover.
+
+The task is controlled by the `role_sync_options` section in the configuration file. It includes:
+
+* **Role name filters**: Determines which roles replicate. No roles replicate until you add at least one include filter.
+* **Sync interval**: How frequently to synchronize roles
+
+Within the configured filters, the task keeps the shadow cluster's roles as a full mirror of the source, creating, updating, and deleting roles to match. It does not replicate user credentials or the ACLs bound to roles; the Security Migrator task replicates ACLs. See xref:manage:disaster-recovery/shadowing/setup.adoc#role-filtering[Role filtering].
+--
+endif::[]
 ====
 
 === Task status and monitoring
@@ -129,7 +165,13 @@ For monitoring task health and troubleshooting task issues, see xref:manage:disa
 
 Shadowing replicates your topic data with complete fidelity, preserving all message records with their original offsets, timestamps, headers, and metadata. The partition structure remains identical between source and shadow clusters, ensuring applications can resume processing from the exact same position after failover.
 
-Consumer group data flows according to your group filters, replicating offsets and membership information for matched groups. ACLs replicate based on your security filters. Schema Registry data synchronizes schema definitions, versions, and compatibility settings.
+Consumer group data flows according to your group filters, replicating offsets and membership information for matched groups. ACLs replicate based on your security filters.
+ifndef::env-cloud[]
+Schema Registry data synchronizes schema definitions, versions, and compatibility settings, either by shadowing the `_schemas` topic or through the xref:manage:disaster-recovery/shadowing/migrate-schemas-confluent.adoc[Schema Registry API].
+endif::[]
+ifdef::env-cloud[]
+Schema Registry data synchronizes schema definitions, versions, and compatibility settings by shadowing the `_schemas` topic.
+endif::[]
 
 Partition count is always replicated to ensure the shadow topic matches the source topic's partition structure.
 
@@ -180,10 +222,10 @@ endif::[]
 
 Choose your implementation approach:
 
-* **xref:./setup.adoc[Setup and Configuration]**: Initial shadow configuration, authentication, and topic selection
-* **xref:./monitor.adoc[Monitoring and Operations]**: Health checks, lag monitoring, and operational procedures
-* **xref:./failover.adoc[Planned Failover]**: Controlled disaster recovery testing and migrations
-* **xref:./failover-runbook.adoc[Failover Runbook]**: Rapid disaster response procedures
+* **xref:manage:disaster-recovery/shadowing/setup.adoc[Setup and Configuration]**: Initial shadow configuration, authentication, and topic selection
+* **xref:manage:disaster-recovery/shadowing/monitor.adoc[Monitoring and Operations]**: Health checks, lag monitoring, and operational procedures
+* **xref:manage:disaster-recovery/shadowing/failover.adoc[Planned Failover]**: Controlled disaster recovery testing and migrations
+* **xref:manage:disaster-recovery/shadowing/failover-runbook.adoc[Failover Runbook]**: Rapid disaster response procedures
 
 ifndef::env-cloud[]
 [TIP]
@@ -203,7 +245,7 @@ endif::[]
 
 After setting up Shadowing for your Redpanda clusters, consider these additional steps:
 
-* **Test your disaster recovery procedures**: Regularly practice failover scenarios in a non-production environment. See xref:./failover-runbook.adoc[] for step-by-step disaster procedures.
+* **Test your disaster recovery procedures**: Regularly practice failover scenarios in a non-production environment. See xref:manage:disaster-recovery/shadowing/failover-runbook.adoc[] for step-by-step disaster procedures.
 
 * **Monitor shadow link health**: Set up alerting on the metrics described above to ensure early detection of replication issues.
 
