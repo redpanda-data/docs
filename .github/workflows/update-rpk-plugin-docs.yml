@@ -6,10 +6,11 @@
 # version. This workflow refreshes only that plugin's subtree in the committed
 # rpk snapshot and opens a PR per eligible branch.
 #
-# A branch is eligible when its newest rpk snapshot contains the plugin's
-# top-level command. Today that means connect and ai update main and beta,
-# while k8s and check (26.2-only) update beta until 26.2 GA. Ineligible
-# branches skip with a notice, so a k8s release never fails on main.
+# PRs always target main: plugin versions are independent of Redpanda's
+# major.minor docs versioning, and beta receives plugin doc updates through
+# the regular main -> beta syncs and RC-triggered full regenerations. A
+# plugin whose command is missing from main's newest rpk snapshot (k8s and
+# check until 26.2 GA) skips with a notice instead of failing.
 #
 # Senders:
 #   redpanda-data/connect            -> plugin: connect
@@ -48,10 +49,6 @@ concurrency:
 
 jobs:
   update-plugin-docs:
-    strategy:
-      fail-fast: false
-      matrix:
-        base: [main, beta]
     runs-on: ubuntu-latest
     steps:
       - name: Resolve parameters
@@ -92,24 +89,24 @@ jobs:
 
           echo "plugin=$PLUGIN" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Plugin: $PLUGIN, version: ${VERSION:-latest}, target branch: ${{ matrix.base }}"
+          echo "Plugin: $PLUGIN, version: ${VERSION:-latest}"
 
-      - name: Checkout ${{ matrix.base }}
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.base }}
+          ref: main
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Check branch eligibility
+      - name: Check plugin exists in main's rpk line
         id: eligible
         env:
           PLUGIN: ${{ steps.params.outputs.plugin }}
         run: |
-          # Newest committed snapshot on this branch (excluding diff artifacts)
+          # Newest committed snapshot (excluding diff artifacts)
           SNAPSHOT=$(ls docs-data/rpk-v*.json 2>/dev/null | grep -v 'rpk-diff' | sort -V | tail -1)
           if [ -z "$SNAPSHOT" ]; then
-            echo "::notice::No rpk snapshot on ${{ matrix.base }}; skipping"
+            echo "::notice::No rpk snapshot on main; skipping"
             echo "eligible=false" >> $GITHUB_OUTPUT
             exit 0
           fi
@@ -119,7 +116,7 @@ jobs:
             echo "snapshot=$SNAPSHOT" >> $GITHUB_OUTPUT
             echo "Eligible: $SNAPSHOT contains 'rpk $PLUGIN'"
           else
-            echo "::notice::rpk snapshot on ${{ matrix.base }} ($SNAPSHOT) has no '$PLUGIN' command; skipping. This is expected while the plugin only exists in a newer rpk line."
+            echo "::notice::main's rpk snapshot ($SNAPSHOT) has no '$PLUGIN' command; skipping. Expected while the plugin only exists in a newer rpk line — its docs flow to main when that line GAs."
             echo "eligible=false" >> $GITHUB_OUTPUT
           fi
 
@@ -166,7 +163,7 @@ jobs:
           git add -A
           if git diff --staged --quiet; then
             echo "has_changes=false" >> $GITHUB_OUTPUT
-            echo "No documentation changes for ${{ steps.params.outputs.plugin }} on ${{ matrix.base }}"
+            echo "No documentation changes for ${{ steps.params.outputs.plugin }}"
           else
             echo "has_changes=true" >> $GITHUB_OUTPUT
             echo "Changed files:"
@@ -216,8 +213,8 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           # Version-less branch name: rapid successive releases update the
           # same open PR instead of stacking one PR per version.
-          branch: rpk-plugin-docs/${{ steps.params.outputs.plugin }}-${{ matrix.base }}
-          base: ${{ matrix.base }}
+          branch: rpk-plugin-docs/${{ steps.params.outputs.plugin }}-main
+          base: main
           title: "docs: update rpk ${{ steps.params.outputs.plugin }} plugin docs (${{ steps.params.outputs.version || 'latest' }})"
           body-path: ${{ runner.temp }}/pr-body.md
           commit-message: "docs: update rpk ${{ steps.params.outputs.plugin }} plugin docs for ${{ steps.params.outputs.version || 'latest' }}"
