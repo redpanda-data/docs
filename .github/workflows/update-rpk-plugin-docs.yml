@@ -1,0 +1,227 @@
+# Regenerates the docs for a single rpk plugin when the plugin releases.
+#
+# rpk plugins (connect, ai, k8s, check) release on their own cadence,
+# independent of Redpanda/rpk releases. Each plugin's release workflow sends a
+# repository_dispatch here with the plugin's rpk command name and the released
+# version. This workflow refreshes only that plugin's subtree in the committed
+# rpk snapshot and opens a PR per eligible branch.
+#
+# A branch is eligible when its newest rpk snapshot contains the plugin's
+# top-level command. Today that means connect and ai update main and beta,
+# while k8s and check (26.2-only) update beta until 26.2 GA. Ineligible
+# branches skip with a notice, so a k8s release never fails on main.
+#
+# Senders:
+#   redpanda-data/connect            -> plugin: connect
+#   redpanda-data/cloudv2 (apps/rpai) -> plugin: ai
+#   redpanda-data/redpanda-operator  -> plugin: k8s
+#   redpanda-data/redpanda-check     -> plugin: check
+name: Update rpk plugin documentation
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugin:
+        description: 'rpk command name of the plugin (ai, connect, k8s, check)'
+        required: true
+        type: choice
+        options:
+          - ai
+          - connect
+          - k8s
+          - check
+      version:
+        description: 'Plugin version to install and record (e.g., 4.102.0). Defaults to the latest published version.'
+        required: false
+  repository_dispatch:
+    types: [update-rpk-plugin-docs]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# One run per plugin at a time. Rapid releases (rpk ai ships several times a
+# week) queue instead of racing each other on the same PR branch.
+concurrency:
+  group: rpk-plugin-docs-${{ github.event.client_payload.plugin || github.event.inputs.plugin }}
+  cancel-in-progress: false
+
+jobs:
+  update-plugin-docs:
+    strategy:
+      fail-fast: false
+      matrix:
+        base: [main, beta]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve parameters
+        id: params
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_PLUGIN: ${{ github.event.client_payload.plugin }}
+          DISPATCH_VERSION: ${{ github.event.client_payload.version }}
+          INPUT_PLUGIN: ${{ github.event.inputs.plugin }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            PLUGIN="$DISPATCH_PLUGIN"
+            VERSION="$DISPATCH_VERSION"
+          else
+            PLUGIN="$INPUT_PLUGIN"
+            VERSION="$INPUT_VERSION"
+          fi
+
+          # The payload must use the rpk command name, not the manifest slug
+          # (rpai -> ai). An unknown name would otherwise skip silently on
+          # every branch, so fail loudly here.
+          case "$PLUGIN" in
+            ai|connect|k8s|check) ;;
+            rpai)
+              echo "::error::Plugin 'rpai' is the manifest slug; send the rpk command name 'ai' instead"
+              exit 1
+              ;;
+            *)
+              echo "::error::Unknown plugin '$PLUGIN'. Supported: ai, connect, k8s, check"
+              exit 1
+              ;;
+          esac
+
+          # Normalize the version: strip a leading v (senders pass tag-derived
+          # values). An empty version means install latest.
+          VERSION="${VERSION#v}"
+
+          echo "plugin=$PLUGIN" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Plugin: $PLUGIN, version: ${VERSION:-latest}, target branch: ${{ matrix.base }}"
+
+      - name: Checkout ${{ matrix.base }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.base }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check branch eligibility
+        id: eligible
+        env:
+          PLUGIN: ${{ steps.params.outputs.plugin }}
+        run: |
+          # Newest committed snapshot on this branch (excluding diff artifacts)
+          SNAPSHOT=$(ls docs-data/rpk-v*.json 2>/dev/null | grep -v 'rpk-diff' | sort -V | tail -1)
+          if [ -z "$SNAPSHOT" ]; then
+            echo "::notice::No rpk snapshot on ${{ matrix.base }}; skipping"
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if jq -e --arg p "$PLUGIN" '(.raw_tree // .tree).commands[] | select(.name == $p)' "$SNAPSHOT" > /dev/null; then
+            echo "eligible=true" >> $GITHUB_OUTPUT
+            echo "snapshot=$SNAPSHOT" >> $GITHUB_OUTPUT
+            echo "Eligible: $SNAPSHOT contains 'rpk $PLUGIN'"
+          else
+            echo "::notice::rpk snapshot on ${{ matrix.base }} ($SNAPSHOT) has no '$PLUGIN' command; skipping. This is expected while the plugin only exists in a newer rpk line."
+            echo "eligible=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node.js
+        if: steps.eligible.outputs.eligible == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: steps.eligible.outputs.eligible == 'true'
+        run: npm ci
+
+      # Go is only exercised when the snapshot's rpk version has no published
+      # release binary (RC snapshots on beta: RC releases are drafts, so the
+      # generator builds rpk from source at the tag).
+      - name: Setup Go
+        if: steps.eligible.outputs.eligible == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Refresh plugin docs
+        if: steps.eligible.outputs.eligible == 'true'
+        env:
+          PLUGIN: ${{ steps.params.outputs.plugin }}
+          VERSION: ${{ steps.params.outputs.version }}
+          SNAPSHOT: ${{ steps.eligible.outputs.snapshot }}
+        run: |
+          ARGS=(generate rpk-docs
+            --plugin "$PLUGIN"
+            --from-json "$SNAPSHOT"
+            --summary-file "${{ runner.temp }}/pr-summary.md")
+          if [ -n "$VERSION" ]; then
+            ARGS+=(--plugin-version "$VERSION")
+          fi
+          npx doc-tools "${ARGS[@]}"
+
+      - name: Check for changes
+        if: steps.eligible.outputs.eligible == 'true'
+        id: changes
+        run: |
+          git add -A
+          if git diff --staged --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No documentation changes for ${{ steps.params.outputs.plugin }} on ${{ matrix.base }}"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Changed files:"
+            git diff --staged --name-only | head -20
+          fi
+
+      - name: Generate PR description
+        if: steps.eligible.outputs.eligible == 'true' && steps.changes.outputs.has_changes == 'true'
+        env:
+          PR_BODY: ${{ runner.temp }}/pr-body.md
+          PR_SUMMARY: ${{ runner.temp }}/pr-summary.md
+          PLUGIN: ${{ steps.params.outputs.plugin }}
+          VERSION: ${{ steps.params.outputs.version }}
+        run: |
+          cat > "$PR_BODY" << 'HEADER'
+          ## Summary
+
+          Automated update of a single rpk plugin's documentation, triggered by a plugin release.
+
+          HEADER
+
+          echo "**Plugin**: \`rpk $PLUGIN\`" >> "$PR_BODY"
+          if [ -n "$VERSION" ]; then
+            echo "**Released version**: \`$VERSION\`" >> "$PR_BODY"
+          fi
+          echo "" >> "$PR_BODY"
+          echo "Only the \`rpk $PLUGIN\` subtree was refreshed in the rpk snapshot. All other pages were re-rendered from the committed snapshot and should show no changes. If a later release supersedes this one before merge, this PR updates in place." >> "$PR_BODY"
+          echo "" >> "$PR_BODY"
+
+          if [ -f "$PR_SUMMARY" ]; then
+            cat "$PR_SUMMARY" >> "$PR_BODY"
+            echo "" >> "$PR_BODY"
+          fi
+
+          cat >> "$PR_BODY" << 'FOOTER'
+          ## Automation
+
+          Generated by [rpk-docs automation](https://github.com/redpanda-data/docs-extensions-and-macros/tree/main/tools/rpk-docs).
+
+          Review the changes and merge when ready.
+          FOOTER
+
+      - name: Create Pull Request
+        if: steps.eligible.outputs.eligible == 'true' && steps.changes.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Version-less branch name: rapid successive releases update the
+          # same open PR instead of stacking one PR per version.
+          branch: rpk-plugin-docs/${{ steps.params.outputs.plugin }}-${{ matrix.base }}
+          base: ${{ matrix.base }}
+          title: "docs: update rpk ${{ steps.params.outputs.plugin }} plugin docs (${{ steps.params.outputs.version || 'latest' }})"
+          body-path: ${{ runner.temp }}/pr-body.md
+          commit-message: "docs: update rpk ${{ steps.params.outputs.plugin }} plugin docs for ${{ steps.params.outputs.version || 'latest' }}"
+          delete-branch: true
+          labels: |
+            documentation
+            automated
