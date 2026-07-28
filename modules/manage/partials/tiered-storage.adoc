@@ -985,6 +985,63 @@ The following tables show outcomes for combinations of cluster-level and topic-l
 |===
 
 
+[[tiered-storage-versions]]
+=== Choose a Tiered Storage version
+
+Starting in Redpanda v26.2, Tiered Storage is available in two versions:
+
+* Tiered Storage v1 (`tiered_v1`) is the original implementation and remains the default.
+* Tiered Storage v2 (`tiered_v2`) is a new implementation that adds full compaction support, including tombstone removal, for topics stored in object storage.
+
+You enable both versions the same way, by setting `redpanda.storage.mode=tiered` on a topic, and the storage mode of a topic displays as `tiered` for both. The version used by each topic is reported by the read-only `redpanda.storage.mode.impl` topic property.
+
+==== Differences between Tiered Storage v1 and v2
+
+The two versions differ in how they compact topics with a `compact` cleanup policy:
+
+[cols="1,2,2"]
+|===
+| | Tiered Storage v1 | Tiered Storage v2
+
+| Compacted data
+| Compaction runs on local data only. Data that has already been uploaded to object storage is not compacted, so duplicate keys can remain in object storage indefinitely.
+| Compaction runs on the data in object storage, so the entire partition is compacted.
+
+| Compaction window
+| Compaction is limited to a small window of data, and only duplicate keys that fall within the same window are removed.
+| Full compaction: eventually only the latest value for each key is retained across the entire partition.
+
+| Tombstone removal
+| Not supported. Tombstone records are not removed by compaction.
+| Supported. Tombstone records are removed after the retention period configured by `delete.retention.ms`.
+|===
+
+==== Select a Tiered Storage version
+
+The `tiered` value of the `redpanda.storage.mode` topic property is an alias. When a topic is created, it resolves to the version selected by the config_ref:default_redpanda_storage_mode_tiered_impl,true,properties/cluster-properties[] cluster property, which defaults to `tiered_v1`. To make all new `tiered` topics use Tiered Storage v2:
+
+[,bash]
+----
+rpk cluster config set default_redpanda_storage_mode_tiered_impl=tiered_v2
+----
+
+To select the version explicitly for a single topic, regardless of the cluster-wide default, set both the `redpanda.storage.mode` and `redpanda.storage.mode.impl` properties when you create the topic:
+
+[,bash]
+----
+rpk topic create <topic_name> -c redpanda.storage.mode=tiered -c redpanda.storage.mode.impl=tiered_v2
+----
+
+The two values must agree: both `tiered_v1` and `tiered_v2` correspond to the `tiered` storage mode. You can set `redpanda.storage.mode.impl` on its own only when it matches the version selected by the cluster default.
+
+To check which version an existing topic uses, run `rpk topic describe <topic_name>`. The `redpanda.storage.mode` property displays `tiered` for both versions, and the `redpanda.storage.mode.impl` property reports `tiered_v1` or `tiered_v2`.
+
+==== Tiered Storage v2 restrictions
+
+* You can create Tiered Storage v2 topics only after every broker in the cluster runs v26.2 or later. During a rolling upgrade, requests to create them are rejected. After the upgrade completes, no additional action is required.
+* Upgrading a cluster never changes the version of existing topics. Changing `default_redpanda_storage_mode_tiered_impl` affects only topics created after the change.
+* A topic cannot be converted between Tiered Storage v1 and v2. The `redpanda.storage.mode.impl` property is read-only and can be set only when the topic is created.
+
 === Set retention limits
 
 Redpanda supports retention limits and compaction for topics using Tiered Storage. Set retention limits to purge topic data after it reaches a specified age or size.
@@ -1005,7 +1062,9 @@ See also: xref:manage:cluster-maintenance/disk-utilization.adoc#configure-messag
 
 When you set xref:reference:properties/topic-properties.adoc#cleanup-policy[`cleanup.policy`] for a topic to `compact`, nothing gets deleted from object storage based on retention settings. When set to `compact,delete`, compacted segments are deleted from object storage based on `retention.ms` and `retention.bytes`.
 
-For compacted topics, Redpanda compacts segments after they have been uploaded to object storage. Redpanda initially uploads all uncompacted segments. It then re-uploads the segments with compaction applied. It's likely that some segments in object storage are not compacted, but the Tiered Storage read path can manage this.
+For compacted topics that use <<tiered-storage-versions,Tiered Storage v1>>, Redpanda compacts segments locally and re-uploads them to object storage. Redpanda initially uploads all uncompacted segments. It then re-uploads the segments with compaction applied. Because compaction runs on local data only, it's likely that some segments in object storage are not compacted, but the Tiered Storage read path can manage this.
+
+For compacted topics that use Tiered Storage v2, available starting in Redpanda v26.2, compaction runs on the data in object storage, so the entire partition is eventually compacted.
 
 ==== Manage local capacity for Tiered Storage topics
 
