@@ -7,8 +7,10 @@ line at the start of the section body. The explicit [id=...] anchor above each
 heading is untouched, so existing xrefs keep working.
 Update this pattern when features graduate to GA or new beta CRDs are added.
 Pipeline* = Pipeline CRD, Stretch* = StretchCluster CRD, Shadow* = ShadowLink CRD.
+NamedValueSource (exact match) is a Pipeline-only supporting type that does not
+share the prefix. The shared ValueSource type predates Pipeline and stays GA.
 */ -}}
-{{- $betaTypePattern := "^(Pipeline|Stretch|Shadow)" -}}
+{{- $betaTypePattern := "^(Pipeline|Stretch|Shadow|NamedValueSource$)" -}}
 {{- $isBeta := regexMatch $betaTypePattern $type.Name -}}
 {{- if asciidocShouldRenderType $type -}}
 
