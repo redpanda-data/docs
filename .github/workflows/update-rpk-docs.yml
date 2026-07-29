@@ -142,18 +142,21 @@ jobs:
           VERSION="${{ steps.params.outputs.version }}"
 
           # When no diff version is supplied (the usual case for the rpk-release
-          # repository_dispatch trigger), fall back to the currently-published
-          # version recorded in antora.yml (full-version). That is the version the
-          # docs currently target, so it is the correct baseline for "what's new".
+          # repository_dispatch trigger), diff against the newest committed rpk
+          # snapshot on this branch: that is the version the docs currently
+          # document, so it is the correct baseline for "what's new". Resolving
+          # from antora.yml full-version broke whenever full-version advanced
+          # past the newest snapshot (RC suffixes on beta, or patch releases
+          # documented by other automations on main) — the named snapshot did
+          # not exist, so the diff and the What's new update silently skipped.
           if [ -z "$DIFF_VERSION" ]; then
-            FULL_VERSION=$(grep -E '^\s*full-version:' antora.yml \
-              | head -1 \
-              | sed -E "s/.*full-version:[[:space:]]*['\"]?([^'\"[:space:]]+).*/\1/")
-            if [ -n "$FULL_VERSION" ]; then
-              DIFF_VERSION="v${FULL_VERSION#v}"
-              echo "Using antora.yml full-version as diff base: $DIFF_VERSION"
+            NEWEST_SNAPSHOT=$(ls docs-data/rpk-v*.json 2>/dev/null | grep -v 'rpk-diff' | sort -V | tail -1)
+            if [ -n "$NEWEST_SNAPSHOT" ]; then
+              DIFF_VERSION=$(basename "$NEWEST_SNAPSHOT" .json)
+              DIFF_VERSION="${DIFF_VERSION#rpk-}"
+              echo "Using newest committed snapshot as diff base: $DIFF_VERSION"
             else
-              echo "Could not read full-version from antora.yml; skipping diff"
+              echo "No committed rpk snapshot found; skipping diff"
             fi
           else
             echo "Using supplied diff version: $DIFF_VERSION"
