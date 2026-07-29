@@ -42,6 +42,25 @@ use the `statefulset.podTemplate.spec.terminationGracePeriodSeconds` setting.
 . The `postStart` hook is executed immediately after a container is created.
 The `postStart` hook takes the broker out of maintenance mode. This action re-integrates the broker into the cluster, allowing it to start handling requests and participate in the cluster's operations again.
 
+[[operator-restart-gates]]
+=== How the Redpanda Operator gates each restart
+
+If the Redpanda Operator manages your cluster, the operator itself replaces the Pods during restarts that it performs, such as applying a configuration change that requires a restart or rolling out a version upgrade. In Redpanda Operator v26.2.1 or later, the operator gates every restart with Redpanda's per-broker restart probes, in addition to the maintenance-mode hooks. It restarts at most one broker per pass and re-evaluates the cluster against a fresh view of the brokers before touching the next Pod:
+
+. Before restarting a broker, the operator calls the broker's pre-restart probe (Admin API `GET /v1/broker/pre_restart_probe`) to determine which partitions the restart would put at risk. The operator delays the restart, and retries on its next pass, while the probe reports any of the following risks:
++
+--
+* Partitions that would lose data acknowledged with `acks=1`
+* Partitions that would become unavailable
+* Partitions that could no longer complete `acks=all` produce requests
+--
++
+Partitions on topics with a replication factor of 1 do not block the restart, because they have no redundancy for the restart to preserve. To keep them available, temporarily increase their replication factor before you restart. See <<Perform a rolling restart>>.
+
+. After the restarted broker's Pod passes its Kubernetes readiness probe, the operator calls the broker's post-restart probe (Admin API `GET /v1/broker/post_restart_probe`) and holds the next restart until the broker reports that it has reclaimed 100% of its in-sync replica load. A Pod can become Ready while the broker inside it is still replaying partition state from its peers, so this gate prevents the operator from taking a second replica down before the first has caught up.
+
+The restart probes require Redpanda 25.1 or later. On earlier Redpanda versions, the operator falls back to gating restarts on the cluster-wide health check. The probes run only while a restart is in progress, so they add no load during steady-state operation.
+
 include::upgrade:partial$rolling-upgrades/restart-impact.adoc[leveloffset=+1]
 
 == Perform a rolling restart
@@ -105,7 +124,7 @@ To view additional information about your brokers, run:
 
 ```bash
 kubectl exec <pod-name> --namespace <namespace> -c redpanda -- \
-  rpk redpanda admin brokers list
+  rpk cluster info -b --detailed
 ```
 
 include::shared:partial$suggested-reading.adoc[]
