@@ -7,8 +7,8 @@
 :learning-objective-2: Describe how qualified subject syntax maps subjects to contexts.
 :learning-objective-3: Enable and configure Schema Registry contexts using the cluster property and HTTP API.
 
-// Single-sourcing tags: Cloud-only content is wrapped in ifdef::env-cloud[] ... endif::[]
-// Self-managed-only content is wrapped in ifndef::env-cloud[] ... endif::[]
+// Single-sourcing tags: Cloud-only content is wrapped in env-cloud ifdef conditionals.
+// Self-managed-only content is wrapped in env-cloud ifndef conditionals.
 
 // tag::single-source[]
 
@@ -82,7 +82,6 @@ endif::env-cloud[]
 
 == Limitations
 
-* *Non-Java SerDe clients*: Not supported in Schema Registry contexts.
 * *Server-side schema ID validation*: Schema ID validation using Kafka record headers does not support contexts. However, schema ID validation using magic byte and prefix are supported.
 * *`referencedby` endpoint*: `GET /subjects/\{subject\}/versions/\{version\}/referencedby` returns a list of bare schema IDs with no context information. When references span contexts, it is not possible to determine which context each returned ID belongs to.
 * *Cross-context isolation*: Contexts provide organizational and ID-space isolation, but do not prevent cross-context schema references. There is no mechanism to block schemas in one context from referencing schemas in another context.
@@ -103,6 +102,8 @@ With Schema Registry contexts, each context has its own independent ID counter. 
 ----
 GET /schemas/ids/1?subject=:.staging:my-topic
 ----
+
+Alternatively, send the request through a context URL prefix. ID lookups under the prefix are scoped to that context automatically, with no query parameter required. See <<serdes-clients>>.
 
 See also <<schema-id-lookup-fails>>.
 
@@ -193,6 +194,7 @@ Unqualified references in schema definitions resolve to the same context as the 
 }
 ----
 
+[#enable-contexts]
 == Enable Schema Registry contexts
 
 ifndef::env-cloud[]
@@ -217,7 +219,7 @@ rpk cluster config get schema_registry_enable_qualified_subjects
 endif::env-cloud[]
 
 ifdef::env-cloud[]
-NOTE: On BYOC and Dedicated clusters, contact Redpanda support or use the cluster configuration API to enable `schema_registry_enable_qualified_subjects`. This property requires a broker restart.
+NOTE: On BYOC and Dedicated clusters, Schema Registry contexts are enabled by default. To opt out, use the cluster configuration API or contact Redpanda support to set `schema_registry_enable_qualified_subjects` to `false`. This property requires a broker restart.
 endif::env-cloud[]
 
 == Configure Schema Registry contexts
@@ -501,6 +503,58 @@ For additional detail, refer to the full reference documentation for these comma
 * xref:streaming:reference:rpk/rpk-registry/rpk-registry-subject-delete.adoc[]
 * xref:streaming:reference:rpk/rpk-registry/rpk-registry-subject-list.adoc[]
 
+[#serdes-clients]
+== Use contexts with SerDes clients
+
+SerDes clients, such as Kafka producers and consumers that use Schema Registry serializers and deserializers, can target a context through the Schema Registry base URL alone. Append `/contexts/\{context\}` to the URL in the client's `schema.registry.url` setting, and every schema operation that client performs is scoped to that context. Because Redpanda applies the context on the server side, this works with any SerDes client in any language, without client-side context support or code changes. Use this pattern to point different applications or environments at separate contexts through configuration alone.
+
+ifndef::env-cloud[]
+NOTE: Context URL prefixes are available in Redpanda 26.2 and later, and in 26.1 patch releases starting with 26.1.7. In 26.1, you must first <<enable-contexts,enable Schema Registry contexts>>.
+endif::env-cloud[]
+
+For example, to scope a client to the `.staging` context:
+
+[source,properties]
+----
+schema.registry.url=http://<host>:8081/contexts/.staging
+----
+
+All endpoint families that SerDes clients use are available under the `/contexts/\{context\}/` prefix:
+
+* Subject and version operations
+* Compatibility checks
+* Subject-level and context-level configuration and mode
+* Schema type listing (`GET /schemas/types`)
+* Schema ID lookups (`GET /schemas/ids/\{id\}` and related endpoints)
+
+Schema ID lookups sent through the prefix are scoped to that context automatically, so clients do not need to pass the `subject` query parameter.
+
+A request sent through the prefix is equivalent to the same request with a qualified subject. For example, both of the following requests register a schema for subject `my-topic` in the `.staging` context:
+
+[source,bash]
+----
+# Context URL prefix
+curl -s -X POST \
+  http://localhost:8081/contexts/.staging/subjects/my-topic/versions \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  -d '{"schema": "{\"type\":\"string\"}"}'
+
+# Qualified subject
+curl -s -X POST \
+  http://localhost:8081/subjects/:.staging:my-topic/versions \
+  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  -d '{"schema": "{\"type\":\"string\"}"}'
+----
+
+The context segment of the URL accepts equivalent forms: `/contexts/.staging/`, `/contexts/staging/`, and `/contexts/:.staging:/` all target the `.staging` context. Context names that contain a colon (`:`) are rejected as invalid.
+
+ACLs authorize a prefixed request against the same qualified subject name (for example, `:.staging:my-topic`), so existing grants, including prefix grants, keep working unchanged. See <<acl-authorization>>.
+
+[IMPORTANT]
+====
+If qualified subject parsing is not active on the cluster, requests to `/contexts/` endpoints do not return an error. Instead, the qualified subject names are stored as literal subject names in the default context. See <<qualified-subjects-not-recognized>>.
+====
+
 [#client-integration-status]
 == Client integration status
 
@@ -515,13 +569,13 @@ The following table identifies the status of Schema Registry context client inte
 | Supported
 | Use qualified subjects directly in any endpoint.
 
-| Java SerDe (Confluent)
+| Java SerDes (Confluent)
 | Supported
-| Requires a custom `ContextNameStrategy`. See the Confluent SerDe documentation for details.
+| Point the client's `schema.registry.url` at a context URL prefix (see <<serdes-clients>>), or use a custom `ContextNameStrategy`. See the Confluent SerDes documentation for details.
 
-| Non-Java SerDe
-| Not supported
-| Workaround: set the client's Schema Registry base URL to `\http://<host>:8081/contexts/\{context\}`.
+| Non-Java SerDes
+| Supported
+| Point the client's `schema.registry.url` at a context URL prefix. See <<serdes-clients>>.
 
 | rpk
 | Supported
@@ -640,7 +694,7 @@ To audit your existing subjects for affected names before enabling Schema Regist
 ifndef::env-cloud[]
 [source,bash]
 ----
-rpk registry subject list | grep '^\.'
+rpk registry subject list | grep '^:\.'
 ----
 endif::env-cloud[]
 
@@ -676,13 +730,26 @@ Following is troubleshooting guidance for Schema Registry contexts.
 curl -s "http://localhost:8081/schemas/ids/1?subject=:.staging:my-topic"
 ----
 
+[#qualified-subjects-not-recognized]
 === Qualified subjects not recognized (treated as literal names)
 
-*Symptom*: Subjects with the `:.` prefix are stored as literal subject names in the default context instead of being parsed as context-qualified subjects.
+*Symptom*: Subjects with the `:.` prefix are stored as literal subject names in the default context instead of being parsed as context-qualified subjects. Requests sent through a context URL prefix (see <<serdes-clients>>) show the same behavior: they do not return an error, but all operations land in the default context.
 
-*Cause 1*: `schema_registry_enable_qualified_subjects` is set to `false` (the default).
+*Cause 1*: `schema_registry_enable_qualified_subjects` is set to `false`.
+ifndef::env-cloud[]
+This is the default in Redpanda versions earlier than 26.2.
+endif::env-cloud[]
 
 *Cause 2*: The property was set to `true` but the brokers have not yet been restarted. This property is not dynamic and requires a full broker restart to take effect.
+
+To confirm, check whether the registry lists only the default context while clients are using qualified subjects or context URLs:
+
+[source,bash]
+----
+curl -s http://localhost:8081/contexts
+----
+
+If the response is `["."]`, qualified subject parsing is not active.
 
 *Resolution*:
 
@@ -692,6 +759,9 @@ ifndef::env-cloud[]
 rpk cluster config set schema_registry_enable_qualified_subjects true
 # Then restart all brokers
 ----
+endif::env-cloud[]
+ifdef::env-cloud[]
+On BYOC and Dedicated clusters, use the cluster configuration API or contact Redpanda support to set `schema_registry_enable_qualified_subjects` to `true`. The change requires a broker restart.
 endif::env-cloud[]
 
 === Schema registration fails after upgrading to v26.1
@@ -705,7 +775,7 @@ endif::env-cloud[]
 ifndef::env-cloud[]
 [source,bash]
 ----
-rpk registry subject list | grep '^\.'
+rpk registry subject list | grep '^:\.'
 ----
 endif::env-cloud[]
 
