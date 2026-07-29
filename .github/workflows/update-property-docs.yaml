@@ -9,7 +9,14 @@ on:
         required: true
         type: string
   repository_dispatch:
-    types: [trigger-property-docs-generation]
+    types: [trigger-property-docs-generation, trigger-cloud-property-sync]
+
+# Serialize runs that target the same PR branch. Cloud-sync dispatches share a
+# fixed branch, so repeat dispatches queue instead of racing. Release runs are
+# keyed by the incoming tag.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.action == 'trigger-cloud-property-sync' && 'cloud-sync' || github.event.inputs.tag || github.event.client_payload.tag || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   generate-property-docs:
@@ -43,6 +50,18 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          # Doc-tools installs its Python requirements at run time. The pinned
+          # doc-tools version in package-lock.json determines those requirements,
+          # so the lockfile hash is the closest stable cache key.
+          key: ${{ runner.os }}-pip-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: npm ci
@@ -50,7 +69,17 @@ jobs:
       - name: Determine tag
         id: tag
         run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
+          if [ "${{ github.event.action }}" = "trigger-cloud-property-sync" ]; then
+            # Cloud-sync regenerates docs for the version already published in
+            # antora.yml, so resolve the tag from there instead of the payload.
+            TAG=$(grep 'latest-redpanda-tag:' antora.yml | awk '{print $2}' | tr -d "\"'")
+            if [ -z "$TAG" ]; then
+              echo "❌ Could not resolve latest-redpanda-tag from antora.yml" >&2
+              exit 1
+            fi
+            echo "Resolved tag from antora.yml: $TAG"
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+          elif [ -n "${{ github.event.inputs.tag }}" ]; then
             echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
           elif [ -n "${{ github.event.client_payload.tag }}" ]; then
             echo "tag=${{ github.event.client_payload.tag }}" >> $GITHUB_OUTPUT
@@ -64,6 +93,16 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.tag }}"
+
+          if [ "${{ github.event.action }}" = "trigger-cloud-property-sync" ]; then
+            # Cloud-sync regenerates docs for the current tag on purpose.
+            # Doc-tools' same-tag path skips the diff phase and version bump,
+            # so bypassing the newer-tag guard is safe here.
+            echo "Cloud property sync event — regenerating docs for $TAG"
+            echo "is_newer=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           CURRENT=$(grep 'latest-redpanda-tag:' antora.yml | awk '{print $2}' | tr -d "\"'")
 
           echo "📄 Current latest-redpanda-tag in antora.yml: $CURRENT"
@@ -95,17 +134,49 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
 
+      - name: Prepare pull request metadata
+        if: steps.version_check.outputs.is_newer == 'true'
+        id: pr_meta
+        env:
+          CLOUD_COMMIT_SHA: ${{ github.event.client_payload.commit_sha }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+
+          if [ "${{ github.event.action }}" = "trigger-cloud-property-sync" ]; then
+            # Use a fixed branch so repeat cloud-sync dispatches update one
+            # open PR instead of colliding with the release branch.
+            echo "branch=update-property-docs-cloud-sync" >> $GITHUB_OUTPUT
+            echo "labels=auto-docs,cloud-property-sync" >> $GITHUB_OUTPUT
+            {
+              echo "body<<BODY_EOF"
+              echo "This PR regenerates Redpanda property documentation for **$TAG** to sync cloud availability metadata."
+              if [ -n "$CLOUD_COMMIT_SHA" ]; then
+                echo ""
+                echo "Triggered by cloudv2 commit: \`$CLOUD_COMMIT_SHA\`"
+              fi
+              echo "BODY_EOF"
+            } >> $GITHUB_OUTPUT
+          else
+            echo "branch=update-property-docs-$TAG" >> $GITHUB_OUTPUT
+            echo "labels=auto-docs" >> $GITHUB_OUTPUT
+            {
+              echo "body<<BODY_EOF"
+              echo "This PR auto-generates updated Redpanda property documentation for **$TAG**."
+              echo "BODY_EOF"
+            } >> $GITHUB_OUTPUT
+          fi
+
       - name: Create pull request
         if: steps.version_check.outputs.is_newer == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ env.ACTIONS_BOT_TOKEN }}
           commit-message: "auto-docs: Update property docs for ${{ steps.tag.outputs.tag }}"
-          branch: update-property-docs-${{ steps.tag.outputs.tag }}
+          branch: ${{ steps.pr_meta.outputs.branch }}
           title: "auto-docs: Update property docs for tag ${{ steps.tag.outputs.tag }}"
-          body: |
-            This PR auto-generates updated Redpanda property documentation for **${{ steps.tag.outputs.tag }}**.
-          labels: auto-docs
+          body: ${{ steps.pr_meta.outputs.body }}
+          labels: ${{ steps.pr_meta.outputs.labels }}
 
       - name: Skip notice
         if: steps.version_check.outputs.is_newer != 'true'
