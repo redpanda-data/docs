@@ -102,6 +102,7 @@ jobs:
         id: eligible
         env:
           PLUGIN: ${{ steps.params.outputs.plugin }}
+          VERSION: ${{ steps.params.outputs.version }}
         run: |
           # Newest committed snapshot (excluding diff artifacts)
           SNAPSHOT=$(ls docs-data/rpk-v*.json 2>/dev/null | grep -v 'rpk-diff' | sort -V | tail -1)
@@ -111,14 +112,29 @@ jobs:
             exit 0
           fi
 
-          if jq -e --arg p "$PLUGIN" '(.raw_tree // .tree).commands[] | select(.name == $p)' "$SNAPSHOT" > /dev/null; then
-            echo "eligible=true" >> $GITHUB_OUTPUT
-            echo "snapshot=$SNAPSHOT" >> $GITHUB_OUTPUT
-            echo "Eligible: $SNAPSHOT contains 'rpk $PLUGIN'"
-          else
+          if ! jq -e --arg p "$PLUGIN" '(.raw_tree // .tree).commands[] | select(.name == $p)' "$SNAPSHOT" > /dev/null; then
             echo "::notice::main's rpk snapshot ($SNAPSHOT) has no '$PLUGIN' command; skipping. Expected while the plugin only exists in a newer rpk line — its docs flow to main when that line GAs."
             echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
+
+          # Never regress docs to an older plugin version: a backport release
+          # (for example connect v4.95.1 after 4.102.0 is documented) would
+          # otherwise pin-install the older version and rewrite the docs to
+          # match it. Equal versions still run (idempotent refresh).
+          RECORDED=$(jq -r --arg p "$PLUGIN" '.plugin_versions[$p] // empty' "$SNAPSHOT")
+          if [ -n "$VERSION" ] && [ -n "$RECORDED" ] && [ "$VERSION" != "$RECORDED" ]; then
+            OLDEST=$(printf '%s\n%s\n' "$VERSION" "$RECORDED" | sort -V | head -1)
+            if [ "$OLDEST" = "$VERSION" ]; then
+              echo "::notice::Dispatched $PLUGIN version $VERSION is older than the documented version ($RECORDED); skipping to avoid regressing docs (backport release)."
+              echo "eligible=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          echo "eligible=true" >> $GITHUB_OUTPUT
+          echo "snapshot=$SNAPSHOT" >> $GITHUB_OUTPUT
+          echo "Eligible: $SNAPSHOT contains 'rpk $PLUGIN' (documented: ${RECORDED:-unknown}, dispatched: ${VERSION:-latest})"
 
       - name: Setup Node.js
         if: steps.eligible.outputs.eligible == 'true'
@@ -150,6 +166,7 @@ jobs:
           ARGS=(generate rpk-docs
             --plugin "$PLUGIN"
             --from-json "$SNAPSHOT"
+            --update-whats-new
             --summary-file "${{ runner.temp }}/pr-summary.md")
           if [ -n "$VERSION" ]; then
             ARGS+=(--plugin-version "$VERSION")
