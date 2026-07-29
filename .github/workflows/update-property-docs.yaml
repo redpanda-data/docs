@@ -68,8 +68,14 @@ jobs:
 
       - name: Determine tag
         id: tag
+        # Dispatch-controlled values are passed through env so the shell never
+        # re-parses them as script text (prevents template injection).
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          PAYLOAD_TAG: ${{ github.event.client_payload.tag }}
         run: |
-          if [ "${{ github.event.action }}" = "trigger-cloud-property-sync" ]; then
+          if [ "$EVENT_ACTION" = "trigger-cloud-property-sync" ]; then
             # Cloud-sync regenerates docs for the version already published in
             # antora.yml, so resolve the tag from there instead of the payload.
             TAG=$(grep 'latest-redpanda-tag:' antora.yml | awk '{print $2}' | tr -d "\"'")
@@ -78,23 +84,34 @@ jobs:
               exit 1
             fi
             echo "Resolved tag from antora.yml: $TAG"
-            echo "tag=$TAG" >> $GITHUB_OUTPUT
-          elif [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          elif [ -n "${{ github.event.client_payload.tag }}" ]; then
-            echo "tag=${{ github.event.client_payload.tag }}" >> $GITHUB_OUTPUT
+          elif [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ -n "$PAYLOAD_TAG" ]; then
+            TAG="$PAYLOAD_TAG"
           else
             echo "❌ No tag provided via input or dispatch payload" >&2
             exit 1
           fi
 
+          # Reject anything outside the release-tag charset (no control
+          # characters, newlines, whitespace, or shell metacharacters) before
+          # the value reaches GITHUB_OUTPUT and downstream steps. Bash =~
+          # matches the whole string, so embedded newlines cannot sneak past.
+          if ! [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "❌ Invalid tag format: $TAG" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Check if tag is newer than antora.yml latest
         id: version_check
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.tag.outputs.tag }}"
 
-          if [ "${{ github.event.action }}" = "trigger-cloud-property-sync" ]; then
+          if [ "$EVENT_ACTION" = "trigger-cloud-property-sync" ]; then
             # Cloud-sync regenerates docs for the current tag on purpose.
             # Doc-tools' same-tag path skips the diff phase and version bump,
             # so bypassing the newer-tag guard is safe here.
@@ -125,25 +142,35 @@ jobs:
         if: steps.version_check.outputs.is_newer == 'true'
         run: |
           set -euo pipefail
-          echo "Running doc generation for: ${{ steps.tag.outputs.tag }}"
+          echo "Running doc generation for: $TAG"
           npx doc-tools generate property-docs \
-            --tag "${{ steps.tag.outputs.tag }}" \
+            --tag "$TAG" \
             --generate-partials \
             --cloud-support \
             --overrides docs-data/property-overrides.json
         env:
           GITHUB_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
 
       - name: Prepare pull request metadata
         if: steps.version_check.outputs.is_newer == 'true'
         id: pr_meta
         env:
           CLOUD_COMMIT_SHA: ${{ github.event.client_payload.commit_sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.tag.outputs.tag }}"
 
-          if [ "${{ github.event.action }}" = "trigger-cloud-property-sync" ]; then
+          # Only trust commit_sha if it looks like a commit hash. Bash =~
+          # matches the whole string, so a newline-containing payload cannot
+          # terminate the BODY_EOF block and inject extra outputs.
+          if [ -n "$CLOUD_COMMIT_SHA" ] && ! [[ "$CLOUD_COMMIT_SHA" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+            echo "⚠️ Ignoring commit_sha from payload — not a valid commit hash" >&2
+            CLOUD_COMMIT_SHA=""
+          fi
+
+          if [ "$EVENT_ACTION" = "trigger-cloud-property-sync" ]; then
             # Use a fixed branch so repeat cloud-sync dispatches update one
             # open PR instead of colliding with the release branch.
             echo "branch=update-property-docs-cloud-sync" >> $GITHUB_OUTPUT
