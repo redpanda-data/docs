@@ -15,6 +15,9 @@ on:
         required: false
         default: 'true'
         type: boolean
+      plugin_pins:
+        description: 'Comma-separated plugin version pins for pre-GA plugins (e.g. k8s=26.3.1-beta.1). Without a pin, a plugin with no promoted latest version installs nothing and its commands are absent from the docs.'
+        required: false
   repository_dispatch:
     types: [update-rpk-docs]
 
@@ -55,24 +58,29 @@ jobs:
           DISPATCH_VERSION: ${{ github.event.client_payload.version }}
           DISPATCH_DIFF_VERSION: ${{ github.event.client_payload.diff_version }}
           DISPATCH_DRAFT_MISSING: ${{ github.event.client_payload.draft_missing }}
+          DISPATCH_PLUGIN_PINS: ${{ github.event.client_payload.plugin_pins }}
           INPUT_VERSION: ${{ github.event.inputs.version }}
           INPUT_DIFF_VERSION: ${{ github.event.inputs.diff_version }}
           INPUT_DRAFT_MISSING: ${{ github.event.inputs.draft_missing }}
+          INPUT_PLUGIN_PINS: ${{ github.event.inputs.plugin_pins }}
         run: |
           # Handle workflow_dispatch vs repository_dispatch
           if [ "$EVENT_NAME" = "repository_dispatch" ]; then
             VERSION="${DISPATCH_VERSION:-dev}"
             DIFF_VERSION="${DISPATCH_DIFF_VERSION}"
             DRAFT_MISSING="${DISPATCH_DRAFT_MISSING:-false}"
+            PLUGIN_PINS="${DISPATCH_PLUGIN_PINS}"
           else
             VERSION="${INPUT_VERSION}"
             DIFF_VERSION="${INPUT_DIFF_VERSION}"
             DRAFT_MISSING="${INPUT_DRAFT_MISSING}"
+            PLUGIN_PINS="${INPUT_PLUGIN_PINS}"
           fi
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "diff_version=$DIFF_VERSION" >> $GITHUB_OUTPUT
           echo "draft_missing=$DRAFT_MISSING" >> $GITHUB_OUTPUT
+          echo "plugin_pins=$PLUGIN_PINS" >> $GITHUB_OUTPUT
 
           # Detect RC versions (e.g., v26.2.0-rc1, 26.2.0-rc2)
           if [[ "$VERSION" =~ -rc[0-9]+$ ]]; then
@@ -200,6 +208,22 @@ jobs:
           DRAFT_MISSING="${{ steps.params.outputs.draft_missing }}"
           if [ "$DRAFT_MISSING" = "true" ]; then
             CMD="$CMD --draft-missing"
+          fi
+
+          # Pin individual plugin installs (pre-GA plugins have no promoted
+          # latest version, so unpinned installs resolve nothing and their
+          # commands drop out of the docs).
+          PLUGIN_PINS="${{ steps.params.outputs.plugin_pins }}"
+          if [ -n "$PLUGIN_PINS" ]; then
+            IFS=',' read -ra PINS <<< "$PLUGIN_PINS"
+            for PIN in "${PINS[@]}"; do
+              PIN="$(echo "$PIN" | tr -d '[:space:]')"
+              if [[ ! "$PIN" =~ ^[a-z0-9]+=[A-Za-z0-9._-]+$ ]]; then
+                echo "::error::Invalid plugin pin '$PIN'. Expected <name>=<version>, e.g. k8s=26.3.1-beta.1"
+                exit 1
+              fi
+              CMD="$CMD --plugin-pin $PIN"
+            done
           fi
 
           CMD="$CMD --output-dir modules/reference/pages/rpk"
