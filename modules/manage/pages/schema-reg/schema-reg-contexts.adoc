@@ -684,7 +684,10 @@ For the full metrics reference, see xref:streaming:reference:public-metrics-refe
 
 [IMPORTANT]
 ====
-*Breaking change*: When `schema_registry_enable_qualified_subjects` is enabled, any existing subject whose name matches the qualified subject pattern (for example, `:.staging:user-value`) is reinterpreted as subject `user-value` in context `.staging`, rather than as a literal subject name in the default context. Subjects without a `:.` prefix are unaffected.
+ifndef::env-cloud[]
+*Breaking change*: Upgrading to Redpanda v26.2 or later enables `schema_registry_enable_qualified_subjects` automatically, including on existing clusters, unless you explicitly set the property to `false` before the upgrade.
+endif::env-cloud[]
+When `schema_registry_enable_qualified_subjects` is enabled, any existing subject whose name matches the qualified subject pattern (for example, `:.staging:user-value`) is reinterpreted as subject `user-value` in context `.staging`, rather than as a literal subject name in the default context. Subjects without a `:.` prefix are unaffected.
 
 This edge case is rare. No automatic migration is provided.
 ====
@@ -711,6 +714,8 @@ If you find affected subjects, rename them before enabling the property, or crea
 [IMPORTANT]
 ====
 Remember that changing `schema_registry_enable_qualified_subjects` requires a broker restart in both directions (enabling and disabling).
+
+Treat disabling the property as a stopgap while you rename affected subjects: the property is temporary and planned for removal in a future release, after which qualified subject parsing is always on.
 ====
 
 == Troubleshooting
@@ -742,14 +747,14 @@ endif::env-cloud[]
 
 *Cause 2*: The property was set to `true` but the brokers have not yet been restarted. This property is not dynamic and requires a full broker restart to take effect.
 
-To confirm, check whether the registry lists only the default context while clients are using qualified subjects or context URLs:
+To investigate, list the materialized contexts:
 
 [source,bash]
 ----
 curl -s http://localhost:8081/contexts
 ----
 
-If the response is `["."]`, qualified subject parsing is not active.
+A response of `["."]` alone does not confirm the cause: an enabled registry that has no schemas registered in named contexts returns the same result. To confirm, check the property value and whether the brokers have restarted since it changed, or register a test schema in a non-default context and list the contexts again. If the new context does not appear, qualified subject parsing is not active, and the test schema was stored under a literal subject name. Hard-delete the test subject before enabling the property so that it is not reinterpreted later (see <<upgrade-considerations>>).
 
 *Resolution*:
 
