@@ -1,0 +1,34 @@
+# When rpk ai partials change on main (a merged plugin refresh or full rpk
+# regeneration), tell adp-docs so it can reconcile its single-source stub
+# pages and nav against the new partial set. adp-docs consumes partials from
+# this repo's main at build time, so the merge to main is the right moment.
+name: Notify adp-docs of rpk ai partial changes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/reference/partials/rpk-ai/**'
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.RP_AWS_CRED_REGION }}
+          role-to-assume: arn:aws:iam::${{ secrets.RP_AWS_CRED_ACCOUNT_ID }}:role/${{ vars.RP_AWS_CRED_BASE_ROLE_NAME }}${{ github.event.repository.name }}
+
+      - uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            ,sdlc/prod/github/actions_bot_token
+          parse-json-secrets: true
+
+      - name: Trigger stub reconciliation in adp-docs
+        env:
+          GH_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
+        run: gh api repos/redpanda-data/adp-docs/dispatches -f event_type=sync-rpk-ai-stubs
