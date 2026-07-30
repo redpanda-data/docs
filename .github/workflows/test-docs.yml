@@ -14,6 +14,7 @@ jobs:
     outputs:
       console: ${{ steps.filter.outputs.console }}
       quickstart: ${{ steps.filter.outputs.quickstart }}
+      kindguide: ${{ steps.filter.outputs.kindguide }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,6 +27,10 @@ jobs:
               - 'modules/console/**'
             quickstart:
               - 'modules/get-started/pages/quick-start.adoc'
+            kindguide:
+              - 'modules/deploy/pages/redpanda/kubernetes/local-guide.adoc'
+              - 'modules/deploy/partials/kubernetes/**'
+              - 'antora.yml'
 
   run-tests:
     needs: setup
@@ -98,3 +103,71 @@ jobs:
           path: /home/runner/work/_temp/doc-detective-output.json
         env:
           REDPANDA_GITHUB_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
+
+  test-kind-guide:
+    needs: setup
+    # Skip the entire job for fork PRs. Run for all scheduled and manual triggers, and on PRs that touch the Kind guide or its shared partials.
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true) &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch' || github.event_name == 'schedule' || needs.setup.outputs.kindguide == 'true')
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.RP_AWS_CRED_REGION }}
+          role-to-assume: arn:aws:iam::${{ secrets.RP_AWS_CRED_ACCOUNT_ID }}:role/${{ vars.RP_AWS_CRED_BASE_ROLE_NAME }}${{ github.event.repository.name }}
+      - uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            ,sdlc/prod/github/actions_bot_token
+          parse-json-secrets: true
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
+          path: redpanda-docs
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: redpanda-docs
+
+      - name: Set GitHub token
+        run: |
+          echo "REDPANDA_GITHUB_TOKEN=${{ env.ACTIONS_BOT_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Test Kind local development guide
+        uses: doc-detective/github-action@v1
+        with:
+          input: ../../modules/deploy/pages/redpanda/kubernetes/local-guide.adoc
+          working_directory: redpanda-docs/tests/setup-tests
+          exit_on_fail: true
+          create_issue_on_fail: true
+          issue_title: "Doc Detective failure: Kind local guide"
+          issue_labels: "doc-detective,kind-guide"
+          integrations: "claude"
+          prompt: "Investigate this Kind local development guide test failure. The test executes the commands documented in modules/deploy/pages/redpanda/kubernetes/local-guide.adoc and its shared partials (modules/deploy/partials/kubernetes/). Determine whether the failure is a docs bug (command drift vs the current operator/chart behavior), a product regression, or test environment flake, and propose the specific docs fix if applicable."
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
+        env:
+          REDPANDA_GITHUB_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
+
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doc-detective-kind-guide-output
+          path: /home/runner/work/_temp/doc-detective-output.json
