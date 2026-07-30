@@ -6,6 +6,16 @@
 
 Deploy a local Redpanda cluster with Redpanda Console using the Helm chart. Explore the essentials of how Redpanda works in Kubernetes and what components are deployed by default. Then, use `rpk` both as an internal client and an external client to interact with your Redpanda cluster from the command line.
 
+// ========================AUTOMATED TESTS===================================
+// The comments in this file are used to run automated tests of the documented steps. Tests are run using GitHub Actions on each pull request that changes this file in the upstream repository. For more details about the testing tool we use, see https://doc-detective.com/.
+// This test follows the kind + Redpanda Operator tab path, using `redpanda` wherever the docs say <namespace>. It runs on Linux only because the "Configure external access to Redpanda" section is documented as Linux-only.
+
+// (test start {"testId": "kind-guide", "description": "Local development cluster with kind and the Redpanda Operator", "runOn": [{"platforms": ["linux"]}]})
+
+// Clean slate: remove any leftover kind cluster and scratch files from a previous run.
+// (step {"runShell": {"command": "kind delete cluster", "timeout": 120000, "exitCodes": [0, 1]}})
+// (step {"runShell": {"command": "rm -rf kind-guide && mkdir -p kind-guide", "timeout": 30000, "exitCodes": [0]}})
+
 .Only for development and testing
 [CAUTION]
 ====
@@ -31,16 +41,20 @@ kind::
 ```bash
 kubectl version --client
 ```
+// (step {"runShell": {"command": "kubectl version --client", "timeout": 30000, "exitCodes": [0]}})
 
 * https://helm.sh/docs/intro/install/[Install Helm^]. Minimum required Helm version: {supported-helm-version}
 +
 ```bash
 helm version
 ```
+// (step {"runShell": {"command": "helm version", "timeout": 30000, "exitCodes": [0]}})
 
 * https://kind.sigs.k8s.io/docs/user/quick-start/#installation[Install kind^]
+// (step {"runShell": {"command": "kind version", "timeout": 30000, "exitCodes": [0]}})
 
 * https://docs.docker.com/get-docker/[Install Docker^]
+// (step {"runShell": {"command": "docker info", "timeout": 60000, "exitCodes": [0]}})
 
 --
 minikube::
@@ -88,12 +102,15 @@ nodes:
   - role: worker
 EOF
 ```
+// Scratch files are written to the kind-guide subdirectory of the Doc Detective working directory (tests/setup-tests).
+// (step {"runShell": {"command": "cat <<EOF >kind.yaml\n---\napiVersion: kind.x-k8s.io/v1alpha4\nkind: Cluster\nnodes:\n  - role: control-plane\n  - role: worker\n  - role: worker\n  - role: worker\nEOF", "workingDirectory": "./kind-guide", "timeout": 30000, "exitCodes": [0]}})
 
 . Create the Kubernetes cluster from the configuration file:
 +
 ```bash
 kind create cluster --config kind.yaml
 ```
+// (step {"runShell": {"command": "kind create cluster --config kind.yaml", "workingDirectory": "./kind-guide", "timeout": 300000, "exitCodes": [0]}})
 
 --
 minikube::
@@ -134,6 +151,7 @@ Operator::
 ```bash
 kubectl auth can-i create CustomResourceDefinition --all-namespaces
 ```
+// (step {"runShell": {"command": "kubectl auth can-i create CustomResourceDefinition --all-namespaces", "timeout": 30000, "exitCodes": [0], "stdio": "yes"}})
 +
 You should see `yes` in the output.
 +
@@ -146,18 +164,25 @@ helm repo add jetstack https://charts.jetstack.io
 helm repo update
 helm install cert-manager jetstack/cert-manager --set crds.enabled=true --namespace cert-manager --create-namespace
 ```
+// (step {"runShell": {"command": "helm repo add jetstack https://charts.jetstack.io\nhelm repo update\nhelm install cert-manager jetstack/cert-manager --set crds.enabled=true --namespace cert-manager --create-namespace", "timeout": 300000, "exitCodes": [0]}})
 +
 TLS is enabled by default. The Redpanda Helm chart uses cert-manager to manage TLS certificates by default.
 
 . Deploy the Redpanda Operator:
 +
 include::deploy:partial$kubernetes/deploy-operator.adoc[]
+// The rendered docs resolve {latest-operator-version} from a build-time attribute that tracks the latest Redpanda Operator release, so the test resolves the same value from the Helm repository index instead of the stale raw-file fallback in the partial.
+// (step {"runShell": {"command": "helm repo add redpanda https://charts.redpanda.com\nhelm repo update", "timeout": 120000, "exitCodes": [0]}})
+// (step {"runShell": {"command": "helm show chart redpanda/operator | awk -F': ' '/^version:/{print $2}'", "timeout": 60000, "exitCodes": [0], "stdio": "/[0-9]+\\.[0-9]+\\.[0-9]+/"}, "variables": {"OPERATOR_VERSION": "$$stdio.stdout"}})
+// This is the cluster-scoped deployment command from the deploy-operator partial, with <namespace> set to redpanda.
+// (step {"runShell": {"command": "helm upgrade --install redpanda-controller redpanda/operator --namespace redpanda --create-namespace --version $OPERATOR_VERSION --set crds.enabled=true", "timeout": 300000, "exitCodes": [0]}})
 
 . Ensure that the Deployment is successfully rolled out:
 +
 ```bash
 kubectl --namespace <namespace> rollout status --watch deployment/redpanda-controller-operator
 ```
+// (step {"runShell": {"command": "kubectl --namespace redpanda rollout status --watch deployment/redpanda-controller-operator", "timeout": 300000, "exitCodes": [0], "stdio": "successfully rolled out"}})
 +
 [.no-copy]
 ----
@@ -186,12 +211,18 @@ spec:
 ```bash
 kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
 ```
+// (step {"runShell": {"command": "cat <<EOF >redpanda-cluster.yaml\napiVersion: cluster.redpanda.com/v1alpha2\nkind: Redpanda\nmetadata:\n  name: redpanda\nspec:\n  clusterSpec:\n    external:\n      domain: customredpandadomain.local\n    statefulset:\n      initContainers:\n        setDataDirOwnership:\n          enabled: true\nEOF", "workingDirectory": "./kind-guide", "timeout": 30000, "exitCodes": [0]}})
+// (step {"runShell": {"command": "kubectl apply -f redpanda-cluster.yaml --namespace redpanda", "workingDirectory": "./kind-guide", "timeout": 60000, "exitCodes": [0]}})
 
 . Wait for the Redpanda Operator to deploy Redpanda using the Helm chart:
 +
 ```bash
 kubectl get redpanda --namespace <namespace> --watch
 ```
+// The documented --watch command never exits, so the test uses a bounded wait on the same Ready condition instead.
+// (step {"runShell": {"command": "kubectl wait redpanda/redpanda --namespace redpanda --for=condition=Ready --timeout=1200s", "timeout": 1260000, "exitCodes": [0], "stdio": "condition met"}})
+// Wait for all three broker Pods to be Ready before using the cluster. The Redpanda resource can report Ready while the last broker Pod is still starting.
+// (step {"runShell": {"command": "kubectl --namespace redpanda wait pod redpanda-0 redpanda-1 redpanda-2 --for=condition=Ready --timeout=600s", "timeout": 660000, "exitCodes": [0]}})
 +
 [.no-copy]
 ----
@@ -204,6 +235,7 @@ This step may take a few minutes. You can watch for new Pods to make sure that t
 ```bash
 kubectl get pod --namespace <namespace>
 ```
+// (step {"runShell": {"command": "kubectl get pod --namespace redpanda", "timeout": 30000, "exitCodes": [0], "stdio": "redpanda-0"}})
 +
 If it's taking too long, see <<Troubleshoot>>.
 --
@@ -302,6 +334,8 @@ spec:
 ----
 kubectl apply -f topic.yaml --namespace <namespace>
 ----
+// (step {"runShell": {"command": "cat <<EOF >topic.yaml\napiVersion: cluster.redpanda.com/v1alpha2\nkind: Topic\nmetadata:\n  name: twitch-chat\nspec:\n  kafkaApiSpec:\n    brokers:\n      - \"redpanda-0.redpanda.redpanda.svc.cluster.local:9093\"\n      - \"redpanda-1.redpanda.redpanda.svc.cluster.local:9093\"\n      - \"redpanda-2.redpanda.redpanda.svc.cluster.local:9093\"\n    tls:\n      caCertSecretRef:\n        name: \"redpanda-default-cert\"\n        key: \"ca.crt\"\nEOF", "workingDirectory": "./kind-guide", "timeout": 30000, "exitCodes": [0]}})
+// (step {"runShell": {"command": "kubectl apply -f topic.yaml --namespace redpanda", "workingDirectory": "./kind-guide", "timeout": 60000, "exitCodes": [0]}})
 
 .. Check the logs of the Redpanda Operator to confirm that the topic was created:
 +
@@ -309,6 +343,9 @@ kubectl apply -f topic.yaml --namespace <namespace>
 ----
 kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace <namespace>
 ----
+// Give the Redpanda Operator a few seconds to reconcile the Topic resource before checking the logs.
+// (step {"runShell": {"command": "sleep 10", "timeout": 30000, "exitCodes": [0]}})
+// (step {"runShell": {"command": "kubectl logs -l app.kubernetes.io/name=operator -c manager --namespace redpanda", "timeout": 60000, "exitCodes": [0], "stdio": "twitch-chat"}})
 +
 You should see that the Redpanda Operator reconciled the Topic resource.
 +
@@ -384,6 +421,8 @@ TOPIC STATUS twitch-chat OK
 ```bash
 internal-rpk topic describe twitch-chat
 ```
+// The test runs the expanded form of the internal-rpk alias because each test step runs in a new shell, where aliases don't persist.
+// (step {"runShell": {"command": "kubectl --namespace redpanda exec -i -t redpanda-0 -c redpanda -- rpk topic describe twitch-chat", "timeout": 60000, "exitCodes": [0], "stdio": "twitch-chat"}})
 +
 .Expected output:
 [%collapsible]
@@ -430,6 +469,8 @@ Example output:
 ```text
 Produced to partition 0 at offset 0 with timestamp 1663282629789.
 ```
+// The test pipes the message into the producer because test steps are non-interactive. This is the same pattern that the Redpanda quickstart test uses.
+// (step {"runShell": {"command": "echo \"Pandas are fabulous!\" | kubectl --namespace redpanda exec -i -t redpanda-0 -c redpanda -- rpk topic produce twitch-chat", "timeout": 60000, "exitCodes": [0], "stdio": "Produced to partition"}})
 
 . Press kbd:[Ctrl + C] to finish producing messages to the topic.
 
@@ -438,6 +479,7 @@ Produced to partition 0 at offset 0 with timestamp 1663282629789.
 ```bash
 internal-rpk topic consume twitch-chat --num 1
 ```
+// (step {"runShell": {"command": "kubectl --namespace redpanda exec -i -t redpanda-0 -c redpanda -- rpk topic consume twitch-chat --num 1", "timeout": 60000, "exitCodes": [0], "stdio": "Pandas are fabulous!"}})
 +
 .Expected output:
 [%collapsible]
@@ -458,6 +500,12 @@ Your message is displayed along with its metadata:
 
 include::deploy:partial$kubernetes/guides/explore-topics-localhost.adoc[leveloffset=+1]
 
+// The explore-topics-localhost partial documents port-forwarding plus browser steps. The test runs the documented port-forward in the background and verifies Redpanda Console with an HTTP status check instead of browser steps, because shell checks are more stable than a browser session inside a cluster test.
+// (step {"runShell": {"command": "nohup kubectl --namespace redpanda port-forward svc/redpanda-console 8080:8080 >port-forward.log 2>&1 & echo $! > port-forward.pid\nsleep 5", "workingDirectory": "./kind-guide", "timeout": 30000, "exitCodes": [0]}})
+// (step {"httpRequest": {"url": "http://localhost:8080", "method": "get", "statusCodes": [200], "timeout": 30000}})
+// Stop the documented port-forward process (the docs use Ctrl+C).
+// (step {"runShell": {"command": "kill $(cat port-forward.pid)", "workingDirectory": "./kind-guide", "timeout": 30000, "exitCodes": [0]}})
+
 include::deploy:partial$kubernetes/guides/external-access-intro.adoc[leveloffset=+1]
 
 NOTE: These steps work only on Linux operating systems.
@@ -465,8 +513,9 @@ NOTE: These steps work only on Linux operating systems.
 . Add mappings in your `/etc/hosts` file between your worker nodes' IP addresses and their custom domain names:
 +
 ```bash
-sudo true && kubectl --namespace <namespace> get endpoints,node -A -o go-template='{{ range $_ := .items }}{{ if and (eq .kind "Endpoints") (eq .metadata.name "redpanda-external") }}{{ range $_ := (index .subsets 0).addresses }}{{ $nodeName := .nodeName }}{{ $podName := .targetRef.name }}{{ range $node := $.items }}{{ if and (eq .kind "Node") (eq .metadata.name $nodeName) }}{{ range $_ := .status.addresses }}{{ if eq .type "InternalIP" }}{{ .address }} {{ $podName }}.customredpandadomain.local{{ "\n" }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}' | envsubst | sudo tee -a /etc/hosts
+sudo true && kubectl --namespace <namespace> get endpoints,node -A -o go-template='{{ range $_ := .items }}{{ if and (eq .kind "Endpoints") (eq .metadata.name "redpanda-external") }}{{ range $_ := (index .subsets 0).addresses }}{{ $nodeName := .nodeName }}{{ $podName := .targetRef.name }}{{ range $node := $.items }}{{ if and (eq .kind "Node") (eq .metadata.name $nodeName) }}{{ range $_ := .status.addresses }}{{ if eq .type "InternalIP" }}{{ .address }} {{ $podName }}.customredpandadomain.local{{ "\n" }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}' | envsubst | sudo tee -a /etc/hosts
 ```
+// (step {"runShell": {"command": "sudo true && kubectl --namespace redpanda get endpoints,node -A -o go-template='{{ range $_ := .items }}{{ if and (eq .kind \"Endpoints\") (eq .metadata.name \"redpanda-external\") }}{{ range $_ := (index .subsets 0).addresses }}{{ $nodeName := .nodeName }}{{ $podName := .targetRef.name }}{{ range $node := $.items }}{{ if and (eq .kind \"Node\") (eq .metadata.name $nodeName) }}{{ range $_ := .status.addresses }}{{ if eq .type \"InternalIP\" }}{{ .address }} {{ $podName }}.customredpandadomain.local{{ \"\\n\" }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}' | envsubst | sudo tee -a /etc/hosts", "timeout": 60000, "exitCodes": [0], "stdio": "redpanda-0.customredpandadomain.local"}})
 +
 .`/etc/hosts`
 ----
@@ -481,6 +530,8 @@ sudo true && kubectl --namespace <namespace> get endpoints,node -A -o go-templat
 ----
 kubectl --namespace <namespace> get secret redpanda-external-root-certificate -o go-template='{{ index .data "ca.crt" | base64decode }}' > ca.crt
 ----
+// The ca.crt file is saved in the test scratch directory because the rpk profile references it by relative path.
+// (step {"runShell": {"command": "kubectl --namespace redpanda get secret redpanda-external-root-certificate -o go-template='{{ index .data \"ca.crt\" | base64decode }}' > ca.crt", "workingDirectory": "./kind-guide", "timeout": 30000, "exitCodes": [0]}})
 
 . Install `rpk` on your local Linux machine, not on a Pod:
 +
@@ -488,6 +539,8 @@ kubectl --namespace <namespace> get secret redpanda-external-root-certificate -o
 [loweralpha]
 include::get-started:partial$install-rpk-linux.adoc[tags=latest]
 --
+// The test adds -o to unzip so that the step is non-interactive when rpk is already installed in the test environment. CI runners are amd64.
+// (step {"runShell": {"command": "curl -LO https://github.com/redpanda-data/redpanda/releases/latest/download/rpk-linux-amd64.zip && mkdir -p ~/.local/bin && export PATH=\"~/.local/bin:$PATH\" && unzip -o rpk-linux-amd64.zip -d ~/.local/bin/", "workingDirectory": "./kind-guide", "timeout": 180000, "exitCodes": [0]}})
 
 . Configure `rpk` to connect to your cluster using the xref:manage:kubernetes/networking/k-connect-to-redpanda.adoc#rpk-profile[pre-configured profile]:
 +
@@ -497,16 +550,33 @@ rpk profile create --from-profile <(kubectl get configmap --namespace <namespace
 ----
 +
 Replace `<profile-name>` with the name that you want to give this `rpk` profile.
+// (step {"runShell": {"command": "rpk profile create --from-profile <(kubectl get configmap --namespace redpanda redpanda-rpk -o go-template='{{ .data.profile }}') kind-guide", "workingDirectory": "./kind-guide", "timeout": 60000, "exitCodes": [0]}})
 
 . Test the connection:
 +
 ```bash
 rpk cluster info
 ```
+// (step {"runShell": {"command": "rpk cluster info", "workingDirectory": "./kind-guide", "timeout": 120000, "exitCodes": [0], "stdio": "BROKERS"}})
 
 include::deploy:partial$kubernetes/default-components.adoc[leveloffset=+1]
 
 include::deploy:partial$kubernetes/guides/uninstall.adoc[leveloffset=+1]
+
+// These steps run the Operator tab of the uninstall partial, in the documented order, with <namespace> set to redpanda.
+// (step {"runShell": {"command": "kubectl delete users --namespace redpanda --all\nkubectl delete topics --namespace redpanda --all\nkubectl delete schemas --namespace redpanda --all\nkubectl delete redpanda --namespace redpanda --all\nkubectl delete consoles --namespace redpanda --all", "timeout": 600000, "exitCodes": [0]}})
+// The Redpanda resource can finish deleting before the broker Pods are gone. Wait for the Pods to terminate so that later PVC deletion isn't blocked by PVC protection.
+// (step {"runShell": {"command": "kubectl --namespace redpanda wait pod redpanda-0 redpanda-1 redpanda-2 --for=delete --timeout=600s", "timeout": 660000, "exitCodes": [0, 1]}})
+// The documented verification: every Redpanda-related resource must be gone before uninstalling
+// the operator, or leftover finalizers block CRD deletion. Poll with a bounded loop.
+// (step {"runShell": {"command": "timeout 300 bash -c 'until [ -z \"$(kubectl get users,topics,schemas,redpandas,consoles --namespace redpanda -o name 2>/dev/null)\" ]; do sleep 5; done'; kubectl get users,topics,schemas,redpandas,consoles --namespace redpanda", "timeout": 330000, "exitCodes": [0]}})
+// (step {"runShell": {"command": "helm uninstall redpanda-controller --namespace redpanda", "timeout": 300000, "exitCodes": [0]}})
+// (step {"runShell": {"command": "kubectl api-resources --api-group='cluster.redpanda.com'", "timeout": 30000, "exitCodes": [0]}})
+// The inner timeout kills the whole process tree on overrun so no orphaned kubectl
+// process outlives the step and hangs the job. On overrun, the step dumps which CRDs
+// are stuck terminating, their finalizers, and any remaining instances before failing.
+// (step {"runShell": {"command": "timeout --kill-after=10 420 bash -c 'kubectl get crds -o name | grep cluster.redpanda.com | xargs kubectl delete' || { rc=$?; echo '=== CRD delete incomplete, diagnostics:'; kubectl get crds -o custom-columns='NAME:.metadata.name,DELETION:.metadata.deletionTimestamp,FINALIZERS:.metadata.finalizers' | grep -E 'NAME|redpanda' || true; for crd in $(kubectl get crds -o name | grep cluster.redpanda.com || true); do kind=$(basename $crd | cut -d. -f1); echo \"--- remaining instances of $kind:\"; kubectl get $kind -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,DELETION:.metadata.deletionTimestamp,FINALIZERS:.metadata.finalizers' 2>&1 | head -10; done; exit $rc; }", "timeout": 600000, "exitCodes": [0]}})
+// (step {"runShell": {"command": "kubectl delete pvc,secret --all --namespace redpanda", "timeout": 600000, "exitCodes": [0]}})
 
 == Delete the cluster
 
@@ -522,6 +592,7 @@ kind::
 ----
 kind delete cluster
 ----
+// (step {"runShell": {"command": "kind delete cluster", "timeout": 120000, "exitCodes": [0]}})
 
 --
 minikube::
@@ -539,6 +610,11 @@ To remove the convenience alias created during the quickstart:
 ```bash
 unalias internal-rpk
 ```
+
+// Remove the rpk profile and test scratch files.
+// (step {"runShell": {"command": "rpk profile delete kind-guide", "timeout": 30000, "exitCodes": [0, 1]}})
+// (step {"runShell": {"command": "rm -rf kind-guide", "timeout": 30000, "exitCodes": [0]}})
+// (test end)
 
 include::deploy:partial$kubernetes/guides/troubleshoot.adoc[leveloffset=+1]
 
