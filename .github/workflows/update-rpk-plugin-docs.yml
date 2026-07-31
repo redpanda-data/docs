@@ -41,6 +41,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  id-token: write
 
 # One run per plugin at a time. Rapid releases (rpk ai ships several times a
 # week) queue instead of racing each other on the same PR branch.
@@ -51,6 +52,7 @@ concurrency:
 jobs:
   update-plugin-docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Resolve parameters
         id: params
@@ -255,12 +257,31 @@ jobs:
           Review the changes and merge when ready.
           FOOTER
 
+      # PRs created with secrets.GITHUB_TOKEN do not trigger the repo's own
+      # Actions workflows, so generated PRs would carry no run-tests
+      # validation. Use the actions bot token instead (same pattern as the
+      # other cross-repo senders).
+      - name: Configure AWS credentials
+        if: steps.eligible.outputs.eligible == 'true' && steps.changes.outputs.has_changes == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.RP_AWS_CRED_REGION }}
+          role-to-assume: arn:aws:iam::${{ secrets.RP_AWS_CRED_ACCOUNT_ID }}:role/${{ vars.RP_AWS_CRED_BASE_ROLE_NAME }}${{ github.event.repository.name }}
+
+      - name: Fetch actions bot token
+        if: steps.eligible.outputs.eligible == 'true' && steps.changes.outputs.has_changes == 'true'
+        uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            ,sdlc/prod/github/actions_bot_token
+          parse-json-secrets: true
+
       - name: Create Pull Request
         if: steps.eligible.outputs.eligible == 'true' && steps.changes.outputs.has_changes == 'true'
         id: create_pr
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
           # Version-less branch name: rapid successive releases update the
           # same open PR instead of stacking one PR per version.
           branch: rpk-plugin-docs/${{ steps.params.outputs.plugin }}-main
@@ -292,4 +313,4 @@ jobs:
             --description "rpk ai commands added or removed; adp-docs stubs and nav need a follow-up" \
             --color D93F0B || true
           gh pr edit "$PR" --add-label rpk-ai-structural-change
-          gh pr comment "$PR" --body ":warning: This rpk ai refresh adds or removes commands. adp-docs publishes rpk ai through static single-source stubs, so it needs a follow-up: add or delete the matching stub pages and nav entries in redpanda-data/adp-docs. The change tables above list the affected commands."
+          gh pr comment "$PR" --body ":warning: This rpk ai refresh adds or removes commands. When this PR merges, the adp-docs stub sync fires automatically (docs main push -> sync-rpk-ai-stubs dispatch) and opens a stub/nav reconciliation PR in redpanda-data/adp-docs — review and merge that follow-on PR. Renames need a page-alias decision there; the change tables above list the affected commands."
