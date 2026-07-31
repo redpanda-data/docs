@@ -1,0 +1,316 @@
+# Regenerates the docs for a single rpk plugin when the plugin releases.
+#
+# rpk plugins (connect, ai, k8s, check) release on their own cadence,
+# independent of Redpanda/rpk releases. Each plugin's release workflow sends a
+# repository_dispatch here with the plugin's rpk command name and the released
+# version. This workflow refreshes only that plugin's subtree in the committed
+# rpk snapshot and opens a PR per eligible branch.
+#
+# PRs always target main: plugin versions are independent of Redpanda's
+# major.minor docs versioning, and beta receives plugin doc updates through
+# the regular main -> beta syncs and RC-triggered full regenerations. A
+# plugin whose command is missing from main's newest rpk snapshot (k8s and
+# check until 26.2 GA) skips with a notice instead of failing.
+#
+# Senders:
+#   redpanda-data/connect            -> plugin: connect
+#   redpanda-data/cloudv2 (apps/rpai) -> plugin: ai
+#   redpanda-data/redpanda-operator  -> plugin: k8s
+#   redpanda-data/redpanda-check     -> plugin: check
+name: Update rpk plugin documentation
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugin:
+        description: 'rpk command name of the plugin (ai, connect, k8s, check)'
+        required: true
+        type: choice
+        options:
+          - ai
+          - connect
+          - k8s
+          - check
+      version:
+        description: 'Plugin version to install and record (e.g., 4.102.0). Defaults to the latest published version.'
+        required: false
+  repository_dispatch:
+    types: [update-rpk-plugin-docs]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+# One run per plugin at a time. Rapid releases (rpk ai ships several times a
+# week) queue instead of racing each other on the same PR branch.
+concurrency:
+  group: rpk-plugin-docs-${{ github.event.client_payload.plugin || github.event.inputs.plugin }}
+  cancel-in-progress: false
+
+jobs:
+  update-plugin-docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Resolve parameters
+        id: params
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_PLUGIN: ${{ github.event.client_payload.plugin }}
+          DISPATCH_VERSION: ${{ github.event.client_payload.version }}
+          INPUT_PLUGIN: ${{ github.event.inputs.plugin }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            PLUGIN="$DISPATCH_PLUGIN"
+            VERSION="$DISPATCH_VERSION"
+          else
+            PLUGIN="$INPUT_PLUGIN"
+            VERSION="$INPUT_VERSION"
+          fi
+
+          # The payload must use the rpk command name, not the manifest slug
+          # (rpai -> ai). An unknown name would otherwise skip silently on
+          # every branch, so fail loudly here.
+          case "$PLUGIN" in
+            ai|connect|k8s|check) ;;
+            rpai)
+              echo "::error::Plugin 'rpai' is the manifest slug; send the rpk command name 'ai' instead"
+              exit 1
+              ;;
+            *)
+              echo "::error::Unknown plugin '$PLUGIN'. Supported: ai, connect, k8s, check"
+              exit 1
+              ;;
+          esac
+
+          # Normalize the version: strip a leading v (senders pass tag-derived
+          # values). An empty version means install latest.
+          VERSION="${VERSION#v}"
+
+          # Validate before writing to GITHUB_OUTPUT: the value flows into
+          # shell commands and the PR title, and a newline could override
+          # other outputs.
+          if [ -n "$VERSION" ] && [[ ! "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9.+_-]*$ ]]; then
+            echo "::error::Invalid version '$VERSION'. Expected a version string like 4.102.0 or 26.3.1-beta.1"
+            exit 1
+          fi
+
+          echo "plugin=$PLUGIN" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Plugin: $PLUGIN, version: ${VERSION:-latest}"
+
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check plugin exists in main's rpk line
+        id: eligible
+        env:
+          PLUGIN: ${{ steps.params.outputs.plugin }}
+          VERSION: ${{ steps.params.outputs.version }}
+        run: |
+          # Newest committed snapshot (excluding diff artifacts).
+          # Tilde-normalize prerelease suffixes first: plain sort -V ranks
+          # v26.2.1-rc2 after v26.2.1, so a lingering rc snapshot would win
+          # over the GA one. ~ sorts lowest in GNU version sort.
+          SNAPSHOT=$(ls docs-data/rpk-v*.json 2>/dev/null | grep -v 'rpk-diff' | sed 's/-rc/~rc/' | sort -V | sed 's/~rc/-rc/' | tail -1)
+          if [ -z "$SNAPSHOT" ]; then
+            echo "::notice::No rpk snapshot on main; skipping"
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if ! jq -e --arg p "$PLUGIN" '(.raw_tree // .tree).commands[] | select(.name == $p)' "$SNAPSHOT" > /dev/null; then
+            echo "::notice::main's rpk snapshot ($SNAPSHOT) has no '$PLUGIN' command; skipping. Expected while the plugin only exists in a newer rpk line — its docs flow to main when that line GAs."
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Never regress docs to an older plugin version: a backport release
+          # (for example connect v4.95.1 after 4.102.0 is documented) would
+          # otherwise pin-install the older version and rewrite the docs to
+          # match it. Equal versions still run (idempotent refresh).
+          RECORDED=$(jq -r --arg p "$PLUGIN" '.plugin_versions[$p] // empty' "$SNAPSHOT")
+          if [ -n "$VERSION" ] && [ -n "$RECORDED" ] && [ "$VERSION" != "$RECORDED" ]; then
+            # Tilde-normalize prerelease suffixes: sort -V ranks 26.3.1 BELOW
+            # 26.3.1-beta.1, which would make a GA release after a pinned beta
+            # look like a backport and get skipped.
+            OLDEST=$(printf '%s\n%s\n' "$VERSION" "$RECORDED" | sed 's/-/~/' | sort -V | sed 's/~/-/' | head -1)
+            if [ "$OLDEST" = "$VERSION" ]; then
+              echo "::notice::Dispatched $PLUGIN version $VERSION is older than the documented version ($RECORDED); skipping to avoid regressing docs (backport release)."
+              echo "eligible=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          echo "eligible=true" >> $GITHUB_OUTPUT
+          echo "snapshot=$SNAPSHOT" >> $GITHUB_OUTPUT
+          echo "Eligible: $SNAPSHOT contains 'rpk $PLUGIN' (documented: ${RECORDED:-unknown}, dispatched: ${VERSION:-latest})"
+
+      - name: Setup Node.js
+        if: steps.eligible.outputs.eligible == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: steps.eligible.outputs.eligible == 'true'
+        run: npm ci
+
+      # Go is only exercised when the snapshot's rpk version has no published
+      # release binary (RC snapshots on beta: RC releases are drafts, so the
+      # generator builds rpk from source at the tag).
+      - name: Setup Go
+        if: steps.eligible.outputs.eligible == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Refresh plugin docs
+        if: steps.eligible.outputs.eligible == 'true'
+        env:
+          PLUGIN: ${{ steps.params.outputs.plugin }}
+          VERSION: ${{ steps.params.outputs.version }}
+          SNAPSHOT: ${{ steps.eligible.outputs.snapshot }}
+        run: |
+          ARGS=(generate rpk-docs
+            --plugin "$PLUGIN"
+            --from-json "$SNAPSHOT"
+            --summary-file "${{ runner.temp }}/pr-summary.md")
+          # rpk ai's docs home is adp-docs, and the ADP release notes already
+          # cover its CLI changes per release, so ai skips the Self-Managed
+          # What's-new page. Its dispatch still refreshes the shared partials.
+          case "$PLUGIN" in
+            connect|k8s|check) ARGS+=(--update-whats-new) ;;
+          esac
+          if [ -n "$VERSION" ]; then
+            ARGS+=(--plugin-version "$VERSION")
+          fi
+          npx doc-tools "${ARGS[@]}"
+
+      - name: Check for changes
+        if: steps.eligible.outputs.eligible == 'true'
+        id: changes
+        run: |
+          git add -A
+          if git diff --staged --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No documentation changes for ${{ steps.params.outputs.plugin }}"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Changed files:"
+            git diff --staged --name-only | head -20
+          fi
+
+          # Structural changes (commands added/removed/deprecated) matter for
+          # downstream consumers with static stubs (adp-docs for rpk ai)
+          if grep -qE '\| (New|Removed|Deprecated) commands +\|' "${{ runner.temp }}/pr-summary.md" 2>/dev/null; then
+            echo "structural=true" >> $GITHUB_OUTPUT
+          else
+            echo "structural=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate PR description
+        if: steps.eligible.outputs.eligible == 'true' && steps.changes.outputs.has_changes == 'true'
+        env:
+          PR_BODY: ${{ runner.temp }}/pr-body.md
+          PR_SUMMARY: ${{ runner.temp }}/pr-summary.md
+          PLUGIN: ${{ steps.params.outputs.plugin }}
+          VERSION: ${{ steps.params.outputs.version }}
+        run: |
+          cat > "$PR_BODY" << 'HEADER'
+          ## Summary
+
+          Automated update of a single rpk plugin's documentation, triggered by a plugin release.
+
+          HEADER
+
+          echo "**Plugin**: \`rpk $PLUGIN\`" >> "$PR_BODY"
+          if [ -n "$VERSION" ]; then
+            echo "**Released version**: \`$VERSION\`" >> "$PR_BODY"
+          fi
+          echo "" >> "$PR_BODY"
+          echo "Only the \`rpk $PLUGIN\` subtree was refreshed in the rpk snapshot. All other pages were re-rendered from the committed snapshot and should show no changes. If a later release supersedes this one before merge, this PR updates in place." >> "$PR_BODY"
+          echo "" >> "$PR_BODY"
+
+          if [ -f "$PR_SUMMARY" ]; then
+            cat "$PR_SUMMARY" >> "$PR_BODY"
+            echo "" >> "$PR_BODY"
+          fi
+
+          cat >> "$PR_BODY" << 'FOOTER'
+          > Note: the first regeneration after a doc-tools template change can
+          > carry one-time churn on pages outside this plugin (for example, a
+          > template-level attribute change touches every rpk page).
+
+          ## Automation
+
+          Generated by [rpk-docs automation](https://github.com/redpanda-data/docs-extensions-and-macros/tree/main/tools/rpk-docs).
+
+          Review the changes and merge when ready.
+          FOOTER
+
+      # PRs created with secrets.GITHUB_TOKEN do not trigger the repo's own
+      # Actions workflows, so generated PRs would carry no run-tests
+      # validation. Use the actions bot token instead (same pattern as the
+      # other cross-repo senders).
+      - name: Configure AWS credentials
+        if: steps.eligible.outputs.eligible == 'true' && steps.changes.outputs.has_changes == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.RP_AWS_CRED_REGION }}
+          role-to-assume: arn:aws:iam::${{ secrets.RP_AWS_CRED_ACCOUNT_ID }}:role/${{ vars.RP_AWS_CRED_BASE_ROLE_NAME }}${{ github.event.repository.name }}
+
+      - name: Fetch actions bot token
+        if: steps.eligible.outputs.eligible == 'true' && steps.changes.outputs.has_changes == 'true'
+        uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            ,sdlc/prod/github/actions_bot_token
+          parse-json-secrets: true
+
+      - name: Create Pull Request
+        if: steps.eligible.outputs.eligible == 'true' && steps.changes.outputs.has_changes == 'true'
+        id: create_pr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
+          # Version-less branch name: rapid successive releases update the
+          # same open PR instead of stacking one PR per version.
+          branch: rpk-plugin-docs/${{ steps.params.outputs.plugin }}-main
+          base: main
+          title: "docs: update rpk ${{ steps.params.outputs.plugin }} plugin docs (${{ steps.params.outputs.version || 'latest' }})"
+          body-path: ${{ runner.temp }}/pr-body.md
+          commit-message: "docs: update rpk ${{ steps.params.outputs.plugin }} plugin docs for ${{ steps.params.outputs.version || 'latest' }}"
+          delete-branch: true
+          labels: |
+            documentation
+            automated
+
+      # adp-docs publishes rpk ai through static single-source stubs, so a
+      # refresh that adds or removes commands needs a manual stub/nav
+      # follow-up there. Make that visible instead of discovered via a broken
+      # ADP page.
+      - name: Flag adp-docs follow-up for rpk ai structural changes
+        if: >-
+          steps.eligible.outputs.eligible == 'true' &&
+          steps.changes.outputs.has_changes == 'true' &&
+          steps.changes.outputs.structural == 'true' &&
+          steps.params.outputs.plugin == 'ai' &&
+          steps.create_pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.create_pr.outputs.pull-request-number }}
+        run: |
+          gh label create rpk-ai-structural-change --force \
+            --description "rpk ai commands added or removed; adp-docs stubs and nav need a follow-up" \
+            --color D93F0B || true
+          gh pr edit "$PR" --add-label rpk-ai-structural-change
+          gh pr comment "$PR" --body ":warning: This rpk ai refresh adds or removes commands. When this PR merges, the adp-docs stub sync fires automatically (docs main push -> sync-rpk-ai-stubs dispatch) and opens a stub/nav reconciliation PR in redpanda-data/adp-docs — review and merge that follow-on PR. Renames need a page-alias decision there; the change tables above list the affected commands."
