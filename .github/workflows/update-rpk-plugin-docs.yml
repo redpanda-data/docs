@@ -209,10 +209,23 @@ jobs:
             git diff --staged --name-only | head -20
           fi
 
-          # Structural changes (commands added/removed/deprecated) matter for
-          # downstream consumers with static stubs (adp-docs for rpk ai)
-          if grep -qE '\| (New|Removed|Deprecated) commands +\|' "${{ runner.temp }}/pr-summary.md" 2>/dev/null; then
+          # Structural changes matter for downstream consumers with static
+          # stubs (adp-docs for rpk ai). Two independent signals, because the
+          # command tree and the page set can change independently: the rpk ai
+          # connection pages appeared with ZERO tree changes (the commands
+          # existed as stubs in 0.2.31; removing their overrides excludes is
+          # what created the pages), so the summary-table grep alone missed
+          # it. Any added, deleted, or renamed page/partial for this plugin is
+          # structural; pure content modifications are not.
+          PLUGIN="${{ steps.params.outputs.plugin }}"
+          PAGESET_CHANGE=$(git diff --staged --name-status -- \
+            "modules/reference/partials/rpk-${PLUGIN}" \
+            "modules/reference/pages/rpk/rpk-${PLUGIN}" \
+            | grep -cE '^[ADR]' || true)
+          if [ "$PAGESET_CHANGE" -gt 0 ] || \
+             grep -qE '\| (New|Removed|Deprecated) commands +\|' "${{ runner.temp }}/pr-summary.md" 2>/dev/null; then
             echo "structural=true" >> $GITHUB_OUTPUT
+            [ "$PAGESET_CHANGE" -gt 0 ] && echo "Page-set change detected: $PAGESET_CHANGE added/deleted/renamed page(s)"
           else
             echo "structural=false" >> $GITHUB_OUTPUT
           fi
