@@ -1,0 +1,123 @@
+# Re-renders the generated rpk reference pages whenever the overrides file
+# changes on a docs branch.
+#
+# The overrides file (docs-data/rpk-overrides.json) is the curated-content
+# store for generated rpk pages: descriptions, flag rewrites, added sections,
+# exclusions. Without this workflow, an overrides edit merges but the rendered
+# pages keep the old content until the next release-driven regeneration, so
+# the repo carries overrides that the published docs do not reflect.
+#
+# This is a pure re-render from the newest committed rpk snapshot: no rpk
+# binary, no diff, no What's new update. The run is idempotent, so a re-render
+# that changes nothing exits green without opening a PR. The PR only touches
+# generated pages, which cannot re-trigger this workflow (it only watches the
+# overrides file and its schema).
+name: Re-render rpk docs on overrides change
+
+on:
+  push:
+    branches: [main, beta]
+    paths:
+      - 'docs-data/rpk-overrides.json'
+      - 'docs-data/rpk-overrides.schema.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+# Only the newest overrides state matters: a superseded run for the same
+# branch is cancelled rather than queued.
+concurrency:
+  group: rpk-overrides-rerender-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  rerender:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout docs repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Resolve newest rpk snapshot
+        id: snapshot
+        run: |
+          # Tilde-normalize prerelease suffixes first: plain sort -V ranks
+          # 26.2.1-rc2 above 26.2.1, which would re-render GA pages from an
+          # RC snapshot.
+          SNAPSHOT=$(ls docs-data/rpk-v*.json 2>/dev/null | grep -v 'rpk-diff' | sed 's/-rc/~rc/' | sort -V | sed 's/~rc/-rc/' | tail -1)
+          if [ -z "$SNAPSHOT" ]; then
+            echo "::error::No rpk snapshot found in docs-data/"
+            exit 1
+          fi
+          echo "Using snapshot: $SNAPSHOT"
+          echo "snapshot=$SNAPSHOT" >> "$GITHUB_OUTPUT"
+
+      - name: Re-render rpk docs
+        run: |
+          npx --yes -p @redpanda-data/docs-extensions-and-macros@^5.3.0 doc-tools generate rpk-docs \
+            --from-json "${{ steps.snapshot.outputs.snapshot }}" \
+            --summary-file /tmp/pr-summary.md
+
+      - name: Detect changes
+        id: changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            git status --short | head -20
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "Overrides change did not alter any rendered page. Nothing to do."
+          fi
+
+      - name: Configure AWS credentials
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.RP_AWS_CRED_REGION }}
+          role-to-assume: arn:aws:iam::${{ secrets.RP_AWS_CRED_ACCOUNT_ID }}:role/${{ vars.RP_AWS_CRED_BASE_ROLE_NAME }}${{ github.event.repository.name }}
+
+      - name: Fetch actions bot token
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            ,sdlc/prod/github/actions_bot_token
+          parse-json-secrets: true
+
+      - name: Build PR body
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          {
+            echo "Automated re-render of the generated rpk reference pages after an overrides change on \`${{ github.ref_name }}\` (${{ github.sha }})."
+            echo
+            echo "Review focus: the changed pages should reflect exactly the merged overrides edit, nothing else. The generator version is pinned to the same range the release regeneration uses, so unrelated churn here means the branch missed a regeneration and this PR is catching it up."
+            echo
+            cat /tmp/pr-summary.md 2>/dev/null || true
+          } > /tmp/pr-body.md
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ env.ACTIONS_BOT_TOKEN }}
+          branch: rpk-docs/overrides-rerender-${{ github.ref_name }}
+          base: ${{ github.ref_name }}
+          title: 'docs: re-render rpk docs for overrides change (${{ github.ref_name }})'
+          body-path: /tmp/pr-body.md
+          commit-message: 'docs: re-render rpk docs for overrides change'
+          labels: |
+            documentation
+            automated
+            rpk
+          delete-branch: true
