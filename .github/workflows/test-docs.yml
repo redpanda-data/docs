@@ -7,19 +7,19 @@ on:
   workflow_dispatch:
     inputs:
       redpanda_version:
-        description: 'Redpanda version to test, such as v26.2.1. Defaults to the version pinned in antora.yml.'
+        description: 'Redpanda version to test, such as v26.2.1. Defaults to the latest stable GitHub release (stable vs beta channel decided by antora.yml).'
         required: false
         type: string
       redpanda_docker_repo:
-        description: 'Redpanda Docker repo, such as redpanda or redpanda-unstable (for RCs). Defaults to the repo pinned in antora.yml.'
+        description: 'Redpanda Docker repo, such as redpanda or redpanda-unstable (for RCs). Defaults to redpanda (redpanda-unstable when antora.yml is in beta mode and an RC exists).'
         required: false
         type: string
       console_version:
-        description: 'Redpanda Console version to test, such as v3.9.0. Defaults to the version pinned in antora.yml.'
+        description: 'Redpanda Console version to test, such as v3.9.0. Defaults to the latest stable GitHub release (stable vs beta channel decided by antora.yml).'
         required: false
         type: string
       console_docker_repo:
-        description: 'Console Docker repo, such as console. Defaults to the repo pinned in antora.yml.'
+        description: 'Console Docker repo, such as console. Defaults to console.'
         required: false
         type: string
   repository_dispatch:
@@ -48,9 +48,13 @@ jobs:
             kindguide:
               - 'modules/deploy/pages/redpanda/kubernetes/local-guide.adoc'
               - 'modules/deploy/partials/kubernetes/**'
-            # antora.yml pins the Redpanda and Console versions the quickstart
-            # tests against. Version-bump PRs must run the test so UI or image
-            # changes are caught before merge, not by the nightly run.
+              - 'antora.yml'
+            # A version-bump PR signals a new Redpanda or Console release. The
+            # quickstart test resolves the LATEST STABLE release at runtime
+            # (not the antora.yml pins), so running it on bump PRs catches
+            # breakage from that release before merge instead of in the
+            # nightly run. antora.yml deliberately appears here and under
+            # kindguide: dorny/paths-filter filters evaluate independently.
             versions:
               - 'antora.yml'
 
@@ -112,7 +116,19 @@ jobs:
         # Optional version overrides. Manual runs set them through workflow
         # inputs. Upstream repos (for example Console releases or Redpanda RC
         # builds) set them through the trigger-tests dispatch payload. When
-        # unset, the test resolves versions from antora.yml as before.
+        # unset, the test resolves the latest stable GitHub release for each
+        # product (doc-tools get-redpanda-version / get-console-version;
+        # antora.yml only decides stable vs beta), not the antora.yml pins.
+        #
+        # Cross-repo contract for senders: repository_dispatch event type
+        # `trigger-tests`, client_payload keys `redpanda_version`,
+        # `redpanda_docker_repo`, `console_version`, `console_docker_repo`.
+        #
+        # The env var names are consumed by
+        # tests/setup-tests/fetch-versions-and-rpk.json: renaming a variable
+        # there silently disables its override here. These overrides attach
+        # only to this all-tests step; a future dispatch that runs only the
+        # quickstart step would need the same env block there.
         env:
           REDPANDA_VERSION: ${{ github.event.inputs.redpanda_version || github.event.client_payload.redpanda_version }}
           REDPANDA_DOCKER_REPO: ${{ github.event.inputs.redpanda_docker_repo || github.event.client_payload.redpanda_docker_repo }}
