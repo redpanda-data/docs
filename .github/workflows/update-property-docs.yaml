@@ -14,8 +14,12 @@ on:
 # Serialize runs that target the same PR branch. Cloud-sync dispatches share a
 # fixed branch, so repeat dispatches queue instead of racing. Release runs are
 # keyed by the incoming tag.
+# One global group: cloud-sync and release runs regenerate the same
+# partials, so running them concurrently produces two PRs that clobber each
+# other on merge. The resolved tag isn't known at concurrency-evaluation time
+# (cloud-sync reads it from antora.yml at runtime), so serialize everything.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.action == 'trigger-cloud-property-sync' && 'cloud-sync' || github.event.inputs.tag || github.event.client_payload.tag || github.ref }}
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
@@ -116,7 +120,7 @@ jobs:
             # Doc-tools' same-tag path skips the diff phase and version bump,
             # so bypassing the newer-tag guard is safe here.
             echo "Cloud property sync event — regenerating docs for $TAG"
-            echo "is_newer=true" >> $GITHUB_OUTPUT
+            echo "is_newer=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -132,10 +136,10 @@ jobs:
           # Compare semver using sort -V
           if [ "$(printf "%s\n%s" "$CUR_NUM" "$NEW_NUM" | sort -V | tail -n1)" = "$NEW_NUM" ] && [ "$CUR_NUM" != "$NEW_NUM" ]; then
             echo "$TAG is newer than $CURRENT"
-            echo "is_newer=true" >> $GITHUB_OUTPUT
+            echo "is_newer=true" >> "$GITHUB_OUTPUT"
           else
             echo "$TAG is not newer than $CURRENT — skipping doc generation"
-            echo "is_newer=false" >> $GITHUB_OUTPUT
+            echo "is_newer=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Generate property docs
@@ -152,6 +156,10 @@ jobs:
           GITHUB_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
           TAG: ${{ steps.tag.outputs.tag }}
 
+      # Note: the --regenerate-old-baseline doc-tools flag mentioned in review
+      # discussions applies only to manual local --diff runs (it rebuilds a
+      # stale committed baseline). This workflow never passes --diff, so the
+      # flag is deliberately absent here.
       - name: Prepare pull request metadata
         if: steps.version_check.outputs.is_newer == 'true'
         id: pr_meta
@@ -172,9 +180,11 @@ jobs:
 
           if [ "$EVENT_ACTION" = "trigger-cloud-property-sync" ]; then
             # Use a fixed branch so repeat cloud-sync dispatches update one
-            # open PR instead of colliding with the release branch.
-            echo "branch=update-property-docs-cloud-sync" >> $GITHUB_OUTPUT
-            echo "labels=auto-docs,cloud-property-sync" >> $GITHUB_OUTPUT
+            # open PR instead of colliding with the release branch. Distinct
+            # title so the PR list shows which trigger fired.
+            echo "branch=update-property-docs-cloud-sync" >> "$GITHUB_OUTPUT"
+            echo "labels=auto-docs,cloud-property-sync" >> "$GITHUB_OUTPUT"
+            echo "title=auto-docs: Sync cloud property availability ($TAG)" >> "$GITHUB_OUTPUT"
             {
               echo "body<<BODY_EOF"
               echo "This PR regenerates Redpanda property documentation for **$TAG** to sync cloud availability metadata."
@@ -183,15 +193,16 @@ jobs:
                 echo "Triggered by cloudv2 commit: \`$CLOUD_COMMIT_SHA\`"
               fi
               echo "BODY_EOF"
-            } >> $GITHUB_OUTPUT
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "branch=update-property-docs-$TAG" >> $GITHUB_OUTPUT
-            echo "labels=auto-docs" >> $GITHUB_OUTPUT
+            echo "branch=update-property-docs-$TAG" >> "$GITHUB_OUTPUT"
+            echo "labels=auto-docs" >> "$GITHUB_OUTPUT"
+            echo "title=auto-docs: Update property docs for tag $TAG" >> "$GITHUB_OUTPUT"
             {
               echo "body<<BODY_EOF"
               echo "This PR auto-generates updated Redpanda property documentation for **$TAG**."
               echo "BODY_EOF"
-            } >> $GITHUB_OUTPUT
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create pull request
@@ -201,7 +212,7 @@ jobs:
           token: ${{ env.ACTIONS_BOT_TOKEN }}
           commit-message: "auto-docs: Update property docs for ${{ steps.tag.outputs.tag }}"
           branch: ${{ steps.pr_meta.outputs.branch }}
-          title: "auto-docs: Update property docs for tag ${{ steps.tag.outputs.tag }}"
+          title: ${{ steps.pr_meta.outputs.title }}
           body: ${{ steps.pr_meta.outputs.body }}
           labels: ${{ steps.pr_meta.outputs.labels }}
 
