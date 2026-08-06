@@ -134,6 +134,56 @@ Note that `--num <#>` is the number of partitions to _add_, not the total number
 
 include::develop:partial$balance-existing-topic-redistribution.adoc[]
 
+=== Reduce the number of partitions
+
+You cannot reduce the number of partitions on an existing topic. The Kafka API does not support it, because records are distributed across partitions by key, and removing partitions would orphan their data.
+
+To move a topic's data to a smaller number of partitions, copy the data to a new topic:
+
+. Create a new topic with the target number of partitions:
++
+[,bash]
+----
+rpk topic create <new-topic> --partitions <count>
+----
+
+. Copy the data with a xref:connect:get-started:about.adoc[Redpanda Connect] pipeline. The following configuration copies every record from the beginning of the original topic and preserves record keys, so the default partitioner distributes records across the new partitions by key:
++
+.`reduce-partitions.yaml`
+[,yaml]
+----
+input:
+  redpanda:
+    seed_brokers: ["<broker-address>"]
+    topics: ["<original-topic>"]
+    consumer_group: partition-reduction-copy
+    start_from_oldest: true
+output:
+  redpanda:
+    seed_brokers: ["<broker-address>"]
+    topic: <new-topic>
+    key: ${! @kafka_key }
+----
++
+[,bash]
+----
+rpk connect run reduce-partitions.yaml
+----
+
+. Wait for the copy to catch up. The copy is complete when the consumer group reports a lag of zero for every partition of the original topic and producers have stopped writing to it:
++
+[,bash]
+----
+rpk group describe partition-reduction-copy
+----
+
+. Point your producers and consumers at the new topic.
+
+. When you no longer need the original topic, delete it to reclaim storage. See <<Delete a topic>>.
+
+CAUTION: The copy preserves record keys but not the global order of records across partitions. Stop producers before you switch over so that no records are written to the original topic after the copy catches up.
+
+
 ifndef::env-cloud[]
 [[change-the-replication-factor]]
 === Change the replication factor
