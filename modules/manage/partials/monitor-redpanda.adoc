@@ -16,6 +16,7 @@ This topic covers the following about monitoring Redpanda metrics:
 * <<configure-prometheus,Configure Prometheus to monitor Redpanda metrics>>
 * <<generate-grafana-dashboard,Generate Grafana dashboard>>
 * <<use-redpanda-monitoring-examples,Learn from examples in the Redpanda monitoring examples repository>>
+* <<usage-statistics-reporting,Usage statistics that Redpanda reports to Redpanda Data>>
 * <<monitor-for-performance-and-health,Metrics and queries to monitor for system performance and health>>
 * <<references,References of public and internal metrics>>
 
@@ -241,3 +242,122 @@ For hands-on learning, Redpanda provides a repository with examples of monitorin
 image::https://github.com/redpanda-data/observability/blob/main/docs/images/Ops%20Dashboard.png?raw=true[Example Redpanda Ops Dashboard^]
 
 It includes https://github.com/redpanda-data/observability#grafana-dashboards[example Grafana dashboards^] and a https://github.com/redpanda-data/observability#sandbox-environment[sandbox environment^] in which you launch a Dockerized Redpanda cluster and create a custom workload to monitor with dashboards.
+
+== Usage statistics reporting
+
+By default, each Redpanda cluster sends a usage statistics report to Redpanda Data every 24 hours. The report helps Redpanda Data understand how Redpanda is deployed and used. It contains aggregate counts, version information, and cluster configuration settings, such as a unique cluster identifier, the number of topics and partitions, the Redpanda version and uptime of each broker, and whether enterprise features are in use. The report does not include topic names, message data, or client identifiers.
+
+The xref:reference:properties/cluster-properties.adoc#enable_metrics_reporter[`enable_metrics_reporter`] cluster property controls this reporting, and the xref:reference:properties/cluster-properties.adoc#metrics_reporter_report_interval[`metrics_reporter_report_interval`] property sets the report interval.
+
+ifdef::env-kubernetes[]
+=== Kubernetes deployment metadata
+
+In version 26.1.1 and later of the Redpanda Helm chart and Redpanda Operator, the chart or operator adds Kubernetes deployment metadata to the usage statistics report. At deploy time, it sets the following environment variables on the Redpanda container, and each broker includes their values in its report:
+
+[cols="1m,2a"]
+|===
+| Environment variable | Description
+
+| REDPANDA_METRICS_K8S_DEPLOYMENT_TYPE
+| Whether the cluster is deployed with the Helm chart (`helm`) or the Redpanda Operator (`operator`).
+
+| REDPANDA_METRICS_K8S_CHART_VERSION
+| The Helm chart version. For Operator deployments, the Redpanda Operator version.
+
+| REDPANDA_METRICS_K8S_OPERATOR_IMAGE_VERSION
+| The image repository and tag of the sidecar container.
+
+| REDPANDA_METRICS_K8S_VERSION
+| The Kubernetes server version.
+
+| REDPANDA_METRICS_K8S_ENVIRONMENT
+| The cloud platform, detected from the Kubernetes version string: `GCP` for GKE or `AWS` for EKS. This variable is not set when the platform cannot be detected, for example on AKS or self-managed Kubernetes.
+
+| REDPANDA_METRICS_K8S_CLUSTER_ID
+| The UID of the `kube-system` namespace, which identifies the Kubernetes cluster without exposing its name. This variable is not set when the deployment cannot read the `kube-system` namespace.
+|===
+
+Redpanda Console reports its usage separately. The Console Helm chart sets a similar group of environment variables, including the Console image version, on the Console Deployment.
+
+To inspect exactly what your deployment reports, list the environment variables on a Redpanda Pod:
+
+```bash
+kubectl exec redpanda-0 --namespace <namespace> --container redpanda -- env | grep REDPANDA_METRICS_K8S
+```
+
+=== Disable usage statistics reporting
+
+To disable usage statistics reporting entirely, including the Kubernetes deployment metadata, disable the metrics reporter:
+
+[tabs]
+======
+Operator::
++
+--
+.`redpanda-cluster.yaml`
+[,yaml,lines=9-11]
+----
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    config:
+      cluster:
+        enable_metrics_reporter: false
+----
+
+```bash
+kubectl apply -f redpanda-cluster.yaml --namespace <namespace>
+```
+
+--
+Helm::
++
+--
+[tabs]
+====
+--values::
++
+.`disable-usage-stats.yaml`
+[,yaml]
+----
+config:
+  cluster:
+    enable_metrics_reporter: false
+----
++
+```bash
+helm upgrade --install redpanda redpanda/redpanda --namespace <namespace> --create-namespace \
+--values disable-usage-stats.yaml --reuse-values
+```
+
+--set::
++
+[,bash,lines=4]
+----
+helm upgrade --install redpanda redpanda/redpanda \
+  --namespace <namespace> \
+  --create-namespace \
+  --set config.cluster.enable_metrics_reporter=false
+----
+
+====
+--
+======
+
+To keep the base report but omit the Kubernetes deployment metadata, set `logging.usageStats.enabled` to `false` in the Helm values or in `spec.clusterSpec.logging.usageStats.enabled` of the Redpanda resource.
+endif::[]
+
+ifndef::env-kubernetes[]
+=== Disable usage statistics reporting
+
+To disable usage statistics reporting, disable the metrics reporter:
+
+[,bash]
+----
+rpk cluster config set enable_metrics_reporter false
+----
+endif::[]
