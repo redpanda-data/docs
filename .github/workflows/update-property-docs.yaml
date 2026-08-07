@@ -9,7 +9,18 @@ on:
         required: true
         type: string
   repository_dispatch:
-    types: [trigger-property-docs-generation]
+    types: [trigger-property-docs-generation, trigger-cloud-property-sync]
+
+# Serialize runs that target the same PR branch. Cloud-sync dispatches share a
+# fixed branch, so repeat dispatches queue instead of racing. Release runs are
+# keyed by the incoming tag.
+# One global group: cloud-sync and release runs regenerate the same
+# partials, so running them concurrently produces two PRs that clobber each
+# other on merge. The resolved tag isn't known at concurrency-evaluation time
+# (cloud-sync reads it from antora.yml at runtime), so serialize everything.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   generate-property-docs:
@@ -43,27 +54,76 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          # Doc-tools installs its Python requirements at run time. The pinned
+          # doc-tools version in package-lock.json determines those requirements,
+          # so the lockfile hash is the closest stable cache key.
+          key: ${{ runner.os }}-pip-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: npm ci
 
       - name: Determine tag
         id: tag
+        # Dispatch-controlled values are passed through env so the shell never
+        # re-parses them as script text (prevents template injection).
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          PAYLOAD_TAG: ${{ github.event.client_payload.tag }}
         run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          elif [ -n "${{ github.event.client_payload.tag }}" ]; then
-            echo "tag=${{ github.event.client_payload.tag }}" >> $GITHUB_OUTPUT
+          if [ "$EVENT_ACTION" = "trigger-cloud-property-sync" ]; then
+            # Cloud-sync regenerates docs for the version already published in
+            # antora.yml, so resolve the tag from there instead of the payload.
+            TAG=$(grep 'latest-redpanda-tag:' antora.yml | awk '{print $2}' | tr -d "\"'")
+            if [ -z "$TAG" ]; then
+              echo "❌ Could not resolve latest-redpanda-tag from antora.yml" >&2
+              exit 1
+            fi
+            echo "Resolved tag from antora.yml: $TAG"
+          elif [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ -n "$PAYLOAD_TAG" ]; then
+            TAG="$PAYLOAD_TAG"
           else
             echo "❌ No tag provided via input or dispatch payload" >&2
             exit 1
           fi
 
+          # Reject anything outside the release-tag charset (no control
+          # characters, newlines, whitespace, or shell metacharacters) before
+          # the value reaches GITHUB_OUTPUT and downstream steps. Bash =~
+          # matches the whole string, so embedded newlines cannot sneak past.
+          if ! [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "❌ Invalid tag format: $TAG" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Check if tag is newer than antora.yml latest
         id: version_check
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.tag.outputs.tag }}"
+
+          if [ "$EVENT_ACTION" = "trigger-cloud-property-sync" ]; then
+            # Cloud-sync regenerates docs for the current tag on purpose.
+            # Doc-tools' same-tag path skips the diff phase and version bump,
+            # so bypassing the newer-tag guard is safe here.
+            echo "Cloud property sync event — regenerating docs for $TAG"
+            echo "is_newer=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           CURRENT=$(grep 'latest-redpanda-tag:' antora.yml | awk '{print $2}' | tr -d "\"'")
 
           echo "📄 Current latest-redpanda-tag in antora.yml: $CURRENT"
@@ -76,24 +136,74 @@ jobs:
           # Compare semver using sort -V
           if [ "$(printf "%s\n%s" "$CUR_NUM" "$NEW_NUM" | sort -V | tail -n1)" = "$NEW_NUM" ] && [ "$CUR_NUM" != "$NEW_NUM" ]; then
             echo "$TAG is newer than $CURRENT"
-            echo "is_newer=true" >> $GITHUB_OUTPUT
+            echo "is_newer=true" >> "$GITHUB_OUTPUT"
           else
             echo "$TAG is not newer than $CURRENT — skipping doc generation"
-            echo "is_newer=false" >> $GITHUB_OUTPUT
+            echo "is_newer=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Generate property docs
         if: steps.version_check.outputs.is_newer == 'true'
         run: |
           set -euo pipefail
-          echo "Running doc generation for: ${{ steps.tag.outputs.tag }}"
+          echo "Running doc generation for: $TAG"
           npx doc-tools generate property-docs \
-            --tag "${{ steps.tag.outputs.tag }}" \
+            --tag "$TAG" \
             --generate-partials \
             --cloud-support \
             --overrides docs-data/property-overrides.json
         env:
           GITHUB_TOKEN: ${{ env.ACTIONS_BOT_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+
+      # Note: the --regenerate-old-baseline doc-tools flag mentioned in review
+      # discussions applies only to manual local --diff runs (it rebuilds a
+      # stale committed baseline). This workflow never passes --diff, so the
+      # flag is deliberately absent here.
+      - name: Prepare pull request metadata
+        if: steps.version_check.outputs.is_newer == 'true'
+        id: pr_meta
+        env:
+          CLOUD_COMMIT_SHA: ${{ github.event.client_payload.commit_sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # Only trust commit_sha if it looks like a commit hash. Bash =~
+          # matches the whole string, so a newline-containing payload cannot
+          # terminate the BODY_EOF block and inject extra outputs.
+          if [ -n "$CLOUD_COMMIT_SHA" ] && ! [[ "$CLOUD_COMMIT_SHA" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+            echo "⚠️ Ignoring commit_sha from payload — not a valid commit hash" >&2
+            CLOUD_COMMIT_SHA=""
+          fi
+
+          if [ "$EVENT_ACTION" = "trigger-cloud-property-sync" ]; then
+            # Use a fixed branch so repeat cloud-sync dispatches update one
+            # open PR instead of colliding with the release branch. Distinct
+            # title so the PR list shows which trigger fired.
+            echo "branch=update-property-docs-cloud-sync" >> "$GITHUB_OUTPUT"
+            echo "labels=auto-docs,cloud-property-sync" >> "$GITHUB_OUTPUT"
+            echo "title=auto-docs: Sync cloud property availability ($TAG)" >> "$GITHUB_OUTPUT"
+            {
+              echo "body<<BODY_EOF"
+              echo "This PR regenerates Redpanda property documentation for **$TAG** to sync cloud availability metadata."
+              if [ -n "$CLOUD_COMMIT_SHA" ]; then
+                echo ""
+                echo "Triggered by cloudv2 commit: \`$CLOUD_COMMIT_SHA\`"
+              fi
+              echo "BODY_EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "branch=update-property-docs-$TAG" >> "$GITHUB_OUTPUT"
+            echo "labels=auto-docs" >> "$GITHUB_OUTPUT"
+            echo "title=auto-docs: Update property docs for tag $TAG" >> "$GITHUB_OUTPUT"
+            {
+              echo "body<<BODY_EOF"
+              echo "This PR auto-generates updated Redpanda property documentation for **$TAG**."
+              echo "BODY_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create pull request
         if: steps.version_check.outputs.is_newer == 'true'
@@ -101,11 +211,10 @@ jobs:
         with:
           token: ${{ env.ACTIONS_BOT_TOKEN }}
           commit-message: "auto-docs: Update property docs for ${{ steps.tag.outputs.tag }}"
-          branch: update-property-docs-${{ steps.tag.outputs.tag }}
-          title: "auto-docs: Update property docs for tag ${{ steps.tag.outputs.tag }}"
-          body: |
-            This PR auto-generates updated Redpanda property documentation for **${{ steps.tag.outputs.tag }}**.
-          labels: auto-docs
+          branch: ${{ steps.pr_meta.outputs.branch }}
+          title: ${{ steps.pr_meta.outputs.title }}
+          body: ${{ steps.pr_meta.outputs.body }}
+          labels: ${{ steps.pr_meta.outputs.labels }}
 
       - name: Skip notice
         if: steps.version_check.outputs.is_newer != 'true'
