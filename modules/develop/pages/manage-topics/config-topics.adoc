@@ -134,6 +134,167 @@ Note that `--num <#>` is the number of partitions to _add_, not the total number
 
 include::develop:partial$balance-existing-topic-redistribution.adoc[]
 
+=== Reduce the number of partitions
+
+You cannot reduce the number of partitions on an existing topic. The Kafka API does not support it: a record's partition is chosen when the record is produced, and records that have already been written stay in the partition where they landed, so removing a partition would orphan its data. Redpanda assigns a record that has a key to a partition by hashing the key, and leaves a record without a key to the producer's partitioner, which usually spreads such records across all available partitions.
+
+To move a topic's data to fewer partitions, copy it to a new topic and switch your clients over. Before you start, check that your applications can tolerate the following:
+
+* *Duplicates*: Redpanda Connect delivers records at least once, so a restart or a retry during the copy can write the same record to the new topic twice. A lag of zero shows only how far the copy has committed, not that the new topic is free of duplicates. Either make your consumers idempotent, or deduplicate on a record ID after the copy.
+* *Ordering*: records keep their keys, so all records for a key still land on one partition and keep their order relative to each other, but the global order of records across partitions is not preserved.
+* *Retention*: the copy starts at the oldest record that is still retained. Records that retention or compaction has already removed cannot be copied, and both keep running during the copy, so complete the copy well within the topic's retention period.
+* *Consumer offsets*: consumer group offsets are stored per topic, so the offsets your consumers committed on the original topic do not carry over. Each consumer starts from the beginning of the new topic and replays what the copy wrote, unless you set its offsets explicitly with `rpk group seek`.
+* *Write downtime*: producers must stop writing to the original topic before you switch clients over, so plan a window in which the topic accepts no writes.
+
+The following procedure reduces a topic named `orders` from three partitions to one.
+
+. Check the configuration of the original topic so that you can recreate it. Note the replication factor, and every row whose `SOURCE` is `DYNAMIC_TOPIC_CONFIG`, which is an override you must set on the new topic:
++
+[,bash]
+----
+rpk topic describe orders
+----
++
+.Example output (abbreviated)
+[%collapsible]
+====
+[,bash,role="no-wrap"]
+----
+SUMMARY
+=======
+NAME        orders
+PARTITIONS  3
+REPLICAS    1
+
+CONFIGS
+=======
+KEY                           VALUE      SOURCE
+cleanup.policy                delete     DEFAULT_CONFIG
+retention.bytes               -1         DEFAULT_CONFIG
+retention.local.target.ms     86400000   DEFAULT_CONFIG
+retention.ms                  604800000  DYNAMIC_TOPIC_CONFIG
+segment.bytes                 134217728  DEFAULT_CONFIG
+----
+====
++
+Here, only `retention.ms` is an override. If the topic has Tiered Storage settings, a custom cleanup policy, or other overrides, carry all of them over: a new topic created without them silently falls back to the cluster defaults.
+
+. Create the new topic with the target number of partitions, the replication factor of the original topic, and each override from the previous step:
++
+[,bash]
+----
+rpk topic create orders-reduced --partitions 1 --replicas 1 --topic-config retention.ms=604800000
+----
++
+.Example output
+[%collapsible]
+====
+[,bash,role="no-wrap"]
+----
+TOPIC           STATUS
+orders-reduced  OK
+----
+====
+
+. Copy the data with a xref:connect:get-started:about.adoc[Redpanda Connect] pipeline. This configuration reads all records that are still available in the original topic and preserves record keys, so records for the same key land on the same partition of the new topic:
++
+.`reduce-partitions.yaml`
+[,yaml]
+----
+input:
+  redpanda:
+    seed_brokers: ["<broker-address>"]
+    topics: ["orders"]
+    consumer_group: orders-to-orders-reduced
+    start_offset: earliest
+output:
+  redpanda:
+    seed_brokers: ["<broker-address>"]
+    topic: orders-reduced
+    key: ${! @kafka_key }
+----
++
+Give the consumer group a name that is unique to this copy, such as `<original-topic>-to-<new-topic>`. `start_offset: earliest` applies only when the group has no committed offset, so a group name that has been used before resumes from where it left off and skips records.
++
+[,bash]
+----
+rpk connect run reduce-partitions.yaml
+----
++
+.Example output
+[%collapsible]
+====
+[,bash,role="no-wrap"]
+----
+level=info msg="Launching a Redpanda Connect instance, use CTRL+C to close"
+level=info msg="Output type redpanda is now active"
+level=info msg="Input type redpanda is now active"
+----
+====
+
+. Stop the producers that write to the original topic. Leave the pipeline running so that it copies the last records they wrote.
+
+. Wait for the copy to drain. It is complete when the consumer group reports a `LAG` of `0` for every partition of the original topic:
++
+[,bash]
+----
+rpk group describe orders-to-orders-reduced
+----
++
+.Example output
+[%collapsible]
+====
+[,bash,role="no-wrap"]
+----
+GROUP                  orders-to-orders-reduced
+COORDINATOR-NODE       0
+COORDINATOR-PARTITION  __consumer_offsets/0
+STATE                  Stable
+BALANCER               cooperative-sticky
+MEMBERS                1
+TOTAL-LAG              0
+
+TOPIC   PARTITION  CURRENT-OFFSET  LOG-START-OFFSET  LOG-END-OFFSET  LAG  MEMBER-ID                                              CLIENT-ID         HOST
+orders  0          3               0                 3               0    redpanda-connect-15d7a80f-590f-4cde-bc16-4854fa2754    redpanda-connect  10.0.0.1
+orders  1          3               0                 3               0    redpanda-connect-15d7a80f-590f-4cde-bc16-4854fa2754    redpanda-connect  10.0.0.1
+orders  2          3               0                 3               0    redpanda-connect-15d7a80f-590f-4cde-bc16-4854fa2754    redpanda-connect  10.0.0.1
+----
+====
+
+. Compare the record counts of the two topics. For each topic, the number of available records is the sum of `HIGH-WATERMARK` minus `LOG-START-OFFSET` across its partitions. A higher count on the new topic means the copy wrote duplicates:
++
+[,bash]
+----
+rpk topic describe orders -p
+rpk topic describe orders-reduced -p
+----
++
+.Example output
+[%collapsible]
+====
+[,bash,role="no-wrap"]
+----
+PARTITION  LEADER  EPOCH  REPLICAS  LOG-START-OFFSET  HIGH-WATERMARK
+0          0       1      [0]       0                 3
+1          0       1      [0]       0                 3
+2          0       1      [0]       0                 3
+
+PARTITION  LEADER  EPOCH  REPLICAS  LOG-START-OFFSET  HIGH-WATERMARK
+0          0       1      [0]       0                 9
+----
+====
++
+Nine records across the three original partitions, and the same nine on the single partition of the new topic.
+
+. Point your producers and consumers at the new topic. Consumers start from the beginning of the new topic unless you set their offsets with `rpk group seek`.
+
+. Stop the pipeline with kbd:[Ctrl+C].
+
+. When you no longer need the original topic, delete it to reclaim storage. See <<Delete a topic>>.
+
+CAUTION: Do not delete the original topic until the new topic holds the data you expect and your consumers are running against it. Deleting a topic deletes its data.
+
+
 ifndef::env-cloud[]
 [[change-the-replication-factor]]
 === Change the replication factor
